@@ -1,0 +1,11 @@
+{
+  "name": "@mlpal/harness-protocol",
+  "version": "0.9.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}
