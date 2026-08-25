@@ -98,8 +98,13 @@ export interface Profile {
     system: string;
     /** System prompt for the adversarial verification sub-agent. */
     verifierAgent: string;
-    /** User-turn framing handed to the verifier (receives the original task text). */
-    verifierTask: (task: string) => string;
+    /** User-turn framing handed to the verifier. Receives the original task text and the
+     *  run's DELIVERABLE — the final assistant report. Profiles whose deliverable is the
+     *  workspace (coding: the diff is on disk) may ignore it; profiles whose deliverable
+     *  is the text itself (reviewer) MUST embed it, or the verifier audits a filesystem
+     *  that cannot contain what it is checking. (Found by our own H2 experiment: the
+     *  fail-closed gate refused every delivery with "no review exists on disk".) */
+    verifierTask: (task: string, deliverable?: string) => string;
   };
   loop: LoopPolicy;
   verification: VerificationPolicy;

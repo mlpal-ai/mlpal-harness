@@ -7,7 +7,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mlpal/harness-protocol": "workspace:*",
+    "@mlpal/harness-protocol": "file:../protocol",
     "tinyglobby": "^0.2.10",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.1"

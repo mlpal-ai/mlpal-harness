@@ -52,11 +52,18 @@ End with EXACTLY one line — the literal string \`VERDICT: \` followed by one o
 - FAIL: at least one finding is false, miscited, or unevidenced — name it and why.
 - PARTIAL: environmental limitation only (cited repo state unavailable) — never for "I'm unsure".`;
 
-export function reviewerVerifierTask(task: string): string {
+export function reviewerVerifierTask(task: string, deliverable?: string): string {
+  // The reviewer's deliverable is TEXT, not a diff — the verifier must receive it, or it
+  // audits a filesystem that cannot contain what it is checking.
+  const report = deliverable?.trim()
+    ? `\n\n<review_report>\n${deliverable}\n</review_report>\n`
+    : "\n\n(No review text was produced — treat that itself as the thing to audit: was the repository genuinely searched?)\n";
   return (
-    `A code review was just completed in this repository. Audit the review's claims for truth, ` +
-    `evidence, and completeness.\n\n<original_task>\n${task}\n</original_task>\n\n` +
-    `Follow your protocol — check each cited file:line, test each failure scenario you cheaply can, ` +
+    `A code review was just completed in this repository. The review's REPORT is below; audit its ` +
+    `claims for truth, evidence, and completeness against the repository.` +
+    `\n\n<original_task>\n${task}\n</original_task>` +
+    report +
+    `\nFollow your protocol — open each cited file:line, test each failure scenario you cheaply can, ` +
     `and end with a VERDICT line.`
   );
 }

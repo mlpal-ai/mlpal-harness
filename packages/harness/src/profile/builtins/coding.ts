@@ -149,8 +149,9 @@ End with EXACTLY one line — the literal string \`VERDICT: \` followed by one o
 - FAIL: something is wrong — include the failing command, exact output, and how to reproduce.
 - PARTIAL: environmental limitation only (no test framework, tool missing) — never for "I'm unsure".`;
 
-/** Was inline in verifiers/agent.ts agentVerifier(). */
-export function codingVerifierTask(task: string): string {
+/** Was inline in verifiers/agent.ts agentVerifier(). The deliverable param is unused by
+ *  design: coding's deliverable is the on-disk diff, which the verifier reads itself. */
+export function codingVerifierTask(task: string, _deliverable?: string): string {
   return (
     `An implementation was just completed in this repository. Independently verify it is correct ` +
     `and complete. Run \`git diff\` to see the changes.\n\n<original_task>\n${task}\n</original_task>\n\n` +

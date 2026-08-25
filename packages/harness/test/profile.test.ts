@@ -283,3 +283,19 @@ describe("profile loading", () => {
     expect(() => assertSettingsRespectLocks(CODING_PROFILE, { mode: "manual" })).not.toThrow();
   });
 });
+
+describe("verifier deliverable framing", () => {
+  test("reviewer framing embeds the report; empty deliverable is itself flagged", async () => {
+    const { reviewerVerifierTask } = await import("../src/profile/builtins/reviewer");
+    const framed = reviewerVerifierTask("review the repo", "## Findings\nD1 x.py:3 off-by-one");
+    expect(framed).toContain("<review_report>");
+    expect(framed).toContain("D1 x.py:3 off-by-one");
+    const empty = reviewerVerifierTask("review the repo", "");
+    expect(empty).toContain("No review text was produced");
+  });
+
+  test("coding framing is unchanged by the deliverable param (golden)", async () => {
+    const { codingVerifierTask } = await import("../src/profile/builtins/coding");
+    expect(codingVerifierTask("TASK", "ignored")).toBe(codingVerifierTask("TASK"));
+  });
+});
