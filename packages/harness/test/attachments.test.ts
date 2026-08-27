@@ -1,3 +1,4 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,5 +152,30 @@ describe("collectAttachmentsForPaths (resolve [Image #N] placeholders)", () => {
     expect(atts).toHaveLength(1);
     expect(atts[0]!.kind).toBe("image");
     expect(atts[0]!.block).toMatchObject({ type: "image", source: { media_type: "image/png" } });
+  });
+});
+
+describe("detectImageSpans performance bound", () => {
+  test("52k transcript-like paste stays fast (was multi-second)", () => {
+    let text = "";
+    while (text.length < 52000) {
+      text += "looked at /Users/x/proj/src/deck/slide.tsx and assets/logo.png then /usr/local/bin/node scripts/b.js\n";
+    }
+    const t0 = performance.now();
+    const spans = detectImageSpans(text, "/tmp");
+    const ms = performance.now() - t0;
+    expect(spans).toEqual([]);
+    expect(ms).toBeLessThan(250); // generous CI margin; the bug was ~4000ms
+  });
+
+  test("real paths still detected after the window bound", () => {
+    const dir = mkdtempSync(join(tmpdir(), "spans-"));
+    const img = join(dir, "shot 1.png");
+    writeFileSync(img, "x");
+    const escaped = img.replace(/ /g, "\\ ");
+    const found = detectImageSpans(`please look at ${escaped} thanks`, "/tmp");
+    expect(found.length).toBe(1);
+    expect(found[0]!.path).toBe(img);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

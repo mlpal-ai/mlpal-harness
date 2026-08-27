@@ -219,11 +219,20 @@ export function detectImageSpans(text: string, cwd: string): { raw: string; path
   const out: { raw: string; path: string }[] = [];
   const seen = new Set<string>();
   const extRe = new RegExp(`\\.${EXT_RE}\\b`, "gi");
+  // A path candidate never spans a newline and never exceeds PATH_MAX (1024 on macOS).
+  // Without these bounds a large paste is quadratic WITH stat() syscalls per candidate:
+  // every "/" in the entire preceding text became a start for every extension match — a
+  // 52k pasted transcript took multi-second, user-visible time to ingest.
+  const WINDOW = 1024;
   let m: RegExpExecArray | null;
   while ((m = extRe.exec(text))) {
     const end = m.index + m[0].length;
-    const starts = new Set([0]);
-    for (let i = 0; i < end; i++) if (text[i] === "/" || text[i] === "~") starts.add(i);
+    let lo = Math.max(0, end - WINDOW);
+    const nl = Math.max(text.lastIndexOf("\n", end - 1), text.lastIndexOf("\r", end - 1));
+    if (nl >= lo) lo = nl + 1;
+    if (lo >= end) continue;
+    const starts = new Set([lo]);
+    for (let i = lo; i < end; i++) if (text[i] === "/" || text[i] === "~") starts.add(i);
     // Longest first (smallest start) → recovers the most escaped specials.
     for (const start of [...starts].sort((a, b) => a - b)) {
       const raw = text.slice(start, end);
