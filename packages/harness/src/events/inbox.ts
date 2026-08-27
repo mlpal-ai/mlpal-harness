@@ -14,6 +14,16 @@
  *   disk) so a noisy producer can never inflate the model's context.
  */
 
+/** One-line presentation form of a shell command for event labels: first non-empty line,
+ *  whitespace collapsed, clipped. Multi-line heredocs interpolated raw into event rows
+ *  read as leaked internal state, and newline-joined renderings silently rewrote them
+ *  into different-looking commands (2026-08-27 video report). */
+export function commandLabel(command: string, max = 64): string {
+  const first = command.split("\n").find((l) => l.trim()) ?? "";
+  const one = first.trim().replace(/\s+/g, " ");
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
 export type EventKind = "progress" | "complete" | "error" | "mail";
 
 export interface AgentEvent {

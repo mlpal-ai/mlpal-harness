@@ -122,3 +122,20 @@ describe("EventInbox", () => {
     }
   });
 });
+
+describe("commandLabel", () => {
+  test("multi-line heredoc collapses to one clipped line", async () => {
+    const { commandLabel } = await import("../src/events/inbox");
+    const cmd = "cd ~/Downloads/Coding/mlpal/pitch && python3 - <<'PY' > .sol-out.md 2>.sol-err.txt\nimport json,os,urllib.request\nprint('x')\nPY";
+    const label = commandLabel(cmd);
+    expect(label).not.toContain("\n");
+    expect(label.length).toBeLessThanOrEqual(64);
+    expect(label.startsWith("cd ~/Downloads/Coding/mlpal/pitch && python3 - <<'PY'")).toBe(true);
+    expect(label.endsWith("…")).toBe(true);
+  });
+
+  test("short single-line commands pass through untouched", async () => {
+    const { commandLabel } = await import("../src/events/inbox");
+    expect(commandLabel("npm test")).toBe("npm test");
+  });
+});

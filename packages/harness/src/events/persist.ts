@@ -1,3 +1,4 @@
+import { commandLabel } from "./inbox";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { EventInbox, InboxSnapshot } from "./inbox";
@@ -142,7 +143,7 @@ export async function restoreInbox(
         kind: "complete",
         label: ref.label,
         body:
-          `${ref.id} (${ref.kind} "${ref.label}") finished while ${host().name} was not running ` +
+          `${ref.id} (${ref.kind} "${commandLabel(ref.label)}") finished while ${host().name} was not running ` +
           `(exit status unknown).` +
           (tail ? ` Output after the last delivered point:\n${tail}` : " (no further output.)"),
         ts: Date.now(),
@@ -158,7 +159,7 @@ export async function restoreInbox(
       kind: "error",
       label: ref.label,
       body:
-        `${ref.id} (${ref.kind} "${ref.label}") was still running when the previous ${host().name} process ` +
+        `${ref.id} (${ref.kind} "${commandLabel(ref.label)}") was still running when the previous ${host().name} process ` +
         `exited, and did not survive the restart. Start it again if it's still needed.`,
       ts: Date.now(),
     });

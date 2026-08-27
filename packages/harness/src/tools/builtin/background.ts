@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { EventInbox } from "../../events/inbox";
+import { commandLabel } from "../../events/inbox";
 import { hostEnvName } from "../../host";
 
 /**
@@ -400,7 +401,7 @@ export class BackgroundTasks {
         source: t.id,
         sourceType: "monitor",
         kind: "progress",
-        label: t.command,
+        label: commandLabel(t.command),
         body: t.output.slice(-PROGRESS_TAIL).trimEnd(),
         ts: Date.now(),
       });
@@ -417,7 +418,7 @@ export class BackgroundTasks {
       source: t.id,
       sourceType: t.monitor ? "monitor" : "shell",
       kind: t.exitCode === 0 ? "complete" : "error",
-      label: t.command,
+      label: commandLabel(t.command),
       body: exitNote(t),
       ts: Date.now(),
     });
@@ -436,7 +437,7 @@ export class BackgroundTasks {
             source: t.id,
             sourceType: "monitor",
             kind: "error",
-            label: t.command,
+            label: commandLabel(t.command),
             body:
               `Monitor ${t.id} (${t.command}) hit its ${Math.round((t.timeoutAt - t.startedAt) / 1000)}s timeout and was killed.` +
               (t.output.trim() ? `\nLast output:\n${t.output.slice(-STALL_TAIL).trimEnd()}` : ""),
@@ -454,7 +455,7 @@ export class BackgroundTasks {
           source: t.id,
           sourceType: "shell",
           kind: "progress",
-          label: t.command,
+          label: commandLabel(t.command),
           body: stallNote(t, nowMs),
           ts: nowMs,
         });
