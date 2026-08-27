@@ -101,3 +101,45 @@ describe("maybeCompact", () => {
     expect(r.compacted).toBe(false);
   });
 });
+
+describe("compaction estimation hardening (2026-08-27 engine review #4/#11)", () => {
+  test("knownFloorTokens forces compaction when char/4 underestimates", async () => {
+    // Small transcript by char count, but the gateway reported it's really huge (cache-heavy).
+    const messages: Message[] = [
+      { role: "user", content: "small" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "another" },
+    ];
+    let summarized = false;
+    const r = await maybeCompact(messages, undefined, {
+      contextWindow: 10000,
+      maxOutputTokens: 1000,
+      keepRecentTurns: 1,
+      knownFloorTokens: 9000, // real occupancy the estimate can't see
+      summarize: async () => {
+        summarized = true;
+        return "summary";
+      },
+    });
+    expect(r.compacted).toBe(true);
+    expect(summarized).toBe(true);
+  });
+
+  test("overheadTokens (tool schemas) counts toward the budget", async () => {
+    const messages: Message[] = [
+      { role: "user", content: "x".repeat(400) },
+      { role: "assistant", content: "y".repeat(400) },
+      { role: "user", content: "z".repeat(400) },
+    ];
+    // Without overhead this fits; the schema block pushes it over.
+    const under = await maybeCompact(messages, undefined, {
+      contextWindow: 4000, maxOutputTokens: 500, keepRecentTurns: 1, summarize: async () => "s",
+    });
+    expect(under.compacted).toBe(false);
+    const over = await maybeCompact(messages, undefined, {
+      contextWindow: 4000, maxOutputTokens: 500, keepRecentTurns: 1, overheadTokens: 3000,
+      summarize: async () => "s",
+    });
+    expect(over.compacted).toBe(true);
+  });
+});

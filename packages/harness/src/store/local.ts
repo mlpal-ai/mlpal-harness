@@ -135,6 +135,19 @@ class LocalMemory implements MemoryStore {
 class LocalRegistry implements Registry {
   constructor(private readonly dir: string) {}
 
+  // Serialize read-modify-write on each JSON map: without it, concurrent async writers in
+  // one process (a listen() heartbeat every 1.5s, sub-agent session patches, the main loop's
+  // status updates) interleave read→read→write→write and the loser's patch vanishes. The
+  // queue makes each patch atomic against others in this process. (Cross-process contention
+  // between separate yodex instances is still last-write-wins — the atomic rename prevents
+  // corruption, not a lost patch; true multi-process needs advisory file locking, deferred.)
+  private writeChain: Promise<unknown> = Promise.resolve();
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.writeChain.then(fn, fn);
+    this.writeChain = next.catch(() => {});
+    return next;
+  }
+
   private get agentsFile(): string {
     return join(this.dir, "agents.json");
   }
@@ -143,23 +156,29 @@ class LocalRegistry implements Registry {
   }
 
   async putAgent(a: AgentRecord): Promise<void> {
-    const map = await readJson<Record<string, AgentRecord>>(this.agentsFile, {});
-    map[a.agentId] = a;
-    await writeJson(this.agentsFile, map);
+    return this.serialize(async () => {
+      const map = await readJson<Record<string, AgentRecord>>(this.agentsFile, {});
+      map[a.agentId] = a;
+      await writeJson(this.agentsFile, map);
+    });
   }
 
   async putSession(s: SessionRecord): Promise<void> {
-    const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
-    map[s.sessionId] = s;
-    await writeJson(this.sessionsFile, map);
+    return this.serialize(async () => {
+      const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
+      map[s.sessionId] = s;
+      await writeJson(this.sessionsFile, map);
+    });
   }
 
   async patchSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void> {
-    const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
-    const cur = map[sessionId];
-    if (!cur) return;
-    map[sessionId] = { ...cur, ...patch, updatedAt: nowIso() };
-    await writeJson(this.sessionsFile, map);
+    return this.serialize(async () => {
+      const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
+      const cur = map[sessionId];
+      if (!cur) return;
+      map[sessionId] = { ...cur, ...patch, updatedAt: nowIso() };
+      await writeJson(this.sessionsFile, map);
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {

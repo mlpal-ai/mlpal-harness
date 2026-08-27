@@ -334,10 +334,22 @@ export function assertSettingsRespectLocks(
   profile: Profile,
   explicit: Record<string, unknown>,
 ): void {
-  // settings path → profile path it would override
+  // settings path → profile path it would override. Every settings key that a downstream
+  // layer merges onto a profile field must appear here, or a lock on that field is a lie:
+  // e.g. a profile locking permissions.allow was silently overridden by a user settings.json
+  // allow list (the stronger adversary — the model can be asked to edit that file).
   const map: [string, string][] = [
     ["mode", "permissions.defaultMode"],
     ["maxTurns", "budgets.maxTurns"],
+    ["permissions.allow", "permissions.allow"],
+    ["permissions.deny", "permissions.deny"],
+    ["routing.subtasks", "routing.subagents"],
+    ["routing.budget", "routing.subagents"],
+    ["routing.escalation", "routing.escalation.ladder"],
+    ["routing.escalationPatience", "routing.escalation.patience"],
+    ["routing.classifyStart", "routing.classifyStart"],
+    ["verify.command", "verification.command"],
+    ["verify.auto", "verification.command"],
     ["verify.selfCheck", "verification.selfCheck.enabled"],
     ["verify.selfCheckMinEdits", "verification.selfCheck.minEdits"],
     ["verify.antiChurn", "verification.antiChurn.enabled"],

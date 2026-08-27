@@ -1,4 +1,5 @@
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -100,11 +101,33 @@ export function contextRoots(ctx: ToolContext): string[] {
   return ctx.roots && ctx.roots.length > 0 ? ctx.roots : [ctx.cwd];
 }
 
-/** True if `p` resolves inside one of the allowed roots (after normalizing `..`/symlinks). */
+/** Realpath of the deepest EXISTING ancestor of `p`, with the non-existent tail re-appended.
+ *  Lexical resolve() alone is fooled by a symlink inside the workspace pointing out of it
+ *  (`ln -s ~/.ssh link` → `Read("link/id_rsa")` passed the boundary); resolving the real path
+ *  of what actually exists on disk closes that escape while still allowing a not-yet-created
+ *  file (a Write target) whose parent dir is legitimately inside a root. */
+function realResolve(p: string): string {
+  let cur = resolve(p);
+  const tail: string[] = [];
+  for (let guard = 0; guard < 256; guard++) {
+    try {
+      return tail.length ? join(realpathSync(cur), ...tail) : realpathSync(cur);
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return resolve(p); // reached fs root without existence — lexical fallback
+      tail.unshift(cur.slice(parent.length + 1));
+      cur = parent;
+    }
+  }
+  return resolve(p);
+}
+
+/** True if `p` resolves inside one of the allowed roots, after resolving symlinks on the
+ *  parts that exist — so a symlink escape out of the workspace is caught. */
 export function withinRoots(p: string, roots: string[]): boolean {
-  const target = resolve(p);
+  const target = realResolve(p);
   return roots.some((r) => {
-    const root = resolve(r);
+    const root = realResolve(r);
     return target === root || target.startsWith(root + sep);
   });
 }

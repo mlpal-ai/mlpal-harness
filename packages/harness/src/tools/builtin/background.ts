@@ -182,7 +182,12 @@ export class BackgroundTasks {
       closeSync(fd); // the child holds its own copy
       child.unref();
     } else {
-      child = spawn("/bin/bash", ["-c", command], { cwd });
+      // detached → the task gets its OWN process group, so Kill can signal the whole group
+      // and take down grandchildren (the `npm run dev` node server, a piped subprocess) with
+      // it. Without this, kill signaled only the bash child; the grandchild kept running and
+      // held its port (next run: EADDRINUSE). stdio stays piped for BashOutput; we do NOT
+      // unref (this task is tracked, unlike a durable monitor).
+      child = spawn("/bin/bash", ["-c", command], { cwd, detached: true });
     }
 
     const task: BgTask = {
@@ -430,19 +435,26 @@ export class BackgroundTasks {
     for (const t of this.tasks.values()) {
       if (t.exitCode !== null) continue;
       if (t.monitor) {
-        if (this.routes(t) && t.timeoutAt !== undefined && nowMs >= t.timeoutAt && !t.exitReported) {
+        // Enforce the deadline regardless of inbox routing: a monitor started by a sub-agent
+        // session, or a pipe-mode monitor in an embedded/test host (no in-shell timeout
+        // guard), must still be killed at its deadline — it was previously coupled to
+        // `this.routes(t)` and ran forever when unrouted. Report the event only when an
+        // inbox is actually attached for it.
+        if (t.timeoutAt !== undefined && nowMs >= t.timeoutAt && !t.exitReported) {
           t.exitReported = true; // claim before kill so the close handler doesn't double-report
-          this.inbox!.emit({
-            id: `${t.id}#timeout`,
-            source: t.id,
-            sourceType: "monitor",
-            kind: "error",
-            label: commandLabel(t.command),
-            body:
-              `Monitor ${t.id} (${t.command}) hit its ${Math.round((t.timeoutAt - t.startedAt) / 1000)}s timeout and was killed.` +
-              (t.output.trim() ? `\nLast output:\n${t.output.slice(-STALL_TAIL).trimEnd()}` : ""),
-            ts: nowMs,
-          });
+          if (this.routes(t)) {
+            this.inbox!.emit({
+              id: `${t.id}#timeout`,
+              source: t.id,
+              sourceType: "monitor",
+              kind: "error",
+              label: commandLabel(t.command),
+              body:
+                `Monitor ${t.id} (${t.command}) hit its ${Math.round((t.timeoutAt - t.startedAt) / 1000)}s timeout and was killed.` +
+                (t.output.trim() ? `\nLast output:\n${t.output.slice(-STALL_TAIL).trimEnd()}` : ""),
+              ts: nowMs,
+            });
+          }
           this.kill(t.id);
         }
         continue; // monitors are expected to be quiet between polls — no prompt-stall check
@@ -528,10 +540,17 @@ export class BackgroundTasks {
       }, 2000).unref?.();
       return true;
     }
-    task.child?.kill("SIGTERM");
-    setTimeout(() => {
-      if (task.exitCode === null) task.child?.kill("SIGKILL");
-    }, 2000).unref?.();
+    // Non-durable task: signal its process group (it was spawned detached) so grandchildren
+    // die too, falling back to the direct child if the group is already gone.
+    const gpid = task.child?.pid;
+    if (gpid !== undefined) {
+      signalGroup(gpid, "SIGTERM");
+      setTimeout(() => {
+        if (task.exitCode === null) signalGroup(gpid, "SIGKILL");
+      }, 2000).unref?.();
+    } else {
+      task.child?.kill("SIGTERM");
+    }
     return true;
   }
 
@@ -541,7 +560,8 @@ export class BackgroundTasks {
       // Durable monitors outlive us BY DESIGN: they re-attach on the next resume, and their
       // in-shell timeout guard bounds their life even if no yodex ever comes back.
       if (t.outFile) continue;
-      t.child?.kill("SIGKILL");
+      if (t.child?.pid !== undefined) signalGroup(t.child.pid, "SIGKILL");
+      else t.child?.kill("SIGKILL");
     }
   }
 }

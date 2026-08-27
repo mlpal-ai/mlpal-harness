@@ -288,3 +288,24 @@ describe("workspace boundary (--add-dir)", () => {
     expect(r.content).toContain("hi");
   });
 });
+
+describe("withinRoots symlink escape (2026-08-27 engine review #6)", () => {
+  test("a symlink inside the workspace pointing OUT of it is rejected", async () => {
+    const { withinRoots } = await import("../src/tools/types");
+    const { symlinkSync, mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+    const { realpathSync } = await import("node:fs");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+    const cwd = join(base, "work");
+    const secret = join(base, "secret");
+    mkdirSync(cwd);
+    mkdirSync(secret);
+    symlinkSync(secret, join(cwd, "escape")); // work/escape -> ../secret
+    // lexical resolve would say work/escape/x is under work; realpath catches it
+    expect(withinRoots(join(cwd, "escape", "x"), [cwd])).toBe(false);
+    // a genuine in-workspace path (existing dir) still passes
+    expect(withinRoots(join(cwd, "sub"), [cwd])).toBe(true);
+    // a not-yet-created file whose parent is inside the root still passes (Write target)
+    expect(withinRoots(join(cwd, "newfile.txt"), [cwd])).toBe(true);
+    rmSync(base, { recursive: true, force: true });
+  });
+});

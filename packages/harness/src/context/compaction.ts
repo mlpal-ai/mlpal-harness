@@ -25,9 +25,12 @@ function blockText(b: ContentBlock): string {
     case "tool_result":
       return `(result) ${typeof b.content === "string" ? b.content : JSON.stringify(b.content)}`;
     case "image":
-      return "(image)";
+      // An image is ~1.6k tokens, not the 2 that "(image)" would score — undercounting it
+      // let a multi-image context sail past the real window into a fatal 400. Pad so char/4
+      // lands near the real cost.
+      return "x".repeat(6400);
     case "document":
-      return "(document)";
+      return "x".repeat(4000);
     default:
       return "";
   }
@@ -58,6 +61,21 @@ export interface CompactionOptions {
   /** Fired once when compaction is about to happen (over budget), before any mutation.
    *  The PreCompact lifecycle hook rides on this. */
   onBeforeCompact?: () => Promise<void>;
+  /** Tokens the char/4 estimate can't see: the tool-schema block and fixed request overhead.
+   *  Added to every occupancy estimate so compaction accounts for them. */
+  overheadTokens?: number;
+  /** The real input_tokens the gateway reported for the LAST request this turn. Messages only
+   *  grow within a turn, so it's a lower bound on true occupancy — used to correct a
+   *  systematic char/4 underestimate (code is ~3.3 chars/token) so compaction never fires
+   *  too late and hits the model's hard limit. */
+  knownFloorTokens?: number;
+}
+
+/** Effective occupancy: the larger of the char/4 estimate (+overhead) and the last real
+ *  input count the gateway measured — the floor can't be undershot by an optimistic estimate. */
+function occupancy(messages: Message[], system: string | undefined, opts: CompactionOptions): number {
+  const est = estimateMessagesTokens(messages, system) + (opts.overheadTokens ?? 0);
+  return Math.max(est, opts.knownFloorTokens ?? 0);
 }
 
 export interface CompactionResult {
@@ -128,24 +146,45 @@ export async function maybeCompact(
 ): Promise<CompactionResult> {
   const budget = Math.floor(opts.contextWindow * (opts.threshold ?? 0.8)) - opts.maxOutputTokens;
   if (budget <= 0) return { messages, compacted: false };
-  if (estimateMessagesTokens(messages, system) <= budget) return { messages, compacted: false };
+  if (occupancy(messages, system, opts) <= budget) return { messages, compacted: false };
 
   // Over budget → compaction will happen. Let the PreCompact hook observe/save first.
   await opts.onBeforeCompact?.();
 
   // Over budget: microcompact first — often enough, and costs no model call.
+  const original = messages;
   const micro = microcompact(messages, opts.keepRecentTurns ?? 6);
-  if (estimateMessagesTokens(micro, system) <= budget) {
+  if (occupancy(micro, system, opts) <= budget) {
     return { messages: micro, compacted: true, summary: undefined, replaced: 0 };
   }
-  messages = micro;
+  const microShrank = micro !== original && occupancy(micro, system, opts) < occupancy(original, system, opts);
 
   const keep = opts.keepRecentTurns ?? 6;
-  const cut = findCut(messages, messages.length - keep);
-  if (cut <= 0) return { messages, compacted: false }; // nothing safe to summarize
+  let cut = findCut(micro, micro.length - keep);
+  // No safe cut with the default recent window (a short session whose recent turns alone
+  // blow the budget — several big file reads). Shrink the recent window to find a cut that
+  // ACTUALLY gets the kept portion under budget, rather than discarding the microcompaction
+  // and riding into the model's hard limit. Only accept a shrunk cut that fits — if even a
+  // single recent message exceeds budget, summarizing can't help.
+  if (cut <= 0) {
+    for (let k = keep - 1; k >= 1; k--) {
+      const c = findCut(micro, micro.length - k);
+      if (c > 0 && occupancy(micro.slice(c), system, opts) <= budget) {
+        cut = c;
+        break;
+      }
+    }
+  }
+  if (cut <= 0) {
+    // Nothing safe/useful to summarize (e.g. one enormous single message) — still adopt the
+    // micro shrink if it helped, rather than returning the un-shrunk original.
+    return microShrank
+      ? { messages: micro, compacted: true, summary: undefined, replaced: 0 }
+      : { messages: original, compacted: false };
+  }
 
-  const older = messages.slice(0, cut);
-  const recent = messages.slice(cut);
+  const older = micro.slice(0, cut);
+  const recent = micro.slice(cut);
   const summary = await opts.summarize(older);
   return {
     messages: prependSummary(recent, summary),

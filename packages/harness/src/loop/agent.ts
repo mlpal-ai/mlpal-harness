@@ -236,6 +236,9 @@ function summarizeBlocks(blocks: ToolResultBlocks): string {
 export class AgentSession {
   private readonly maxTokens: number;
   private readonly maxTurns: number;
+  /** char/4-invisible tokens: the serialized tool-schema block + fixed request overhead.
+   *  Computed once (the toolset is stable for a run) and fed to compaction. */
+  private toolSchemaTokens = 0;
   private initialized = false;
   /** SessionStart fires once per session instance (not per turn). */
   private sessionStartFired = false;
@@ -243,6 +246,15 @@ export class AgentSession {
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
     this.maxTurns = cfg.maxTurns ?? 50;
+    // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
+    // transcript-only char/4 estimate never sees (easily 5-15k tokens). ~1200 tokens fixed
+    // request overhead on top.
+    try {
+      const schemas = JSON.stringify(cfg.tools.schemas());
+      this.toolSchemaTokens = Math.ceil(schemas.length / 4) + 1200;
+    } catch {
+      this.toolSchemaTokens = 1200;
+    }
   }
 
   private async init(): Promise<void> {
@@ -359,6 +371,8 @@ export class AgentSession {
     // can't loop forever. Continues across the max-output-tokens boundary.
     let maxTokensRecoveries = 0;
     const maxTokensRecoveryLimit = 3;
+    // The gateway's real input_tokens from the last request this turn — compaction's floor.
+    let lastInputTokens = 0;
     // Completion self-check state. Steps aside when any Stop verifier is wired (that takes
     // precedence). Counts successful edits and whether the run ran a test/build/typecheck, so
     // it can nudge once if the run is about to finish having edited real code but never checked.
@@ -405,6 +419,7 @@ export class AgentSession {
     }
     log.info("run start", { model: activeModel, ladder: ladder.length, authorType: author.type });
 
+    try {
     for (;;) {
       if (cfg.signal?.aborted) {
         log.warn("run cancelled");
@@ -424,6 +439,12 @@ export class AgentSession {
           maxOutputTokens: this.maxTokens,
           threshold: cfg.compaction?.threshold,
           keepRecentTurns: cfg.compaction?.keepRecentTurns,
+          // The tool-schema block the char/4 estimate can't see, plus fixed request overhead.
+          overheadTokens: this.toolSchemaTokens,
+          // The gateway's real input count from the last request this turn — a lower bound on
+          // true occupancy, so an optimistic char/4 estimate can't defer compaction past the
+          // model's hard limit.
+          knownFloorTokens: lastInputTokens,
           summarize: (older) => this.summarize(older),
           onBeforeCompact: cfg.hooks?.has("PreCompact")
             ? async () => {
@@ -489,6 +510,12 @@ export class AgentSession {
       }
 
       totalUsage = addUsage(totalUsage, result.usage);
+      // Real occupancy of the request just sent (input + cache), the floor for the NEXT
+      // turn's compaction check. Cache-read counts against the window too.
+      lastInputTokens =
+        (result.usage.input_tokens ?? 0) +
+        (result.usage.cache_read_input_tokens ?? 0) +
+        (result.usage.cache_creation_input_tokens ?? 0);
       const asstEvt: AssistantEvent = {
         type: "assistant",
         message: result.message,
@@ -829,6 +856,19 @@ export class AgentSession {
         metrics.increment("agent.inbox_events", events.length, { at: "midloop" });
       }
       messages.push({ role: "user", content: turnContent });
+    }
+    } finally {
+      // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
+      // Previously only the success branch reset status/head and answered owed handoffs,
+      // so a cancelled or errored run left the session advertised "active" forever (a
+      // phantom live editor that HandoffTask routing trusts) and left peers blocked in
+      // HandoffTask waiting out their full timeout. Idempotent: owedReplies is already
+      // empty and the patch already applied on the success path.
+      for (const correlationId of owedReplies) {
+        await postHandoffReply(this.store, cfg.agentId, correlationId, lastAssistantText).catch(() => {});
+      }
+      owedReplies.length = 0;
+      await this.store.registry.patchSession(cfg.sessionId, { head: parent, status: "idle" }).catch(() => {});
     }
   }
 

@@ -162,8 +162,17 @@ export class EventInbox {
   private remember(id: string): void {
     this.seen.add(id);
     if (this.seen.size > MAX_SEEN) {
-      const oldest = this.seen.values().next().value;
-      if (oldest !== undefined) this.seen.delete(oldest);
+      // Evict the oldest id that is NOT still pending. Evicting a pending id breaks the
+      // at-least-once-idempotent contract: a producer replay after resume would then
+      // double-deliver that undelivered event. A chatty monitor (fresh id per progress
+      // tick) could otherwise push a long-parked terminal event's id out.
+      const pendingIds = new Set(this.pending.map((e) => e.id));
+      for (const id of this.seen) {
+        if (!pendingIds.has(id)) {
+          this.seen.delete(id);
+          break;
+        }
+      }
     }
   }
 }

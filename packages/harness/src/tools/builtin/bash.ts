@@ -47,11 +47,19 @@ function run(
     const started = Date.now();
     const child = spawn("/bin/bash", ["-c", SHELL_PRELUDE + command], { cwd: ctx.cwd });
     let output = "";
-    let killedByTimeout = false;
+    let truncated = false;
     let settled = false;
 
+    // Keep the TAIL, not the head: a noisy failing build's final error summary and exit
+    // context are what matter, and dropping everything after the first MAX_OUTPUT chars
+    // discarded exactly that. Trim from the front once over budget (matches background
+    // tasks' appendOutput).
     const append = (d: Buffer) => {
-      if (output.length < MAX_OUTPUT) output += d.toString();
+      output += d.toString();
+      if (output.length > MAX_OUTPUT) {
+        output = output.slice(output.length - MAX_OUTPUT);
+        truncated = true;
+      }
     };
     child.stdout.on("data", append);
     child.stderr.on("data", append);
@@ -89,14 +97,16 @@ function run(
       child.stdout.removeListener("data", append);
       child.stderr.removeListener("data", append);
       let out = output;
-      if (out.length >= MAX_OUTPUT) out += "\n[output truncated]";
-      if (killedByTimeout) out += `\n[timed out after ${timeoutMs}ms]`;
+      if (truncated) out = `[earlier output truncated — showing the last ${MAX_OUTPUT} chars]\n${out}`;
       resolve({ output: out, code: code ?? 0 });
     };
     child.on("error", (e) => {
       clearTimeout(timer);
       if (!settled) {
         settled = true;
+        ctx.signal?.removeEventListener("abort", onAbort);
+        child.stdout.removeListener("data", append);
+        child.stderr.removeListener("data", append);
         resolve({ output: `failed to spawn: ${e.message}`, code: 127 });
       }
     });
