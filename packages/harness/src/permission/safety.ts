@@ -14,6 +14,17 @@
  * a robust approximation that surfaces the pieces a denylist must see. Quotes are respected
  * so `echo "a; b"` is not split on the quoted `;`.
  */
+/** Index of the `)` that closes the `(` at `open`, honoring nesting; -1 if unbalanced.
+ *  `indexOf(")")` stopped at the first inner `)` and mis-sliced nested substitutions. */
+function matchParen(s: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
 export function splitShellCommands(command: string): string[] {
   const parts: string[] = [];
   let buf = "";
@@ -26,6 +37,7 @@ export function splitShellCommands(command: string): string[] {
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!;
     const next = command[i + 1];
+    const prev = command[i - 1];
     if (quote) {
       if (c === quote) quote = null;
       else buf += c;
@@ -39,19 +51,41 @@ export function splitShellCommands(command: string): string[] {
       quote = c;
       continue;
     }
+    // A backslash escapes the next char (so `\;` is a literal, not a separator).
+    if (c === "\\" && next !== undefined) {
+      buf += c + next;
+      i++;
+      continue;
+    }
     // operators that separate commands
     if ((c === "&" && next === "&") || (c === "|" && next === "|")) {
       push();
       i++;
       continue;
     }
+    // A single `&` backgrounds a command — a real separator (a deny rule must still catch
+    // the sub-command after it). But `&` also appears in redirects (`2>&1`, `&>file`,
+    // `>&2`), which are NOT separators; the surrounding `>` disambiguates.
+    if (c === "&" && prev !== ">" && next !== ">") {
+      push();
+      continue;
+    }
     if (c === ";" || c === "|" || c === "\n") {
       push();
       continue;
     }
+    // process substitution `<( … )` / `>( … )` runs a command; recurse like `$( … )`.
+    if ((c === "<" || c === ">") && next === "(") {
+      const end = matchParen(command, i + 1);
+      if (end > 0) {
+        for (const sub of splitShellCommands(command.slice(i + 2, end))) parts.push(sub);
+        i = end;
+        continue;
+      }
+    }
     // command substitution: recurse into `$( … )` and backticks
     if (c === "$" && next === "(") {
-      const end = command.indexOf(")", i + 2);
+      const end = matchParen(command, i + 1);
       if (end > 0) {
         for (const sub of splitShellCommands(command.slice(i + 2, end))) parts.push(sub);
         i = end;

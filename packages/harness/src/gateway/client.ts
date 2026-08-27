@@ -264,11 +264,12 @@ export class GatewayClient implements ModelClient {
     for (;;) {
       const model = models[modelIdx]!;
       let emitted = false;
+      const idle = this.idleTimeout(userSignal);
       try {
-        const res = await this.connect(this.buildBody({ ...req, model }), model, userSignal);
+        const res = await this.connect(this.buildBody({ ...req, model }), model, userSignal, idle);
         if (!res.body) throw new GatewayError("no response body", 502, "http");
         const computeUnits = parseComputeUnits(res.headers);
-        const gen = this.consume(res.body, model);
+        const gen = this.consume(res.body, model, idle.reset);
         let step = await gen.next();
         while (!step.done) {
           emitted = true;
@@ -344,6 +345,8 @@ export class GatewayClient implements ModelClient {
           kind: err instanceof GatewayError ? err.kind : "unknown",
         });
         throw err;
+      } finally {
+        idle.clear(); // never leak the idle timer past an attempt (success, resume, or throw)
       }
     }
   }
@@ -380,6 +383,7 @@ export class GatewayClient implements ModelClient {
     body: Record<string, unknown>,
     model: string,
     userSignal: AbortSignal | undefined,
+    idle: { signal: AbortSignal; reset: () => void },
   ): Promise<Response> {
     let attempt = 0;
     for (;;) {
@@ -387,7 +391,8 @@ export class GatewayClient implements ModelClient {
         throw new GatewayError("request cancelled", 0, "cancelled");
       }
       try {
-        const res = await this.fetchOnce(body, userSignal);
+        idle.reset(); // each handshake attempt gets a fresh idle window
+        const res = await this.fetchOnce(body, idle.signal);
         if (res.ok) return res;
         const err = await this.toError(res);
         if (!err.retryable || attempt >= this.maxRetries) throw err;
@@ -425,11 +430,41 @@ export class GatewayClient implements ModelClient {
     }
   }
 
-  private fetchOnce(
-    body: Record<string, unknown>,
-    userSignal: AbortSignal | undefined,
-  ): Promise<Response> {
-    const signal = anySignal(userSignal, AbortSignal.timeout(this.timeoutMs))!;
+  /**
+   * An IDLE timeout, not a total-time one. `timeoutMs` of *silence* aborts; every received
+   * SSE event resets the clock via `reset()`. A total-time budget (the old
+   * `AbortSignal.timeout`) killed legitimately long turns mid-stream, and because a timeout
+   * is a resumable error, the loop re-streamed the byte-identical turn straight into the same
+   * wall — up to `maxResume` full re-bills and a structurally uncompletable turn. Idle-based:
+   * an actively-streaming turn never times out; a genuinely stalled connection still aborts
+   * and resumes correctly.
+   */
+  private idleTimeout(userSignal: AbortSignal | undefined): {
+    signal: AbortSignal;
+    reset: () => void;
+    clear: () => void;
+  } {
+    const ctrl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      timer = setTimeout(() => ctrl.abort(new DOMException("idle timeout", "TimeoutError")), this.timeoutMs);
+      timer.unref?.();
+    };
+    arm();
+    const combined = userSignal ? anySignal(userSignal, ctrl.signal)! : ctrl.signal;
+    return {
+      signal: combined,
+      reset: () => {
+        if (timer) clearTimeout(timer);
+        arm();
+      },
+      clear: () => {
+        if (timer) clearTimeout(timer);
+      },
+    };
+  }
+
+  private fetchOnce(body: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
     return fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
@@ -480,14 +515,18 @@ export class GatewayClient implements ModelClient {
   private async *consume(
     stream: ReadableStream<Uint8Array>,
     fallbackModel: string,
+    onEvent?: () => void,
   ): AsyncGenerator<StreamDelta, ModelResult, void> {
     const blocks = new Map<number, AccBlock>();
     let model = fallbackModel;
     let usage: Usage = { input_tokens: 0, output_tokens: 0 };
     let stopReason: StopReason | null = null;
+    let sawStop = false;
 
     for await (const ev of parseSSE(stream)) {
+      onEvent?.(); // reset the idle-timeout clock: this stream is alive
       const type = ev.type as string;
+      if (type === "message_stop") sawStop = true;
       switch (type) {
         case "message_start": {
           const msg = (ev.message ?? {}) as { model?: string; usage?: Partial<Usage> };
@@ -543,6 +582,15 @@ export class GatewayClient implements ModelClient {
         default:
           break;
       }
+    }
+
+    // A stream that ends without message_stop/message_delta was truncated by a mid-message
+    // connection close (LB idle-close, proxy restart) — no error event, no thrown read error,
+    // just a clean FIN. Returning the partial as a finished turn presents truncated text as
+    // the final answer and turns a half-streamed tool_use into a malformed-JSON retry. Treat
+    // it as a resumable stream error so the loop re-streams instead.
+    if (!sawStop && stopReason === null) {
+      throw new GatewayError("stream closed before completion", 0, "network");
     }
 
     return {
