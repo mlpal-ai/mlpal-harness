@@ -102,6 +102,7 @@ export function agentVerifier(opts: AgentVerifierOptions): Hook {
       const findings = out.slice(-1800);
       return {
         block: true,
+        verdict: "FAIL",
         reason:
           "Independent verification FAILED. Do not stop — fix the issues below, then finish " +
           "(the verifier will re-check).\n\n" +
@@ -113,12 +114,15 @@ export function agentVerifier(opts: AgentVerifierOptions): Hook {
       const findings = out.slice(-1800);
       return {
         block: true,
+        ...(verdict ? { verdict } : {}),
         reason:
           "Independent verification did not return an explicit PASS and this profile requires one " +
           "(fail-closed). Address what the verifier could not confirm, then finish (it will re-check).\n\n" +
           findings,
       };
     }
-    return {}; // open: PASS, PARTIAL, or unparseable -> allow completion
+    // open: PASS, PARTIAL, or unparseable -> allow completion. Surface the verdict (when parsed)
+    // so the loop can stamp checks.agent.verdict on telemetry even though nothing blocked.
+    return verdict ? { verdict } : {};
   });
 }

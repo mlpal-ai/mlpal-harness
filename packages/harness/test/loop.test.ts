@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { EngineEvent } from "@mlpal/harness-protocol";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
+import type { RunOutcomeEvent } from "../src/telemetry/contract";
 import { MemoryMetrics } from "../src/obs/metrics";
 import { ModelRouter } from "../src/routing/router";
 import { createPolicy, type PermissionMode } from "../src/permission/engine";
@@ -135,6 +136,70 @@ describe("agentic loop", () => {
     expect(entries.length).toBe(5);
     expect(entries[0]!.parentUuid).toBeNull();
     expect(entries[1]!.parentUuid).toBe(entries[0]!.uuid);
+  });
+
+  test("HOP telemetry: a successful run emits one content-free run-outcome at the finish", async () => {
+    const emitted: RunOutcomeEvent[] = [];
+    const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);
+    const sess = session(model, "autopilot", {
+      telemetry: {
+        hop: { name: "coding", version: "1.2.3" },
+        repo: "acme",
+        resolveTier: () => "frontier",
+        emit: (e) => emitted.push(e),
+      },
+    });
+    await collect(sess.run({ text: "go" }));
+
+    expect(emitted).toHaveLength(1);
+    const ev = emitted[0]!;
+    expect(ev.contract).toBe("d11.2");
+    expect(ev.action_type).toBe("run.completed");
+    expect(ev.scope_id).toBe("acme");
+    expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
+    expect(ev.payload.run_result).toBe("success");
+    expect(ev.payload.failure_class).toBeNull();
+    expect(ev.payload.tier).toBe("frontier");
+    expect(ev.payload.turns).toBeGreaterThan(0);
+    expect(ev.payload.tokens.output).toBeGreaterThan(0);
+    expect(typeof ev.payload.wall_ms).toBe("number");
+    // echo is not a verify command in the coding vocab, so observe neither ran nor passed.
+    expect(ev.payload.checks.observe).toEqual({ ran: false, passed: false });
+  });
+
+  test("HOP telemetry: hitting max turns classes as step_budget_stall", async () => {
+    const emitted: RunOutcomeEvent[] = [];
+    const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);
+    const sess = session(model, "autopilot", {
+      maxTurns: 1,
+      telemetry: { hop: { name: "coding", version: "1.0.0" }, repo: "acme", emit: (e) => emitted.push(e) },
+    });
+    await collect(sess.run({ text: "go" }));
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.payload.run_result).toBe("max_turns");
+    expect(emitted[0]!.payload.failure_class).toBe("step_budget_stall");
+    expect(emitted[0]!.payload).not.toHaveProperty("tier"); // no resolver => tier omitted
+  });
+
+  test("HOP telemetry: a throwing sink never breaks the run (fire-and-forget)", async () => {
+    const model = new ScriptedModel([textDone("done")]);
+    const sess = session(model, "autopilot", {
+      telemetry: {
+        hop: { name: "coding", version: "1.0.0" },
+        repo: "acme",
+        emit: () => {
+          throw new Error("sink down");
+        },
+      },
+    });
+    const events = await collect(sess.run({ text: "go" }));
+    expect(events.find((e) => e.type === "result")).toBeDefined();
+  });
+
+  test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {
+    const model = new ScriptedModel([textDone("done")]);
+    const events = await collect(session(model, "autopilot").run({ text: "go" }));
+    expect(events.find((e) => e.type === "result")).toBeDefined();
   });
 
   test("plan mode denies a mutating tool; loop reports the denial and ends", async () => {

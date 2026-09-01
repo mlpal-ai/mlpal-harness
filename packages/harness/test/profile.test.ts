@@ -273,6 +273,122 @@ describe("profile loading", () => {
     expect(p.permissions.deny).toContain("Bash(curl*)"); // own
   });
 
+  // A complete tuning HOP with an eval of each gating role. `human` promote avoids the auto-gate
+  // requirement so these fixtures isolate one rule at a time.
+  const tunedYaml = (over: Record<string, string> = {}) =>
+    [
+      "spec: mlpal/hop-v1",
+      "name: tuned",
+      "version: 1.0.0",
+      "extends: coding",
+      "evals:",
+      "  - { name: gold, tasks: 'e/gold', scorer: 'pytest -q', role: golden }",
+      "  - { name: front, tasks: 'e/front', scorer: 'measure', role: frontier }",
+      "tuning:",
+      `  cadence: ${over.cadence ?? "daily"}`,
+      "  minRunsSinceLast: 200",
+      "  canaryFraction: 0.1",
+      "  canaryMinRuns: 50",
+      `  promote: ${over.promote ?? "human"}`,
+      `  frontierMetric: ${over.frontierMetric ?? "front"}`,
+      "  promotionMargin: '-5% at p<.05'",
+      `  goldenSuite: ${over.goldenSuite ?? "gold"}`,
+    ].join("\n");
+
+  test("tuning: block loads, resolves references, and defaults gates by role", () => {
+    const p = loadProfile(writeProfile("p/tuned", tunedYaml()), opts());
+    expect(p.tuning).toEqual({
+      cadence: "daily",
+      minRunsSinceLast: 200,
+      canaryFraction: 0.1,
+      canaryMinRuns: 50,
+      promote: "human",
+      frontierMetric: "front",
+      promotionMargin: "-5% at p<.05",
+      goldenSuite: "gold",
+    });
+    const byName = Object.fromEntries(p.evals.map((e) => [e.name, e]));
+    expect(byName.gold!.gates).toBe(true); // golden gates by default
+    expect(byName.front!.gates).toBe(false); // frontier is scored, not a gate
+  });
+
+  test("per-N-runs cadence is accepted", () => {
+    const p = loadProfile(writeProfile("p/pern", tunedYaml({ cadence: "per-500-runs" })), opts());
+    expect(p.tuning?.cadence).toBe("per-500-runs");
+  });
+
+  test("frontierMetric must name a role:frontier eval", () => {
+    expect(() =>
+      loadProfile(writeProfile("p/badfront", tunedYaml({ frontierMetric: "gold" })), opts()),
+    ).toThrow(/frontierMetric "gold" must name an eval suite with role: frontier/);
+  });
+
+  test("goldenSuite must name a role:golden eval", () => {
+    expect(() =>
+      loadProfile(writeProfile("p/badgold", tunedYaml({ goldenSuite: "front" })), opts()),
+    ).toThrow(/goldenSuite "front" must name an eval suite with role: golden/);
+  });
+
+  test("an incomplete tuning block is a loud error, never a silent partial", () => {
+    const pdir = writeProfile("p/partial", [
+      "spec: mlpal/hop-v1",
+      "name: partial",
+      "version: 1.0.0",
+      "extends: coding",
+      "tuning: { cadence: daily }",
+    ].join("\n"));
+    expect(() => loadProfile(pdir, opts())).toThrow(/missing required field "minRunsSinceLast"/);
+  });
+
+  test("promote: auto requires a mandatory-pass golden gate", () => {
+    const pdir = writeProfile("p/autonogate", [
+      "spec: mlpal/hop-v1",
+      "name: autonogate",
+      "version: 1.0.0",
+      "extends: coding",
+      "evals:",
+      "  - { name: gold, tasks: 'e/gold', scorer: 'pytest', role: golden, gates: false }",
+      "  - { name: front, tasks: 'e/front', scorer: 'measure', role: frontier }",
+      "tuning:",
+      "  cadence: daily",
+      "  minRunsSinceLast: 200",
+      "  canaryFraction: 0.1",
+      "  canaryMinRuns: 50",
+      "  promote: auto",
+      "  frontierMetric: front",
+      "  promotionMargin: '-5%'",
+      "  goldenSuite: gold",
+    ].join("\n"));
+    expect(() => loadProfile(pdir, opts())).toThrow(/promote: auto but its golden suite "gold" does not gate/);
+  });
+
+  test("promote: auto loads when the golden suite gates", () => {
+    const p = loadProfile(writeProfile("p/autook", tunedYaml({ promote: "auto" })), opts());
+    expect(p.tuning?.promote).toBe("auto");
+  });
+
+  test("locked: [tuning.promote] in a parent blocks a child override (blast-radius ratchet)", () => {
+    writeProfile(".yodex/hops/base", tunedYaml() + "\nlocked: [tuning.promote]");
+    const child = writeProfile("p/child", [
+      "spec: mlpal/hop-v1",
+      "name: child",
+      "version: 1.0.0",
+      "extends: base",
+      "tuning: { promote: auto }",
+    ].join("\n"));
+    expect(() => loadProfile(child, opts())).toThrow(/overrides "tuning.promote", which is locked by its parent "tuned"/);
+  });
+
+  test("a HOP without a tuning block is valid (un-tuned)", () => {
+    const p = loadProfile(writeProfile("p/untuned", [
+      "spec: mlpal/hop-v1",
+      "name: untuned",
+      "version: 1.0.0",
+      "extends: coding",
+    ].join("\n")), opts());
+    expect(p.tuning).toBeUndefined();
+  });
+
   test("settings lock enforcement: explicit user mode vs a locked defaultMode errors", () => {
     expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, { mode: "autopilot" })).toThrow(
       /profile "reviewer" locks "permissions.defaultMode"/,

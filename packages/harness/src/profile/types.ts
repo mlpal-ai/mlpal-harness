@@ -79,6 +79,46 @@ export interface EvalSuite {
   runs: number;
   /** Fraction of task-runs that must pass. */
   passBar: number;
+  /**
+   * Optimizer role (HOP tuning). golden = mandatory-pass, frozen correctness invariant that may
+   * never regress; frontier = the scored metric being tuned (its scorer computes the number);
+   * probe = cheap deterministic smoke that kills broken candidates first. Unset = an
+   * informational suite that neither gates promotion nor is the tuning target.
+   */
+  role?: EvalRole;
+  /**
+   * Whether this suite may GATE promotion (block it). The deterministic-gates-only rule: an
+   * LLM-judged suite MUST set gates:false (advisory, informs but never gates). Defaults by role
+   * at load — golden/probe gate, frontier and role-less suites do not.
+   */
+  gates?: boolean;
+}
+
+export type EvalRole = "golden" | "frontier" | "probe";
+
+/** How and when a HOP is tuned (the optimizer's control plane). Complements `tunable` (what the
+ *  tuner may move) and `locked` (what it may never): tuning declares the cadence and the
+ *  promotion gate. Cadence is derived by the author from telemetry volume, environment drift,
+ *  blast radius, and eval cost — high-traffic read-only HOPs tune daily and auto-promote on green
+ *  evals; payment/infra HOPs tune slowly, canary long, and keep humans on promote. */
+export interface TuningPolicy {
+  /** Scheduled cadence; `per-<N>-runs` is the parametric floor for low-traffic HOPs. */
+  cadence: "daily" | "weekly" | "monthly" | "on-incident" | `per-${number}-runs`;
+  /** Statistical-power floor: a proposal needs at least this many new runs since the last tune. */
+  minRunsSinceLast: number;
+  /** Fraction of live runs the new version is rolled out to before full promotion. */
+  canaryFraction: number;
+  /** Minimum canary runs before promote/rollback is decided. */
+  canaryMinRuns: number;
+  /** auto = promote on green evals (earned per-HOP, read-only/low-blast only); human = a person
+   *  merges the promotion PR. Lock `tuning.promote` in a parent to force human on all children. */
+  promote: "auto" | "human";
+  /** Names an eval suite with role:frontier whose scorer computes the tuned number. */
+  frontierMetric: string;
+  /** The preregistered win bar on the frontier metric, e.g. "-5% at p<.05". */
+  promotionMargin: string;
+  /** Names an eval suite with role:golden — the mandatory-pass, digest-pinned gate. */
+  goldenSuite: string;
 }
 
 /** The composed, validated profile — what the loader hands the host. */
@@ -135,6 +175,8 @@ export interface Profile {
     taskType: string;
   };
   evals: EvalSuite[];
+  /** How and when this HOP is tuned + the promotion gate. Absent = an un-tuned HOP (valid). */
+  tuning?: TuningPolicy;
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];

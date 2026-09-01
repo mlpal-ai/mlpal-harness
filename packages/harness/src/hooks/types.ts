@@ -87,6 +87,9 @@ export interface HookResult {
   updatedPrompt?: string;
   /** Extra context to feed the model (e.g. PostToolUse observations). */
   injectContext?: string;
+  /** Stop (agent verifier): the raw verdict, surfaced even when it does not block, so the run
+   *  loop can stamp it on telemetry (checks.agent.verdict). Absent for non-verifier hooks. */
+  verdict?: "PASS" | "FAIL" | "PARTIAL";
 }
 
 export interface Hook {

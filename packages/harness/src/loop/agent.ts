@@ -39,6 +39,13 @@ import { frameHandoff, postHandoffReply } from "./handoff";
  */
 import type { LoopPolicy } from "../profile/types";
 import { CODING_PROFILE } from "../profile/builtins/coding";
+import {
+  buildRunOutcome,
+  classifyFailure,
+  type RunResult,
+  type TelemetrySink,
+  type VerifierVerdict,
+} from "../telemetry/contract";
 
 export interface AgentConfig {
   agentId: string;
@@ -160,6 +167,21 @@ export interface AgentConfig {
    * (pre-split behavior, byte-identical — pinned by golden tests).
    */
   loop?: LoopPolicy;
+  /**
+   * HOP telemetry sink (D11.2). When set, the loop emits one content-free RunOutcomeEvent at the
+   * finish point of every run — the Capture stage of the HOP optimizer. Fire-and-forget: the
+   * emit is wrapped so it can never throw or delay the run. Unset (headless/tests) => no emit and
+   * zero behaviour change. The host owns identity/tier resolution (it holds the catalog); the
+   * engine only assembles run-state fields.
+   */
+  telemetry?: {
+    hop: { name: string; version: string };
+    /** Workspace/repo identity — the episode scope on the memory side. */
+    repo: string;
+    /** Resolve a served model id to its tier label; host-provided (has the catalog). */
+    resolveTier?: (model: string) => string | undefined;
+    emit: TelemetrySink;
+  };
 }
 
 export interface TurnInput {
@@ -382,10 +404,19 @@ export class AgentSession {
     const antiChurnOn = cfg.antiChurn !== false && !cfg.hooks?.has("Stop");
     let editsMade = 0;
     let verifyObserved = false;
+    // A verification command RAN (matched the vocab), independent of whether it passed — the
+    // observe mechanism's {ran} vs {passed} for telemetry checks.observe. verifyObserved is
+    // {passed} (ran and not env-broken).
+    let verifyRan = false;
     let selfCheckFired = false;
     // Anti-churn: edits-per-file this run, and whether the breaker has already fired once.
     const editsByFile = new Map<string, number>();
     let churnFired = false;
+    // HOP telemetry run-state (only assembled at the finish point when cfg.telemetry is set).
+    const startMs = Date.now();
+    let verifierVerdict: VerifierVerdict | null = null;
+    let outcome: RunResult | null = null;
+    let thrownError: unknown;
     // Cross-repo handoff: correlationIds of received task requests we owe a reply to when
     // this run finishes, and the latest assistant text to send back as that reply.
     const owedReplies: string[] = [];
@@ -423,11 +454,13 @@ export class AgentSession {
     for (;;) {
       if (cfg.signal?.aborted) {
         log.warn("run cancelled");
+        outcome = "cancelled";
         yield this.result("cancelled", turns, totalUsage);
         return;
       }
       if (turns >= this.maxTurns) {
         log.warn("run hit max turns", { maxTurns: this.maxTurns });
+        outcome = "max_turns";
         yield this.result("max_turns", turns, totalUsage);
         break;
       }
@@ -501,11 +534,14 @@ export class AgentSession {
       } catch (e) {
         if (e instanceof GatewayError && e.kind === "cancelled") {
           log.warn("run cancelled mid-stream");
+          outcome = "cancelled";
           yield this.result("cancelled", turns, totalUsage);
           return;
         }
         log.error("model call failed", { error: String(e) });
         metrics.increment("agent.errors", 1, { model: cfg.model });
+        outcome = "error";
+        thrownError = e;
         throw e;
       }
 
@@ -651,6 +687,11 @@ export class AgentSession {
         // Stop hooks (verifier loop): a hook may block "done" and force a correction.
         if (cfg.hooks?.has("Stop") && stopContinuations < maxStopContinuations) {
           const results = await cfg.hooks.run({ event: "Stop", numTurns: turns }, this.hookCtx());
+          // Stamp the agent-verifier verdict for telemetry even when it passes (allows without
+          // blocking). The last verdict seen is the finishing one — a FAIL that blocks is later
+          // overwritten by the PASS the loop eventually reaches.
+          const v = results.find((r) => r.verdict)?.verdict;
+          if (v) verifierVerdict = v;
           const blocker = results.find((r) => r.block);
           if (blocker) {
             stopContinuations += 1;
@@ -724,6 +765,7 @@ export class AgentSession {
           inputTokens: totalUsage.input_tokens,
           outputTokens: totalUsage.output_tokens,
         });
+        outcome = "success";
         yield this.result("success", turns, totalUsage);
         break;
       }
@@ -760,6 +802,7 @@ export class AgentSession {
             const cmd = String((tu.input as { command?: unknown }).command ?? "");
             if (loop.verifyCommandRe.test(cmd)) {
               const r = trEvts.find((e) => e.toolUseId === tu.id);
+              if (r) verifyRan = true;
               // A check that couldn't actually run (missing deps/interpreter) isn't verification.
               if (r && !(loop.envBrokenRe?.test(r.content) ?? false)) verifyObserved = true;
             }
@@ -869,6 +912,43 @@ export class AgentSession {
       }
       owedReplies.length = 0;
       await this.store.registry.patchSession(cfg.sessionId, { head: parent, status: "idle" }).catch(() => {});
+
+      // HOP telemetry Capture (D11.2): emit one content-free run-outcome at the finish point.
+      // `outcome` is null only when the generator was abandoned before any terminal result — no
+      // outcome to report, so skip. Fire-and-forget: never throws, never blocks the caller.
+      if (cfg.telemetry && outcome) {
+        try {
+          cfg.telemetry.emit(
+            buildRunOutcome({
+              hop: cfg.telemetry.hop,
+              repo: cfg.telemetry.repo,
+              model: activeModel,
+              tier: cfg.telemetry.resolveTier?.(activeModel),
+              taskType: loop.taskType,
+              runResult: outcome,
+              failureClass: classifyFailure(outcome, thrownError),
+              tokens: {
+                input: totalUsage.input_tokens ?? 0,
+                output: totalUsage.output_tokens ?? 0,
+                cacheRead: totalUsage.cache_read_input_tokens ?? 0,
+                cacheCreation: totalUsage.cache_creation_input_tokens ?? 0,
+              },
+              wallMs: Date.now() - startMs,
+              turns,
+              checks: {
+                selfCheckFired,
+                antiChurnFired: churnFired,
+                observeRan: verifyRan,
+                observePassed: verifyObserved,
+                agentVerdict: verifierVerdict,
+              },
+              occurredAt: now(),
+            }),
+          );
+        } catch (e) {
+          log.warn("telemetry emit failed (ignored)", { error: String(e) });
+        }
+      }
     }
   }
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import type { Profile, ProfileSource } from "./types";
+import type { EvalSuite, Profile, ProfileSource, TuningPolicy } from "./types";
 import { PROFILE_SPEC_ID } from "./types";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
@@ -25,14 +25,35 @@ import { hostDir } from "../host";
  * definable in builtin (code) profiles. Documented in the spec as a v1 limitation.
  */
 
-const evalSuiteSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  tasks: z.string().min(1),
-  scorer: z.string().min(1),
-  runs: z.number().int().positive().default(1),
-  passBar: z.number().min(0).max(1).default(1),
-});
+const evalSuiteSchema = z
+  .object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    tasks: z.string().min(1),
+    scorer: z.string().min(1),
+    runs: z.number().int().positive().default(1),
+    passBar: z.number().min(0).max(1).default(1),
+    role: z.enum(["golden", "frontier", "probe"]).optional(),
+    gates: z.boolean().optional(),
+  })
+  .strict();
+
+// All fields optional so a leaf can override single tuning leaves over a parent's block; the
+// composed result is validated for completeness + reference integrity in composeProfile.
+const tuningSchema = z
+  .object({
+    cadence: z
+      .union([z.enum(["daily", "weekly", "monthly", "on-incident"]), z.string().regex(/^per-\d+-runs$/)])
+      .optional(),
+    minRunsSinceLast: z.number().int().min(0).optional(),
+    canaryFraction: z.number().min(0).max(1).optional(),
+    canaryMinRuns: z.number().int().min(0).optional(),
+    promote: z.enum(["auto", "human"]).optional(),
+    frontierMetric: z.string().min(1).optional(),
+    promotionMargin: z.string().min(1).optional(),
+    goldenSuite: z.string().min(1).optional(),
+  })
+  .strict();
 
 export const profileYamlSchema = z
   .object({
@@ -106,6 +127,7 @@ export const profileYamlSchema = z
     budgets: z.object({ maxTurns: z.number().int().positive().optional() }).strict().default({}),
     telemetry: z.object({ taskType: z.string().optional() }).strict().default({}),
     evals: z.array(evalSuiteSchema).default([]),
+    tuning: tuningSchema.optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(z.object({ path: z.string(), range: z.tuple([z.number(), z.number()]) }).strict())
@@ -167,6 +189,70 @@ const OBSERVE_SOURCES: Record<string, { verify: RegExp | null; envBroken: RegExp
   "builtin:none": { verify: null, envBroken: null },
 };
 
+/** Resolve gates defaults by role: golden and probe gate promotion; frontier and role-less suites
+ *  do not (frontier is the scored metric, not a pass/fail gate). An explicit `gates` always wins,
+ *  so an LLM-judged golden suite can opt out with gates:false (the deterministic-gates-only rule). */
+function withGatesDefaults(evals: EvalSuite[]): EvalSuite[] {
+  return evals.map((e) => ({ ...e, gates: e.gates ?? (e.role === "golden" || e.role === "probe") }));
+}
+
+const TUNING_REQUIRED = [
+  "cadence",
+  "minRunsSinceLast",
+  "canaryFraction",
+  "canaryMinRuns",
+  "promote",
+  "frontierMetric",
+  "promotionMargin",
+  "goldenSuite",
+] as const;
+
+/** Merge a child's tuning leaves over the parent's block (per-leaf, like verification). The
+ *  composed block must be COMPLETE — a half-specified tuning is a loud error, not a silent partial. */
+function composeTuning(
+  parent: TuningPolicy | undefined,
+  child: ProfileYaml["tuning"],
+  name: string,
+): TuningPolicy | undefined {
+  if (!parent && !child) return undefined;
+  const merged: Record<string, unknown> = { ...(parent ?? {}) };
+  for (const [k, v] of Object.entries(child ?? {})) if (v !== undefined) merged[k] = v;
+  for (const k of TUNING_REQUIRED) {
+    if (merged[k] === undefined) {
+      throw new Error(
+        `profile "${name}" declares a tuning block missing required field "${k}" — ` +
+          `a HOP either has a complete tuning policy or none`,
+      );
+    }
+  }
+  return merged as unknown as TuningPolicy;
+}
+
+/** Tuning references must resolve to eval suites with the right role, and auto-promote needs a real
+ *  mandatory-pass gate. Blast-radius / read-only gating of auto-promote is enforced by the tuner (it
+ *  needs capability-tag resolution the loader does not have) — the engine enforces reference integrity. */
+function validateTuning(tuning: TuningPolicy, evals: EvalSuite[], name: string): void {
+  const byName = new Map(evals.map((e) => [e.name, e]));
+  const frontier = byName.get(tuning.frontierMetric);
+  if (!frontier || frontier.role !== "frontier") {
+    throw new Error(
+      `profile "${name}" tuning.frontierMetric "${tuning.frontierMetric}" must name an eval suite with role: frontier`,
+    );
+  }
+  const golden = byName.get(tuning.goldenSuite);
+  if (!golden || golden.role !== "golden") {
+    throw new Error(
+      `profile "${name}" tuning.goldenSuite "${tuning.goldenSuite}" must name an eval suite with role: golden`,
+    );
+  }
+  if (tuning.promote === "auto" && !golden.gates) {
+    throw new Error(
+      `profile "${name}" sets tuning.promote: auto but its golden suite "${golden.name}" does not gate ` +
+        `(gates: false) — auto-promotion requires a mandatory-pass gate`,
+    );
+  }
+}
+
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
 export function composeProfile(
   parent: Profile,
@@ -197,6 +283,9 @@ export function composeProfile(
   const observe = y.verification.observe ?? parent.verification.observe;
   const observed = OBSERVE_SOURCES[observe]!;
   const tunable = [...parent.tunable.filter((t) => !y.tunable.some((o) => o.path === t.path)), ...y.tunable];
+  const evals = withGatesDefaults(y.evals.length > 0 ? y.evals : parent.evals);
+  const tuning = composeTuning(parent.tuning, y.tuning, y.name);
+  if (tuning) validateTuning(tuning, evals, y.name);
 
   return {
     spec: PROFILE_SPEC_ID,
@@ -263,7 +352,8 @@ export function composeProfile(
     tools: { include: y.tools.include ?? parent.tools.include },
     budgets: { maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns },
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
-    evals: y.evals.length > 0 ? y.evals : parent.evals,
+    evals,
+    ...(tuning ? { tuning } : {}),
     locked: [...new Set([...parent.locked, ...y.locked])],
     tunable,
   };

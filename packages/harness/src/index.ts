@@ -47,6 +47,7 @@ export * from "./catalog/catalog";
 export * from "./host";
 export * from "./profile/types";
 export * from "./profile/load";
+export * from "./telemetry/contract";
 export { CODING_PROFILE, CODING_SYSTEM_PROMPT } from "./profile/builtins/coding";
 export { REVIEWER_PROFILE } from "./profile/builtins/reviewer";
 export * from "./skills/index";

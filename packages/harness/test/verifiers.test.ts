@@ -48,15 +48,18 @@ describe("agentVerifier (adversarial)", () => {
     expect(r.reason).toContain("verification FAILED");
   });
 
-  test("passes on VERDICT: PASS", async () => {
+  test("passes on VERDICT: PASS — allows completion, surfaces the verdict for telemetry", async () => {
     const h = agentVerifier(verifierReturning("all good.\nVERDICT: PASS"));
-    expect(await h.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
+    // No `block` => completion allowed; `verdict` is stamped so the loop can record checks.agent.
+    expect(await h.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({ verdict: "PASS" });
   });
 
   test("fails open on PARTIAL and on an unparseable verdict", async () => {
     const partial = agentVerifier(verifierReturning("no framework.\nVERDICT: PARTIAL"));
-    expect(await partial.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
+    // Fails open (no block), but the parsed verdict is still surfaced.
+    expect(await partial.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({ verdict: "PARTIAL" });
     const garbage = agentVerifier(verifierReturning("I could not decide."));
+    // Unparseable => no verdict to surface, still allowed.
     expect(await garbage.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
   });
 
