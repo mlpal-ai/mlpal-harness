@@ -22,7 +22,14 @@
  *                     representation before.
  */
 
-/** Terminal run status. Mirrors the loop's result subtypes and the ingest's RUN_RESULTS set. */
+/**
+ * Terminal run status. Mirrors the loop's result subtypes and the ingest's RUN_RESULTS set.
+ * This is loop COMPLETION, not task correctness: `success` means the agent reached its finish
+ * gate and the run ended without error/stall/abort — a wrong-but-complete answer is still
+ * `success`. Whether the produced work is correct is a graded, out-of-band signal that this
+ * content-free event deliberately does NOT carry; consumers must join it from an external grader
+ * and must never read `success` as "resolved".
+ */
 export type RunResult = "success" | "error" | "max_turns" | "cancelled";
 
 /**
