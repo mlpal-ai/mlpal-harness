@@ -426,6 +426,79 @@ describe("profile loading", () => {
     expect(t?.range).toEqual(["frontier", "max"]); // enum-set, not numeric
   });
 
+  test("model.tiers load, compose (inline override), and main resolves to a declared tier", () => {
+    writeProfile(".yodex/hops/base-tiers", [
+      "spec: mlpal/hop-v1",
+      "name: base-tiers",
+      "version: 1.0.0",
+      "extends: coding",
+      "model:",
+      "  main: frontier",
+      "  tiers:",
+      "    cheap: { primary: gpt-5.6-luna, fallbacks: [claude-haiku-4-5] }",
+      "    frontier: { primary: claude-opus-5, fallbacks: [gpt-5.6-sol] }",
+    ].join("\n"));
+    const p = loadProfile(writeProfile("p/child-tiers", [
+      "spec: mlpal/hop-v1",
+      "name: child-tiers",
+      "version: 1.0.0",
+      "extends: base-tiers",
+      "model: { tiers: { frontier: { primary: claude-opus-5, fallbacks: [] } } }", // override just frontier
+    ].join("\n")), opts());
+    expect(p.model?.tiers?.cheap?.primary).toBe("gpt-5.6-luna"); // inherited
+    expect(p.model?.tiers?.frontier?.fallbacks).toEqual([]); // overridden
+    expect(p.warnings ?? []).toEqual([]); // fully pinned, no warning
+  });
+
+  test("an unknown tier name (no subscribe) is a load error; a pinned id is fine", () => {
+    const bad = writeProfile("p/badtier", [
+      "spec: mlpal/hop-v1", "name: badtier", "version: 1.0.0", "extends: coding",
+      "model: { main: premium, tiers: { frontier: { primary: claude-opus-5 } } }",
+    ].join("\n"));
+    expect(() => loadProfile(bad, opts())).toThrow(/references model tier "premium" not in model.tiers/);
+    // a pinned id (has a digit) is accepted even when not a tier name
+    const ok = loadProfile(writeProfile("p/pinned", [
+      "spec: mlpal/hop-v1", "name: pinned", "version: 1.0.0", "extends: coding",
+      "model: { main: claude-opus-5, tiers: { frontier: { primary: claude-opus-5 } } }",
+    ].join("\n")), opts());
+    expect(ok.model?.main).toBe("claude-opus-5");
+  });
+
+  test("a model.main fallback that is a lower tier's primary is a load error", () => {
+    const bad = writeProfile("p/downfall", [
+      "spec: mlpal/hop-v1", "name: downfall", "version: 1.0.0", "extends: coding",
+      "model:",
+      "  main: frontier",
+      "  tiers:",
+      "    cheap: { primary: gpt-5.6-luna }",
+      "    frontier: { primary: claude-opus-5, fallbacks: [gpt-5.6-luna] }", // cheap's primary!
+    ].join("\n"));
+    expect(() => loadProfile(bad, opts())).toThrow(/may not silently degrade downward/);
+  });
+
+  test("an unknown-tier fallback loads with a warning; catalog-only warns unpinned", () => {
+    const p = loadProfile(writeProfile("p/unkfall", [
+      "spec: mlpal/hop-v1", "name: unkfall", "version: 1.0.0", "extends: coding",
+      "model: { main: frontier, tiers: { frontier: { primary: claude-opus-5, fallbacks: [gpt-5.6-sol] } } }",
+    ].join("\n")), opts());
+    expect(p.warnings?.some((w) => w.includes("gpt-5.6-sol"))).toBe(true);
+
+    const catalogOnly = loadProfile(writeProfile("p/catonly", [
+      "spec: mlpal/hop-v1", "name: catonly", "version: 1.0.0", "extends: coding",
+      "model: { main: frontier }", // no tiers, no subscribe
+    ].join("\n")), opts());
+    expect(catalogOnly.warnings?.some((w) => w.includes("unpinned"))).toBe(true);
+  });
+
+  test("subscribe defers an unknown tier to the host baseline (no load error)", () => {
+    const p = loadProfile(writeProfile("p/sub", [
+      "spec: mlpal/hop-v1", "name: sub", "version: 1.0.0", "extends: coding",
+      "model: { main: premium, subscribe: 'coding@3' }", // premium comes from the baseline
+    ].join("\n")), opts());
+    expect(p.model?.subscribe).toBe("coding@3");
+    expect(p.model?.main).toBe("premium");
+  });
+
   test("requires block unions binaries + mcp by name down the chain", () => {
     writeProfile(".yodex/hops/base-req", [
       "spec: mlpal/hop-v1",

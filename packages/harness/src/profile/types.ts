@@ -144,10 +144,17 @@ export function isNumericRange(r: TunableRange): r is [number, number] {
  *  pinned model id (`claude-opus-5`). */
 export type ModelRef = string;
 
+/** A tier definition (§8): a concrete primary model plus an ordered fallback chain consulted only
+ *  on serving failure (unavailable/overloaded), never on quality. */
+export interface TierDef {
+  primary: ModelRef;
+  fallbacks: ModelRef[];
+}
+
 /** v1.1 — the loop's model policy, so model choice is a HOP field a tuner can move (declarable
  *  `tunable` with an enum-set range), not a runtime accident. Absent => host default model. */
 export interface ModelPolicy {
-  /** Main loop model. */
+  /** Main loop model: a tier name defined in `tiers` (or the subscribed baseline), or a pinned id. */
   main: ModelRef;
   /** Per-role subagent model tiers; composes with routing.subagents (the strategy). A cheap
    *  subagent never authorizes or executes a mutation. */
@@ -155,6 +162,13 @@ export interface ModelPolicy {
   /** Guidance: the loop may invoke any catalog model via the gateway on demand. Default true;
    *  the user's /model and session overrides always outrank the artifact. */
   allowInvokeAny: boolean;
+  /** Inline tier definitions (name → {primary, fallbacks}) — model selection lives in the artifact,
+   *  changed only by eval-gated diffs. Composes over a `subscribe` baseline (inline overrides per
+   *  name). The loader records this resolved table so `hop {name, version}` implies an exact set. */
+  tiers?: Record<string, TierDef>;
+  /** Optional pinned gateway-profile baseline "<profile>@<version>" (pin+notify, never live). The
+   *  baseline's tiers are resolved by the host at runtime (offline the loader only sees inline tiers). */
+  subscribe?: string;
 }
 
 /** v1.1 — external prerequisites the host checks at preflight (not registered tools — those are
@@ -260,4 +274,7 @@ export interface Profile {
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */
   tunable: { path: string; range: TunableRange }[];
+  /** Non-fatal load-time notices the host should surface (e.g. an unpinned model set, or a
+   *  fallback of unknown tier). Errors throw; these inform. Absent => none. */
+  warnings?: string[];
 }

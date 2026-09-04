@@ -75,6 +75,10 @@ const modelSchema = z
       .strict()
       .optional(),
     allowInvokeAny: z.boolean().optional(),
+    tiers: z
+      .record(z.object({ primary: z.string().min(1), fallbacks: z.array(z.string().min(1)).default([]) }).strict())
+      .optional(),
+    subscribe: z.string().regex(/^[a-z0-9-]+@[\w.-]+$/, "subscribe must be <profile>@<version>").optional(),
   })
   .strict();
 
@@ -344,7 +348,8 @@ function validateTuning(tuning: TuningPolicy, evals: EvalSuite[], name: string):
 }
 
 /** Merge a child's model leaves over the parent's. `main` is required whenever a model block
- *  exists; `allowInvokeAny` defaults true. */
+ *  exists; `allowInvokeAny` defaults true. `tiers` compose per name (inline overrides a subscribed
+ *  baseline and a parent's tiers); `subscribe` is a single pinned baseline. */
 function composeModel(
   parent: ModelPolicy | undefined,
   child: ProfileYaml["model"],
@@ -355,11 +360,62 @@ function composeModel(
   if (!main) {
     throw new Error(`profile "${name}" declares a model block without model.main`);
   }
+  const tiers = parent?.tiers || child?.tiers ? { ...(parent?.tiers ?? {}), ...(child?.tiers ?? {}) } : undefined;
+  const subscribe = child?.subscribe ?? parent?.subscribe;
   return {
     main,
     subagents: { ...(parent?.subagents ?? {}), ...(child?.subagents ?? {}) },
     allowInvokeAny: child?.allowInvokeAny ?? parent?.allowInvokeAny ?? true,
+    ...(tiers ? { tiers } : {}),
+    ...(subscribe ? { subscribe } : {}),
   };
+}
+
+/** Canonical tier ordering for the downward-fallback check; custom tier names have no order. */
+const TIER_RANK: Record<string, number> = { cheap: 0, mid: 1, frontier: 2, max: 3 };
+/** A reference with a digit is a pinned model id (claude-opus-5); a bare word is a tier name. */
+const looksLikeModelId = (ref: string) => /\d/.test(ref);
+
+/** Validate the model block (§8 load-time rules) and return non-fatal warnings; throws on error. */
+function validateModel(model: ModelPolicy, name: string): string[] {
+  const warnings: string[] = [];
+  const tiers = model.tiers;
+  const refs = [model.main, model.subagents.readOnly, model.subagents.verify].filter(Boolean) as string[];
+
+  // (1) A referenced tier must resolve; an unknown tier is a load error, never a silent fallback.
+  for (const ref of refs) {
+    if (looksLikeModelId(ref)) continue; // a pinned id — the host/serving layer validates it
+    if (tiers && ref in tiers) continue; // resolves (schema guarantees a non-empty primary)
+    if (model.subscribe) continue; // may be defined by the subscribed baseline (host resolves at runtime)
+    if (!tiers) {
+      warnings.push(`model.* "${ref}" resolves against the catalog (no tiers/subscribe) — the model set is unpinned`);
+      continue;
+    }
+    throw new Error(
+      `profile "${name}" references model tier "${ref}" not in model.tiers (${Object.keys(tiers).join(", ")}) ` +
+        `and no subscribe baseline provides it`,
+    );
+  }
+
+  // (2) A model.main fallback that is a known LOWER tier's primary is a load error; unknown-tier
+  // fallbacks are allowed with a warning. Only meaningful when main is a canonically-ranked tier.
+  if (tiers && model.main in tiers && model.main in TIER_RANK) {
+    const mainRank = TIER_RANK[model.main]!;
+    const primaryToTier = new Map(Object.entries(tiers).map(([t, d]) => [d.primary, t]));
+    for (const fb of tiers[model.main]!.fallbacks) {
+      const fbTier = primaryToTier.get(fb);
+      if (fbTier && fbTier in TIER_RANK && TIER_RANK[fbTier]! < mainRank) {
+        throw new Error(
+          `profile "${name}" model.main tier "${model.main}" lists fallback "${fb}" — the primary of lower ` +
+            `tier "${fbTier}"; a main loop may not silently degrade downward`,
+        );
+      }
+      if (!fbTier) {
+        warnings.push(`model.main fallback "${fb}" is not a declared tier's primary (author-vouched, unpinned quality)`);
+      }
+    }
+  }
+  return warnings;
 }
 
 /** Union parent + child requirements by name (child wins on collision) — extending a HOP ADDS
@@ -423,6 +479,7 @@ export function composeProfile(
   const tuning = composeTuning(parent.tuning, y.tuning, y.name);
   if (tuning) validateTuning(tuning, evals, y.name);
   const model = composeModel(parent.model, y.model, y.name);
+  const modelWarnings = model ? validateModel(model, y.name) : [];
   const requires = composeRequires(parent.requires, y.requires);
   const safety = composeSafety(parent.safety, y.safety);
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
@@ -516,6 +573,7 @@ export function composeProfile(
     ...(safety ? { safety } : {}),
     locked,
     tunable,
+    ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };
 }
 
