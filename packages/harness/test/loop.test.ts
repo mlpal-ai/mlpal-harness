@@ -191,6 +191,23 @@ describe("agentic loop", () => {
     expect(p.task_type).toBe("discover"); // host override beats the HOP's telemetry.taskType
   });
 
+  test("onAsk receives the ask context: a safety edge carries its safetyReason", async () => {
+    const seen: Array<{ command: unknown; safetyReason?: string; reason?: string }> = [];
+    const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);
+    const sess = session(model, "cruise", {
+      canUseTool: (req) =>
+        req.toolName === "Bash"
+          ? { behavior: "ask", reason: "destructive action requires approval", safetyReason: "needs_approval" }
+          : { behavior: "allow" },
+      onAsk: async (req, ask) => {
+        seen.push({ command: req.input.command, safetyReason: ask.safetyReason, reason: ask.reason });
+        return { behavior: "deny", reason: "declined at the edge" };
+      },
+    });
+    await collect(sess.run({ text: "destroy it" }));
+    expect(seen).toEqual([{ command: "terraform destroy", safetyReason: "needs_approval", reason: "destructive action requires approval" }]);
+  });
+
   test("HOP telemetry: hitting max turns classes as step_budget_stall", async () => {
     const emitted: RunOutcomeEvent[] = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);

@@ -138,8 +138,10 @@ export interface AgentConfig {
   /** The CURRENT plan (task tracker render) appended verbatim after a compaction summary —
    *  plans are anchor state, never summarized. Replaces the old last-TodoWrite capture. */
   planSnapshot?: () => string | null;
-  /** Resolve an "ask" decision (interactive prompt). Headless default denies. */
-  onAsk?: (req: PermissionRequest) => Promise<Decision>;
+  /** Resolve an "ask" decision (interactive prompt). Headless default denies. `ask` carries WHY the
+   *  policy asked: a §10 safety edge (`safetyReason`) must always be answered per action — no
+   *  session grant or live-mode raise may satisfy it — so the host needs to tell the two apart. */
+  onAsk?: (req: PermissionRequest, ask: AskContext) => Promise<Decision>;
   /** Headless safety runs (§10): when a safety-edge ask has no interactive answerer, END the run
    *  as NEEDS_APPROVAL (stop-and-wait) rather than denying the action and continuing. The host sets
    *  this for a headless run under a HOP with a safety envelope; it writes the hop-run-result-v1
@@ -208,6 +210,12 @@ export interface TurnInput {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/** Why the permission policy asked. `safetyReason` is set only for a §10 safety-envelope edge. */
+export interface AskContext {
+  reason?: string;
+  safetyReason?: SafetyReason;
 }
 
 /** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
@@ -1263,7 +1271,7 @@ export class AgentSession {
   private async resolve(req: PermissionRequest): Promise<Decision> {
     const d = await this.cfg.canUseTool(req);
     if (d.behavior !== "ask") return d;
-    if (this.cfg.onAsk) return this.cfg.onAsk(req);
+    if (this.cfg.onAsk) return this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason });
     // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
     // denying just this action and continuing — the infra HOP must not proceed past the edge.
     if (d.safetyReason && this.cfg.parkHeadless) {
