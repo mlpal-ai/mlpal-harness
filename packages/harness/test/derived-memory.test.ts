@@ -41,6 +41,25 @@ describe("Memorize tool", () => {
     expect(raw).toContain("GitHub Actions");
   });
 
+  test("stamps host-supplied provenance: hop, prompt_sha, origin (audit by prompt, not timestamp)", async () => {
+    const tool = createMemorizeTool({
+      store,
+      workspace: "infra",
+      provenance: () => ({ hop: "infra@0.1.1", promptSha: "0123abcd4567", origin: "routine:watch-web" }),
+    });
+    await tool.call({ slug: "alert-policy", content: "Alert once per breach; dedupe by memory." }, ctx);
+    const raw = (await store.memory.readTopic("infra--alert-policy"))!;
+    expect(raw).toContain("hop: infra@0.1.1");
+    expect(raw).toContain("prompt_sha: 0123abcd4567");
+    expect(raw).toContain("origin: routine:watch-web");
+    // absent provenance => no empty keys
+    const bare = createMemorizeTool({ store, workspace: "infra" });
+    await bare.call({ slug: "plain", content: "x" }, ctx);
+    const rawBare = (await store.memory.readTopic("infra--plain"))!;
+    expect(rawBare).not.toContain("hop:");
+    expect(rawBare).not.toContain("prompt_sha:");
+  });
+
   test("updating a slug mints a new event_id and records supersedes", async () => {
     const tool = createMemorizeTool({ store, workspace: "w" });
     await tool.call({ slug: "db-choice", content: "We use SQLite." }, ctx);

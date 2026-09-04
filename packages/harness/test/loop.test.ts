@@ -178,6 +178,7 @@ describe("agentic loop", () => {
         role: "subagent",
         parentRunId: "parent-run",
         taskType: "discover",
+        sourceRef: "routine:watch",
         emit: (e) => emitted.push(e),
       },
     });
@@ -189,6 +190,7 @@ describe("agentic loop", () => {
     expect(typeof p.run_id).toBe("string");
     expect(p.run_id.length).toBeGreaterThan(0);
     expect(p.task_type).toBe("discover"); // host override beats the HOP's telemetry.taskType
+    expect(emitted[0]!.source_ref).toBe("routine:watch"); // how the run began, envelope-level
   });
 
   test("onDecision observes the EFFECTIVE decision: headless ask refused, then a hard deny from policy", async () => {

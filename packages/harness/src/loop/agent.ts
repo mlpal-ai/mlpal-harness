@@ -199,6 +199,8 @@ export interface AgentConfig {
     parentRunId?: string;
     /** Host override of the HOP's `telemetry.taskType` (an eval kit knows the scenario's class). */
     taskType?: string;
+    /** Envelope `source_ref`: how the run began (`interactive` | `one-shot` | `routine:<name>` | …). */
+    sourceRef?: string;
     emit: TelemetrySink;
   };
 }
@@ -980,6 +982,7 @@ export class AgentSession {
               runId: cfg.sessionId,
               parentRunId: cfg.telemetry.parentRunId,
               taskType: cfg.telemetry.taskType ?? loop.taskType,
+              sourceRef: cfg.telemetry.sourceRef,
               runResult: outcome,
               failureClass: classifyFailure(outcome, thrownError),
               tokens: {

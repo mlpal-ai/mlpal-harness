@@ -134,10 +134,24 @@ export async function derivedMemorySection(
   );
 }
 
+/** Provenance stamped on every memory write, so an audit can find every memory written under a
+ *  given HOP + prompt (a wrong verifier rule once became a memorised policy; by timestamp alone
+ *  that is unfindable). Supplied by the host, which knows the loaded HOP and how the run began. */
+export interface MemorizeProvenance {
+  /** `<name>@<version>` of the loaded HOP. */
+  hop?: string;
+  /** Short hash of the loaded prompts (system + verifier task framing). */
+  promptSha?: string;
+  /** `routine:<name>` | `one-shot` | `interactive`. */
+  origin?: string;
+}
+
 export interface MemorizeDeps {
   store: Store;
   workspace: string;
   sessionId?: string;
+  /** Called per write (the host may resolve it lazily). */
+  provenance?: () => MemorizeProvenance;
 }
 
 export function createMemorizeTool(deps: MemorizeDeps): Tool<{
@@ -185,6 +199,10 @@ export function createMemorizeTool(deps: MemorizeDeps): Tool<{
         status: "active",
       };
       if (prior?.meta.event_id) meta.supersedes = prior.meta.event_id;
+      const prov = deps.provenance?.() ?? {};
+      if (prov.hop) meta.hop = prov.hop;
+      if (prov.promptSha) meta.prompt_sha = prov.promptSha;
+      if (prov.origin) meta.origin = prov.origin;
       await deps.store.memory.writeTopic(key, frontmatter(meta) + input.content.trim() + "\n");
       return { content: `${prior ? "updated" : "saved"} memory ${key}` };
     },
