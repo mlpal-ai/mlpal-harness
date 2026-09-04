@@ -29,8 +29,12 @@
  * `success`. Whether the produced work is correct is a graded, out-of-band signal that this
  * content-free event deliberately does NOT carry; consumers must join it from an external grader
  * and must never read `success` as "resolved".
+ *
+ * `needs_approval` (d11.3): the run parked at the §10 safety approval edge and stopped, waiting
+ * for a human — distinct from a `cancelled` (user abort). It requires `failure_class:
+ * approval_pending`, and the authoritative record is the hop-run-result-v1 artifact.
  */
-export type RunResult = "success" | "error" | "max_turns" | "cancelled";
+export type RunResult = "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
 
 /**
  * Failure-taxonomy label (failure_class_vocab@v1). Frozen SET; the v1 emitter populates only the
@@ -48,9 +52,14 @@ export type FailureClass =
   | "gateway_error"
   | "verifier_reject"
   | "user_cancelled"
-  | "other";
+  | "other"
+  // vocab@v2 (d11.3): the safety/approval failure modes.
+  | "approval_pending" // the run parked for approval (null iff success still holds: this is non-null)
+  | "policy_denied" // a mutative/destructive action denied by the safety policy
+  | "approval_declined" // a human declined the pending approval
+  | "preflight_failed"; // a `requires` preflight gap blocked the run
 
-export const FAILURE_CLASS_VOCAB = "failure_class_vocab@v1";
+export const FAILURE_CLASS_VOCAB = "failure_class_vocab@v2";
 
 /** Adversarial agent-verifier verdict; null when no agent verifier ran this run. */
 export type VerifierVerdict = "PASS" | "FAIL" | "PARTIAL";
@@ -58,8 +67,10 @@ export type VerifierVerdict = "PASS" | "FAIL" | "PARTIAL";
 /** postFeedback delegation outcome, when one was reported for this run. */
 export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
 
-/** Wire discriminator memory reads to route an envelope to the right contract version. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.2" as const;
+/** Wire discriminator memory reads to route an envelope to the right contract version. Stamped per
+ *  EMITTER version, not per event: a d11.3-capable emitter stamps every event d11.3 (a success is
+ *  byte-identical to d11.2), so a d11.2 `cancelled` is unambiguously a true cancel, never a park. */
+export const TELEMETRY_CONTRACT_VERSION = "d11.3" as const;
 
 /**
  * Per-mechanism verification signal. The seam has four mechanisms (observe = command verifier,
@@ -157,6 +168,8 @@ export function classifyFailure(runResult: RunResult, thrown?: unknown): Failure
   switch (runResult) {
     case "success":
       return null;
+    case "needs_approval":
+      return "approval_pending"; // the d11.3 invariant: needs_approval ⟺ approval_pending
     case "max_turns":
       return "step_budget_stall";
     case "cancelled":

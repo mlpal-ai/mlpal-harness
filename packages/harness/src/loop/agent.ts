@@ -25,6 +25,7 @@ import { GatewayError, type ModelClient, type ModelResult } from "../gateway/cli
 import { type Logger, silentLogger } from "../obs/logger";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
+import type { SafetyReason } from "../permission/safety-envelope";
 import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ToolResult } from "../tools/types";
@@ -138,6 +139,11 @@ export interface AgentConfig {
   planSnapshot?: () => string | null;
   /** Resolve an "ask" decision (interactive prompt). Headless default denies. */
   onAsk?: (req: PermissionRequest) => Promise<Decision>;
+  /** Headless safety runs (§10): when a safety-edge ask has no interactive answerer, END the run
+   *  as NEEDS_APPROVAL (stop-and-wait) rather than denying the action and continuing. The host sets
+   *  this for a headless run under a HOP with a safety envelope; it writes the hop-run-result-v1
+   *  artifact from the terminal result event's pendingApproval. */
+  parkHeadless?: boolean;
   /**
    * Completion self-check: nudge once to verify-or-admit when a run made >= selfCheckMinEdits
    * successful edits but never ran a test/build/typecheck. Default on (undefined => on); set
@@ -195,6 +201,18 @@ export interface TurnInput {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
+ *  ENDS as NEEDS_APPROVAL (stop-and-wait) instead of denying the action and continuing. */
+class SafetyParkSignal extends Error {
+  constructor(
+    readonly command: string,
+    readonly reason: SafetyReason,
+  ) {
+    super("safety approval edge (headless park)");
+    this.name = "SafetyParkSignal";
+  }
 }
 
 /** Sleep `ms`, resolving early if `signal` aborts — so a listening worker stops promptly. */
@@ -900,6 +918,17 @@ export class AgentSession {
       }
       messages.push({ role: "user", content: turnContent });
     }
+    } catch (e) {
+      if (e instanceof SafetyParkSignal) {
+        // §10 safety edge hit headless: END the run as needs_approval and hand the pending action
+        // to the host (for the hop-run-result-v1 artifact). The finally emits d11.3 needs_approval.
+        outcome = "needs_approval";
+        log.info("run parked for approval", { reason: e.reason });
+        metrics.increment("agent.needs_approval", 1, { reason: e.reason });
+        yield this.result("needs_approval", turns, totalUsage, { command: e.command, reason: e.reason });
+      } else {
+        throw e;
+      }
     } finally {
       // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
       // Previously only the success branch reset status/head and answered owed handoffs,
@@ -1225,14 +1254,20 @@ export class AgentSession {
     const d = await this.cfg.canUseTool(req);
     if (d.behavior !== "ask") return d;
     if (this.cfg.onAsk) return this.cfg.onAsk(req);
+    // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
+    // denying just this action and continuing — the infra HOP must not proceed past the edge.
+    if (d.safetyReason && this.cfg.parkHeadless) {
+      throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason);
+    }
     return { behavior: "deny", reason: "approval required but running non-interactively" };
   }
 
   private result(
-    subtype: "success" | "error" | "max_turns" | "cancelled",
+    subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval",
     numTurns: number,
     usage: Usage,
+    pendingApproval?: { command: string; reason: string },
   ): EngineEvent {
-    return { type: "result", subtype, numTurns, usage, ts: now() };
+    return { type: "result", subtype, numTurns, usage, ts: now(), ...(pendingApproval ? { pendingApproval } : {}) };
   }
 }

@@ -153,7 +153,7 @@ describe("agentic loop", () => {
 
     expect(emitted).toHaveLength(1);
     const ev = emitted[0]!;
-    expect(ev.contract).toBe("d11.2");
+    expect(ev.contract).toBe("d11.3");
     expect(ev.action_type).toBe("run.completed");
     expect(ev.scope_id).toBe("acme");
     expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
@@ -194,6 +194,30 @@ describe("agentic loop", () => {
     });
     const events = await collect(sess.run({ text: "go" }));
     expect(events.find((e) => e.type === "result")).toBeDefined();
+  });
+
+  test("HOP safety: a headless safety-edge ask ENDS the run as needs_approval (park)", async () => {
+    const emitted: RunOutcomeEvent[] = [];
+    const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);
+    const sess = session(model, "cruise", {
+      parkHeadless: true,
+      canUseTool: (req) =>
+        req.toolName === "Bash"
+          ? { behavior: "ask", reason: "needs_approval: destructive", safetyReason: "needs_approval" }
+          : { behavior: "allow" },
+      telemetry: { hop: { name: "infra", version: "1.0.0" }, repo: "acme", emit: (e) => emitted.push(e) },
+    });
+    const events = await collect(sess.run({ text: "destroy it" }));
+
+    const result = events.find((e) => e.type === "result");
+    expect(result && "subtype" in result ? result.subtype : "").toBe("needs_approval");
+    const pending = result && "pendingApproval" in result ? (result as { pendingApproval?: unknown }).pendingApproval : null;
+    expect(pending).toMatchObject({ command: "terraform destroy", reason: "needs_approval" });
+    // telemetry: d11.3 needs_approval + approval_pending
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.payload.run_result).toBe("needs_approval");
+    expect(emitted[0]!.payload.failure_class).toBe("approval_pending");
+    expect(emitted[0]!.contract).toBe("d11.3");
   });
 
   test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {

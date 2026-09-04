@@ -1,7 +1,7 @@
 import type { Author } from "@mlpal/harness-protocol";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "./safety";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
-import type { SafetyDisposition } from "./safety-envelope";
+import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 
 /**
  * Permission engine: a deny → allow → mode-default cascade. Pure data + string
@@ -22,7 +22,9 @@ export type PermissionMode = "recon" | "manual" | "cruise" | "autopilot";
 export type Decision =
   | { behavior: "allow" }
   | { behavior: "deny"; reason: string }
-  | { behavior: "ask"; reason?: string };
+  // `safetyReason` marks an ask that came from the §10 envelope edge (vs an ordinary mode prompt),
+  // so a headless run can turn it into a NEEDS_APPROVAL terminal instead of a plain denial.
+  | { behavior: "ask"; reason?: string; safetyReason?: SafetyReason };
 
 export interface PermissionRequest {
   toolName: string;
@@ -74,7 +76,7 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     if (config.safety) {
       const d = config.safety(req);
       if (d?.outcome === "deny") return { behavior: "deny", reason: safetyReasonText(d) };
-      if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d) };
+      if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d), safetyReason: d.reason };
       if (d?.outcome === "allow") return { behavior: "allow" };
       // d === null: the envelope does not apply to this action — fall through.
     }

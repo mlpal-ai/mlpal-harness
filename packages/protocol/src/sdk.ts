@@ -53,10 +53,15 @@ export interface ToolResultEvent {
 
 export interface ResultEvent {
   type: "result";
-  subtype: "success" | "error" | "max_turns" | "cancelled";
+  /** `needs_approval` (HOP §10): the run parked at the safety approval edge and stopped, waiting
+   *  for a human — distinct from a user-initiated `cancelled`. */
+  subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
   numTurns: number;
   usage: Usage;
   ts: string;
+  /** Present on subtype `needs_approval`: the pending action + its safety reason code, for the
+   *  host's hop-run-result-v1 artifact. */
+  pendingApproval?: { command: string; reason: string };
 }
 
 export interface ErrorEvent {

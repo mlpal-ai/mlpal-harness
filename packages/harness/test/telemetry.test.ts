@@ -36,6 +36,10 @@ describe("classifyFailure", () => {
     expect(classifyFailure("error")).toBe("other");
     expect(classifyFailure("error", "a string")).toBe("other");
   });
+
+  test("needs_approval => approval_pending (the d11.3 invariant)", () => {
+    expect(classifyFailure("needs_approval")).toBe("approval_pending");
+  });
 });
 
 const baseInput: RunOutcomeInput = {
@@ -63,7 +67,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.2",
+      contract: "d11.3",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -90,7 +94,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.2");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.3");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -116,6 +120,6 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.2");
+    expect(round.contract).toBe("d11.3");
   });
 });
