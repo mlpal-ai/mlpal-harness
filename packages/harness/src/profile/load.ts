@@ -178,6 +178,10 @@ export const profileYamlSchema = z
             tier: z.enum(["max", "frontier", "mid", "cheap"]).optional(),
             riskGateMinChangedLines: z.number().int().min(0).optional(),
             failMode: z.enum(["open", "closed"]).optional(),
+            // v1.1 — the verifier's user-turn framing, definable in YAML (was builtin-only). `{task}`
+            // and `{deliverable}` are substituted. A HOP whose deliverable is TEXT (not an on-disk
+            // diff) needs this, or the inherited coding framing audits a filesystem that can't hold it.
+            task: z.string().min(1).optional(),
           })
           .strict()
           .default({}),
@@ -519,7 +523,12 @@ export function composeProfile(
       verifierAgent: y.prompts.verifierAgent
         ? resolvePromptText(y.prompts.verifierAgent, dir, "prompts.verifierAgent")
         : parent.prompts.verifierAgent,
-      verifierTask: parent.prompts.verifierTask,
+      verifierTask: y.verification.agent.task
+        ? (task: string, deliverable?: string) =>
+            y.verification.agent
+              .task!.replaceAll("{task}", task)
+              .replaceAll("{deliverable}", deliverable ?? "(no deliverable on disk)")
+        : parent.prompts.verifierTask,
     },
     loop: {
       ...parent.loop,

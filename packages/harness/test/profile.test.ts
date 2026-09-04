@@ -379,6 +379,15 @@ describe("profile loading", () => {
     expect(() => loadProfile(child, opts())).toThrow(/overrides "tuning.promote", which is locked by its parent "tuned"/);
   });
 
+  test("verification.agent.task defines the verifier framing in YAML (text-deliverable HOPs)", () => {
+    const p = loadProfile(writeProfile("p/vtask", [
+      "spec: mlpal/hop-v1", "name: vtask", "version: 1.0.0", "extends: coding",
+      "verification: { agent: { task: 'Check {task} -- result: {deliverable}' } }",
+    ].join("\n")), opts());
+    expect(p.prompts.verifierTask("do X", "the result")).toBe("Check do X -- result: the result");
+    expect(p.prompts.verifierTask("do X")).toBe("Check do X -- result: (no deliverable on disk)");
+  });
+
   test("a HOP without a tuning block is valid (un-tuned)", () => {
     const p = loadProfile(writeProfile("p/untuned", [
       "spec: mlpal/hop-v1",
