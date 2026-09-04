@@ -141,7 +141,7 @@ function representativeArg(req: PermissionRequest): string {
   return JSON.stringify(req.input);
 }
 
-function globMatch(pattern: string, value: string): boolean {
+export function globMatch(pattern: string, value: string): boolean {
   const re = new RegExp(
     `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`,
   );

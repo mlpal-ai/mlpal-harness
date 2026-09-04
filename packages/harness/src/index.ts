@@ -8,6 +8,7 @@ export * from "./memory/memory";
 export * from "./memory/derived";
 export * from "./tools";
 export * from "./permission/engine";
+export * from "./permission/safety-envelope";
 export * from "./loop/agent";
 export { loadMessages } from "./loop/messages";
 export * from "./registry/models";
