@@ -77,8 +77,10 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
       const d = config.safety(req);
       if (d?.outcome === "deny") return { behavior: "deny", reason: safetyReasonText(d) };
       if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d), safetyReason: d.reason };
-      if (d?.outcome === "allow") return { behavior: "allow" };
-      // d === null: the envelope does not apply to this action — fall through.
+      // recon is bypass-immune: an in-envelope allow makes a MUTATIVE action autonomous, and
+      // recon exists precisely to refuse those. Fall through so the mode default denies it.
+      if (d?.outcome === "allow" && config.mode !== "recon") return { behavior: "allow" };
+      // d === null (or an allow under recon): fall through to the mode default.
     }
     for (const rule of allow) {
       if (ruleMatches(rule, req)) return { behavior: "allow" };

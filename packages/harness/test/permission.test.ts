@@ -164,4 +164,20 @@ describe("safety envelope hook (v1.1)", () => {
     const can = createPolicy({ mode: "autopilot", safety: () => ({ outcome: "allow" }) });
     expect(can(bash("rm -rf /"))).toMatchObject({ behavior: "deny" });
   });
+
+  test("recon is bypass-immune: an in-envelope safety allow never admits a change", () => {
+    // Regression: before this guard, `--mode recon` under a safety HOP let an in-envelope
+    // mutative `aws ec2 create-vpc` through (envelope allow short-circuited the mode) while
+    // still denying reads — the inverse of read-only.
+    const can = createPolicy({ mode: "recon", safety: () => ({ outcome: "allow" }) });
+    expect(can(bash("aws ec2 create-vpc --cidr-block 10.0.0.0/16"))).toMatchObject({
+      behavior: "deny",
+      reason: "recon mode is read-only: changes are blocked",
+    });
+    // Reads are unaffected: the tool's readOnly flag still admits them under recon.
+    expect(can(req("Read", { path: "main.tf" }, true, false))).toEqual({ behavior: "allow" });
+    // Every other mode keeps the in-envelope allow autonomous.
+    const cruise = createPolicy({ mode: "cruise", safety: () => ({ outcome: "allow" }) });
+    expect(cruise(bash("aws ec2 create-vpc"))).toEqual({ behavior: "allow" });
+  });
 });
