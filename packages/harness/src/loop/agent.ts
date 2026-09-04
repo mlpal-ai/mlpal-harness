@@ -220,7 +220,7 @@ function now(): string {
 
 /** How an attempt's effective decision was reached: straight from the policy, from the interactive
  *  answerer, or from the headless resolution of an ask (parked at the §10 edge, or refused). */
-export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless_refused";
+export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless_refused" | "tool";
 
 /** Why the permission policy asked. `safetyReason` is set only for a §10 safety-envelope edge. */
 export interface AskContext {
@@ -1224,13 +1224,14 @@ export class AgentSession {
     // resolve() lets tools that register asynchronously (MCP servers still connecting)
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
     const tool = await cfg.tools.resolve(tu.name);
-    const decision = await this.resolve({
+    const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
       readOnly: tool?.readOnly ?? false,
       isEdit: tool?.edits ?? false,
       principal,
-    });
+    };
+    const { decision, via } = await this.resolve(permReq);
 
     let raw: string | ToolResultBlocks;
     let isError: boolean;
@@ -1254,6 +1255,15 @@ export class AgentSession {
       raw = res.content;
       isError = res.isError ?? false;
       diff = res.meta?.diff;
+      // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
+      // and the trace must record the effective outcome, not the cascade's permission.
+      this.observed(
+        permReq,
+        res.meta?.refused
+          ? { behavior: "deny", reason: typeof res.content === "string" ? res.content.split("\n")[0]! : "refused by the tool", source: "tool_boundary" }
+          : decision,
+        res.meta?.refused ? "tool" : via,
+      );
     }
 
     let display = typeof raw === "string" ? raw : summarizeBlocks(raw);
@@ -1279,11 +1289,14 @@ export class AgentSession {
     return make(display, isError, blocks, diff);
   }
 
-  private async resolve(req: PermissionRequest): Promise<Decision> {
+  /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
+   *  the caller after the tool ran, so a tool-boundary refusal can turn it into the effective deny. */
+  private async resolve(req: PermissionRequest): Promise<{ decision: Decision; via: DecisionVia }> {
     const d = await this.cfg.canUseTool(req);
-    if (d.behavior !== "ask") return this.observed(req, d, "policy");
+    if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
     if (this.cfg.onAsk) {
-      return this.observed(req, await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason }), "interactive");
+      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason });
+      return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
     }
     // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
     // denying just this action and continuing — the infra HOP must not proceed past the edge.
@@ -1291,7 +1304,10 @@ export class AgentSession {
       this.observed(req, d, "headless_park");
       throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason);
     }
-    return this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused");
+    return {
+      decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),
+      via: "headless_refused",
+    };
   }
 
   private observed(req: PermissionRequest, decision: Decision, via: DecisionVia): Decision {

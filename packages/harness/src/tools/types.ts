@@ -22,8 +22,10 @@ export interface ToolResult {
   content: string | ToolResultBlocks;
   isError?: boolean;
   /** Render-only metadata that rides on the ToolResultEvent but is NEVER sent to the model
-   *  (kept out of the tool_result blocks). `diff` is a unified patch for Write/Edit. */
-  meta?: { diff?: string };
+   *  (kept out of the tool_result blocks). `diff` is a unified patch for Write/Edit. `refused` marks
+   *  a result the TOOL's own boundary produced (the permission cascade had allowed the call), so
+   *  the attempt trace records the effective outcome as a denial, not an access. */
+  meta?: { diff?: string; refused?: "outside_roots" };
 }
 
 export interface Tool<I = unknown> {
@@ -157,11 +159,14 @@ export function resolveInRoots(
   const abs = resolvePath(ctx.cwd, p);
   if (!withinRoots(abs, roots)) {
     return {
-      error: err(
-        `Path is outside the allowed directories: ${p}\n` +
-          `Allowed: ${roots.join(", ")}\n` +
-          `Grant access by starting ${host().name} with --add-dir <dir>.`,
-      ),
+      error: {
+        ...err(
+          `Path is outside the allowed directories: ${p}\n` +
+            `Allowed: ${roots.join(", ")}\n` +
+            `Grant access by starting ${host().name} with --add-dir <dir>.`,
+        ),
+        meta: { refused: "outside_roots" },
+      },
     };
   }
   return { path: abs };

@@ -207,6 +207,18 @@ describe("agentic loop", () => {
     ]);
   });
 
+  test("onDecision records a tool-boundary refusal as denied/outside_roots, never as an allowed access", async () => {
+    const seen: Array<{ tool: string; behavior: string; via: string; source?: string }> = [];
+    const model = new ScriptedModel([toolUse("Read", { path: "/etc/hosts" }), textDone("done")]);
+    const sess = session(model, "autopilot", {
+      onDecision: (req, d, via) => seen.push({ tool: req.toolName, behavior: d.behavior, via, source: d.behavior === "deny" ? d.source : undefined }),
+    });
+    const events = await collect(sess.run({ text: "read it" }));
+    const result = events.find((e) => e.type === "tool_result") as { content?: unknown } | undefined;
+    expect(String(result?.content ?? "")).toContain("outside the allowed directories");
+    expect(seen).toEqual([{ tool: "Read", behavior: "deny", via: "tool", source: "tool_boundary" }]);
+  });
+
   test("onAsk receives the ask context: a safety edge carries its safetyReason", async () => {
     const seen: Array<{ command: unknown; safetyReason?: string; reason?: string }> = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);
