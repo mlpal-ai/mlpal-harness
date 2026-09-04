@@ -450,18 +450,27 @@ describe("profile loading", () => {
     expect(p.warnings ?? []).toEqual([]); // fully pinned, no warning
   });
 
-  test("an unknown tier name (no subscribe) is a load error; a pinned id is fine", () => {
+  test("tier NAMES follow a grammar (a digit/uppercase in a tier name is a load error)", () => {
     const bad = writeProfile("p/badtier", [
       "spec: mlpal/hop-v1", "name: badtier", "version: 1.0.0", "extends: coding",
-      "model: { main: premium, tiers: { frontier: { primary: claude-opus-5 } } }",
+      "model: { main: frontier, tiers: { tier2: { primary: claude-opus-5 }, frontier: { primary: claude-opus-5 } } }",
     ].join("\n"));
-    expect(() => loadProfile(bad, opts())).toThrow(/references model tier "premium" not in model.tiers/);
-    // a pinned id (has a digit) is accepted even when not a tier name
-    const ok = loadProfile(writeProfile("p/pinned", [
-      "spec: mlpal/hop-v1", "name: pinned", "version: 1.0.0", "extends: coding",
+    expect(() => loadProfile(bad, opts())).toThrow(/model.tiers name "tier2" must match/);
+  });
+
+  test("classification is table membership: a non-table token is a pinned id, not an unknown tier", () => {
+    // `sol`-style: a bare token not in the table resolves as a pinned id at serving, no load error.
+    const ok = loadProfile(writeProfile("p/pinnedref", [
+      "spec: mlpal/hop-v1", "name: pinnedref", "version: 1.0.0", "extends: coding",
+      "model: { main: sol, tiers: { frontier: { primary: claude-opus-5 } } }",
+    ].join("\n")), opts());
+    expect(ok.model?.main).toBe("sol"); // treated as an id, resolved by the serving layer
+    // an id with a digit likewise
+    const ok2 = loadProfile(writeProfile("p/pinned2", [
+      "spec: mlpal/hop-v1", "name: pinned2", "version: 1.0.0", "extends: coding",
       "model: { main: claude-opus-5, tiers: { frontier: { primary: claude-opus-5 } } }",
     ].join("\n")), opts());
-    expect(ok.model?.main).toBe("claude-opus-5");
+    expect(ok2.model?.main).toBe("claude-opus-5");
   });
 
   test("a model.main fallback that is a lower tier's primary is a load error", () => {

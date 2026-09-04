@@ -373,31 +373,36 @@ function composeModel(
 
 /** Canonical tier ordering for the downward-fallback check; custom tier names have no order. */
 const TIER_RANK: Record<string, number> = { cheap: 0, mid: 1, frontier: 2, max: 3 };
-/** A reference with a digit is a pinned model id (claude-opus-5); a bare word is a tier name. */
-const looksLikeModelId = (ref: string) => /\d/.test(ref);
+/** Tier NAMES are a constrained grammar (lowercase + hyphens, no digits/uppercase) so a tier name
+ *  can never collide with a pinned model id. Classification is then pure table membership. */
+const TIER_NAME_RE = /^[a-z][a-z-]{0,31}$/;
 
 /** Validate the model block (§8 load-time rules) and return non-fatal warnings; throws on error. */
 function validateModel(model: ModelPolicy, name: string): string[] {
   const warnings: string[] = [];
   const tiers = model.tiers;
-  const refs = [model.main, model.subagents.readOnly, model.subagents.verify].filter(Boolean) as string[];
 
-  // (1) A referenced tier must resolve; an unknown tier is a load error, never a silent fallback.
-  for (const ref of refs) {
-    if (looksLikeModelId(ref)) continue; // a pinned id — the host/serving layer validates it
-    if (tiers && ref in tiers) continue; // resolves (schema guarantees a non-empty primary)
-    if (model.subscribe) continue; // may be defined by the subscribed baseline (host resolves at runtime)
-    if (!tiers) {
-      warnings.push(`model.* "${ref}" resolves against the catalog (no tiers/subscribe) — the model set is unpinned`);
-      continue;
+  // Tier NAMES follow a grammar so they can't be mistaken for a pinned model id (claude-opus-5).
+  if (tiers) {
+    for (const key of Object.keys(tiers)) {
+      if (!TIER_NAME_RE.test(key)) {
+        throw new Error(
+          `profile "${name}" model.tiers name "${key}" must match ${TIER_NAME_RE} (lowercase + hyphens, ` +
+            `no digits or uppercase) so it cannot collide with a pinned model id`,
+        );
+      }
     }
-    throw new Error(
-      `profile "${name}" references model tier "${ref}" not in model.tiers (${Object.keys(tiers).join(", ")}) ` +
-        `and no subscribe baseline provides it`,
-    );
   }
 
-  // (2) A model.main fallback that is a known LOWER tier's primary is a load error; unknown-tier
+  // Classification is by table membership: a reference present in the resolved tier table is a
+  // tier; any other token is a pinned model id the serving layer validates (a `sol`-style id
+  // resolves precisely because it is not in the table). With no tiers AND no subscribe, model.*
+  // resolves against the catalog (v1.0 back-compat) — the model set is then unpinned.
+  if (!tiers && !model.subscribe) {
+    warnings.push("model.* resolves against the catalog (no tiers/subscribe declared) — the model set is unpinned");
+  }
+
+  // A model.main fallback that is a known LOWER tier's primary is a load error; unknown-tier
   // fallbacks are allowed with a warning. Only meaningful when main is a canonically-ranked tier.
   if (tiers && model.main in tiers && model.main in TIER_RANK) {
     const mainRank = TIER_RANK[model.main]!;
