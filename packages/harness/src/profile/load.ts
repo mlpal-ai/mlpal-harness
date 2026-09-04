@@ -1,7 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import type { EvalSuite, Profile, ProfileSource, TuningPolicy } from "./types";
+import type {
+  EvalSuite,
+  ModelPolicy,
+  Profile,
+  ProfileSource,
+  RequiresPolicy,
+  SafetyPolicy,
+  TuningPolicy,
+} from "./types";
 import { PROFILE_SPEC_ID } from "./types";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
@@ -42,9 +50,11 @@ const evalSuiteSchema = z
 // composed result is validated for completeness + reference integrity in composeProfile.
 const tuningSchema = z
   .object({
+    // `on-incident` is a trigger, not a cadence (§6.2) — the scheduled clock only.
     cadence: z
-      .union([z.enum(["daily", "weekly", "monthly", "on-incident"]), z.string().regex(/^per-\d+-runs$/)])
+      .union([z.enum(["daily", "weekly", "monthly"]), z.string().regex(/^per-\d+-runs$/)])
       .optional(),
+    maxAge: z.string().regex(/^\d+[dw]$/, "maxAge is a duration like 4w or 14d").optional(),
     minRunsSinceLast: z.number().int().min(0).optional(),
     canaryFraction: z.number().min(0).max(1).optional(),
     canaryMinRuns: z.number().int().min(0).optional(),
@@ -52,6 +62,75 @@ const tuningSchema = z
     frontierMetric: z.string().min(1).optional(),
     promotionMargin: z.string().min(1).optional(),
     goldenSuite: z.string().min(1).optional(),
+    triggers: z.array(z.enum(["on-model-release", "on-api-change", "on-incident"])).optional(),
+  })
+  .strict();
+
+// v1.1 blocks. All fields optional so a leaf can override single leaves over a parent's block.
+const modelSchema = z
+  .object({
+    main: z.string().min(1).optional(),
+    subagents: z
+      .object({ readOnly: z.string().min(1).optional(), verify: z.string().min(1).optional() })
+      .strict()
+      .optional(),
+    allowInvokeAny: z.boolean().optional(),
+  })
+  .strict();
+
+const requiresSchema = z
+  .object({
+    binaries: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            detect: z.string().min(1), // a shell string or a `builtin:<domain>` detector
+            setup: z.string().optional(),
+            timeoutMs: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .default([]),
+    mcp: z.array(z.object({ name: z.string().min(1) }).strict()).default([]),
+  })
+  .strict();
+
+const safetySchema = z
+  .object({
+    toolClasses: z
+      .object({
+        readOnly: z.array(z.string()).default([]),
+        mutative: z.array(z.string()).default([]),
+        destructive: z.array(z.string()).default([]),
+      })
+      .strict()
+      .default({}),
+    preApply: z
+      .object({ requirePlanArtifact: z.boolean().default(true), hash: z.array(z.string()).default([]) })
+      .strict()
+      .default({}),
+    blastRadius: z
+      .object({
+        maxResources: z.number().int().positive().optional(),
+        accounts: z.array(z.string()).optional(),
+        regions: z.array(z.string()).optional(),
+        requireTag: z.string().optional(),
+      })
+      .strict()
+      .default({}),
+    approval: z
+      .object({
+        destructive: z.enum(["always", "never"]).default("always"),
+        outOfScope: z.enum(["always", "never"]).default("always"),
+        costCeilingUsdMonth: z.number().positive().optional(),
+      })
+      .strict()
+      .default({}),
+    identities: z
+      .object({ read: z.string().optional(), write: z.string().optional(), neverSelfGrant: z.boolean().default(true) })
+      .strict()
+      .default({}),
   })
   .strict();
 
@@ -128,9 +207,20 @@ export const profileYamlSchema = z
     telemetry: z.object({ taskType: z.string().optional() }).strict().default({}),
     evals: z.array(evalSuiteSchema).default([]),
     tuning: tuningSchema.optional(),
+    model: modelSchema.optional(),
+    requires: requiresSchema.optional(),
+    safety: safetySchema.optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
-      .array(z.object({ path: z.string(), range: z.tuple([z.number(), z.number()]) }).strict())
+      .array(
+        z
+          .object({
+            path: z.string(),
+            // numeric interval [min,max] OR an enum-set of allowed string values [a,b,…] (v1.1).
+            range: z.union([z.tuple([z.number(), z.number()]), z.array(z.string().min(1)).min(1)]),
+          })
+          .strict(),
+      )
       .default([]),
   })
   .strict(); // unknown top-level keys are a loud error, not a silent ignore
@@ -253,6 +343,52 @@ function validateTuning(tuning: TuningPolicy, evals: EvalSuite[], name: string):
   }
 }
 
+/** Merge a child's model leaves over the parent's. `main` is required whenever a model block
+ *  exists; `allowInvokeAny` defaults true. */
+function composeModel(
+  parent: ModelPolicy | undefined,
+  child: ProfileYaml["model"],
+  name: string,
+): ModelPolicy | undefined {
+  if (!parent && !child) return undefined;
+  const main = child?.main ?? parent?.main;
+  if (!main) {
+    throw new Error(`profile "${name}" declares a model block without model.main`);
+  }
+  return {
+    main,
+    subagents: { ...(parent?.subagents ?? {}), ...(child?.subagents ?? {}) },
+    allowInvokeAny: child?.allowInvokeAny ?? parent?.allowInvokeAny ?? true,
+  };
+}
+
+/** Union parent + child requirements by name (child wins on collision) — extending a HOP ADDS
+ *  prerequisites rather than replacing them. */
+function composeRequires(
+  parent: RequiresPolicy | undefined,
+  child: ProfileYaml["requires"],
+): RequiresPolicy | undefined {
+  if (!parent && !child) return undefined;
+  const mergeByName = <T extends { name: string }>(a: T[], b: T[]): T[] => {
+    const m = new Map(a.map((x) => [x.name, x]));
+    for (const x of b) m.set(x.name, x);
+    return [...m.values()];
+  };
+  return {
+    binaries: mergeByName(parent?.binaries ?? [], child?.binaries ?? []),
+    mcp: mergeByName(parent?.mcp ?? [], child?.mcp ?? []),
+  };
+}
+
+/** Safety is LOCKED whenever present, so a child overriding a parent's safety is already a lock
+ *  violation. This therefore only INTRODUCES safety where the parent had none, or inherits it. */
+function composeSafety(
+  parent: SafetyPolicy | undefined,
+  child: ProfileYaml["safety"],
+): SafetyPolicy | undefined {
+  return (child ?? parent) as SafetyPolicy | undefined;
+}
+
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
 export function composeProfile(
   parent: Profile,
@@ -286,6 +422,27 @@ export function composeProfile(
   const evals = withGatesDefaults(y.evals.length > 0 ? y.evals : parent.evals);
   const tuning = composeTuning(parent.tuning, y.tuning, y.name);
   if (tuning) validateTuning(tuning, evals, y.name);
+  const model = composeModel(parent.model, y.model, y.name);
+  const requires = composeRequires(parent.requires, y.requires);
+  const safety = composeSafety(parent.safety, y.safety);
+  // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
+  const locked = [...new Set([...parent.locked, ...y.locked, ...(safety ? ["safety"] : [])])];
+  if (safety) {
+    // A safety block IS a declaration of apply capability; two consequences (§10, §6.2 review 22/24):
+    const effectiveDefaultMode = y.permissions.defaultMode ?? parent.permissions.defaultMode;
+    if (effectiveDefaultMode === "autopilot") {
+      throw new Error(
+        `profile "${y.name}" declares a safety block with defaultMode: autopilot — autopilot may not ` +
+          `auto-approve a destructive or out-of-scope plan; use cruise (the safety block is enforced in every mode)`,
+      );
+    }
+    if (tuning?.promote === "auto") {
+      throw new Error(
+        `profile "${y.name}" sets tuning.promote: auto with a safety block present — an apply-capable ` +
+          `HOP may not self-promote; use promote: human`,
+      );
+    }
+  }
 
   return {
     spec: PROFILE_SPEC_ID,
@@ -354,7 +511,10 @@ export function composeProfile(
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
     evals,
     ...(tuning ? { tuning } : {}),
-    locked: [...new Set([...parent.locked, ...y.locked])],
+    ...(model ? { model } : {}),
+    ...(requires ? { requires } : {}),
+    ...(safety ? { safety } : {}),
+    locked,
     tunable,
   };
 }
@@ -384,6 +544,58 @@ function loadFromDir(dir: string, source: ProfileSource, opts: LoadProfileOption
   return composeProfile(parent, y, dir, source);
 }
 
+/** Split a named ref into name + optional `@version` pin. Paths and builtins never reach here. */
+function parseHopRef(ref: string): { name: string; version?: string } {
+  const at = ref.lastIndexOf("@");
+  return at > 0 ? { name: ref.slice(0, at), version: ref.slice(at + 1) } : { name: ref };
+}
+
+const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+function cmpSemver(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i]! !== pb[i]!) return pa[i]! - pb[i]!;
+  return 0;
+}
+
+/**
+ * Resolve a named HOP's directory under a hops root, honoring the flat and versioned layouts (§2).
+ * Returns the directory holding hop.yaml, or null if the name is not present here. Throws on an
+ * ambiguous layout (both flat and versioned in one `hops/<name>/`) or an unresolvable `@version`.
+ */
+function resolveNamedHopDir(root: string, ref: string): string | null {
+  const { name, version } = parseHopRef(ref);
+  const base = hostDir(root, "hops", name);
+  if (!existsSync(base)) return null;
+  const flat = existsSync(join(base, "hop.yaml"));
+  const versions = readdirSync(base).filter((e) => SEMVER_RE.test(e) && existsSync(join(base, e, "hop.yaml")));
+  if (flat && versions.length > 0) {
+    throw new Error(
+      `HOP "${name}" has both a flat hop.yaml and versioned subdirs under ${base} — a single hops/${name}/ ` +
+        `must use one layout, not both`,
+    );
+  }
+  if (flat) {
+    if (version) {
+      throw new Error(
+        `HOP "${name}" uses the flat layout (no versions); drop the @${version} pin or move it under ` +
+          `hops/${name}/${version}/`,
+      );
+    }
+    return base;
+  }
+  if (versions.length > 0) {
+    if (version) {
+      if (!versions.includes(version)) {
+        throw new Error(`HOP "${name}@${version}" not found under ${base} (have: ${[...versions].sort(cmpSemver).join(", ")})`);
+      }
+      return join(base, version);
+    }
+    return join(base, [...versions].sort(cmpSemver).at(-1)!);
+  }
+  return null;
+}
+
 function resolveProfile(ref: string, opts: LoadProfileOptions, depth: number, fromDir?: string): Profile {
   const builtins = builtinProfiles();
   if (builtins[ref]) return builtins[ref]!;
@@ -395,14 +607,14 @@ function resolveProfile(ref: string, opts: LoadProfileOptions, depth: number, fr
     }
     return loadFromDir(base, "path", opts, depth);
   }
-  // Named lookup: project then user.
-  const project = hostDir(opts.cwd, "hops", ref);
-  if (existsSync(join(project, "hop.yaml"))) return loadFromDir(project, "project", opts, depth);
-  const user = hostDir(opts.home, "hops", ref);
-  if (existsSync(join(user, "hop.yaml"))) return loadFromDir(user, "user", opts, depth);
+  // Named lookup: project then user; each honors flat + versioned layouts and `name@version` pins.
+  const project = resolveNamedHopDir(opts.cwd, ref);
+  if (project) return loadFromDir(project, "project", opts, depth);
+  const user = resolveNamedHopDir(opts.home, ref);
+  if (user) return loadFromDir(user, "user", opts, depth);
   throw new Error(
-    `unknown HOP "${ref}" — not a builtin (${Object.keys(builtins).join(", ")}), and neither ` +
-      `${project} nor ${user} contains a hop.yaml; create one with a hop.yaml declaring ` +
+    `unknown HOP "${ref}" — not a builtin (${Object.keys(builtins).join(", ")}), and no hops/${parseHopRef(ref).name}/ ` +
+      `(flat or versioned) found under the project or user root; create one with a hop.yaml declaring ` +
       `spec: ${PROFILE_SPEC_ID}`,
   );
 }

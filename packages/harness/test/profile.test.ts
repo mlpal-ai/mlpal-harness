@@ -389,6 +389,174 @@ describe("profile loading", () => {
     expect(p.tuning).toBeUndefined();
   });
 
+  // ---- v1.1 additive blocks ----
+
+  test("model block loads; main required; allowInvokeAny defaults true; subagents compose", () => {
+    const p = loadProfile(writeProfile("p/m", [
+      "spec: mlpal/hop-v1",
+      "name: m",
+      "version: 1.0.0",
+      "extends: coding",
+      "model: { main: frontier, subagents: { readOnly: cheap } }",
+    ].join("\n")), opts());
+    expect(p.model).toEqual({ main: "frontier", subagents: { readOnly: "cheap" }, allowInvokeAny: true });
+  });
+
+  test("a model block without main is a loud error", () => {
+    const pdir = writeProfile("p/nomain", [
+      "spec: mlpal/hop-v1",
+      "name: nomain",
+      "version: 1.0.0",
+      "extends: coding",
+      "model: { subagents: { verify: mid } }",
+    ].join("\n"));
+    expect(() => loadProfile(pdir, opts())).toThrow(/model block without model.main/);
+  });
+
+  test("model.main is tunable via an enum-set range (the x12 gap)", () => {
+    const p = loadProfile(writeProfile("p/tm", [
+      "spec: mlpal/hop-v1",
+      "name: tm",
+      "version: 1.0.0",
+      "extends: coding",
+      "model: { main: frontier }",
+      "tunable: [ { path: model.main, range: [frontier, max] } ]",
+    ].join("\n")), opts());
+    const t = p.tunable.find((x) => x.path === "model.main");
+    expect(t?.range).toEqual(["frontier", "max"]); // enum-set, not numeric
+  });
+
+  test("requires block unions binaries + mcp by name down the chain", () => {
+    writeProfile(".yodex/hops/base-req", [
+      "spec: mlpal/hop-v1",
+      "name: base-req",
+      "version: 1.0.0",
+      "extends: coding",
+      "requires: { binaries: [ { name: aws, detect: 'aws --version' } ], mcp: [ { name: aws-mcp } ] }",
+    ].join("\n"));
+    const p = loadProfile(writeProfile("p/child-req", [
+      "spec: mlpal/hop-v1",
+      "name: child-req",
+      "version: 1.0.0",
+      "extends: base-req",
+      "requires: { binaries: [ { name: terraform, detect: 'terraform version' } ] }",
+    ].join("\n")), opts());
+    expect(p.requires?.binaries.map((b) => b.name).sort()).toEqual(["aws", "terraform"]);
+    expect(p.requires?.mcp.map((m) => m.name)).toEqual(["aws-mcp"]); // inherited
+  });
+
+  test("safety block loads and is AUTO-LOCKED (child cannot override it)", () => {
+    const p = loadProfile(writeProfile("p/saf", [
+      "spec: mlpal/hop-v1",
+      "name: saf",
+      "version: 1.0.0",
+      "extends: coding",
+      "permissions: { defaultMode: cruise }", // safety + autopilot is a load error (review 22)
+      "safety: { blastRadius: { maxResources: 25 } }",
+    ].join("\n")), opts());
+    expect(p.safety?.blastRadius.maxResources).toBe(25);
+    expect(p.safety?.approval.destructive).toBe("always"); // default
+    expect(p.locked).toContain("safety"); // auto-locked
+
+    writeProfile(".yodex/hops/base-saf", [
+      "spec: mlpal/hop-v1",
+      "name: base-saf",
+      "version: 1.0.0",
+      "extends: coding",
+      "permissions: { defaultMode: cruise }",
+      "safety: { blastRadius: { maxResources: 25 } }",
+    ].join("\n"));
+    const child = writeProfile("p/loosen", [
+      "spec: mlpal/hop-v1",
+      "name: loosen",
+      "version: 1.0.0",
+      "extends: base-saf",
+      "safety: { blastRadius: { maxResources: 9999 } }",
+    ].join("\n"));
+    expect(() => loadProfile(child, opts())).toThrow(/overrides "safety.*which is locked by its parent "base-saf"/s);
+  });
+
+  test("safety + defaultMode autopilot is a load error (review 22)", () => {
+    const pdir = writeProfile("p/safauto", [
+      "spec: mlpal/hop-v1", "name: safauto", "version: 1.0.0", "extends: coding",
+      "permissions: { defaultMode: autopilot }",
+      "safety: { blastRadius: { maxResources: 10 } }",
+    ].join("\n"));
+    expect(() => loadProfile(pdir, opts())).toThrow(/safety block with defaultMode: autopilot/);
+  });
+
+  test("promote: auto with a safety block is refused (review 24)", () => {
+    const pdir = writeProfile("p/safpromote", [
+      "spec: mlpal/hop-v1", "name: safpromote", "version: 1.0.0", "extends: coding",
+      "permissions: { defaultMode: cruise }",
+      "safety: { blastRadius: { maxResources: 10 } }",
+      "evals:",
+      "  - { name: g, tasks: 'e/g', scorer: 'pytest', role: golden }",
+      "  - { name: f, tasks: 'e/f', scorer: 'm', role: frontier }",
+      "tuning: { cadence: daily, minRunsSinceLast: 200, canaryFraction: 0.1, canaryMinRuns: 50, promote: auto, frontierMetric: f, promotionMargin: '-5%', goldenSuite: g }",
+    ].join("\n"));
+    expect(() => loadProfile(pdir, opts())).toThrow(/promote: auto with a safety block present/);
+  });
+
+  test("tuning.maxAge accepted; cadence on-incident rejected (review 8, 9)", () => {
+    const p = loadProfile(writeProfile("p/maxage", [
+      "spec: mlpal/hop-v1", "name: maxage", "version: 1.0.0", "extends: coding",
+      "evals:",
+      "  - { name: g, tasks: 'e/g', scorer: 'pytest', role: golden }",
+      "  - { name: f, tasks: 'e/f', scorer: 'm', role: frontier }",
+      "tuning: { cadence: per-30-runs, maxAge: 4w, minRunsSinceLast: 30, canaryFraction: 0.1, canaryMinRuns: 20, promote: human, frontierMetric: f, promotionMargin: '-5%', goldenSuite: g }",
+    ].join("\n")), opts());
+    expect(p.tuning?.maxAge).toBe("4w");
+    const bad = writeProfile("p/oncad", [
+      "spec: mlpal/hop-v1", "name: oncad", "version: 1.0.0", "extends: coding",
+      "tuning: { cadence: on-incident, minRunsSinceLast: 1, canaryFraction: 0.1, canaryMinRuns: 1, promote: human, frontierMetric: f, promotionMargin: '-5%', goldenSuite: g }",
+    ].join("\n"));
+    expect(() => loadProfile(bad, opts())).toThrow(/cadence/i);
+  });
+
+  test("tuning.triggers array loads beside cadence", () => {
+    const p = loadProfile(writeProfile("p/trig", [
+      "spec: mlpal/hop-v1",
+      "name: trig",
+      "version: 1.0.0",
+      "extends: coding",
+      "evals:",
+      "  - { name: g, tasks: 'e/g', scorer: 'pytest', role: golden }",
+      "  - { name: f, tasks: 'e/f', scorer: 'm', role: frontier }",
+      "tuning:",
+      "  cadence: weekly",
+      "  triggers: [on-model-release, on-incident]",
+      "  minRunsSinceLast: 200",
+      "  canaryFraction: 0.1",
+      "  canaryMinRuns: 50",
+      "  promote: human",
+      "  frontierMetric: f",
+      "  promotionMargin: '-5%'",
+      "  goldenSuite: g",
+    ].join("\n")), opts());
+    expect(p.tuning?.triggers).toEqual(["on-model-release", "on-incident"]);
+  });
+
+  test("versioned layout: bare ref resolves highest semver; @version pins", () => {
+    writeProfile(".yodex/hops/infra/1.0.0", ["spec: mlpal/hop-v1", "name: infra", "version: 1.0.0", "extends: coding"].join("\n"));
+    writeProfile(".yodex/hops/infra/1.2.0", ["spec: mlpal/hop-v1", "name: infra", "version: 1.2.0", "extends: coding"].join("\n"));
+    writeProfile(".yodex/hops/infra/1.1.0", ["spec: mlpal/hop-v1", "name: infra", "version: 1.1.0", "extends: coding"].join("\n"));
+    expect(loadProfile("infra", opts()).version).toBe("1.2.0"); // highest
+    expect(loadProfile("infra@1.1.0", opts()).version).toBe("1.1.0"); // pinned
+    expect(() => loadProfile("infra@9.9.9", opts())).toThrow(/infra@9.9.9" not found/);
+  });
+
+  test("versioned layout: flat + versioned in one dir is a loud error", () => {
+    writeProfile(".yodex/hops/dup", ["spec: mlpal/hop-v1", "name: dup", "version: 1.0.0", "extends: coding"].join("\n"));
+    writeProfile(".yodex/hops/dup/2.0.0", ["spec: mlpal/hop-v1", "name: dup", "version: 2.0.0", "extends: coding"].join("\n"));
+    expect(() => loadProfile("dup", opts())).toThrow(/both a flat hop.yaml and versioned subdirs/);
+  });
+
+  test("versioned layout: @version pin against a flat layout errors", () => {
+    writeProfile(".yodex/hops/flatonly", ["spec: mlpal/hop-v1", "name: flatonly", "version: 1.0.0", "extends: coding"].join("\n"));
+    expect(() => loadProfile("flatonly@1.0.0", opts())).toThrow(/uses the flat layout \(no versions\)/);
+  });
+
   test("settings lock enforcement: explicit user mode vs a locked defaultMode errors", () => {
     expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, { mode: "autopilot" })).toThrow(
       /profile "reviewer" locks "permissions.defaultMode"/,

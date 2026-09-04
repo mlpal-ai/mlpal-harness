@@ -102,8 +102,12 @@ export type EvalRole = "golden" | "frontier" | "probe";
  *  blast radius, and eval cost — high-traffic read-only HOPs tune daily and auto-promote on green
  *  evals; payment/infra HOPs tune slowly, canary long, and keep humans on promote. */
 export interface TuningPolicy {
-  /** Scheduled cadence; `per-<N>-runs` is the parametric floor for low-traffic HOPs. */
-  cadence: "daily" | "weekly" | "monthly" | "on-incident" | `per-${number}-runs`;
+  /** Scheduled cadence (the clock); `per-<N>-runs` is the parametric floor for low-traffic HOPs.
+   *  Event conditions live in `triggers`, never here — `on-incident` is a trigger, not a cadence. */
+  cadence: "daily" | "weekly" | "monthly" | `per-${number}-runs`;
+  /** Backstop: a review cycle fires when this much time has passed since the last promotion,
+   *  regardless of cadence/minRunsSinceLast (`4w`, `14d`). Optional; exempt from all-or-nothing. */
+  maxAge?: string;
   /** Statistical-power floor: a proposal needs at least this many new runs since the last tune. */
   minRunsSinceLast: number;
   /** Fraction of live runs the new version is rolled out to before full promotion. */
@@ -119,6 +123,73 @@ export interface TuningPolicy {
   promotionMargin: string;
   /** Names an eval suite with role:golden — the mandatory-pass, digest-pinned gate. */
   goldenSuite: string;
+  /** v1.1 — event-driven re-tune triggers beside the scheduled cadence. A trigger fires a
+   *  cycle, never a promotion (the same evidence gate still applies). */
+  triggers?: TuningTrigger[];
+}
+
+export type TuningTrigger = "on-model-release" | "on-api-change" | "on-incident";
+
+/** A tunable knob's allowed range: a numeric interval `[min, max]`, or an enum-set of allowed
+ *  string values `[a, b, …]`. The enum form (v1.1) lets a categorical knob like `model.main`
+ *  be tuned between tiers — a numeric range could not express that. */
+export type TunableRange = [number, number] | string[];
+
+/** True for the numeric `[min, max]` form (both elements numbers); false for the enum-set form. */
+export function isNumericRange(r: TunableRange): r is [number, number] {
+  return r.length === 2 && typeof r[0] === "number" && typeof r[1] === "number";
+}
+
+/** A model reference: a tier alias (`cheap|mid|frontier|max`, resolved via the catalog) or a
+ *  pinned model id (`claude-opus-5`). */
+export type ModelRef = string;
+
+/** v1.1 — the loop's model policy, so model choice is a HOP field a tuner can move (declarable
+ *  `tunable` with an enum-set range), not a runtime accident. Absent => host default model. */
+export interface ModelPolicy {
+  /** Main loop model. */
+  main: ModelRef;
+  /** Per-role subagent model tiers; composes with routing.subagents (the strategy). A cheap
+   *  subagent never authorizes or executes a mutation. */
+  subagents: { readOnly?: ModelRef; verify?: ModelRef };
+  /** Guidance: the loop may invoke any catalog model via the gateway on demand. Default true;
+   *  the user's /model and session overrides always outrank the artifact. */
+  allowInvokeAny: boolean;
+}
+
+/** v1.1 — external prerequisites the host checks at preflight (not registered tools — those are
+ *  `tools.include`). A HOP declares; the host detects/connects and reports gaps loudly. */
+export interface RequiresPolicy {
+  /** `detect` is a shell string or a `builtin:<domain>` detector; `timeoutMs` overrides the
+   *  host's per-command preflight timeout. */
+  binaries: { name: string; detect: string; setup?: string; timeoutMs?: number }[];
+  mcp: { name: string }[];
+}
+
+/** v1.1 — the apply-safety envelope. LOCKED whenever present (§10). Configures policy inputs;
+ *  the host-owned catastrophic denials stay host-owned and cannot be widened by it. */
+export interface SafetyPolicy {
+  /** Per-action class; the harness carries these as capability tags so the gate keys off the
+   *  action class, not a tool name. */
+  toolClasses: { readOnly: string[]; mutative: string[]; destructive: string[] };
+  /** An apply is admitted only if it matches a reviewed plan artifact whose hash covers these
+   *  components; enforcing this is stateful (consults the run's own dry-run record). */
+  preApply: { requirePlanArtifact: boolean; hash: string[] };
+  /** Hard ceiling on how much a single apply may touch. */
+  blastRadius: {
+    maxResources?: number;
+    accounts?: string[];
+    regions?: string[];
+    requireTag?: string;
+  };
+  /** The edge: which classes stop and ask (resolving to a structured needs_approval in headless). */
+  approval: {
+    destructive: "always" | "never";
+    outOfScope: "always" | "never";
+    costCeilingUsdMonth?: number;
+  };
+  /** Distinct read/write identities; the loop never self-grants the writer role. */
+  identities: { read?: string; write?: string; neverSelfGrant: boolean };
 }
 
 /** The composed, validated profile — what the loader hands the host. */
@@ -177,9 +248,16 @@ export interface Profile {
   evals: EvalSuite[];
   /** How and when this HOP is tuned + the promotion gate. Absent = an un-tuned HOP (valid). */
   tuning?: TuningPolicy;
+  /** v1.1 — the loop's model policy. Absent => host default model. */
+  model?: ModelPolicy;
+  /** v1.1 — external prerequisites checked at preflight. Absent => none. */
+  requires?: RequiresPolicy;
+  /** v1.1 — the apply-safety envelope. Absent => no envelope (permissions still apply).
+   *  Auto-locked when present (see load). */
+  safety?: SafetyPolicy;
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
-  /** The declared optimization surface: paths the tuner may move, with bounds. */
-  tunable: { path: string; range: [number, number] }[];
+  /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */
+  tunable: { path: string; range: TunableRange }[];
 }
