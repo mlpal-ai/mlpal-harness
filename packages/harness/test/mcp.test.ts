@@ -32,6 +32,26 @@ describe("McpManager", () => {
     }
   }, 15000);
 
+  test("connects servers in parallel: a failing one does not delay or block the others", async () => {
+    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    try {
+      const { connected, tools } = await mcp.connectAll(
+        {
+          a: { command: "node", args: [SERVER] },
+          bad: { command: "this-command-does-not-exist-xyz-123" },
+          b: { command: "node", args: [SERVER] },
+        },
+        reg,
+      );
+      expect(connected).toBe(2);
+      expect(tools).toBe(2);
+      expect(mcp.status().map((s) => [s.server, s.ok]).sort()).toEqual([["a", true], ["b", true], ["bad", false]]);
+    } finally {
+      await mcp.close();
+    }
+  }, 15000);
+
   test("isolates a server that fails to start", async () => {
     const reg = new ToolRegistry();
     const mcp = new McpManager();

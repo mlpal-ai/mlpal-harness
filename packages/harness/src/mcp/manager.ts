@@ -97,15 +97,17 @@ export class McpManager {
   }
 
   /** Connect every configured server and register its tools. Returns counts; per-server
-   *  errors are logged and skipped so one bad server can't break startup. */
+   *  errors are logged and skipped so one bad server can't break startup. Servers connect in
+   *  PARALLEL: a host's bounded wait before the first turn is then bounded by the slowest server,
+   *  not the sum — a cold `npx` server queued behind others used to miss a one-shot run's only turn. */
   async connectAll(
     servers: Record<string, McpServerConfig>,
     registry: ToolRegistry,
   ): Promise<{ connected: number; tools: number }> {
-    let tools = 0;
-    for (const [name, config] of Object.entries(servers)) {
-      tools += await this.connect(name, config, registry);
-    }
+    const counts = await Promise.all(
+      Object.entries(servers).map(([name, config]) => this.connect(name, config, registry)),
+    );
+    const tools = counts.reduce((a, b) => a + b, 0);
     return { connected: this.status().filter((s) => s.ok).length, tools };
   }
 

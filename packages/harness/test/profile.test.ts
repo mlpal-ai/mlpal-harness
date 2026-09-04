@@ -667,7 +667,7 @@ describe("v1.1 riskGate + memory.workspace", () => {
         join(dir, "hop.yaml"),
         "spec: mlpal/hop-v1\nname: infra-like\nversion: 0.0.1\ndescription: t\nextends: coding\nverification:\n  agent: { riskGate: actions }\nmemory: { workspace: infra }\n",
       );
-      const p = loadProfile(dir);
+      const p = loadProfile(dir, { cwd: dir, home: join(dir, "home") });
       expect(p.verification.agent.riskGate).toBe("actions");
       expect(p.memory).toEqual({ workspace: "infra" });
       expect(builtinProfiles().coding!.verification.agent.riskGate).toBe("changed-lines");
