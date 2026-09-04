@@ -1,5 +1,7 @@
 import type { Author } from "@mlpal/harness-protocol";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "./safety";
+// Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
+import type { SafetyDisposition } from "./safety-envelope";
 
 /**
  * Permission engine: a deny → allow → mode-default cascade. Pure data + string
@@ -36,9 +38,24 @@ export interface PermissionConfig {
   /** Rules like "Read", "Bash", or "Bash(git*)" — trailing * is a wildcard. */
   allow?: string[];
   deny?: string[];
+  /**
+   * v1.1 — the HOP safety envelope (§10). Host-provided closure: it builds the action (tool tags,
+   * plan estimates) and run-state (a reviewed plan on record?) the pure evaluator needs, records
+   * the attempt trace, and returns a disposition — or `null` when the envelope does not apply (no
+   * safety block, or a read-only action). It runs AFTER the bypass-immune host denials and the
+   * deny rules (neither can be widened by an envelope), but a safety `allow` short-circuits the
+   * mode default: inside the envelope the loop is autonomous, so an in-envelope apply is not asked
+   * per-step the way `cruise` would ask for command execution. `park` becomes an `ask` (the host
+   * maps that to needs_approval headless); `deny` is a hard policy denial.
+   */
+  safety?: (req: PermissionRequest) => SafetyDisposition | null;
 }
 
 export type CanUseTool = (req: PermissionRequest) => Decision | Promise<Decision>;
+
+function safetyReasonText(d: SafetyDisposition): string {
+  return d.detail ? `${d.reason}: ${d.detail}` : (d.reason ?? "safety envelope");
+}
 
 export function createPolicy(config: PermissionConfig): CanUseTool {
   const deny = config.deny ?? [];
@@ -51,6 +68,15 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
 
     for (const rule of deny) {
       if (denyMatches(rule, req)) return { behavior: "deny", reason: `denied by rule "${rule}"` };
+    }
+    // The safety envelope decides after the host/user denials (it can never widen them) and before
+    // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
+    if (config.safety) {
+      const d = config.safety(req);
+      if (d?.outcome === "deny") return { behavior: "deny", reason: safetyReasonText(d) };
+      if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d) };
+      if (d?.outcome === "allow") return { behavior: "allow" };
+      // d === null: the envelope does not apply to this action — fall through.
     }
     for (const rule of allow) {
       if (ruleMatches(rule, req)) return { behavior: "allow" };

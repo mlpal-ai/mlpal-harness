@@ -122,3 +122,46 @@ describe("compound-command safety (2026-08-27 engine review #1/#2)", () => {
     expect((await can(req("Bash", { command: "echo a\\;b" }, false))).behavior).toBe("allow");
   });
 });
+
+describe("safety envelope hook (v1.1)", () => {
+  const bash = (cmd: string) => req("Bash", { command: cmd }, false, false);
+
+  test("safety deny -> deny; park -> ask; allow -> allow (bypasses the mode ask)", () => {
+    const denyHook = createPolicy({
+      mode: "cruise",
+      safety: () => ({ outcome: "deny", reason: "policy_denied", detail: "no reviewed plan" }),
+    });
+    expect(denyHook(bash("terraform apply"))).toMatchObject({ behavior: "deny" });
+
+    const parkHook = createPolicy({ mode: "cruise", safety: () => ({ outcome: "park", reason: "needs_approval" }) });
+    expect(parkHook(bash("terraform destroy"))).toMatchObject({ behavior: "ask" });
+
+    // cruise would ASK for command execution; an in-envelope safety allow makes it autonomous.
+    const allowHook = createPolicy({ mode: "cruise", safety: () => ({ outcome: "allow" }) });
+    expect(allowHook(bash("terraform apply"))).toEqual({ behavior: "allow" });
+  });
+
+  test("a null disposition falls through to the mode default", () => {
+    const can = createPolicy({ mode: "cruise", safety: () => null });
+    expect(can(bash("terraform apply"))).toMatchObject({ behavior: "ask" }); // cruise asks for execute
+  });
+
+  test("a deny rule beats the safety hook (an envelope cannot widen a denial)", () => {
+    let consulted = false;
+    const can = createPolicy({
+      mode: "autopilot",
+      deny: ["Bash(terraform*)"],
+      safety: () => {
+        consulted = true;
+        return { outcome: "allow" };
+      },
+    });
+    expect(can(bash("terraform apply"))).toMatchObject({ behavior: "deny" });
+    expect(consulted).toBe(false); // deny short-circuits before safety is consulted
+  });
+
+  test("the bypass-immune hard deny beats the safety hook", () => {
+    const can = createPolicy({ mode: "autopilot", safety: () => ({ outcome: "allow" }) });
+    expect(can(bash("rm -rf /"))).toMatchObject({ behavior: "deny" });
+  });
+});
