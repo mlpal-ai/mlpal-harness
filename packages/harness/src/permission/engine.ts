@@ -19,9 +19,12 @@ import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
  */
 export type PermissionMode = "recon" | "manual" | "cruise" | "autopilot";
 
+/** Which layer of the cascade produced a deny — for the attempt trace, so a grader never parses text. */
+export type DenySource = "hard_deny" | "deny_rule" | "safety" | "mode";
+
 export type Decision =
   | { behavior: "allow" }
-  | { behavior: "deny"; reason: string }
+  | { behavior: "deny"; reason: string; source?: DenySource; safetyReason?: SafetyReason }
   // `safetyReason` marks an ask that came from the §10 envelope edge (vs an ordinary mode prompt),
   // so a headless run can turn it into a NEEDS_APPROVAL terminal instead of a plain denial.
   | { behavior: "ask"; reason?: string; safetyReason?: SafetyReason };
@@ -66,16 +69,16 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // Layer 0: the deterministic safety authority. Bypass-immune — no mode, allow-rule,
     // or model choice can override it. This is the whole point: allow is earned, deny is absolute.
     const hard = hardDeny(req);
-    if (hard) return { behavior: "deny", reason: hard };
+    if (hard) return { behavior: "deny", reason: hard, source: "hard_deny" };
 
     for (const rule of deny) {
-      if (denyMatches(rule, req)) return { behavior: "deny", reason: `denied by rule "${rule}"` };
+      if (denyMatches(rule, req)) return { behavior: "deny", reason: `denied by rule "${rule}"`, source: "deny_rule" };
     }
     // The safety envelope decides after the host/user denials (it can never widen them) and before
     // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
     if (config.safety) {
       const d = config.safety(req);
-      if (d?.outcome === "deny") return { behavior: "deny", reason: safetyReasonText(d) };
+      if (d?.outcome === "deny") return { behavior: "deny", reason: safetyReasonText(d), source: "safety", safetyReason: d.reason };
       if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d), safetyReason: d.reason };
       // recon is bypass-immune: an in-envelope allow makes a MUTATIVE action autonomous, and
       // recon exists precisely to refuse those. Fall through so the mode default denies it.
@@ -125,7 +128,7 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
     case "recon":
       return req.readOnly
         ? { behavior: "allow" }
-        : { behavior: "deny", reason: "recon mode is read-only: changes are blocked" };
+        : { behavior: "deny", reason: "recon mode is read-only: changes are blocked", source: "mode" };
     default: // manual
       return req.readOnly ? { behavior: "allow" } : { behavior: "ask" };
   }

@@ -659,6 +659,25 @@ describe("profile loading", () => {
   });
 });
 
+describe("v1.1 riskGate + memory.workspace", () => {
+  test("riskGate defaults to changed-lines and a child may select actions; memory.workspace composes child over parent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hop-rg-"));
+    try {
+      writeFileSync(
+        join(dir, "hop.yaml"),
+        "spec: mlpal/hop-v1\nname: infra-like\nversion: 0.0.1\ndescription: t\nextends: coding\nverification:\n  agent: { riskGate: actions }\nmemory: { workspace: infra }\n",
+      );
+      const p = loadProfile(dir);
+      expect(p.verification.agent.riskGate).toBe("actions");
+      expect(p.memory).toEqual({ workspace: "infra" });
+      expect(builtinProfiles().coding!.verification.agent.riskGate).toBe("changed-lines");
+      expect(builtinProfiles().coding!.memory).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("verifier deliverable framing", () => {
   test("reviewer framing embeds the report; empty deliverable is itself flagged", async () => {
     const { reviewerVerifierTask } = await import("../src/profile/builtins/reviewer");

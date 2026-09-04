@@ -191,6 +191,20 @@ describe("agentic loop", () => {
     expect(p.task_type).toBe("discover"); // host override beats the HOP's telemetry.taskType
   });
 
+  test("onDecision observes the EFFECTIVE decision: headless ask refused, then a hard deny from policy", async () => {
+    const seen: Array<{ command: unknown; behavior: string; via: string; source?: string }> = [];
+    const model = new ScriptedModel([toolUse("Bash", { command: "kubectl set image deploy/x c=img" }), toolUse("Bash", { command: "rm -rf /" }), textDone("done")]);
+    const sess = session(model, "cruise", {
+      canUseTool: (req) => (String(req.input.command).startsWith("rm") ? { behavior: "deny", reason: "catastrophic", source: "hard_deny" } : { behavior: "ask" }),
+      onDecision: (req, d, via) => seen.push({ command: req.input.command, behavior: d.behavior, via, source: d.behavior === "deny" ? d.source : undefined }),
+    });
+    await collect(sess.run({ text: "go" }));
+    expect(seen).toEqual([
+      { command: "kubectl set image deploy/x c=img", behavior: "deny", via: "headless_refused", source: "mode" },
+      { command: "rm -rf /", behavior: "deny", via: "policy", source: "hard_deny" },
+    ]);
+  });
+
   test("onAsk receives the ask context: a safety edge carries its safetyReason", async () => {
     const seen: Array<{ command: unknown; safetyReason?: string; reason?: string }> = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);

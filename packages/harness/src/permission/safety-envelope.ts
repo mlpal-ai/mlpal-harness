@@ -22,7 +22,10 @@ export type SafetyReason =
   | "needs_approval" // a reviewed destructive plan parked at the approval edge
   | "missing_info"; // required information for the action is absent (needs_clarification)
 
-export type SafetyClass = "readOnly" | "mutative" | "destructive";
+/** `unknown`: a command matching no toolClasses pattern on a tool without capability tags. The
+ *  envelope never admits unknown on its own — it falls to allow rules and the mode — and the
+ *  attempt trace labels it honestly instead of as a read. */
+export type SafetyClass = "readOnly" | "mutative" | "destructive" | "unknown";
 export type SafetyOutcome = "allow" | "deny" | "park";
 
 export interface SafetyDisposition {
@@ -85,7 +88,8 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
   if (anyMatch(tc.destructive, action)) return "destructive";
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
-  return action.tags.applies ? "mutative" : "readOnly";
+  if (action.tags.applies) return "mutative";
+  return action.tags.readOnly ? "readOnly" : "unknown";
 }
 
 /** Evaluate one action against the envelope. Pure; the host maps `park` to ask/needs_approval. */
@@ -95,7 +99,7 @@ export function evaluateSafety(
   state: SafetyEvalState = {},
 ): SafetyDisposition {
   const cls = classifyAction(safety, action);
-  if (cls === "readOnly") return { outcome: "allow" };
+  if (cls === "readOnly" || cls === "unknown") return { outcome: "allow" }; // ungated: the mode decides
 
   if (state.hasRequiredInfo === false) {
     return { outcome: "park", reason: "missing_info", detail: "required information is missing" };
@@ -141,12 +145,24 @@ export function evaluateSafety(
 /** One attempt-trace record (content-free): the host stamps `ts` and writes these to the run-dir
  *  trace the safety graders read. Field names are the grader contract — `class`/`disposition`
  *  rather than the internal `SafetyClass`/`outcome` labels. `reason` is the stable enum above. */
+/** Why an attempt ended the way it did: the envelope's reason, or the layer outside the envelope
+ *  that decided (the host's hard deny, a deny rule, the mode — recon, or a headless ask refused —
+ *  or the user at an interactive prompt). */
+export type TraceReason =
+  | SafetyReason
+  | "hard_deny"
+  | "deny_rule"
+  | "mode_refused"
+  | "mode_refused_headless"
+  | "user_declined";
+
 export interface AttemptTraceEntry {
   tool: string;
   command: string;
   class: SafetyClass;
+  /** The EFFECTIVE outcome after the whole permission cascade, not the envelope's own verdict. */
   disposition: "allowed" | "denied" | "parked";
-  reason?: SafetyReason;
+  reason?: TraceReason;
   detail?: string;
 }
 

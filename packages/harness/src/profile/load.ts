@@ -177,6 +177,7 @@ export const profileYamlSchema = z
             enabled: z.boolean().optional(),
             tier: z.enum(["max", "frontier", "mid", "cheap"]).optional(),
             riskGateMinChangedLines: z.number().int().min(0).optional(),
+            riskGate: z.enum(["changed-lines", "actions"]).optional(),
             failMode: z.enum(["open", "closed"]).optional(),
             // v1.1 — the verifier's user-turn framing, definable in YAML (was builtin-only). `{task}`
             // and `{deliverable}` are substituted. A HOP whose deliverable is TEXT (not an on-disk
@@ -218,6 +219,7 @@ export const profileYamlSchema = z
     model: modelSchema.optional(),
     requires: requiresSchema.optional(),
     safety: safetySchema.optional(),
+    memory: z.object({ workspace: z.string().min(1).optional() }).strict().default({}),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -491,6 +493,8 @@ export function composeProfile(
   const modelWarnings = model ? validateModel(model, y.name) : [];
   const requires = composeRequires(parent.requires, y.requires);
   const safety = composeSafety(parent.safety, y.safety);
+  const memoryWorkspace = y.memory.workspace ?? parent.memory?.workspace;
+  const memory = memoryWorkspace ? { workspace: memoryWorkspace } : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
   const locked = [...new Set([...parent.locked, ...y.locked, ...(safety ? ["safety"] : [])])];
   if (safety) {
@@ -558,6 +562,7 @@ export function composeProfile(
         tier: y.verification.agent.tier ?? parent.verification.agent.tier,
         riskGateMinChangedLines:
           y.verification.agent.riskGateMinChangedLines ?? parent.verification.agent.riskGateMinChangedLines,
+        riskGate: y.verification.agent.riskGate ?? parent.verification.agent.riskGate,
         failMode: y.verification.agent.failMode ?? parent.verification.agent.failMode,
       },
     },
@@ -585,6 +590,7 @@ export function composeProfile(
     ...(model ? { model } : {}),
     ...(requires ? { requires } : {}),
     ...(safety ? { safety } : {}),
+    ...(memory ? { memory } : {}),
     locked,
     tunable,
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),

@@ -58,8 +58,13 @@ export interface VerificationPolicy {
     enabled: boolean;
     /** Tier for the verifier model (resolved via tierModelOrNearest). */
     tier: Tier;
-    /** Skip verification below this many changed lines (git diff --numstat). */
+    /** Skip verification below this many changed lines (git diff --numstat); the `changed-lines` gate. */
     riskGateMinChangedLines: number;
+    /** v1.1 — which risk gate skips the verifier. `changed-lines` (default): the git-diff threshold
+     *  above, meaningful for a coding deliverable. `actions`: skip when the finishing turn made no
+     *  write-capable or infra-tagged tool call (a read-only or conversational turn has nothing to
+     *  verify); a turn that acted is always verified, so fail-closed semantics hold where they matter. */
+    riskGate: "changed-lines" | "actions";
     /** open: PARTIAL/unparseable/error allows completion (default; prevents runaway
      *  loops). closed: anything but an explicit PASS blocks — for regulated domains. */
     failMode: "open" | "closed";
@@ -269,6 +274,9 @@ export interface Profile {
   /** v1.1 — the apply-safety envelope. Absent => no envelope (permissions still apply).
    *  Auto-locked when present (see load). */
   safety?: SafetyPolicy;
+  /** v1.1 — working-memory identity. `workspace` names the notes workspace the HOP reads (the
+   *  host's default is the working directory's basename; project settings may override). */
+  memory?: { workspace?: string };
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];

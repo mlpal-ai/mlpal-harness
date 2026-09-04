@@ -193,6 +193,7 @@ export const CODING_PROFILE: Profile = {
       enabled: false, // opt-in via settings.verify.agent, as before the split
       tier: "mid",
       riskGateMinChangedLines: 6,
+      riskGate: "changed-lines",
       failMode: "open",
     },
   },

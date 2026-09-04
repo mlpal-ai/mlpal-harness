@@ -139,6 +139,8 @@ export const settingsSchema = z.object({
       backend: z.enum(["local", "graph"]).default("local"),
       /** memory-graph base URL (used when backend=graph). */
       graphUrl: z.string().optional(),
+      /** Notes workspace name. Precedence: this setting > the HOP's memory.workspace > basename(cwd). */
+      workspace: z.string().min(1).optional(),
     })
     .default({ backend: "local" }),
   verify: z

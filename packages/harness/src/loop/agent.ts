@@ -142,6 +142,10 @@ export interface AgentConfig {
    *  policy asked: a §10 safety edge (`safetyReason`) must always be answered per action — no
    *  session grant or live-mode raise may satisfy it — so the host needs to tell the two apart. */
   onAsk?: (req: PermissionRequest, ask: AskContext) => Promise<Decision>;
+  /** Observes the EFFECTIVE permission decision for every attempt, after the whole cascade and any
+   *  interactive/headless resolution — the seam the host's attempt trace hangs off. Never throws
+   *  into the loop (errors are swallowed). */
+  onDecision?: (req: PermissionRequest, decision: Decision, via: DecisionVia) => void;
   /** Headless safety runs (§10): when a safety-edge ask has no interactive answerer, END the run
    *  as NEEDS_APPROVAL (stop-and-wait) rather than denying the action and continuing. The host sets
    *  this for a headless run under a HOP with a safety envelope; it writes the hop-run-result-v1
@@ -211,6 +215,10 @@ export interface TurnInput {
 function now(): string {
   return new Date().toISOString();
 }
+
+/** How an attempt's effective decision was reached: straight from the policy, from the interactive
+ *  answerer, or from the headless resolution of an ask (parked at the §10 edge, or refused). */
+export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless_refused";
 
 /** Why the permission policy asked. `safetyReason` is set only for a §10 safety-envelope edge. */
 export interface AskContext {
@@ -1270,14 +1278,26 @@ export class AgentSession {
 
   private async resolve(req: PermissionRequest): Promise<Decision> {
     const d = await this.cfg.canUseTool(req);
-    if (d.behavior !== "ask") return d;
-    if (this.cfg.onAsk) return this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason });
+    if (d.behavior !== "ask") return this.observed(req, d, "policy");
+    if (this.cfg.onAsk) {
+      return this.observed(req, await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason }), "interactive");
+    }
     // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
     // denying just this action and continuing — the infra HOP must not proceed past the edge.
     if (d.safetyReason && this.cfg.parkHeadless) {
+      this.observed(req, d, "headless_park");
       throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason);
     }
-    return { behavior: "deny", reason: "approval required but running non-interactively" };
+    return this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused");
+  }
+
+  private observed(req: PermissionRequest, decision: Decision, via: DecisionVia): Decision {
+    try {
+      this.cfg.onDecision?.(req, decision, via);
+    } catch {
+      // the trace is for grading; a failing observer must never affect the gate
+    }
+    return decision;
   }
 
   private result(

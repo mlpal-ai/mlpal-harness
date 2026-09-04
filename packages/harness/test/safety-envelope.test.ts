@@ -38,9 +38,13 @@ describe("classifyAction", () => {
     expect(classifyAction(SAFETY, act("echo hi && terraform destroy"))).toBe("destructive");
   });
 
-  test("unlisted action on an applies-tagged tool defaults to mutative, else readOnly", () => {
+  test("unlisted action: applies-tagged => mutative; readOnly-tagged => readOnly; else unknown", () => {
     expect(classifyAction(SAFETY, act("kubectl delete pod x", { applies: true }))).toBe("mutative");
-    expect(classifyAction(SAFETY, act("kubectl get pods", {}))).toBe("readOnly");
+    expect(classifyAction(SAFETY, act("cat notes.md", { readOnly: true }))).toBe("readOnly");
+    // Bash is readOnly:false with no applies tag: a command outside every pattern is UNKNOWN, never
+    // a read — the trace labels it honestly and the mode (not the envelope) decides it.
+    expect(classifyAction(SAFETY, act("kubectl set image deploy/x c=img", {}))).toBe("unknown");
+    expect(evaluateSafety(SAFETY, act("kubectl set image deploy/x c=img", {}))).toEqual({ outcome: "allow" }); // ungated
   });
 });
 

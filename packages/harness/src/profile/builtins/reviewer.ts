@@ -115,6 +115,7 @@ export const REVIEWER_PROFILE: Profile = {
       enabled: true,
       tier: "mid",
       riskGateMinChangedLines: 0, // reviews produce no diff; always verify
+      riskGate: "changed-lines",
       failMode: "closed", // an unverified review is not delivered
     },
   },
