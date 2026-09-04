@@ -44,6 +44,7 @@ import {
   buildRunOutcome,
   classifyFailure,
   type RunResult,
+  type RunRole,
   type TelemetrySink,
   type VerifierVerdict,
 } from "../telemetry/contract";
@@ -186,6 +187,12 @@ export interface AgentConfig {
     repo: string;
     /** Resolve a served model id to its tier label; host-provided (has the catalog). */
     resolveTier?: (model: string) => string | undefined;
+    /** d11.4: main loop vs sub-agent run (host knows which session it built). */
+    role: RunRole;
+    /** d11.4: the session that spawned this run (sub-agent runs only). */
+    parentRunId?: string;
+    /** Host override of the HOP's `telemetry.taskType` (an eval kit knows the scenario's class). */
+    taskType?: string;
     emit: TelemetrySink;
   };
 }
@@ -953,7 +960,10 @@ export class AgentSession {
               repo: cfg.telemetry.repo,
               model: activeModel,
               tier: cfg.telemetry.resolveTier?.(activeModel),
-              taskType: loop.taskType,
+              role: cfg.telemetry.role,
+              runId: cfg.sessionId,
+              parentRunId: cfg.telemetry.parentRunId,
+              taskType: cfg.telemetry.taskType ?? loop.taskType,
               runResult: outcome,
               failureClass: classifyFailure(outcome, thrownError),
               tokens: {

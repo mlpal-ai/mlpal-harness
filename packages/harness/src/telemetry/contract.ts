@@ -69,8 +69,14 @@ export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
 
 /** Wire discriminator memory reads to route an envelope to the right contract version. Stamped per
  *  EMITTER version, not per event: a d11.3-capable emitter stamps every event d11.3 (a success is
- *  byte-identical to d11.2), so a d11.2 `cancelled` is unambiguously a true cancel, never a park. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.3" as const;
+ *  byte-identical to d11.2), so a d11.2 `cancelled` is unambiguously a true cancel, never a park.
+ *  d11.4 adds `role` + `run_id` (+ optional `parent_run_id`): a d11.3 event may be a main run OR a
+ *  sub-agent run (indistinguishable), so a distiller must not default an absent role to main. */
+export const TELEMETRY_CONTRACT_VERSION = "d11.4" as const;
+
+/** Which loop emitted the event. Sub-agent runs (Task children, workflow agents) emit their own
+ *  run.completed under the same HOP; without this a distiller counts them as main runs. */
+export type RunRole = "main" | "subagent";
 
 /**
  * Per-mechanism verification signal. The seam has four mechanisms (observe = command verifier,
@@ -92,6 +98,12 @@ export interface RunOutcomePayload {
   repo: string;
   model: string;
   tier?: string;
+  /** d11.4: main loop vs sub-agent run. */
+  role: RunRole;
+  /** d11.4: the emitting run's session id; `parent_run_id` (sub-agent runs only) is the run that
+   *  spawned it, so main and child events join without guessing. Ids only, never content. */
+  run_id: string;
+  parent_run_id?: string;
   task_type: string;
   run_result: RunResult;
   /** null iff run_result === "success"; a FAILURE_CLASS_VOCAB value otherwise. */
@@ -184,6 +196,9 @@ export interface RunOutcomeInput {
   repo: string;
   model: string;
   tier?: string;
+  role: RunRole;
+  runId: string;
+  parentRunId?: string;
   taskType: string;
   runResult: RunResult;
   failureClass: FailureClass | null;
@@ -217,6 +232,9 @@ export function buildRunOutcome(i: RunOutcomeInput): RunOutcomeEvent {
       repo: i.repo,
       model: i.model,
       ...(i.tier ? { tier: i.tier } : {}),
+      role: i.role,
+      run_id: i.runId,
+      ...(i.parentRunId ? { parent_run_id: i.parentRunId } : {}),
       task_type: i.taskType,
       run_result: i.runResult,
       failure_class: i.failureClass,

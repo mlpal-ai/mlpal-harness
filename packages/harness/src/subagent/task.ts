@@ -17,6 +17,9 @@ export type SubagentRun = (
     description: string;
     prompt: string;
     agent?: string;
+    /** The session whose Task call spawned this child (telemetry `parent_run_id`); absent when the
+     *  tool context carries no session id. */
+    callerSessionId?: string;
     /** Pin the child to a specific gateway-served model or tier alias (cheap|mid|frontier|max).
      *  The gateway is a multi-model surface: consulting a different provider's model is a
      *  delegation, never a hand-rolled API call. */
@@ -95,6 +98,7 @@ export function createTaskTool(
           run(
             {
               description: input.description,
+              callerSessionId: ctx.sessionId,
               prompt: input.prompt,
               agent: input.agent,
               model: input.model,
@@ -135,6 +139,7 @@ export function createTaskTool(
         const { text } = await run(
           {
             description: input.description,
+            callerSessionId: ctx.sessionId,
             prompt: input.prompt,
             agent: input.agent,
             model: input.model,

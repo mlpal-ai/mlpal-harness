@@ -146,6 +146,7 @@ describe("agentic loop", () => {
         hop: { name: "coding", version: "1.2.3" },
         repo: "acme",
         resolveTier: () => "frontier",
+        role: "main",
         emit: (e) => emitted.push(e),
       },
     });
@@ -153,7 +154,7 @@ describe("agentic loop", () => {
 
     expect(emitted).toHaveLength(1);
     const ev = emitted[0]!;
-    expect(ev.contract).toBe("d11.3");
+    expect(ev.contract).toBe("d11.4");
     expect(ev.action_type).toBe("run.completed");
     expect(ev.scope_id).toBe("acme");
     expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
@@ -167,12 +168,35 @@ describe("agentic loop", () => {
     expect(ev.payload.checks.observe).toEqual({ ran: false, passed: false });
   });
 
+  test("HOP telemetry (d11.4): role, run_id, parent_run_id and the host task-type override are stamped", async () => {
+    const emitted: RunOutcomeEvent[] = [];
+    const model = new ScriptedModel([textDone("done")]);
+    const sess = session(model, "autopilot", {
+      telemetry: {
+        hop: { name: "infra", version: "0.1.0" },
+        repo: "acme",
+        role: "subagent",
+        parentRunId: "parent-run",
+        taskType: "discover",
+        emit: (e) => emitted.push(e),
+      },
+    });
+    await collect(sess.run({ text: "go" }));
+    expect(emitted).toHaveLength(1);
+    const p = emitted[0]!.payload;
+    expect(p.role).toBe("subagent");
+    expect(p.parent_run_id).toBe("parent-run");
+    expect(typeof p.run_id).toBe("string");
+    expect(p.run_id.length).toBeGreaterThan(0);
+    expect(p.task_type).toBe("discover"); // host override beats the HOP's telemetry.taskType
+  });
+
   test("HOP telemetry: hitting max turns classes as step_budget_stall", async () => {
     const emitted: RunOutcomeEvent[] = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);
     const sess = session(model, "autopilot", {
       maxTurns: 1,
-      telemetry: { hop: { name: "coding", version: "1.0.0" }, repo: "acme", emit: (e) => emitted.push(e) },
+      telemetry: { hop: { name: "coding", version: "1.0.0" }, repo: "acme", role: "main", emit: (e) => emitted.push(e) },
     });
     await collect(sess.run({ text: "go" }));
     expect(emitted).toHaveLength(1);
@@ -187,6 +211,7 @@ describe("agentic loop", () => {
       telemetry: {
         hop: { name: "coding", version: "1.0.0" },
         repo: "acme",
+        role: "main",
         emit: () => {
           throw new Error("sink down");
         },
@@ -205,7 +230,7 @@ describe("agentic loop", () => {
         req.toolName === "Bash"
           ? { behavior: "ask", reason: "needs_approval: destructive", safetyReason: "needs_approval" }
           : { behavior: "allow" },
-      telemetry: { hop: { name: "infra", version: "1.0.0" }, repo: "acme", emit: (e) => emitted.push(e) },
+      telemetry: { hop: { name: "infra", version: "1.0.0" }, repo: "acme", role: "main", emit: (e) => emitted.push(e) },
     });
     const events = await collect(sess.run({ text: "destroy it" }));
 
@@ -213,11 +238,11 @@ describe("agentic loop", () => {
     expect(result && "subtype" in result ? result.subtype : "").toBe("needs_approval");
     const pending = result && "pendingApproval" in result ? (result as { pendingApproval?: unknown }).pendingApproval : null;
     expect(pending).toMatchObject({ command: "terraform destroy", reason: "needs_approval" });
-    // telemetry: d11.3 needs_approval + approval_pending
+    // telemetry: needs_approval + approval_pending (d11.3 invariant, stamped d11.4)
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.payload.run_result).toBe("needs_approval");
     expect(emitted[0]!.payload.failure_class).toBe("approval_pending");
-    expect(emitted[0]!.contract).toBe("d11.3");
+    expect(emitted[0]!.contract).toBe("d11.4");
   });
 
   test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {

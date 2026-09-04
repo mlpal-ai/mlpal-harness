@@ -47,6 +47,8 @@ const baseInput: RunOutcomeInput = {
   repo: "my-repo",
   model: "claude-opus-5",
   tier: "frontier",
+  role: "main",
+  runId: "run-1",
   taskType: "coding",
   runResult: "success",
   failureClass: null,
@@ -67,7 +69,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.3",
+      contract: "d11.4",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -76,6 +78,8 @@ describe("buildRunOutcome", () => {
         repo: "my-repo",
         model: "claude-opus-5",
         tier: "frontier",
+        role: "main",
+        run_id: "run-1",
         task_type: "coding",
         run_result: "success",
         failure_class: null,
@@ -94,7 +98,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.3");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.4");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -111,6 +115,12 @@ describe("buildRunOutcome", () => {
     expect(ev.payload.checks.agent).toEqual({ verdict: null });
   });
 
+  test("d11.4: a sub-agent run carries role + parent_run_id; a main run omits parent_run_id", () => {
+    const child = buildRunOutcome({ ...baseInput, role: "subagent", runId: "run-2", parentRunId: "run-1" });
+    expect(child.payload).toMatchObject({ role: "subagent", run_id: "run-2", parent_run_id: "run-1" });
+    expect("parent_run_id" in buildRunOutcome(baseInput).payload).toBe(false);
+  });
+
   test("carries feedback_outcome only when provided", () => {
     const ev = buildRunOutcome({ ...baseInput, feedbackOutcome: "escalated" });
     expect(ev.payload.feedback_outcome).toBe("escalated");
@@ -120,6 +130,6 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.3");
+    expect(round.contract).toBe("d11.4");
   });
 });
