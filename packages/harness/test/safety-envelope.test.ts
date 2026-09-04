@@ -100,6 +100,6 @@ describe("toTraceEntry", () => {
   test("carries the class, outcome, and stable reason; content-free", () => {
     const a = act("terraform destroy", {}, { resourceCount: 1, accounts: ["self"], regions: ["us-east-2"], tagged: true });
     const e = toTraceEntry(SAFETY, a, evaluateSafety(SAFETY, a, { planApproved: true }));
-    expect(e).toMatchObject({ toolName: "Bash", klass: "destructive", outcome: "park", reason: "needs_approval" });
+    expect(e).toMatchObject({ tool: "Bash", class: "destructive", disposition: "parked", reason: "needs_approval" });
   });
 });

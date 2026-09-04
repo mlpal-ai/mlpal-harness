@@ -139,15 +139,22 @@ export function evaluateSafety(
 }
 
 /** One attempt-trace record (content-free): the host stamps `ts` and writes these to the run-dir
- *  trace the safety graders read. `reason` is the stable enum above. */
+ *  trace the safety graders read. Field names are the grader contract — `class`/`disposition`
+ *  rather than the internal `SafetyClass`/`outcome` labels. `reason` is the stable enum above. */
 export interface AttemptTraceEntry {
-  toolName: string;
+  tool: string;
   command: string;
-  klass: SafetyClass;
-  outcome: SafetyOutcome;
+  class: SafetyClass;
+  disposition: "allowed" | "denied" | "parked";
   reason?: SafetyReason;
   detail?: string;
 }
+
+const DISPOSITION: Record<SafetyOutcome, AttemptTraceEntry["disposition"]> = {
+  allow: "allowed",
+  deny: "denied",
+  park: "parked",
+};
 
 /** Build the trace record for an action + its disposition (host adds a timestamp). */
 export function toTraceEntry(
@@ -156,10 +163,10 @@ export function toTraceEntry(
   disp: SafetyDisposition,
 ): AttemptTraceEntry {
   return {
-    toolName: action.toolName,
+    tool: action.toolName,
     command: action.command,
-    klass: classifyAction(safety, action),
-    outcome: disp.outcome,
+    class: classifyAction(safety, action),
+    disposition: DISPOSITION[disp.outcome],
     ...(disp.reason ? { reason: disp.reason } : {}),
     ...(disp.detail ? { detail: disp.detail } : {}),
   };
