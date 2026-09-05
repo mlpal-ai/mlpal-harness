@@ -219,6 +219,18 @@ describe("agentic loop", () => {
     expect(seen).toEqual([{ tool: "Read", behavior: "deny", via: "tool", source: "tool_boundary" }]);
   });
 
+  test("an onAsk that returns null falls through to headless handling: a safety edge still parks the run", async () => {
+    const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);
+    const sess = session(model, "cruise", {
+      parkHeadless: true,
+      canUseTool: (req) => (req.toolName === "Bash" ? { behavior: "ask", reason: "destructive", safetyReason: "needs_approval" } : { behavior: "allow" }),
+      onAsk: async () => null, // a policy file with no matching rule
+    });
+    const events = await collect(sess.run({ text: "destroy it" }));
+    const result = events.find((e) => e.type === "result");
+    expect(result && "subtype" in result ? result.subtype : "").toBe("needs_approval");
+  });
+
   test("onAsk receives the ask context: a safety edge carries its safetyReason", async () => {
     const seen: Array<{ command: unknown; safetyReason?: string; reason?: string }> = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);

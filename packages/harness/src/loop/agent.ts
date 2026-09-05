@@ -141,7 +141,7 @@ export interface AgentConfig {
   /** Resolve an "ask" decision (interactive prompt). Headless default denies. `ask` carries WHY the
    *  policy asked: a §10 safety edge (`safetyReason`) must always be answered per action — no
    *  session grant or live-mode raise may satisfy it — so the host needs to tell the two apart. */
-  onAsk?: (req: PermissionRequest, ask: AskContext) => Promise<Decision>;
+  onAsk?: (req: PermissionRequest, ask: AskContext) => Promise<Decision | null>;
   /** Observes the EFFECTIVE permission decision for every attempt, after the whole cascade and any
    *  interactive/headless resolution — the seam the host's attempt trace hangs off. Never throws
    *  into the loop (errors are swallowed). */
@@ -1295,8 +1295,12 @@ export class AgentSession {
     const d = await this.cfg.canUseTool(req);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
     if (this.cfg.onAsk) {
+      // null = "no answer from this answerer" (a policy file with no matching rule): fall through
+      // to the headless handling below, exactly as if no answerer were installed.
       const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason });
-      return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
+      if (answered) {
+        return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
+      }
     }
     // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
     // denying just this action and continuing — the infra HOP must not proceed past the edge.

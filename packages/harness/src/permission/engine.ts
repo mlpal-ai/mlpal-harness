@@ -20,7 +20,7 @@ import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 export type PermissionMode = "recon" | "manual" | "cruise" | "autopilot";
 
 /** Which layer of the cascade produced a deny — for the attempt trace, so a grader never parses text. */
-export type DenySource = "hard_deny" | "deny_rule" | "safety" | "mode" | "tool_boundary";
+export type DenySource = "hard_deny" | "deny_rule" | "safety" | "mode" | "tool_boundary" | "answers_policy";
 
 export type Decision =
   | { behavior: "allow" }

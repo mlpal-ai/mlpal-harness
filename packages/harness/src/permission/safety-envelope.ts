@@ -155,7 +155,8 @@ export type TraceReason =
   | "mode_refused"
   | "mode_refused_headless"
   | "user_declined"
-  | "outside_roots";
+  | "outside_roots"
+  | "policy_declined";
 
 export interface AttemptTraceEntry {
   tool: string;
