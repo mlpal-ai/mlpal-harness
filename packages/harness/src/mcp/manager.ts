@@ -127,8 +127,9 @@ export class McpManager {
       this.logger.info("mcp server connected", { server: name, tools: wrapped.length });
       return wrapped.length;
     } catch (e) {
-      this.statuses.set(name, { server: name, ok: false, tools: 0, error: String(e) });
-      this.logger.error("mcp server failed", { server: name, error: String(e) });
+      const error = `${mcpEndpoint(config)}: ${String((e as Error)?.message ?? e)}`;
+      this.statuses.set(name, { server: name, ok: false, tools: 0, error });
+      this.logger.error("mcp server failed", { server: name, endpoint: mcpEndpoint(config), error: String(e) });
       return 0;
     }
   }
@@ -171,11 +172,18 @@ export class McpManager {
       });
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: {} });
+    // Transport/protocol errors after connect (a server that dies mid-run, a failed SSE
+    // reconnect) are reported here instead of being dropped or escaping as an unhandled
+    // rejection: the status flips to not-ok with the endpoint named, and the run goes on.
+    client.onerror = (error) => {
+      this.statuses.set(name, { server: name, ok: false, tools: 0, error: `${mcpEndpoint(config)}: ${String(error?.message ?? error)}` });
+      this.logger.warn("mcp server error (kept running)", { server: name, endpoint: mcpEndpoint(config), error: String(error?.message ?? error) });
+    };
     await client.connect(transport);
     this.clientByName.set(name, client);
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
-    return result.tools.map((t) => wrapMcpTool(name, client, t));
+    return result.tools.map((t) => wrapMcpTool(name, client, t, mcpEndpoint(config)));
   }
 
   /** Disconnect one server and remove its tools from the given registries (pack removal). */
@@ -196,7 +204,12 @@ export class McpManager {
   }
 }
 
-function wrapMcpTool(server: string, client: Client, def: RawMcpTool): Tool<unknown> {
+/** Where a server lives, for error messages: its URL, or the command that starts it. */
+export function mcpEndpoint(config: McpServerConfig): string {
+  return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
+}
+
+export function wrapMcpTool(server: string, client: Client, def: RawMcpTool, endpoint?: string): Tool<unknown> {
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
@@ -213,12 +226,22 @@ function wrapMcpTool(server: string, client: Client, def: RawMcpTool): Tool<unkn
     async call(input): Promise<ToolResult> {
       // Long-running tools (deep research runs 30-60s+) outlive the SDK's 60s default —
       // allow 10 minutes, and reset the clock whenever the server reports progress.
-      const res = (await client.callTool(
-        { name: def.name, arguments: (input ?? {}) as Record<string, unknown> },
-        undefined,
-        { timeout: 600_000, resetTimeoutOnProgress: true },
-      )) as { content?: unknown; isError?: boolean };
-      return { content: renderContent(res.content), isError: Boolean(res.isError) };
+      try {
+        const res = (await client.callTool(
+          { name: def.name, arguments: (input ?? {}) as Record<string, unknown> },
+          undefined,
+          { timeout: 600_000, resetTimeoutOnProgress: true },
+        )) as { content?: unknown; isError?: boolean };
+        return { content: renderContent(res.content), isError: Boolean(res.isError) };
+      } catch (e) {
+        // A dead or unreachable server is a TOOL error the model can route around, never a run
+        // terminator: 13 routine firings died with Bun's bare "Was there a typo in the url or
+        // port?" while the memory stack was down. Name the server and where it lives.
+        return {
+          content: `MCP server "${server}"${endpoint ? ` at ${endpoint}` : ""} is unreachable or failed: ${String((e as Error)?.message ?? e)}`,
+          isError: true,
+        };
+      }
     },
   };
 }
