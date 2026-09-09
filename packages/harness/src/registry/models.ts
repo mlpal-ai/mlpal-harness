@@ -28,6 +28,10 @@ export interface ModelCapabilities {
 }
 
 export interface ModelInfo {
+  /** Reasoning-effort rungs this model accepts (gateway ladder subset; empty = no effort lever). */
+  effortLevels: string[];
+  /** The rung the model runs at when effort is unset. */
+  defaultEffort?: string;
   tag: string;
   displayName: string;
   provider: string;
@@ -58,7 +62,7 @@ interface RawModel {
   display_name?: string;
   provider?: string;
   description?: string;
-  capabilities?: Partial<ModelCapabilities>;
+  capabilities?: Partial<ModelCapabilities> & { effort_levels?: string[]; default_effort?: string | null };
   context_length?: number | null;
   max_output_tokens?: number | null;
   pricing_tier?: string;
@@ -80,6 +84,8 @@ function toModelInfo(r: RawModel): ModelInfo {
       pdf: c.pdf ?? false,
       audio: c.audio ?? false,
     },
+    effortLevels: Array.isArray(c.effort_levels) ? c.effort_levels.filter((x): x is string => typeof x === "string") : [],
+    ...(c.default_effort ? { defaultEffort: c.default_effort } : {}),
     contextLength: r.context_length ?? null,
     maxOutputTokens: r.max_output_tokens ?? null,
     pricingTier: r.pricing_tier,

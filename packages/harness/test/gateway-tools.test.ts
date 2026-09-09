@@ -10,6 +10,7 @@ const chat = (tag: string, provider: string, over: Partial<ModelInfo> = {}, caps
   displayName: tag,
   provider,
   capabilities: { operation: "chat", streaming: true, tools: true, vision: true, pdf: true, audio: false, ...caps },
+  effortLevels: [],
   contextLength: 1_000_000,
   maxOutputTokens: 128_000,
   deprecated: false,
@@ -17,7 +18,7 @@ const chat = (tag: string, provider: string, over: Partial<ModelInfo> = {}, caps
 });
 const MODELS: ModelInfo[] = [
   chat("claude-opus-5", "anthropic"),
-  chat("gpt-6-astra", "openai", { contextLength: 1_050_000 }),
+  chat("gpt-6-astra", "openai", { contextLength: 1_050_000, effortLevels: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" }),
   chat("gpt-5.6-luna", "openai", {}, { vision: false, pdf: false }),
   chat("old-model", "openai", { deprecated: true }),
   { ...chat("text-embed", "openai"), capabilities: { operation: "embedding", streaming: true, tools: false, vision: false, pdf: false, audio: false } },
@@ -81,7 +82,8 @@ describe("ListModels", () => {
     expect(out).toContain("Flagships by provider: anthropic → claude-opus-5; openai → gpt-6-astra");
     expect(out).toContain("- coding: gpt-6-astra 74.1, claude-opus-5 70");
     expect(out).toContain("mlpal-flash = lowest latency");
-    expect(out).toContain("- gpt-6-astra · openai · 1.05M/128k · tools,vision,pdf · 1/5");
+    expect(out).toContain("- gpt-6-astra · openai · 1.05M/128k · tools,vision,pdf · 1/5 · effort low…max (default medium)");
+    expect(out).toContain("- claude-opus-5 · anthropic · 1M/128k · tools,vision,pdf · ?"); // no rungs known => no effort column
     expect(out).not.toContain("old-model"); // deprecated hidden
     expect(out).not.toContain("text-embed"); // not a chat model
   });
@@ -140,6 +142,19 @@ describe("AskModel", () => {
     expect(String(r.content)).toContain("### gpt-6-astra (in 20, out 7 tokens)\nI see a chart");
     expect(String(r.content)).toContain("gpt-5.6-luna cannot read images");
     expect((client.seen[0]!.messages[0]!.content as ContentBlock[])[0]!.type).toBe("image");
+  });
+
+  test("effort is sent to any provider and the applied rung is reported, with a clamp called out", async () => {
+    const client = new FakeClient((req) => ({
+      ...reply(req.model, "ok"),
+      effort: req.effort === "none" ? { requested: "none", applied: "low" } : { requested: String(req.effort), applied: String(req.effort) },
+    }));
+    const tool = createAskModelTool(deps(client));
+    const r = await tool.call({ models: ["gpt-6-astra", "claude-opus-5"], prompt: "x", effort: "xhigh" }, ctx);
+    expect(client.seen.every((q) => q.effort === "xhigh")).toBe(true); // universal lever, not Anthropic-only
+    expect(String(r.content)).toContain("### gpt-6-astra (in 20, out 7 tokens, effort xhigh)");
+    const c = await tool.call({ model: "claude-opus-5", prompt: "x", effort: "none" }, ctx);
+    expect(String(c.content)).toContain("effort none→low (clamped)");
   });
 
   test("maxTokens is capped by the host budget and the model's own output limit", async () => {

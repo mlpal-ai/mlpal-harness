@@ -26,6 +26,7 @@ import { type Logger, silentLogger } from "../obs/logger";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
+import type { Effort } from "../gateway/client";
 import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ToolResult } from "../tools/types";
@@ -67,7 +68,7 @@ export interface AgentConfig {
   maxTurns?: number;
   /** Reasoning effort (adaptive thinking + a discrete level), sent to the gateway as
    *  output_config.effort. Held stable for the whole run so it never invalidates the prompt cache. */
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: Effort;
   signal?: AbortSignal;
   logger?: Logger;
   metrics?: Metrics;

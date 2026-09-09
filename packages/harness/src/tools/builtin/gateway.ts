@@ -19,7 +19,8 @@ import { z } from "zod";
 import type { ContentBlock, Message } from "@mlpal/harness-protocol";
 import type { Catalog } from "../../catalog/catalog";
 import { isTier, TIERS, tierModelOrNearest } from "../../catalog/catalog";
-import type { ModelClient } from "../../gateway/client";
+import type { Effort, ModelClient } from "../../gateway/client";
+import { EFFORT_LADDER } from "../../gateway/client";
 import type { ModelInfo } from "../../registry/models";
 import { defineTool, type Tool } from "../types";
 
@@ -121,12 +122,13 @@ export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?:
         .filter((m) => !input.provider || m.provider === input.provider)
         .filter((m) => !input.capability || m.capabilities[input.capability])
         .sort((a, b) => a.provider.localeCompare(b.provider) || a.tag.localeCompare(b.tag));
-      lines.push("", `Served chat models (${rows.length}${input.provider || input.capability ? ", filtered" : ""}): tag · provider · ctx/out · caps · cost CU per 1M in/out`);
+      lines.push("", `Served chat models (${rows.length}${input.provider || input.capability ? ", filtered" : ""}): tag · provider · ctx/out · caps · cost CU per 1M in/out · effort rungs (ladder ${EFFORT_LADDER.join("<")})`);
       const cm = cat?.models ?? {};
       for (const m of rows.slice(0, 80)) {
         const caps = [m.capabilities.tools && "tools", m.capabilities.vision && "vision", m.capabilities.pdf && "pdf", m.capabilities.audio && "audio"].filter(Boolean).join(",");
         const cost = cm[m.tag]?.cost ? `${cm[m.tag]!.cost.input_cu_per_1m}/${cm[m.tag]!.cost.output_cu_per_1m}` : "?";
-        lines.push(`- ${m.tag} · ${m.provider} · ${fmtK(m.contextLength)}/${fmtK(m.maxOutputTokens)} · ${caps || "-"} · ${cost}`);
+        const lv = m.effortLevels.length ? ` · effort ${m.effortLevels[0]}…${m.effortLevels[m.effortLevels.length - 1]}${m.defaultEffort ? ` (default ${m.defaultEffort})` : ""}` : "";
+        lines.push(`- ${m.tag} · ${m.provider} · ${fmtK(m.contextLength)}/${fmtK(m.maxOutputTokens)} · ${caps || "-"} · ${cost}${lv}`);
       }
       if (rows.length > 80) lines.push(`… ${rows.length - 80} more (filter by provider or capability)`);
       lines.push("", "Consult a model with AskModel (one answer, no tools, sees the prompt you give it + optional recent context); give it repo access with Agent(model=…).");
@@ -154,7 +156,7 @@ export interface AskModelInput {
   contextChars?: number;
   attachments?: string[];
   maxTokens?: number;
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: Effort;
 }
 
 export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
@@ -173,7 +175,7 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
       contextChars: z.number().int().min(500).max(60000).optional().describe("cap for the recent-context excerpt (default 12000)"),
       attachments: z.array(z.string()).max(8).optional().describe("image or PDF paths in the workspace to show the model"),
       maxTokens: z.number().int().min(16).optional().describe(`answer cap (default 4096, max ${cap}; Anthropic models are floored at 1024 because they think before they write)`),
-      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("reasoning effort (Anthropic models only; others ignore it)"),
+      effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional().describe("reasoning effort on the gateway's universal ladder; a rung the model lacks is clamped and reported (ListModels shows each model's rungs and default)"),
     }),
     async call(input, ctx) {
       const refs = input.models?.length ? input.models : [input.model ?? ""];
@@ -222,7 +224,7 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
             system,
             messages: [{ role: "user", content: userBlocks }],
             maxTokens: outCap,
-            ...(input.effort && r.model.startsWith("claude-") ? { effort: input.effort } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
             signal: ctx.signal,
           });
           let step = await gen.next();
@@ -232,13 +234,14 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
           const label = ref === (result.model || r.model) ? ref : `${ref} → ${result.model || r.model}`;
           const cu = result.computeUnits != null ? `, ${result.computeUnits} CU` : "";
           const cached = result.usage.cache_read_input_tokens ? ` (+${result.usage.cache_read_input_tokens} cached)` : "";
+          const eff = result.effort ? (result.effort.requested === result.effort.applied ? `, effort ${result.effort.applied}` : `, effort ${result.effort.requested}→${result.effort.applied} (clamped)`) : "";
           const text = textOf(result.message);
           const empty = !text
             ? result.stopReason === "max_tokens"
               ? "(no text: the model used its whole maxTokens budget before writing an answer — raise maxTokens)"
               : "(no text in the reply)"
             : text;
-          return `### ${label} (in ${result.usage.input_tokens ?? 0}${cached}, out ${result.usage.output_tokens ?? 0} tokens${cu}${result.stopReason === "max_tokens" ? ", truncated at maxTokens" : ""})\n${empty}`;
+          return `### ${label} (in ${result.usage.input_tokens ?? 0}${cached}, out ${result.usage.output_tokens ?? 0} tokens${cu}${eff}${result.stopReason === "max_tokens" ? ", truncated at maxTokens" : ""})\n${empty}`;
         } catch (e) {
           return `### ${ref} → ${r.model}\n(error: ${String((e as Error)?.message ?? e)})`;
         }

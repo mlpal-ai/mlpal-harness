@@ -180,22 +180,39 @@ describe("GatewayClient accumulation (mocked)", () => {
     expect(sent.output_config).toEqual({ effort: "medium" });
   });
 
-  test("effort is sent only for Anthropic models (provider-agnostic: GPT/Gemini keep their defaults)", async () => {
+  test("a 200 with a plain JSON error body surfaces the gateway's message, not 'stream closed'", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or 'max'" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
+    await expect(drain(client.stream({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], maxTokens: 10 }))).rejects.toThrow(/output_config\.effort/);
+  });
+
+  test("effort is the gateway's universal lever: sent for every provider; the applied rung is read back", async () => {
     let sent: Record<string, unknown> = {};
     globalThis.fetch = (async (_url: string, init: { body: string }) => {
       sent = JSON.parse(init.body);
-      return new Response(SSE, { status: 200 });
+      // The gateway stamps the header on the rungs it ran; a client-side clamp (none => low) is
+      // reported by the client itself, so this fake sends no header for "low".
+      const eff = (sent.output_config as { effort?: string } | undefined)?.effort;
+      return new Response(SSE, { status: 200, headers: eff === "high" ? { "X-MLPal-Reasoning-Effort": "high->high" } : {} });
     }) as unknown as typeof fetch;
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
     const msgs = [{ role: "user" as const, content: "hi" }];
 
-    await drain(client.stream({ model: "claude-opus-5", messages: msgs, maxTokens: 100, effort: "high" }));
-    expect(sent.output_config).toEqual({ effort: "high" }); // Anthropic → sent
-
-    for (const model of ["gpt-5.6-sol", "gemini-3.1-pro-preview"]) {
-      await drain(client.stream({ model, messages: msgs, maxTokens: 100, effort: "high" }));
-      expect(sent.output_config).toBeUndefined(); // non-Anthropic → not sent
+    for (const model of ["claude-opus-5", "gpt-6-astra", "gemini-3.1-pro-preview"]) {
+      const { result: r } = await drain(client.stream({ model, messages: msgs, maxTokens: 100, effort: "high" }));
+      expect(sent.output_config).toEqual({ effort: "high" }); // every provider: the edge translates
+      expect(r.effort).toEqual({ requested: "high", applied: "high" });
     }
+    const { result: clamped } = await drain(client.stream({ model: "claude-fable-5-1", messages: msgs, maxTokens: 100, effort: "none" }));
+    expect(sent.output_config).toEqual({ effort: "low" }); // the messages wire rejects `none` (400): clamped client-side …
+    expect(clamped.effort).toEqual({ requested: "none", applied: "low" }); // … and reported, never silent
+    const { result: unset } = await drain(client.stream({ model: "gpt-4o", messages: msgs, maxTokens: 100 }));
+    expect(sent.output_config).toBeUndefined();
+    expect(unset.effort).toBeUndefined(); // nothing requested, nothing reported
   });
 
   test("postFeedback POSTs the outcome to /v1/feedback and never throws", async () => {

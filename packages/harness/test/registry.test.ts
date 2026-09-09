@@ -7,7 +7,7 @@ const SAMPLE = {
       model_tag: "claude-haiku-4-5-20251001",
       display_name: "Claude Haiku 4.5",
       provider: "anthropic",
-      capabilities: { pdf: true, audio: false, tools: true, vision: true, operation: "chat", streaming: true },
+      capabilities: { pdf: true, audio: false, tools: true, vision: true, operation: "chat", streaming: true, effort_levels: ["low", "medium", "high"], default_effort: "medium" },
       context_length: 200000,
       max_output_tokens: 8192,
       pricing_tier: "economy",
@@ -52,6 +52,10 @@ describe("ModelRegistry (mocked)", () => {
     expect(haiku.capabilities.tools).toBe(true);
     expect(haiku.contextLength).toBe(200000);
     expect(haiku.maxOutputTokens).toBe(8192);
+    // The gateway's universal effort ladder: per-model rungs + default ride on capabilities.
+    expect(haiku.effortLevels).toEqual(["low", "medium", "high"]);
+    expect(haiku.defaultEffort).toBe("medium");
+    expect(r.get("amazon.titan-embed-text-v2:0")!.effortLevels).toEqual([]);
   });
 
   test("chatOnly filter excludes embeddings; deprecated excluded by default", async () => {

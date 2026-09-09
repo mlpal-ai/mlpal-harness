@@ -32,6 +32,12 @@ export interface ToolSchema {
   input_schema: Record<string, unknown>;
 }
 
+/** The gateway's universal reasoning-effort ladder (one ordinal scale on both wires; per-model
+ *  supported rungs are in the catalog as `effortLevels`). A rung a model lacks is clamped toward
+ *  intent by the gateway and reported back — see `ModelResult.effort`. */
+export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORT_LADDER: readonly Effort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 export interface ModelRequest {
   model: string;
   system?: string;
@@ -50,7 +56,7 @@ export interface ModelRequest {
    * Anthropic-only: it's a vendor control, so the client sends it solely for `claude-*` models and
    * leaves GPT/Gemini on their own defaults (they'd ignore it anyway).
    */
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: Effort;
   /** Per-call cancellation, combined with the client-level signal + timeout. */
   signal?: AbortSignal;
   /**
@@ -71,6 +77,22 @@ export interface ModelResult {
    *  the body), so on yodex's streamed turns this is absent; derive from `usage` if a per-turn
    *  figure is needed. Absent ≠ 0: missing/unparseable means "unknown", never "free". */
   computeUnits?: number;
+  /** From the X-MLPal-Reasoning-Effort header ("requested->applied"): what the gateway actually ran
+   *  after clamping to the model's supported rungs. Present only when effort was sent. */
+  effort?: { requested: string; applied: string };
+}
+
+/** The rungs the messages wire accepts today; `none` / `minimal` clamp to `low` client-side. */
+const WIRE_EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export function wireEffort(e: Effort): Effort {
+  return WIRE_EFFORTS.includes(e) ? e : "low";
+}
+
+/** X-MLPal-Reasoning-Effort: "requested->applied" → structured, or undefined when absent. */
+export function parseEffortHeader(headers: Headers): { requested: string; applied: string } | undefined {
+  const raw = headers.get("x-mlpal-reasoning-effort");
+  const m = raw?.match(/^\s*([a-z]+)\s*->\s*([a-z]+)\s*$/i);
+  return m ? { requested: m[1]!.toLowerCase(), applied: m[2]!.toLowerCase() } : undefined;
 }
 
 /** The callModel seam. GatewayClient is the production implementation; tests inject fakes. */
@@ -268,7 +290,28 @@ export class GatewayClient implements ModelClient {
       try {
         const res = await this.connect(this.buildBody({ ...req, model }), model, userSignal, idle);
         if (!res.body) throw new GatewayError("no response body", 502, "http");
+        // A 200 whose body is a plain JSON error (the gateway rejects a request field AFTER
+        // opening the stream, e.g. an effort rung the wire's schema lacks) is not an SSE stream:
+        // surface its message instead of "stream closed before completion".
+        const ctype = res.headers.get("content-type") ?? "";
+        if (ctype.includes("application/json")) {
+          const text = await res.text();
+          let message = text.slice(0, 300);
+          let etype: string | undefined;
+          try {
+            const j = JSON.parse(text) as { error?: { message?: string; type?: string }; message?: string };
+            message = j.error?.message ?? j.message ?? message;
+            etype = j.error?.type;
+          } catch {
+            // not JSON after all — keep the raw excerpt
+          }
+          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", etype);
+        }
         const computeUnits = parseComputeUnits(res.headers);
+        // The gateway's header wins when present; otherwise a client-side clamp is still reported.
+        const effortApplied =
+          parseEffortHeader(res.headers) ??
+          (req.effort && wireEffort(req.effort) !== req.effort ? { requested: req.effort, applied: wireEffort(req.effort) } : undefined);
         const gen = this.consume(res.body, model, idle.reset);
         let step = await gen.next();
         while (!step.done) {
@@ -277,7 +320,11 @@ export class GatewayClient implements ModelClient {
           step = await gen.next();
         }
         this.metrics.histogram("gateway.stream_ms", Date.now() - started, { model });
-        return computeUnits === undefined ? step.value : { ...step.value, computeUnits };
+        return {
+          ...step.value,
+          ...(computeUnits === undefined ? {} : { computeUnits }),
+          ...(effortApplied ? { effort: effortApplied } : {}),
+        };
       } catch (e) {
         const err = this.normalizeError(e, userSignal);
         // Resume across a transient connection drop *after* content was emitted (the laptop-sleep
@@ -351,10 +398,6 @@ export class GatewayClient implements ModelClient {
     }
   }
 
-  /** Anthropic models on the gateway are `claude-*`; GPT are `gpt-*`, Gemini `gemini-*`. Used to
-   *  scope Anthropic-only request options (effort) so we never send them to other providers. */
-  private static isAnthropic = (model: string): boolean => model.startsWith("claude");
-
   private buildBody(req: ModelRequest): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: req.model,
@@ -370,11 +413,12 @@ export class GatewayClient implements ModelClient {
     if (req.tools?.length) body.tools = req.tools;
     if (req.toolChoice) body.tool_choice = req.toolChoice;
     if (req.temperature !== undefined) body.temperature = req.temperature;
-    // Effort is Anthropic's control (adaptive thinking depth). The gateway tolerates it for other
-    // providers (verified: no error, just a no-op/soft-map), but sending a vendor-specific knob to a
-    // non-Anthropic model is noise — and could break if the gateway tightens later. So only send it
-    // for Anthropic models; GPT/Gemini keep their own defaults. Keeps the harness provider-agnostic.
-    if (req.effort && GatewayClient.isAnthropic(req.model)) body.output_config = { effort: req.effort };
+    // Effort is the gateway's UNIVERSAL lever (git-7b48c96): `output_config.effort` is forwarded
+    // to OpenAI/Gemini models by the translating edge and clamped toward intent when a model lacks
+    // the rung. Unset => the model's own default. The messages wire's schema accepts low..max
+    // only (verified 2026-09-09: `none` is a 400 even for a model whose listing offers it), so the
+    // two rungs below `low` are clamped here to `low` and reported as such.
+    if (req.effort) body.output_config = { effort: wireEffort(req.effort) };
     return body;
   }
 

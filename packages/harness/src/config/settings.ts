@@ -20,7 +20,7 @@ export const settingsSchema = z.object({
   model: z.string().default("claude-opus-5"),
   /** Reasoning effort for the main loop (output_config.effort). Unset by default — we don't override
    *  the model's own default reasoning; set it via --effort / YODEX_EFFORT (or here) to pin a level. */
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   /** HOP (harness optimization profile): builtin name (coding, reviewer), a name under
    *  .yodex/hops/, or a directory path. Unset => coding. Also --profile / YODEX_PROFILE. */
   profile: z.string().optional(),
