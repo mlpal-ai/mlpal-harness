@@ -39,3 +39,4 @@ export function defaultRegistry(): ToolRegistry {
   for (const t of BUILTIN_TOOLS) r.register(t);
   return r;
 }
+export { createAskModelTool, createListModelsTool, resolveModelRef, type GatewayToolDeps, type AskModelInput } from "./builtin/gateway";
