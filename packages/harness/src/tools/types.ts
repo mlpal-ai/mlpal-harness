@@ -74,6 +74,18 @@ export function sanitizeJsonSchema(node: unknown): void {
     const o = node as Record<string, unknown>;
     delete o.additionalProperties;
     delete o.$schema;
+    // Gemini's function-declaration schema rejects the draft-2020 exclusive bounds outright
+    // (a whole run on gemini-3.8-flash died on an MCP tool's `id: exclusiveMinimum 0`). Fold them
+    // into the inclusive bounds every provider accepts; the semantics differ by one unit at the
+    // edge, which no tool argument has ever hinged on.
+    if (typeof o.exclusiveMinimum === "number") {
+      if (typeof o.minimum !== "number") o.minimum = o.exclusiveMinimum;
+      delete o.exclusiveMinimum;
+    }
+    if (typeof o.exclusiveMaximum === "number") {
+      if (typeof o.maximum !== "number") o.maximum = o.exclusiveMaximum;
+      delete o.exclusiveMaximum;
+    }
     for (const v of Object.values(o)) sanitizeJsonSchema(v);
   }
 }

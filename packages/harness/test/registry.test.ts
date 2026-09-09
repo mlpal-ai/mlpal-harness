@@ -56,6 +56,8 @@ describe("ModelRegistry (mocked)", () => {
     expect(haiku.effortLevels).toEqual(["low", "medium", "high"]);
     expect(haiku.defaultEffort).toBe("medium");
     expect(r.get("amazon.titan-embed-text-v2:0")!.effortLevels).toEqual([]);
+    // No policy fields in this fixture => unrestricted view.
+    expect(r.policyView).toEqual({ deniedByPolicy: 0, policy: null });
   });
 
   test("chatOnly filter excludes embeddings; deprecated excluded by default", async () => {

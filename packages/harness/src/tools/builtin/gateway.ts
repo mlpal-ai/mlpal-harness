@@ -45,6 +45,8 @@ export interface GatewayToolDeps {
   onUsage?: (model: string, usage: { input_tokens: number; output_tokens: number }) => void;
   /** Hard cap on maxTokens per completion (host budget). Default 16384. */
   maxTokensCap?: number;
+  /** The key's model policy as the gateway reports it (models hidden from this listing). */
+  policyView?: () => { deniedByPolicy: number; policy: { allow?: string[]; deny?: string[] } | null } | undefined;
 }
 
 const META_MODELS: Record<string, string> = {
@@ -131,6 +133,11 @@ export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?:
         lines.push(`- ${m.tag} · ${m.provider} · ${fmtK(m.contextLength)}/${fmtK(m.maxOutputTokens)} · ${caps || "-"} · ${cost}${lv}`);
       }
       if (rows.length > 80) lines.push(`… ${rows.length - 80} more (filter by provider or capability)`);
+      const pv = deps.policyView?.();
+      if (pv && pv.deniedByPolicy > 0) {
+        const globs = pv.policy ? ` (allow: ${(pv.policy.allow ?? []).join(", ") || "*"}; deny: ${(pv.policy.deny ?? []).join(", ") || "-"})` : "";
+        lines.push("", `Your API key's model policy hides ${pv.deniedByPolicy} model(s) from this list${globs}; they cannot be used from this key.`);
+      }
       lines.push("", "Consult a model with AskModel (one answer, no tools, sees the prompt you give it + optional recent context); give it repo access with Agent(model=…).");
       return { content: lines.join("\n") };
     },

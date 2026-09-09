@@ -43,6 +43,13 @@ export interface ModelInfo {
   deprecated: boolean;
 }
 
+/** The key's own model policy as /v1/models reports it: how many models the policy hides, and
+ *  the allow/deny globs (null when the key is unrestricted). */
+export interface ModelPolicyView {
+  deniedByPolicy: number;
+  policy: { allow?: string[]; deny?: string[] } | null;
+}
+
 export interface ModelsConfig {
   baseUrl: string;
   apiKey: string;
@@ -102,6 +109,8 @@ interface RawAliases {
 
 export class ModelRegistry {
   private readonly models = new Map<string, ModelInfo>();
+  /** The key's policy view from the last load (unrestricted until loaded). */
+  policyView: ModelPolicyView = { deniedByPolicy: 0, policy: null };
   /** meta-model tag → concrete chat model (from the gateway's published alias table) */
   private readonly chatAliases = new Map<string, string>();
   private loaded = false;
@@ -128,11 +137,21 @@ export class ModelRegistry {
     if (!res.ok) {
       throw new Error(`failed to load models: ${res.status} ${res.statusText}`);
     }
-    const body = (await res.json()) as { models?: RawModel[] };
+    const body = (await res.json()) as {
+      models?: RawModel[];
+      denied_by_policy?: number;
+      model_policy?: { allow?: string[]; deny?: string[] } | null;
+    };
     this.models.clear();
     for (const raw of body.models ?? []) {
       this.models.set(raw.model_tag, toModelInfo(raw));
     }
+    // The listing is already scoped to the key's model_policy (denied models absent); these two
+    // fields let a host say "N models hidden by your key's policy" instead of silently showing fewer.
+    this.policyView = {
+      deniedByPolicy: typeof body.denied_by_policy === "number" ? body.denied_by_policy : 0,
+      policy: body.model_policy ?? null,
+    };
     // Constrain to what /v1/messages actually serves, and load meta-model aliases — both
     // best-effort so a transient failure doesn't wipe the catalog / block discovery.
     await this.constrainToServed().catch(() => undefined);

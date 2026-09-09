@@ -33,6 +33,9 @@ export interface AssistantEvent {
   usage: Usage;
   stopReason: StopReason | null;
   model: string;
+  /** Reasoning effort the gateway ran this call at ("requested->applied"; applied may be
+   *  "unsupported" for a model with no lever). Present only when the run set an effort. */
+  effort?: { requested: string; applied: string };
   ts: string;
 }
 

@@ -602,6 +602,7 @@ export class AgentSession {
         usage: result.usage,
         stopReason: result.stopReason,
         model: result.model,
+        ...(result.effort ? { effort: result.effort } : {}),
         ts: now(),
       };
       parent = (await this.store.conversation.append(cfg.sessionId, asstEvt, parent)).uuid;
@@ -609,6 +610,7 @@ export class AgentSession {
         model: result.model,
         stopReason: result.stopReason,
         usage: result.usage,
+        ...(result.effort ? { effort: result.effort } : {}),
       });
       yield asstEvt;
       messages.push(result.message);

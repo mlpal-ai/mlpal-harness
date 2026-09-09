@@ -88,6 +88,14 @@ describe("ListModels", () => {
     expect(out).not.toContain("text-embed"); // not a chat model
   });
 
+  test("says how many models the key's policy hides, with the globs, when the gateway reports it", async () => {
+    const tool = createListModelsTool(deps(new FakeClient(() => new Error("x")), { policyView: () => ({ deniedByPolicy: 12, policy: { allow: ["gpt-6-*", "claude-opus-5"], deny: [] } }) }));
+    const out = String((await tool.call({}, ctx)).content);
+    expect(out).toContain("Your API key's model policy hides 12 model(s) from this list (allow: gpt-6-*, claude-opus-5; deny: -)");
+    const quiet = createListModelsTool(deps(new FakeClient(() => new Error("x")), { policyView: () => ({ deniedByPolicy: 0, policy: null }) }));
+    expect(String((await quiet.call({}, ctx)).content)).not.toContain("model policy hides");
+  });
+
   test("filters by capability and provider", async () => {
     const tool = createListModelsTool(deps(new FakeClient(() => new Error("x"))));
     const out = String((await tool.call({ capability: "vision", provider: "openai" }, ctx)).content);
