@@ -10,7 +10,7 @@ import type {
   SafetyPolicy,
   TuningPolicy,
 } from "./types";
-import { PROFILE_SPEC_ID } from "./types";
+import { PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS } from "./types";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
 import { hostDir } from "../host";
@@ -48,6 +48,22 @@ const evalSuiteSchema = z
 
 // All fields optional so a leaf can override single tuning leaves over a parent's block; the
 // composed result is validated for completeness + reference integrity in composeProfile.
+// v1.1 §9.2 — memory.policy: closed sets, loud on an unknown kind (the error names the value),
+// and a policy that feeds nothing is refused: recording deviations nobody reads is a mistake.
+const uniqueMembers = (xs: readonly string[]) => new Set(xs).size === xs.length;
+const memoryPolicySchema = z
+  .object({
+    record: z
+      .array(z.enum(DEVIATION_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown deviation kind ${JSON.stringify(ctx.data)}; one of ${DEVIATION_KINDS.join(", ")}` }) }))
+      .min(1, "memory.policy.record must name at least one deviation kind")
+      .refine(uniqueMembers, "memory.policy.record lists a kind twice"),
+    feeds: z
+      .array(z.enum(MEMORY_FEEDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.feeds: unknown consumer ${JSON.stringify(ctx.data)}; one of ${MEMORY_FEEDS.join(", ")}` }) }))
+      .min(1, "memory.policy.feeds must name at least one consumer (tune, evals)")
+      .default([...MEMORY_FEEDS]),
+  })
+  .strict();
+
 const tuningSchema = z
   .object({
     // `on-incident` is a trigger, not a cadence (§6.2) — the scheduled clock only.
@@ -219,7 +235,7 @@ export const profileYamlSchema = z
     model: modelSchema.optional(),
     requires: requiresSchema.optional(),
     safety: safetySchema.optional(),
-    memory: z.object({ workspace: z.string().min(1).optional() }).strict().default({}),
+    memory: z.object({ workspace: z.string().min(1).optional(), policy: memoryPolicySchema.optional() }).strict().default({}),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -494,7 +510,12 @@ export function composeProfile(
   const requires = composeRequires(parent.requires, y.requires);
   const safety = composeSafety(parent.safety, y.safety);
   const memoryWorkspace = y.memory.workspace ?? parent.memory?.workspace;
-  const memory = memoryWorkspace ? { workspace: memoryWorkspace } : undefined;
+  // §9.2: a child's policy replaces the parent's whole block (a closed set does not merge).
+  const memoryPolicy = y.memory.policy ?? parent.memory?.policy;
+  const memory =
+    memoryWorkspace || memoryPolicy
+      ? { ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}), ...(memoryPolicy ? { policy: memoryPolicy } : {}) }
+      : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
   const locked = [...new Set([...parent.locked, ...y.locked, ...(safety ? ["safety"] : [])])];
   if (safety) {

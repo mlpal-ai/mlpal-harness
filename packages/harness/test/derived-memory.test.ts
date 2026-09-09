@@ -6,6 +6,7 @@ import {
   createMemorizeTool,
   derivedMemorySection,
   listMemories,
+  memoryPolicySection,
   parseTopic,
   topicToEnvelope,
 } from "../src/memory/derived";
@@ -142,5 +143,31 @@ describe("topicToEnvelope (memory-graph sync mapper)", () => {
     const raw = "---\nevent_id: e2\nsupersedes: e1\nscope: global\n---\nUpdated fact.";
     const env = topicToEnvelope("global--f", parseTopic(raw));
     expect(env.payload.supersedes).toBe("e1");
+  });
+});
+
+
+describe("memory policy (hop-v1.1 §9.2)", () => {
+  test("Memorize accepts type: deviation and stamps it in the frontmatter", async () => {
+    const tool = createMemorizeTool({ store, workspace: "infra", provenance: () => ({ hop: "infra@0.2.0", origin: "one-shot" }) });
+    const r = await tool.call(
+      { slug: "dev-unmodelled-describe-volumes", content: "kind: unmodelled\nexpected: a listing\nobserved: SnapshotUnmodelled\ncause: coverage\naction: record it\nrun: r1", type: "deviation" },
+      ctx,
+    );
+    expect(r.isError).toBeFalsy();
+    const raw = (await store.memory.readTopic("infra--dev-unmodelled-describe-volumes"))!;
+    expect(raw).toContain("type: deviation");
+    expect(raw).toContain("hop: infra@0.2.0");
+    expect(topicToEnvelope("infra--dev-unmodelled-describe-volumes", parseTopic(raw)).action_type).toBe("deviation");
+  });
+  test("the host renders the policy; nothing when the HOP declares none", () => {
+    expect(memoryPolicySection(undefined)).toBe("");
+    const s = memoryPolicySection({ record: ["refusal", "surprise"], feeds: ["tune"] });
+    expect(s).toContain("# Memory policy");
+    expect(s).toContain("`refusal`: the permission gate");
+    expect(s).toContain("`surprise`: observed state");
+    expect(s).not.toContain("`unmodelled`");
+    expect(s).toContain("kind: <one of the kinds above>");
+    expect(s).toContain("feed: tune (");
   });
 });

@@ -693,3 +693,43 @@ describe("verifier deliverable framing", () => {
     expect(codingVerifierTask("TASK", "ignored")).toBe(codingVerifierTask("TASK"));
   });
 });
+
+
+describe("v1.1 §9.2 memory.policy", () => {
+  const base = "spec: mlpal/hop-v1\nname: p\nversion: 0.0.1\ndescription: t\nextends: coding\n";
+  const load = (yaml: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "hop-mem-"));
+    writeFileSync(join(dir, "hop.yaml"), yaml);
+    try {
+      return loadProfile(dir, { builtins: builtinProfiles() });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  test("loads the closed sets and defaults feeds to both consumers", () => {
+    const p = load(base + "memory:\n  workspace: infra\n  policy:\n    record: [refusal, unmodelled]\n");
+    expect(p.memory).toEqual({ workspace: "infra", policy: { record: ["refusal", "unmodelled"], feeds: ["tune", "evals"] } });
+  });
+  test("an unknown kind is a load error naming the value", () => {
+    expect(() => load(base + "memory:\n  policy:\n    record: [refusal, hiccup]\n")).toThrow(/unknown deviation kind "hiccup"/);
+  });
+  test("a policy that feeds nothing, or repeats a kind, is refused", () => {
+    expect(() => load(base + "memory:\n  policy:\n    record: [refusal]\n    feeds: []\n")).toThrow(/at least one consumer/);
+    expect(() => load(base + "memory:\n  policy:\n    record: [refusal, refusal]\n")).toThrow(/twice/);
+  });
+  test("a policy without a workspace still loads; a child's policy replaces the parent's whole block", () => {
+    const p = load(base + "memory:\n  policy:\n    record: [surprise]\n");
+    expect(p.memory).toEqual({ policy: { record: ["surprise"], feeds: ["tune", "evals"] } });
+    const parentDir = mkdtempSync(join(tmpdir(), "hop-mem-parent-"));
+    writeFileSync(join(parentDir, "hop.yaml"), base.replace("name: p", "name: parent") + "memory:\n  workspace: w\n  policy:\n    record: [refusal, escalation]\n    feeds: [tune]\n");
+    const childDir = mkdtempSync(join(tmpdir(), "hop-mem-child-"));
+    writeFileSync(join(childDir, "hop.yaml"), `spec: mlpal/hop-v1\nname: child\nversion: 0.0.1\ndescription: t\nextends: ${parentDir}\nmemory:\n  policy:\n    record: [correction]\n`);
+    try {
+      const c = loadProfile(childDir, { builtins: builtinProfiles() });
+      expect(c.memory).toEqual({ workspace: "w", policy: { record: ["correction"], feeds: ["tune", "evals"] } });
+    } finally {
+      rmSync(parentDir, { recursive: true, force: true });
+      rmSync(childDir, { recursive: true, force: true });
+    }
+  });
+});

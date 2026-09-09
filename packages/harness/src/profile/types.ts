@@ -276,7 +276,7 @@ export interface Profile {
   safety?: SafetyPolicy;
   /** v1.1 — working-memory identity. `workspace` names the notes workspace the HOP reads (the
    *  host's default is the working directory's basename; project settings may override). */
-  memory?: { workspace?: string };
+  memory?: { workspace?: string; policy?: MemoryPolicy };
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
@@ -285,4 +285,24 @@ export interface Profile {
   /** Non-fatal load-time notices the host should surface (e.g. an unpinned model set, or a
    *  fallback of unknown tier). Errors throw; these inform. Absent => none. */
   warnings?: string[];
+}
+
+/** v1.1 §9.2 — the deviation kinds a HOP may oblige the agent to memorise. Closed set. */
+export const DEVIATION_KINDS = [
+  "refusal",
+  "verifier_fail",
+  "unmodelled",
+  "correction",
+  "surprise",
+  "escalation",
+] as const;
+export type DeviationKind = (typeof DEVIATION_KINDS)[number];
+export const MEMORY_FEEDS = ["tune", "evals"] as const;
+export type MemoryFeed = (typeof MEMORY_FEEDS)[number];
+
+/** v1.1 §9.2 — memory policy: which deviations the agent MUST record (as `type: deviation`
+ *  memories) and which builder consumers may read them. */
+export interface MemoryPolicy {
+  record: DeviationKind[];
+  feeds: MemoryFeed[];
 }

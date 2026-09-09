@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "../tools/types";
 import type { Store } from "../store/types";
+import type { MemoryPolicy } from "../profile/types";
 
 /**
  * Derived memories: durable facts the agent learns during sessions, written by the model
@@ -21,7 +22,7 @@ import type { Store } from "../store/types";
  */
 
 export type MemoryScope = "project" | "global";
-export type MemoryType = "decision" | "gotcha" | "preference" | "reference" | "fact";
+export type MemoryType = "decision" | "gotcha" | "preference" | "reference" | "fact" | "deviation";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 
@@ -169,7 +170,7 @@ export function createMemorizeTool(deps: MemorizeDeps): Tool<{
       slug: z.string().describe("stable kebab-case id, e.g. 'deploy-process' (reuse to update)"),
       content: z.string().describe("the fact, self-contained, with the why when it matters"),
       scope: z.enum(["project", "global"]).optional().describe("default: project"),
-      type: z.enum(["decision", "gotcha", "preference", "reference", "fact"]).optional(),
+      type: z.enum(["decision", "gotcha", "preference", "reference", "fact", "deviation"]).optional(),
     }),
     async call(input, ctx) {
       if (!SLUG_RE.test(input.slug)) {
@@ -233,4 +234,31 @@ export async function listMemories(
 
 export async function readMemory(store: Store, key: string): Promise<string | null> {
   return store.memory.readTopic(key);
+}
+
+const DEVIATION_WHEN: Record<string, string> = {
+  refusal: "the permission gate refused or parked a call your plan needed",
+  verifier_fail: "the verifier failed a turn and you had to redo it",
+  unmodelled: "a read the environment could not answer (an unrecorded read, a missing CLI, an API this identity cannot reach)",
+  correction: "a person corrected your answer, action or classification",
+  surprise: "observed state contradicts memory, the notes or IaC",
+  escalation: "the run stopped at the envelope edge (needs_approval, needs_clarification, refused)",
+};
+
+/**
+ * Render the HOP's memory policy (hop-v1.1 §9.2) for the system prompt: the host owns this text
+ * so the obligation does not depend on the HOP's own prose. Empty when the HOP declares none.
+ */
+export function memoryPolicySection(policy: MemoryPolicy | undefined): string {
+  if (!policy || policy.record.length === 0) return "";
+  const rows = policy.record.map((k) => `- \`${k}\`: ${DEVIATION_WHEN[k] ?? k}`).join("\n");
+  return (
+    "\n\n# Memory policy (when things do not go to plan)\n" +
+    "Before a headless run ends, or before your next answer in a conversation, save one memory per distinct deviation of these kinds with the Memorize tool, " +
+    "`type: deviation`, slug `dev-<kind>-<short-noun>`, project scope. One per deviation, not per retry. Never a secret value, token or kubeconfig material.\n" +
+    rows +
+    "\n\nBody, one field per line, in this order (a builder parses it without a model):\n" +
+    "```\nkind: <one of the kinds above>\nexpected: <what the plan assumed>\nobserved: <what happened, with the exact refusal, error or status>\ncause: <your best reading, or unknown>\naction: <what would have made this go to plan>\nrun: <the run id if you know it>\n```\n" +
+    `These memories feed: ${policy.feeds.join(", ")} (the builder's next tune turn reads them; do not write them anywhere else).`
+  );
 }
