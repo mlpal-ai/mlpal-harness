@@ -1,4 +1,5 @@
 import { bashOutputTool, bashTool, killTool } from "./builtin/bash";
+import { digestTool } from "./builtin/digest";
 import { editTool, readTool, writeTool } from "./builtin/files";
 import { exitPlanModeTool } from "./builtin/plan";
 import { globTool, grepTool, listTool } from "./builtin/search";
@@ -9,6 +10,7 @@ import type { Tool } from "./types";
 export * from "./types";
 export * from "./registry";
 export { backgroundTasks } from "./builtin/background";
+export { digestTool } from "./builtin/digest";
 export { monitorTool, setMonitorLimit } from "./builtin/bash";
 export {
   createAskUserQuestionTool,
