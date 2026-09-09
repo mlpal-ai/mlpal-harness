@@ -255,7 +255,8 @@ export function memoryPolicySection(policy: MemoryPolicy | undefined): string {
   return (
     "\n\n# Memory policy (when things do not go to plan)\n" +
     "Before a headless run ends, or before your next answer in a conversation, save one memory per distinct deviation of these kinds with the Memorize tool, " +
-    "`type: deviation`, slug `dev-<kind>-<short-noun>`, project scope. One per deviation, not per retry. Never a secret value, token or kubeconfig material.\n" +
+    "`type: deviation`, slug `dev-<kind>-<short-noun>`, project scope. One per deviation, not per retry. Never a secret value, token or kubeconfig material. " +
+    "`observed` is what the tool result already showed you: never go looking for more (no reading the harness's trace, logs, settings or sibling directories; that is itself a deviation).\n" +
     rows +
     "\n\nBody, one field per line, in this order (a builder parses it without a model):\n" +
     "```\nkind: <one of the kinds above>\nexpected: <what the plan assumed>\nobserved: <what happened, with the exact refusal, error or status>\ncause: <your best reading, or unknown>\naction: <what would have made this go to plan>\nrun: <the run id if you know it>\n```\n" +
