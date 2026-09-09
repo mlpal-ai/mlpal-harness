@@ -155,6 +155,9 @@ describe("AskModel", () => {
     expect(String(r.content)).toContain("### gpt-6-astra (in 20, out 7 tokens, effort xhigh)");
     const c = await tool.call({ model: "claude-opus-5", prompt: "x", effort: "none" }, ctx);
     expect(String(c.content)).toContain("effort none→low (clamped)");
+    const noLever = new FakeClient((req) => ({ ...reply(req.model, "ok"), effort: { requested: "high", applied: "unsupported" } }));
+    const u = await createAskModelTool(deps(noLever)).call({ model: "gpt-5.6-luna", prompt: "x", effort: "high" }, ctx);
+    expect(String(u.content)).toContain("effort high→unsupported (this model has no effort lever)");
   });
 
   test("maxTokens is capped by the host budget and the model's own output limit", async () => {

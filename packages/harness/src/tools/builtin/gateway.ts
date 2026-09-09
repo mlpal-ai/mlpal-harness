@@ -234,7 +234,13 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
           const label = ref === (result.model || r.model) ? ref : `${ref} → ${result.model || r.model}`;
           const cu = result.computeUnits != null ? `, ${result.computeUnits} CU` : "";
           const cached = result.usage.cache_read_input_tokens ? ` (+${result.usage.cache_read_input_tokens} cached)` : "";
-          const eff = result.effort ? (result.effort.requested === result.effort.applied ? `, effort ${result.effort.applied}` : `, effort ${result.effort.requested}→${result.effort.applied} (clamped)`) : "";
+          const eff = result.effort
+            ? result.effort.applied === "unsupported"
+              ? `, effort ${result.effort.requested}→unsupported (this model has no effort lever)`
+              : result.effort.requested === result.effort.applied
+                ? `, effort ${result.effort.applied}`
+                : `, effort ${result.effort.requested}→${result.effort.applied} (clamped)`
+            : "";
           const text = textOf(result.message);
           const empty = !text
             ? result.stopReason === "max_tokens"

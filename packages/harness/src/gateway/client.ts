@@ -78,17 +78,13 @@ export interface ModelResult {
    *  figure is needed. Absent ≠ 0: missing/unparseable means "unknown", never "free". */
   computeUnits?: number;
   /** From the X-MLPal-Reasoning-Effort header ("requested->applied"): what the gateway actually ran
-   *  after clamping to the model's supported rungs. Present only when effort was sent. */
+   *  after clamping to the model's supported rungs; `applied` is "unsupported" for a model with no
+   *  effort lever. Present only when effort was sent. */
   effort?: { requested: string; applied: string };
 }
 
-/** The rungs the messages wire accepts today; `none` / `minimal` clamp to `low` client-side. */
-const WIRE_EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
-export function wireEffort(e: Effort): Effort {
-  return WIRE_EFFORTS.includes(e) ? e : "low";
-}
-
-/** X-MLPal-Reasoning-Effort: "requested->applied" → structured, or undefined when absent. */
+/** X-MLPal-Reasoning-Effort: "requested->applied" (applied = a ladder rung, or the literal
+ *  `unsupported` for a model with no effort lever) → structured, or undefined when absent. */
 export function parseEffortHeader(headers: Headers): { requested: string; applied: string } | undefined {
   const raw = headers.get("x-mlpal-reasoning-effort");
   const m = raw?.match(/^\s*([a-z]+)\s*->\s*([a-z]+)\s*$/i);
@@ -308,10 +304,7 @@ export class GatewayClient implements ModelClient {
           throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", etype);
         }
         const computeUnits = parseComputeUnits(res.headers);
-        // The gateway's header wins when present; otherwise a client-side clamp is still reported.
-        const effortApplied =
-          parseEffortHeader(res.headers) ??
-          (req.effort && wireEffort(req.effort) !== req.effort ? { requested: req.effort, applied: wireEffort(req.effort) } : undefined);
+        const effortApplied = parseEffortHeader(res.headers);
         const gen = this.consume(res.body, model, idle.reset);
         let step = await gen.next();
         while (!step.done) {
@@ -413,12 +406,11 @@ export class GatewayClient implements ModelClient {
     if (req.tools?.length) body.tools = req.tools;
     if (req.toolChoice) body.tool_choice = req.toolChoice;
     if (req.temperature !== undefined) body.temperature = req.temperature;
-    // Effort is the gateway's UNIVERSAL lever (git-7b48c96): `output_config.effort` is forwarded
-    // to OpenAI/Gemini models by the translating edge and clamped toward intent when a model lacks
-    // the rung. Unset => the model's own default. The messages wire's schema accepts low..max
-    // only (verified 2026-09-09: `none` is a 400 even for a model whose listing offers it), so the
-    // two rungs below `low` are clamped here to `low` and reported as such.
-    if (req.effort) body.output_config = { effort: wireEffort(req.effort) };
+    // Effort is the gateway's UNIVERSAL lever (git-687b79b): `output_config.effort` takes the full
+    // ladder on every model; the edge clamps toward intent (or drops it for a model with no lever)
+    // and reports what ran in X-MLPal-Reasoning-Effort, on streams too. Unset => the model's own
+    // default. Sent verbatim: the gateway's answer, not a client guess, is the record.
+    if (req.effort) body.output_config = { effort: req.effort };
     return body;
   }
 

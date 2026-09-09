@@ -194,10 +194,10 @@ describe("GatewayClient accumulation (mocked)", () => {
     let sent: Record<string, unknown> = {};
     globalThis.fetch = (async (_url: string, init: { body: string }) => {
       sent = JSON.parse(init.body);
-      // The gateway stamps the header on the rungs it ran; a client-side clamp (none => low) is
-      // reported by the client itself, so this fake sends no header for "low".
+      // The gateway resolves the rung before the first byte and stamps the header on streams too.
       const eff = (sent.output_config as { effort?: string } | undefined)?.effort;
-      return new Response(SSE, { status: 200, headers: eff === "high" ? { "X-MLPal-Reasoning-Effort": "high->high" } : {} });
+      const applied = eff === "none" ? "none->low" : eff === "high" ? "high->high" : undefined;
+      return new Response(SSE, { status: 200, headers: applied ? { "X-MLPal-Reasoning-Effort": applied } : {} });
     }) as unknown as typeof fetch;
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
     const msgs = [{ role: "user" as const, content: "hi" }];
@@ -208,8 +208,8 @@ describe("GatewayClient accumulation (mocked)", () => {
       expect(r.effort).toEqual({ requested: "high", applied: "high" });
     }
     const { result: clamped } = await drain(client.stream({ model: "claude-fable-5-1", messages: msgs, maxTokens: 100, effort: "none" }));
-    expect(sent.output_config).toEqual({ effort: "low" }); // the messages wire rejects `none` (400): clamped client-side …
-    expect(clamped.effort).toEqual({ requested: "none", applied: "low" }); // … and reported, never silent
+    expect(sent.output_config).toEqual({ effort: "none" }); // sent verbatim: the full ladder is accepted on every model …
+    expect(clamped.effort).toEqual({ requested: "none", applied: "low" }); // … and the gateway reports what ran
     const { result: unset } = await drain(client.stream({ model: "gpt-4o", messages: msgs, maxTokens: 100 }));
     expect(sent.output_config).toBeUndefined();
     expect(unset.effort).toBeUndefined(); // nothing requested, nothing reported
