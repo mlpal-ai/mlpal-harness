@@ -186,5 +186,95 @@ describe("AskModel", () => {
     expect(client.seen.find((q) => q.model === "claude-opus-5")!.maxTokens).toBe(1024);
     expect(client.seen.find((q) => q.model === "gpt-6-astra")!.maxTokens).toBe(64);
     expect(String(r.content)).toContain("### claude-opus-5 (in 2 (+1400 cached), out 64 tokens, truncated at maxTokens)\n(no text: the model used its whole maxTokens budget before writing an answer — raise maxTokens)");
+    const wrote = new FakeClient((req) => ({ ...reply(req.model, "ok"), usage: { input_tokens: 2, output_tokens: 5, cache_creation_input_tokens: 3895 } }));
+    const w = await createAskModelTool(deps(wrote)).call({ model: "claude-opus-5", prompt: "x" }, ctx);
+    expect(String(w.content)).toContain("(in 2 (wrote 3895 to cache), out 5 tokens)");
+  });
+});
+
+describe("AskModel threads", () => {
+  const threaded = (client: ModelClient, over: Partial<GatewayToolDeps> = {}) => createAskModelTool(deps(client, over));
+
+  test("a thread pins the model on its first turn and carries the full history on later turns", async () => {
+    const client = new FakeClient((req) => reply(req.model, `turn ${req.messages.length}: ok`));
+    const tool = threaded(client);
+    const r1 = await tool.call({ thread: "review", model: "max", prompt: "Review this diff." }, ctx);
+    expect(String(r1.content)).toContain("thread review turn 1/12");
+    const r2 = await tool.call({ thread: "review", prompt: "What about the null path?" }, ctx); // no model: continues
+    expect(String(r2.content)).toContain("### gpt-6-astra (");
+    expect(String(r2.content)).toContain("thread review turn 2/12");
+    const second = client.seen[1]!;
+    expect(second.messages).toHaveLength(3); // user, assistant, user
+    expect(second.messages[1]!.role).toBe("assistant");
+    expect(((second.messages[1]!.content as ContentBlock[])[0] as { text: string }).text).toBe("turn 1: ok");
+    expect(second.system).toBe(client.seen[0]!.system); // system fixed for the thread
+  });
+
+  test("a different model on an existing thread is refused; the same tier alias resolving to the same model continues", async () => {
+    const client = new FakeClient((req) => reply(req.model, "ok"));
+    const tool = threaded(client);
+    await tool.call({ thread: "t", model: "gpt-6-astra", prompt: "a" }, ctx);
+    const wrong = await tool.call({ thread: "t", model: "claude-opus-5", prompt: "b" }, ctx);
+    expect(wrong.isError).toBe(true);
+    expect(String(wrong.content)).toContain('pinned to gpt-6-astra');
+    const same = await tool.call({ thread: "t", model: "max", prompt: "b" }, ctx); // max => gpt-6-astra
+    expect(same.isError).toBeFalsy();
+    expect(client.seen).toHaveLength(2); // the refused call never reached the model
+  });
+
+  test("threads are per calling session, single-model, kebab-named; unknown thread without a model says what is open", async () => {
+    const client = new FakeClient((req) => reply(req.model, "ok"));
+    const tool = threaded(client);
+    await tool.call({ thread: "shared", model: "gpt-6-astra", prompt: "a" }, ctx);
+    const other = await tool.call({ thread: "shared", prompt: "b" }, { ...ctx, sessionId: "s2" });
+    expect(other.isError).toBe(true);
+    expect(String(other.content)).toContain('no thread "shared" in this session');
+    const listed = await tool.call({ thread: "nope", prompt: "b" }, ctx);
+    expect(String(listed.content)).toContain("open threads: shared on gpt-6-astra, 1 turn(s)");
+    expect((await tool.call({ thread: "Bad Name!", model: "gpt-6-astra", prompt: "a" }, ctx)).isError).toBe(true);
+    expect(String((await tool.call({ thread: "p", models: ["gpt-6-astra", "claude-opus-5"], prompt: "a" }, ctx)).content)).toContain("single-model");
+  });
+
+  test("a failed call leaves the history untouched; reset starts over; a changed system prompt is refused", async () => {
+    let fail = false;
+    const client = new FakeClient((req) => (fail ? new Error("upstream 503") : reply(req.model, "ok")));
+    const tool = threaded(client);
+    await tool.call({ thread: "t", model: "gpt-6-astra", prompt: "a" }, ctx);
+    fail = true;
+    const failed = await tool.call({ thread: "t", prompt: "b" }, ctx);
+    expect(failed.isError).toBe(true);
+    fail = false;
+    await tool.call({ thread: "t", prompt: "c" }, ctx);
+    expect(client.seen[2]!.messages).toHaveLength(3); // a + reply + c; the failed b was not recorded
+    const sys = await tool.call({ thread: "t", system: "be terse", prompt: "d" }, ctx);
+    expect(sys.isError).toBe(true);
+    expect(String(sys.content)).toContain("system prompt fixed");
+    await tool.call({ thread: "t", model: "claude-opus-5", reset: true, prompt: "fresh" }, ctx);
+    expect(client.seen.at(-1)!.model).toBe("claude-opus-5");
+    expect(client.seen.at(-1)!.messages).toHaveLength(1);
+  });
+
+  test("caps: exchanges and history characters refuse with counts instead of truncating", async () => {
+    const client = new FakeClient((req) => reply(req.model, "ok"));
+    const tool = threaded(client);
+    for (let i = 0; i < 12; i++) await tool.call({ thread: "long", model: "gpt-6-astra", prompt: `q${i}` }, ctx);
+    const over = await tool.call({ thread: "long", prompt: "one more" }, ctx);
+    expect(over.isError).toBe(true);
+    expect(String(over.content)).toContain("at its cap (12 exchanges on gpt-6-astra)");
+    const big = "x".repeat(300_000);
+    await tool.call({ thread: "wide", model: "gpt-6-astra", prompt: big }, ctx);
+    const wide = await tool.call({ thread: "wide", prompt: big }, ctx);
+    expect(wide.isError).toBe(true);
+    expect(String(wide.content)).toContain("would exceed its history cap");
+  });
+
+  test("attachments ride in the thread history and count toward the cap", async () => {
+    const client = new FakeClient((req) => reply(req.model, "a red square"));
+    const png: ContentBlock = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(1000) } };
+    const tool = threaded(client, { loadAttachments: async () => [{ name: "c.png", block: png, kind: "image" }] });
+    await tool.call({ thread: "img", model: "gpt-6-astra", prompt: "what is this?", attachments: ["c.png"] }, ctx);
+    await tool.call({ thread: "img", prompt: "and its colour?" }, ctx);
+    const second = client.seen[1]!;
+    expect((second.messages[0]!.content as ContentBlock[])[0]!.type).toBe("image"); // the image is still in the history
   });
 });

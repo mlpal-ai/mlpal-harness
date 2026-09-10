@@ -164,30 +164,133 @@ export interface AskModelInput {
   attachments?: string[];
   maxTokens?: number;
   effort?: Effort;
+  thread?: string;
+  reset?: boolean;
 }
 
-export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
+/** Bounds for consult threads: they live in the running process, per calling session, and must
+ *  never grow silently. A capped thread refuses with its counts so the caller can start a new
+ *  one (with a summary) rather than have history truncated behind the consulted model's back. */
+export const THREAD_LIMITS = {
+  /** user+assistant messages per thread (12 exchanges). */
+  maxMessages: 24,
+  /** characters of history (text + base64 attachment payloads) per thread, ~100k tokens. */
+  maxChars: 400_000,
+  /** threads per calling session. */
+  maxThreads: 32,
+} as const;
+
+const THREAD_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+interface ConsultThread {
+  model: string;
+  system: string;
+  messages: Message[];
+  chars: number;
+  createdAt: string;
+}
+
+/** In-process store of consult threads keyed by calling session + name. A resumed session in a
+ *  new process has none (said explicitly in the tool result), which beats pretending. */
+export class ThreadStore {
+  private readonly threads = new Map<string, ConsultThread>();
+  private key(sessionId: string, name: string): string {
+    return `${sessionId}\u0000${name}`;
+  }
+  get(sessionId: string, name: string): ConsultThread | undefined {
+    return this.threads.get(this.key(sessionId, name));
+  }
+  count(sessionId: string): number {
+    let n = 0;
+    for (const k of this.threads.keys()) if (k.startsWith(`${sessionId}\u0000`)) n += 1;
+    return n;
+  }
+  set(sessionId: string, name: string, t: ConsultThread): void {
+    this.threads.set(this.key(sessionId, name), t);
+  }
+  delete(sessionId: string, name: string): boolean {
+    return this.threads.delete(this.key(sessionId, name));
+  }
+  list(sessionId: string): { name: string; model: string; turns: number }[] {
+    const out: { name: string; model: string; turns: number }[] = [];
+    for (const [k, t] of this.threads) {
+      if (k.startsWith(`${sessionId}\u0000`)) out.push({ name: k.split("\u0000")[1]!, model: t.model, turns: t.messages.length / 2 });
+    }
+    return out;
+  }
+}
+
+function blocksChars(blocks: ContentBlock[]): number {
+  let n = 0;
+  for (const b of blocks) {
+    if (b.type === "text") n += b.text.length;
+    else if ((b.type === "image" || b.type === "document") && "source" in b) n += (b.source as { data?: string }).data?.length ?? 0;
+    else n += JSON.stringify(b).length;
+  }
+  return n;
+}
+
+const DEFAULT_SYSTEM =
+  "You are an expert engineer giving an independent, candid second opinion to another AI agent. Be specific and concrete, disagree when warranted, and say what you are unsure about.";
+
+export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore = new ThreadStore()): Tool<AskModelInput> {
   const cap = deps.maxTokensCap ?? 16384;
   return defineTool({
     name: "AskModel",
     description:
-      "Ask another model a question and get its answer — one completion, no tools, in parallel across up to four models when you pass `models`. This is the way to get a second opinion, a specialist's take (a stronger reasoner, a longer-context reader, a different provider), a vision/PDF read, or a quick draft from a cheaper tier. The model sees ONLY what you send: `prompt` (+ `system`), optional `attachments` (image/PDF paths, capability-gated), and, with context=\"recent\", the recent turns of this conversation rendered as text. `model` is a tier alias (cheap|mid|frontier|max), a meta-model (mlpal|mlpal-flash|mlpal-lite), or any served id (see ListModels). It costs tokens on that model; keep maxTokens tight. For work that needs repo access or tools, use Agent(model=…) instead. Never hand-roll HTTP calls to the gateway.",
+      "Ask another model a question and get its answer — one completion, no tools, in parallel across up to four models when you pass `models`. This is the way to get a second opinion, a specialist's take (a stronger reasoner, a longer-context reader, a different provider), a vision/PDF read, or a quick draft from a cheaper tier. The model sees ONLY what you send: `prompt` (+ `system`), optional `attachments` (image/PDF paths, capability-gated), and, with context=\"recent\", the recent turns of this conversation rendered as text. `model` is a tier alias (cheap|mid|frontier|max), a meta-model (mlpal|mlpal-flash|mlpal-lite), or any served id (see ListModels). To CONTINUE a conversation with the same model (follow-up questions, refining its draft, a multi-round review), pass `thread` — a name you choose; the first call pins the model, later calls with that name carry the whole history so the model remembers its own earlier answers; `reset: true` starts it over. Threads are single-model, capped, and live only in this running process. It costs tokens on that model; keep maxTokens tight. For work that needs repo access or tools, use Agent(model=…) instead. Never hand-roll HTTP calls to the gateway.",
     readOnly: true,
     schema: z.object({
       model: z.string().optional().describe("tier alias, meta-model, or served model id"),
-      models: z.array(z.string()).min(1).max(4).optional().describe("a panel: ask each in parallel and get every answer, labeled"),
+      models: z.array(z.string()).min(1).max(4).optional().describe("a panel: ask each in parallel and get every answer, labeled (not combinable with thread)"),
       prompt: z.string().min(1),
-      system: z.string().optional().describe("a system prompt for the consulted model (default: a neutral expert-reviewer framing)"),
-      context: z.enum(["none", "recent"]).optional().describe("recent = include the recent turns of this conversation (default none)"),
+      system: z.string().optional().describe("a system prompt for the consulted model (default: a neutral expert-reviewer framing; fixed for the life of a thread)"),
+      context: z.enum(["none", "recent"]).optional().describe("recent = include the recent turns of this conversation (default none; in a thread, use it on the first turn)"),
       contextChars: z.number().int().min(500).max(60000).optional().describe("cap for the recent-context excerpt (default 12000)"),
       attachments: z.array(z.string()).max(8).optional().describe("image or PDF paths in the workspace to show the model"),
       maxTokens: z.number().int().min(16).optional().describe(`answer cap (default 4096, max ${cap}; Anthropic models are floored at 1024 because they think before they write)`),
       effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional().describe("reasoning effort on the gateway's universal ladder; a rung the model lacks is clamped and reported (ListModels shows each model's rungs and default)"),
+      thread: z.string().optional().describe("name of a consult thread (kebab-case) to start or continue; the same model answers with the full history"),
+      reset: z.boolean().optional().describe("with thread: discard that thread's history and start over on this call"),
     }),
     async call(input, ctx) {
-      const refs = input.models?.length ? input.models : [input.model ?? ""];
-      if (refs.length === 1 && !refs[0]) return { content: "give `model` (tier alias, meta-model, or id) or `models` (a panel)", isError: true };
       const maxTokens = Math.min(input.maxTokens ?? 4096, cap);
+      const sessionId = ctx.sessionId ?? "no-session";
+
+      // ── Thread bookkeeping (validated before any model call) ─────────────────────────────
+      let thread: ConsultThread | undefined;
+      let threadName: string | undefined;
+      if (input.thread !== undefined) {
+        threadName = input.thread.trim().toLowerCase();
+        if (!THREAD_NAME_RE.test(threadName)) return { content: `thread name "${input.thread}" must be kebab-case (a-z, 0-9, -), up to 64 characters`, isError: true };
+        if (input.models?.length) return { content: "a thread is single-model: pass `model` (or omit it to continue), not `models`", isError: true };
+        if (input.reset) threads.delete(sessionId, threadName);
+        thread = threads.get(sessionId, threadName);
+        if (!thread && !input.model) {
+          const known = threads.list(sessionId);
+          return {
+            content:
+              `no thread "${threadName}" in this session${known.length ? ` (open threads: ${known.map((t) => `${t.name} on ${t.model}, ${t.turns} turn(s)`).join("; ")})` : ""}. ` +
+              "Threads live only in the running process: pass `model` to start it" + (input.reset ? "" : " (a resumed session starts fresh)"),
+            isError: true,
+          };
+        }
+        if (!thread && threads.count(sessionId) >= THREAD_LIMITS.maxThreads) {
+          return { content: `this session already has ${THREAD_LIMITS.maxThreads} consult threads; reset or reuse one`, isError: true };
+        }
+        if (thread && input.system !== undefined && input.system !== thread.system) {
+          return { content: `thread "${threadName}" has its system prompt fixed since its first turn; omit \`system\` to continue, or reset the thread`, isError: true };
+        }
+        if (thread && thread.messages.length >= THREAD_LIMITS.maxMessages) {
+          return {
+            content: `thread "${threadName}" is at its cap (${thread.messages.length / 2} exchanges on ${thread.model}). Start a new thread with a summary of what matters, or reset this one.`,
+            isError: true,
+          };
+        }
+      }
+
+      const refs = input.models?.length ? input.models : [input.model ?? thread?.model ?? ""];
+      if (refs.length === 1 && !refs[0]) return { content: "give `model` (tier alias, meta-model, or id), `models` (a panel), or `thread` to continue", isError: true };
 
       // Shared inputs, built once.
       let contextText = "";
@@ -208,28 +311,38 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
             input.prompt,
         },
       ];
-      const system = input.system ?? "You are an expert engineer giving an independent, candid second opinion to another AI agent. Be specific and concrete, disagree when warranted, and say what you are unsure about.";
+      const system = thread?.system ?? input.system ?? DEFAULT_SYSTEM;
+      if (thread && thread.chars + blocksChars(userBlocks) > THREAD_LIMITS.maxChars) {
+        return {
+          content: `thread "${threadName}" would exceed its history cap (${THREAD_LIMITS.maxChars} characters incl. attachments). Start a new thread with a summary, or reset this one.`,
+          isError: true,
+        };
+      }
 
-      const one = async (ref: string): Promise<string> => {
+      const one = async (ref: string): Promise<{ text: string; ok: boolean; model?: string; reply?: Message }> => {
         const r = resolveModelRef(deps, ref);
-        if ("error" in r) return `### ${ref}\n(error: ${r.error})`;
+        if ("error" in r) return { text: `### ${ref}\n(error: ${r.error})`, ok: false };
+        if (thread && r.model !== thread.model) {
+          return { text: `### ${ref} → ${r.model}\n(error: thread "${threadName}" is pinned to ${thread.model}; omit \`model\` to continue it, or use a new thread name for ${r.model})`, ok: false };
+        }
         const refusal = deps.policy?.(r.model);
-        if (refusal) return `### ${ref} → ${r.model}\n(not allowed: ${refusal})`;
+        if (refusal) return { text: `### ${ref} → ${r.model}\n(not allowed: ${refusal})`, ok: false };
         const info = deps.getModel(r.model);
         const needsVision = attachmentBlocks.some((a) => a.kind === "image");
         const needsPdf = attachmentBlocks.some((a) => a.kind === "pdf");
-        if (needsVision && info && !info.capabilities.vision) return `### ${ref} → ${r.model}\n(error: ${r.model} cannot read images; pick a vision-capable model — ListModels capability=vision)`;
-        if (needsPdf && info && !info.capabilities.pdf) return `### ${ref} → ${r.model}\n(error: ${r.model} cannot read PDFs; pick a pdf-capable model — ListModels capability=pdf)`;
+        if (needsVision && info && !info.capabilities.vision) return { text: `### ${ref} → ${r.model}\n(error: ${r.model} cannot read images; pick a vision-capable model — ListModels capability=vision)`, ok: false };
+        if (needsPdf && info && !info.capabilities.pdf) return { text: `### ${ref} → ${r.model}\n(error: ${r.model} cannot read PDFs; pick a pdf-capable model — ListModels capability=pdf)`, ok: false };
         // Thinking-capable models spend output budget on thinking BEFORE any text: a 64-token cap
         // on claude-opus-5 returned nothing. Floor Anthropic models at 1024 so a short answer
         // still has room after the thinking.
         const floor = r.model.startsWith("claude-") ? Math.max(maxTokens, 1024) : maxTokens;
         const outCap = info?.maxOutputTokens ? Math.min(floor, info.maxOutputTokens) : floor;
+        const history: Message[] = thread ? thread.messages : [];
         try {
           const gen = deps.model_client.stream({
             model: r.model,
             system,
-            messages: [{ role: "user", content: userBlocks }],
+            messages: [...history, { role: "user", content: userBlocks }],
             maxTokens: outCap,
             ...(input.effort ? { effort: input.effort } : {}),
             signal: ctx.signal,
@@ -240,7 +353,12 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
           deps.onUsage?.(result.model || r.model, { input_tokens: result.usage.input_tokens ?? 0, output_tokens: result.usage.output_tokens ?? 0 });
           const label = ref === (result.model || r.model) ? ref : `${ref} → ${result.model || r.model}`;
           const cu = result.computeUnits != null ? `, ${result.computeUnits} CU` : "";
-          const cached = result.usage.cache_read_input_tokens ? ` (+${result.usage.cache_read_input_tokens} cached)` : "";
+          // Both cache legs are shown: a turn that wrote the cache reads "in 2, wrote 3895 to cache"
+          // instead of a misleading "in 2", and the next turn's "+3895 cached" then makes sense.
+          const cached =
+            result.usage.cache_read_input_tokens || result.usage.cache_creation_input_tokens
+              ? ` (${[result.usage.cache_read_input_tokens ? `+${result.usage.cache_read_input_tokens} cached` : "", result.usage.cache_creation_input_tokens ? `wrote ${result.usage.cache_creation_input_tokens} to cache` : ""].filter(Boolean).join(", ")})`
+              : "";
           const eff = result.effort
             ? result.effort.applied === "unsupported"
               ? `, effort ${result.effort.requested}→unsupported (this model has no effort lever)`
@@ -254,15 +372,32 @@ export function createAskModelTool(deps: GatewayToolDeps): Tool<AskModelInput> {
               ? "(no text: the model used its whole maxTokens budget before writing an answer — raise maxTokens)"
               : "(no text in the reply)"
             : text;
-          return `### ${label} (in ${result.usage.input_tokens ?? 0}${cached}, out ${result.usage.output_tokens ?? 0} tokens${cu}${eff}${result.stopReason === "max_tokens" ? ", truncated at maxTokens" : ""})\n${empty}`;
+          const turnNote = threadName ? `, thread ${threadName} turn ${history.length / 2 + 1}/${THREAD_LIMITS.maxMessages / 2}` : "";
+          return {
+            text: `### ${label} (in ${result.usage.input_tokens ?? 0}${cached}, out ${result.usage.output_tokens ?? 0} tokens${cu}${eff}${turnNote}${result.stopReason === "max_tokens" ? ", truncated at maxTokens" : ""})\n${empty}`,
+            ok: true,
+            model: r.model,
+            reply: result.message,
+          };
         } catch (e) {
-          return `### ${ref} → ${r.model}\n(error: ${String((e as Error)?.message ?? e)})`;
+          return { text: `### ${ref} → ${r.model}\n(error: ${String((e as Error)?.message ?? e)})`, ok: false };
         }
       };
 
       const answers = await Promise.all(refs.map(one));
-      const anyOk = answers.some((a) => !/^### [^\n]*\n\((error|not allowed):/.test(a));
-      return { content: answers.join("\n\n"), isError: !anyOk };
+      // A thread grows only on a successful exchange: a failed or cancelled call leaves the
+      // history exactly as the consulted model last saw it.
+      const first = answers[0]!;
+      if (threadName && first.ok && first.model && first.reply) {
+        const replyBlocks: ContentBlock[] = typeof first.reply.content === "string" ? [{ type: "text", text: first.reply.content }] : first.reply.content.filter((b) => b.type === "text");
+        const assistantMsg: Message = { role: "assistant", content: replyBlocks.length ? replyBlocks : [{ type: "text", text: "(no text)" }] };
+        const next: ConsultThread = thread ?? { model: first.model, system, messages: [], chars: 0, createdAt: new Date().toISOString() };
+        next.messages = [...next.messages, { role: "user", content: userBlocks }, assistantMsg];
+        next.chars += blocksChars(userBlocks) + blocksChars(assistantMsg.content as ContentBlock[]);
+        threads.set(sessionId, threadName, next);
+      }
+      const anyOk = answers.some((a) => a.ok);
+      return { content: answers.map((a) => a.text).join("\n\n"), isError: !anyOk };
     },
   });
 }
