@@ -701,7 +701,7 @@ describe("v1.1 §9.2 memory.policy", () => {
     const dir = mkdtempSync(join(tmpdir(), "hop-mem-"));
     writeFileSync(join(dir, "hop.yaml"), yaml);
     try {
-      return loadProfile(dir, { builtins: builtinProfiles() });
+      return loadProfile(dir, { cwd: dir, home: dir });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -725,7 +725,7 @@ describe("v1.1 §9.2 memory.policy", () => {
     const childDir = mkdtempSync(join(tmpdir(), "hop-mem-child-"));
     writeFileSync(join(childDir, "hop.yaml"), `spec: mlpal/hop-v1\nname: child\nversion: 0.0.1\ndescription: t\nextends: ${parentDir}\nmemory:\n  policy:\n    record: [correction]\n`);
     try {
-      const c = loadProfile(childDir, { builtins: builtinProfiles() });
+      const c = loadProfile(childDir, { cwd: childDir, home: childDir });
       expect(c.memory).toEqual({ workspace: "w", policy: { record: ["correction"], feeds: ["tune", "evals"] } });
     } finally {
       rmSync(parentDir, { recursive: true, force: true });
