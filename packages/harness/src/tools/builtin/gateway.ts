@@ -138,7 +138,10 @@ export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?:
         const globs = pv.policy ? ` (allow: ${(pv.policy.allow ?? []).join(", ") || "*"}; deny: ${(pv.policy.deny ?? []).join(", ") || "-"})` : "";
         lines.push("", `Your API key's model policy hides ${pv.deniedByPolicy} model(s) from this list${globs}; they cannot be used from this key.`);
       }
-      lines.push("", "Consult a model with AskModel (one answer, no tools, sees the prompt you give it + optional recent context); give it repo access with Agent(model=…).");
+      lines.push(
+        "",
+        "You can talk to every model above. AskModel: a question to any of them (one answer, no tools), a named `thread` to keep a conversation going with the same model, `models` for a panel of up to four in parallel, `context: recent` to hand it this conversation, `attachments` for images/PDFs. Agent(model=…): a sub-agent on any of them with your tools and the repo. Tier aliases are shorthand for the right model at a cost point; meta-models let the router pick.",
+      );
       return { content: lines.join("\n") };
     },
   });
