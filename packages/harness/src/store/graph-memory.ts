@@ -57,7 +57,9 @@ export class SyncingMemory implements MemoryStore {
     // Best-effort mirror to the graph. Never let a sync failure surface to the agent.
     try {
       const envelope = topicToEnvelope(name, parseTopic(content));
-      const status = await this.post(`${this.endpoint}/api/v1/episodes`, JSON.stringify(envelope), this.headers);
+      // The ingest endpoint takes a LIST; the bare envelope was a 422 and every Memorize mirror
+      // silently failed for weeks (the test pinned the wrong shape).
+      const status = await this.post(`${this.endpoint}/api/v1/episodes`, JSON.stringify({ episodes: [envelope] }), this.headers);
       if (status >= 200 && status < 300) {
         this.log.info("memory synced to graph", { topic: name, event_id: envelope.event_id });
       } else {

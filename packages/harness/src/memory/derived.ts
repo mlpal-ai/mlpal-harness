@@ -54,35 +54,65 @@ export function parseTopic(raw: string): ParsedTopic {
 }
 
 /**
- * Map a parsed topic onto the mlpal-memory-graph bitemporal episode envelope — the single
- * translation a sync worker (topic files → POST /api/v1/episodes) needs. Kept here beside
- * the frontmatter writer so the two never drift. Fields the envelope lacks natively
- * (supersedes / created / updated / type) ride in `payload`; the server sets belief-time.
- * `scope_id` is the workspace for project scope (a stable id is a hosted-mode concern).
+ * Map a parsed topic onto the mlpal-memory-graph episode envelope for a `memory.claim` — the
+ * single translation a sync worker (topic files → POST /api/v1/episodes) needs. Kept beside the
+ * frontmatter writer so the two never drift. Contract (memory v6, WP3): scope `org` with the
+ * workspace named (project memories) or `user` (global) — non-service callers cannot write
+ * `repo`; `action_type: "memory.claim"`; payload {kind, topic, key, value, evidence_ids, hop,
+ * prompt_sha, origin, supersedes}. The server sets belief-time.
  */
 export interface EpisodeEnvelope {
   event_id: string;
   occurred_at: string;
-  scope: "user" | "org" | "repo";
-  scope_id?: string;
-  action_type?: string;
+  scope: "user" | "org";
+  /** Project memories: the workspace the claim belongs to. */
+  workspace?: string;
+  action_type: "memory.claim";
   content: string;
-  payload: Record<string, string>;
+  payload: {
+    kind: string;
+    topic: string;
+    key: string;
+    value: string;
+    evidence_ids: string[];
+    hop?: string;
+    prompt_sha?: string;
+    origin?: string;
+    supersedes?: string;
+    created?: string;
+    updated?: string;
+    sessions?: string;
+  };
+}
+
+/** The ingest body: the server requires a list. */
+export interface IngestRequest {
+  episodes: EpisodeEnvelope[];
 }
 
 export function topicToEnvelope(topic: string, parsed: ParsedTopic): EpisodeEnvelope {
   const m = parsed.meta;
   const isGlobal = topic.startsWith("global--") || m.scope === "global";
+  const key = topic.includes("--") ? topic.slice(topic.indexOf("--") + 2) : topic;
+  // Memorize records no evidence yet; the field is present (empty) so the fold never guesses.
+  const evidence = (m.evidence_ids ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   return {
     event_id: m.event_id ?? crypto.randomUUID(),
     occurred_at: m.occurred ?? m.updated ?? m.created ?? new Date().toISOString(),
-    // yodex scope → envelope scope: global→user, project→repo (the memory-graph enum).
-    scope: isGlobal ? "user" : "repo",
-    scope_id: isGlobal ? undefined : m.workspace,
-    action_type: m.type,
+    // yodex scope → envelope scope: global→user, project→org + workspace (`repo` is service-only).
+    scope: isGlobal ? "user" : "org",
+    ...(isGlobal || !m.workspace ? {} : { workspace: m.workspace }),
+    action_type: "memory.claim",
     content: parsed.content,
     payload: {
-      ...(m.type ? { type: m.type } : {}),
+      kind: m.type ?? "fact",
+      topic,
+      key,
+      value: parsed.content,
+      evidence_ids: evidence,
+      ...(m.hop ? { hop: m.hop } : {}),
+      ...(m.prompt_sha ? { prompt_sha: m.prompt_sha } : {}),
+      ...(m.origin ? { origin: m.origin } : {}),
       ...(m.supersedes ? { supersedes: m.supersedes } : {}),
       ...(m.created ? { created: m.created } : {}),
       ...(m.updated ? { updated: m.updated } : {}),
@@ -101,10 +131,21 @@ export async function derivedMemorySection(
   workspace: string,
   maxChars = 6000,
 ): Promise<string> {
+  return (await derivedMemoryInjection(store, workspace, maxChars)).section;
+}
+
+/** The section plus the event_ids of the topics that made it in — memory attribution per run
+ *  (memory v6, E1a): the run's telemetry names what it was shown, so served memories can be joined
+ *  with run verdicts later. Topics without an event_id (pre-provenance files) are not listed. */
+export async function derivedMemoryInjection(
+  store: Store,
+  workspace: string,
+  maxChars = 6000,
+): Promise<{ section: string; eventIds: string[] }> {
   const topics = await store.memory.listTopics();
   const mine = topics.filter((t) => t.startsWith("global--") || t.startsWith(`${workspace}--`));
-  if (mine.length === 0) return "";
-  const entries: Array<{ t: string; updated: string; body: string }> = [];
+  if (mine.length === 0) return { section: "", eventIds: [] };
+  const entries: Array<{ t: string; updated: string; body: string; eventId?: string }> = [];
   for (const t of mine) {
     const raw = await store.memory.readTopic(t);
     if (!raw) continue;
@@ -113,10 +154,12 @@ export async function derivedMemorySection(
       t,
       updated: meta.updated ?? meta.created ?? "",
       body: `## ${t.replace(/^.*?--/, "")} (${meta.type ?? "fact"}, ${meta.updated ?? meta.created ?? "?"})\n${content}`,
+      eventId: meta.event_id,
     });
   }
   entries.sort((a, b) => b.updated.localeCompare(a.updated));
   const out: string[] = [];
+  const eventIds: string[] = [];
   let used = 0;
   let dropped = 0;
   for (const e of entries) {
@@ -125,14 +168,17 @@ export async function derivedMemorySection(
       continue;
     }
     out.push(e.body);
+    if (e.eventId) eventIds.push(e.eventId);
     used += e.body.length;
   }
-  if (out.length === 0) return "";
-  return (
-    "\n\n# Derived memories\nFacts you saved in past sessions (point-in-time — verify against current code before relying on file/line specifics). Update them with Memorize when they change.\n\n" +
-    out.join("\n\n") +
-    (dropped ? `\n\n(${dropped} older memories omitted — see /memory)` : "")
-  );
+  if (out.length === 0) return { section: "", eventIds: [] };
+  return {
+    section:
+      "\n\n# Derived memories\nFacts you saved in past sessions (point-in-time — verify against current code before relying on file/line specifics). Update them with Memorize when they change.\n\n" +
+      out.join("\n\n") +
+      (dropped ? `\n\n(${dropped} older memories omitted — see /memory)` : ""),
+    eventIds,
+  };
 }
 
 /** Provenance stamped on every memory write, so an audit can find every memory written under a
@@ -243,6 +289,8 @@ const DEVIATION_WHEN: Record<string, string> = {
   correction: "a person corrected your answer, action or classification",
   surprise: "observed state contradicts memory, the notes or IaC",
   escalation: "the run stopped at the envelope edge (needs_approval, needs_clarification, refused)",
+  outcome: "a person accepted, followed or verified what you delivered (helpful), or discarded, redid or corrected it (unhelpful)",
+  preference: "a person told you how they want things: format, channel, scope, timing",
 };
 
 /**

@@ -114,8 +114,24 @@ describe("derivedMemorySection + listMemories", () => {
   });
 });
 
+describe("derivedMemoryInjection (memory attribution)", () => {
+  test("returns the event_ids of exactly the topics rendered into the section, in render order", async () => {
+    const { derivedMemoryInjection } = await import("../src/memory/derived");
+    const tool = createMemorizeTool({ store, workspace: "attr" });
+    await tool.call({ slug: "one", content: "first fact" }, ctx);
+    await tool.call({ slug: "two", content: "second fact" }, ctx);
+    const inj = await derivedMemoryInjection(store, "attr");
+    expect(inj.section).toContain("first fact");
+    expect(inj.eventIds).toHaveLength(2);
+    expect(inj.eventIds.every((id) => /^[0-9a-f-]{36}$/.test(id))).toBe(true);
+    const capped = await derivedMemoryInjection(store, "attr", 40); // too small for either body
+    expect(capped.section).toBe("");
+    expect(capped.eventIds).toEqual([]);
+  });
+});
+
 describe("topicToEnvelope (memory-graph sync mapper)", () => {
-  test("maps a project topic onto a repo-scoped episode envelope", async () => {
+  test("maps a project topic onto an org-scoped memory.claim envelope naming the workspace", async () => {
     const tool = createMemorizeTool({ store, workspace: "backend" });
     await tool.call(
       { slug: "deploy", content: "Deploy via kubectl apply.", type: "decision" },
@@ -123,20 +139,22 @@ describe("topicToEnvelope (memory-graph sync mapper)", () => {
     );
     const raw = (await store.memory.readTopic("backend--deploy"))!;
     const env = topicToEnvelope("backend--deploy", parseTopic(raw));
-    expect(env.scope).toBe("repo");
-    expect(env.scope_id).toBe("backend");
+    expect(env.scope).toBe("org");
+    expect(env.workspace).toBe("backend");
     expect(env.content).toContain("kubectl apply");
-    expect(env.action_type).toBe("decision");
+    expect(env.action_type).toBe("memory.claim");
+    expect(env.payload).toMatchObject({ kind: "decision", topic: "backend--deploy", key: "deploy", value: "Deploy via kubectl apply.", evidence_ids: [] });
     expect(env.event_id).toMatch(/[0-9a-f-]{36}/);
     expect(env.payload.sessions).toContain("sess1234");
   });
 
-  test("maps a global topic onto a user-scoped envelope (no scope_id)", () => {
-    const raw = "---\nevent_id: e1\nscope: global\ntype: preference\noccurred: 2026-01-01\n---\nShort answers.";
+  test("maps a global topic onto a user-scoped envelope (no workspace); provenance rides in payload", () => {
+    const raw = "---\nevent_id: e1\nscope: global\ntype: preference\noccurred: 2026-01-01\nhop: infra@0.1.1\nprompt_sha: abc123abc123\norigin: routine:watch\n---\nShort answers.";
     const env = topicToEnvelope("global--pref", parseTopic(raw));
     expect(env.scope).toBe("user");
-    expect(env.scope_id).toBeUndefined();
+    expect(env.workspace).toBeUndefined();
     expect(env.occurred_at).toBe("2026-01-01");
+    expect(env.payload).toMatchObject({ kind: "preference", key: "pref", hop: "infra@0.1.1", prompt_sha: "abc123abc123", origin: "routine:watch" });
   });
 
   test("carries a supersedes chain through payload", () => {
@@ -158,7 +176,9 @@ describe("memory policy (hop-v1.1 §9.2)", () => {
     const raw = (await store.memory.readTopic("infra--dev-unmodelled-describe-volumes"))!;
     expect(raw).toContain("type: deviation");
     expect(raw).toContain("hop: infra@0.2.0");
-    expect(topicToEnvelope("infra--dev-unmodelled-describe-volumes", parseTopic(raw)).action_type).toBe("deviation");
+    const env = topicToEnvelope("infra--dev-unmodelled-describe-volumes", parseTopic(raw));
+    expect(env.action_type).toBe("memory.claim"); // every memory is a claim; the memory type is the claim's kind
+    expect(env.payload.kind).toBe("deviation");
   });
   test("the host renders the policy; nothing when the HOP declares none", () => {
     expect(memoryPolicySection(undefined)).toBe("");

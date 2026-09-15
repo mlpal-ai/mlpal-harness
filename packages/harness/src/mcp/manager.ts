@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
-import { sanitizeJsonSchema, type Tool, type ToolResult } from "../tools/types";
+import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import { StoredOAuthProvider } from "./oauth";
 import { host } from "../host";
 
@@ -84,11 +84,22 @@ export class McpManager {
   private readonly clientByName = new Map<string, Client>();
   private readonly statuses = new Map<string, McpServerStatus>();
 
+  /** Host-supplied request metadata attached to EVERY tools/call as JSON-RPC `_meta` (the
+   *  calling run's id, the HOP, how the run began). One transport serves the whole process,
+   *  main loop and sub-agents alike, so a connect-time header cannot carry the exact run; the
+   *  per-request `_meta` can, and MCP reserves it for exactly this. A memory server logs which
+   *  ids it served to which run and joins them with run verdicts later (memory v6, E1b). */
+  private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
+
   /** authDir persists OAuth tokens per server (e.g. ~/.yodex/mcp-auth). */
   constructor(
     private readonly logger: Logger = silentLogger,
     private readonly authDir?: string,
   ) {}
+
+  setCallMeta(fn: ((ctx: ToolContext) => Record<string, unknown>) | null): void {
+    this.callMeta = fn;
+  }
 
   /** Per-server connection outcomes (for /mcp, /doctor and diagnostics). One entry per
    *  server — a reconnect replaces the previous outcome. */
@@ -183,7 +194,7 @@ export class McpManager {
     this.clientByName.set(name, client);
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
-    return result.tools.map((t) => wrapMcpTool(name, client, t, mcpEndpoint(config)));
+    return result.tools.map((t) => wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null));
   }
 
   /** Disconnect one server and remove its tools from the given registries (pack removal). */
@@ -209,7 +220,13 @@ export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
 }
 
-export function wrapMcpTool(server: string, client: Client, def: RawMcpTool, endpoint?: string): Tool<unknown> {
+export function wrapMcpTool(
+  server: string,
+  client: Client,
+  def: RawMcpTool,
+  endpoint?: string,
+  meta?: (ctx: ToolContext) => Record<string, unknown> | null,
+): Tool<unknown> {
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
@@ -223,12 +240,13 @@ export function wrapMcpTool(server: string, client: Client, def: RawMcpTool, end
     readOnly: def.annotations?.readOnlyHint === true,
     schema: z.record(z.unknown()) as unknown as Tool<unknown>["schema"],
     jsonSchema: js,
-    async call(input): Promise<ToolResult> {
+    async call(input, ctx): Promise<ToolResult> {
       // Long-running tools (deep research runs 30-60s+) outlive the SDK's 60s default —
       // allow 10 minutes, and reset the clock whenever the server reports progress.
+      const _meta = meta?.(ctx) ?? null;
       try {
         const res = (await client.callTool(
-          { name: def.name, arguments: (input ?? {}) as Record<string, unknown> },
+          { name: def.name, arguments: (input ?? {}) as Record<string, unknown>, ...(_meta ? { _meta } : {}) },
           undefined,
           { timeout: 600_000, resetTimeoutOnProgress: true },
         )) as { content?: unknown; isError?: boolean };

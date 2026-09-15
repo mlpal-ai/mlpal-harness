@@ -66,6 +66,17 @@ describe("McpManager", () => {
     }
   }, 15000);
 
+  test("every tools/call carries the host's _meta (run id, HOP, origin) for the server to attribute", async () => {
+    const seen: unknown[] = [];
+    const fake = { callTool: async (params: unknown) => { seen.push(params); return { content: [{ type: "text", text: "ok" }] }; } };
+    const tool = wrapMcpTool("memory", fake as unknown as Parameters<typeof wrapMcpTool>[1], { name: "memory_search", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2], "http://localhost:8011/mcp", (ctx) => ({ "mlpal/run_id": ctx.sessionId, "mlpal/hop": "infra@0.1.1", "mlpal/origin": "routine:watch" }));
+    await tool.call({ q: "x" }, { cwd: process.cwd(), sessionId: "run-42" } as Parameters<typeof tool.call>[1]);
+    expect(seen[0]).toMatchObject({ name: "memory_search", arguments: { q: "x" }, _meta: { "mlpal/run_id": "run-42", "mlpal/hop": "infra@0.1.1", "mlpal/origin": "routine:watch" } });
+    const bare = wrapMcpTool("memory", fake as unknown as Parameters<typeof wrapMcpTool>[1], { name: "t", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2]);
+    await bare.call({}, { cwd: process.cwd() } as Parameters<typeof bare.call>[1]);
+    expect("_meta" in (seen[1] as object)).toBe(false); // no host meta => nothing added
+  });
+
   test("a tool call to a dead server is a TOOL error naming the server and endpoint, never a throw", async () => {
     const dead = { callTool: async () => { throw new Error("Was there a typo in the url or port?"); } };
     const tool = wrapMcpTool("memory", dead as unknown as Parameters<typeof wrapMcpTool>[1], { name: "memory_search", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2], "http://localhost:8011/mcp");

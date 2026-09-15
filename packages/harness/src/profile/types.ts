@@ -276,7 +276,7 @@ export interface Profile {
   safety?: SafetyPolicy;
   /** v1.1 — working-memory identity. `workspace` names the notes workspace the HOP reads (the
    *  host's default is the working directory's basename; project settings may override). */
-  memory?: { workspace?: string; policy?: MemoryPolicy };
+  memory?: { workspace?: string; policy?: MemoryPolicy; contract?: MemoryContract };
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
@@ -297,12 +297,36 @@ export const DEVIATION_KINDS = [
   "escalation",
 ] as const;
 export type DeviationKind = (typeof DEVIATION_KINDS)[number];
-export const MEMORY_FEEDS = ["tune", "evals"] as const;
+export const MEMORY_FEEDS = ["tune", "evals", "personalize"] as const;
 export type MemoryFeed = (typeof MEMORY_FEEDS)[number];
 
 /** v1.1 §9.2 — memory policy: which deviations the agent MUST record (as `type: deviation`
  *  memories) and which builder consumers may read them. */
 export interface MemoryPolicy {
-  record: DeviationKind[];
+  record: RecordKind[];
   feeds: MemoryFeed[];
+}
+
+/** v1.1 §9.2 addendum — positive kinds a policy may record beside deviations. */
+export const RECORD_KINDS = [...DEVIATION_KINDS, "outcome", "preference"] as const;
+export type RecordKind = (typeof RECORD_KINDS)[number];
+
+/** v1.1 §9.3 — a memory topic: a named, typed stream of claims. */
+export const TOPIC_KINDS = ["state", "record", "learning", "preference", "deviation"] as const;
+export type TopicKind = (typeof TOPIC_KINDS)[number];
+export const READ_SCOPES = ["self", "owner", "team", "company", "fleet"] as const;
+export type ReadScope = (typeof READ_SCOPES)[number];
+export interface MemoryTopic {
+  id: string;
+  kind: TopicKind;
+  key: string;
+  halfLife: string;
+  read: ReadScope;
+  inject: boolean;
+}
+export interface MemoryContract {
+  tenant?: string;
+  topics: MemoryTopic[];
+  reads: string[];
+  writes: string[];
 }

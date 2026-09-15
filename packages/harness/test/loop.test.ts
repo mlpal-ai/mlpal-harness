@@ -154,7 +154,7 @@ describe("agentic loop", () => {
 
     expect(emitted).toHaveLength(1);
     const ev = emitted[0]!;
-    expect(ev.contract).toBe("d11.4");
+    expect(ev.contract).toBe("d11.5");
     expect(ev.action_type).toBe("run.completed");
     expect(ev.scope_id).toBe("acme");
     expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
@@ -179,6 +179,7 @@ describe("agentic loop", () => {
         parentRunId: "parent-run",
         taskType: "discover",
         sourceRef: "routine:watch",
+        memoriesInjected: () => ["mem-1", "mem-2"],
         emit: (e) => emitted.push(e),
       },
     });
@@ -191,6 +192,7 @@ describe("agentic loop", () => {
     expect(p.run_id.length).toBeGreaterThan(0);
     expect(p.task_type).toBe("discover"); // host override beats the HOP's telemetry.taskType
     expect(emitted[0]!.source_ref).toBe("routine:watch"); // how the run began, envelope-level
+    expect(p.memories_injected).toEqual(["mem-1", "mem-2"]); // d11.5 memory attribution
   });
 
   test("onDecision observes the EFFECTIVE decision: headless ask refused, then a hard deny from policy", async () => {
@@ -299,7 +301,7 @@ describe("agentic loop", () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.payload.run_result).toBe("needs_approval");
     expect(emitted[0]!.payload.failure_class).toBe("approval_pending");
-    expect(emitted[0]!.contract).toBe("d11.4");
+    expect(emitted[0]!.contract).toBe("d11.5");
   });
 
   test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {

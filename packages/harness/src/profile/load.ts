@@ -10,7 +10,7 @@ import type {
   SafetyPolicy,
   TuningPolicy,
 } from "./types";
-import { PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS } from "./types";
+import { PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
 import { hostDir } from "../host";
@@ -51,10 +51,45 @@ const evalSuiteSchema = z
 // v1.1 §9.2 — memory.policy: closed sets, loud on an unknown kind (the error names the value),
 // and a policy that feeds nothing is refused: recording deviations nobody reads is a mistake.
 const uniqueMembers = (xs: readonly string[]) => new Set(xs).size === xs.length;
+// v1.1 §9.3 — the memory contract: topics are typed streams; a state topic needs a real key; every
+// declared topic must be covered by `writes`; ids are unique. Errors name the value.
+const HALF_LIFE = /^(none|\d+[dwy]|\d+x)$/;
+const memoryTopicSchema = z
+  .object({
+    id: z.string().min(1).regex(/^[a-z0-9{}][a-z0-9{}._-]*(\/[a-z0-9{}][a-z0-9{}._-]*)*$/, "memory.topics[].id must be slash-separated segments (placeholders {target}, {me} allowed)"),
+    kind: z.enum(TOPIC_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.topics[].kind: unknown kind ${JSON.stringify(ctx.data)}; one of ${TOPIC_KINDS.join(", ")}` }) }),
+    key: z.string().min(1),
+    halfLife: z.string().regex(HALF_LIFE, "memory.topics[].halfLife must be none, <n>d, <n>w, <n>y or <n>x (refresh cadences)").optional(),
+    read: z.enum(READ_SCOPES, { errorMap: (_i, ctx) => ({ message: `memory.topics[].read: unknown scope ${JSON.stringify(ctx.data)}; one of ${READ_SCOPES.join(", ")}` }) }),
+    inject: z.boolean().default(false),
+  })
+  .strict();
+const HALF_LIFE_DEFAULT: Record<string, string> = { state: "2x", record: "none", learning: "1y", preference: "none", deviation: "90d" };
+const globToRegExp = (g: string) => new RegExp("^" + g.split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+const memoryContractSchema = z
+  .object({
+    tenant: z.string().min(1).optional(),
+    topics: z.array(memoryTopicSchema).default([]),
+    reads: z.array(z.string().min(1)).default([]),
+    writes: z.array(z.string().min(1)).default([]),
+  })
+  .strict()
+  .superRefine((c, ctx) => {
+    const seen = new Set<string>();
+    for (const t of c.topics) {
+      if (seen.has(t.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `memory.topics: duplicate id ${JSON.stringify(t.id)}` });
+      seen.add(t.id);
+      if (t.kind === "state" && t.key === "dedup") ctx.addIssue({ code: z.ZodIssueCode.custom, message: `memory.topics: state topic ${JSON.stringify(t.id)} needs a key other than dedup` });
+      if (c.writes.length > 0 && !c.writes.some((w) => globToRegExp(w).test(t.id)))
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `memory.topics: ${JSON.stringify(t.id)} is declared but not covered by writes ${JSON.stringify(c.writes)}` });
+    }
+  })
+  .transform((c) => ({ ...c, topics: c.topics.map((t) => ({ ...t, halfLife: t.halfLife ?? HALF_LIFE_DEFAULT[t.kind]! })), writes: c.writes.length ? c.writes : c.topics.map((t) => t.id) }));
+
 const memoryPolicySchema = z
   .object({
     record: z
-      .array(z.enum(DEVIATION_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown deviation kind ${JSON.stringify(ctx.data)}; one of ${DEVIATION_KINDS.join(", ")}` }) }))
+      .array(z.enum(RECORD_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown kind ${JSON.stringify(ctx.data)}; one of ${RECORD_KINDS.join(", ")}` }) }))
       .min(1, "memory.policy.record must name at least one deviation kind")
       .refine(uniqueMembers, "memory.policy.record lists a kind twice"),
     feeds: z
@@ -235,7 +270,7 @@ export const profileYamlSchema = z
     model: modelSchema.optional(),
     requires: requiresSchema.optional(),
     safety: safetySchema.optional(),
-    memory: z.object({ workspace: z.string().min(1).optional(), policy: memoryPolicySchema.optional() }).strict().default({}),
+    memory: z.object({ workspace: z.string().min(1).optional(), policy: memoryPolicySchema.optional(), contract: memoryContractSchema.optional() }).strict().default({}),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -512,9 +547,15 @@ export function composeProfile(
   const memoryWorkspace = y.memory.workspace ?? parent.memory?.workspace;
   // §9.2: a child's policy replaces the parent's whole block (a closed set does not merge).
   const memoryPolicy = y.memory.policy ?? parent.memory?.policy;
+  // §9.3: a child's contract replaces the parent's whole block (topics are the HOP's own)
+  const memoryContract = y.memory.contract ?? parent.memory?.contract;
   const memory =
-    memoryWorkspace || memoryPolicy
-      ? { ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}), ...(memoryPolicy ? { policy: memoryPolicy } : {}) }
+    memoryWorkspace || memoryPolicy || memoryContract
+      ? {
+          ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}),
+          ...(memoryPolicy ? { policy: memoryPolicy } : {}),
+          ...(memoryContract ? { contract: memoryContract } : {}),
+        }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
   const locked = [...new Set([...parent.locked, ...y.locked, ...(safety ? ["safety"] : [])])];

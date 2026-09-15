@@ -69,7 +69,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.4",
+      contract: "d11.5",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -98,7 +98,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.4");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.5");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -113,6 +113,12 @@ describe("buildRunOutcome", () => {
     expect(ev.payload).not.toHaveProperty("feedback_outcome");
     expect(ev.payload.failure_class).toBe("step_budget_stall");
     expect(ev.payload.checks.agent).toEqual({ verdict: null });
+  });
+
+  test("d11.5: memories_injected rides on the payload when given, absent otherwise", () => {
+    const withMem = buildRunOutcome({ ...baseInput, memoriesInjected: ["e1", "e2"] });
+    expect(withMem.payload.memories_injected).toEqual(["e1", "e2"]);
+    expect("memories_injected" in buildRunOutcome(baseInput).payload).toBe(false);
   });
 
   test("d11.4: a sub-agent run carries role + parent_run_id; a main run omits parent_run_id", () => {
@@ -130,6 +136,6 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.4");
+    expect(round.contract).toBe("d11.5");
   });
 });

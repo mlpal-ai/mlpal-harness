@@ -37,11 +37,15 @@ describe("SyncingMemory", () => {
     // graph received the mapped envelope at the episodes endpoint
     expect(posts.length).toBe(1);
     expect(posts[0]!.url).toBe("https://memory.mlpal.ai/api/v1/episodes");
-    const env = posts[0]!.body as { scope: string; scope_id: string; content: string; action_type: string };
-    expect(env.scope).toBe("repo");
-    expect(env.scope_id).toBe("backend");
+    // The server requires a LIST of envelopes, each a memory.claim with org/workspace scope.
+    const body = posts[0]!.body as { episodes: Array<{ scope: string; workspace?: string; content: string; action_type: string; payload: Record<string, unknown> }> };
+    expect(body.episodes).toHaveLength(1);
+    const env = body.episodes[0]!;
+    expect(env.scope).toBe("org");
+    expect(env.workspace).toBe("backend");
     expect(env.content).toContain("kubectl");
-    expect(env.action_type).toBe("decision");
+    expect(env.action_type).toBe("memory.claim");
+    expect(env.payload).toMatchObject({ kind: "decision", topic: "backend--deploy", key: "deploy", value: "Deploy via kubectl.", evidence_ids: [] });
   });
 
   test("a sync failure never breaks the local write (best-effort)", async () => {
