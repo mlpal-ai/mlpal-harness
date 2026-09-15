@@ -25,7 +25,9 @@ export type SafetyReason =
 /** `unknown`: a command matching no toolClasses pattern on a tool without capability tags. The
  *  envelope never admits unknown on its own — it falls to allow rules and the mode — and the
  *  attempt trace labels it honestly instead of as a read. */
-export type SafetyClass = "readOnly" | "mutative" | "destructive" | "unknown";
+/** `memory`: a write to the HOP's memory server, never an estate change; admitted in every mode;
+ *  deny rules and hard denials still apply (§10.2, memory v6 E5). */
+export type SafetyClass = "readOnly" | "memory" | "mutative" | "destructive" | "unknown";
 export type SafetyOutcome = "allow" | "deny" | "park";
 
 export interface SafetyDisposition {
@@ -83,14 +85,14 @@ function anyMatch(patterns: string[], action: SafetyAction): boolean {
 /** Classify an action against the envelope's toolClasses. Precedence destructive > mutative >
  *  readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
  *  `destructive` — that must be explicit), everything else to `readOnly`. A `memory`-tagged tool
- *  (a working-memory write, not an estate change) is `readOnly` unless the HOP lists it
+ *  (a working-memory write, not an estate change) is `memory` unless the HOP lists it
  *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes. */
 export function classifyAction(safety: SafetyPolicy, action: SafetyAction): SafetyClass {
   const tc = safety.toolClasses;
   if (anyMatch(tc.destructive, action)) return "destructive";
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
-  if (action.tags.memory) return "readOnly";
+  if (action.tags.memory) return "memory";
   if (action.tags.applies) return "mutative";
   return action.tags.readOnly ? "readOnly" : "unknown";
 }
@@ -102,7 +104,7 @@ export function evaluateSafety(
   state: SafetyEvalState = {},
 ): SafetyDisposition {
   const cls = classifyAction(safety, action);
-  if (cls === "readOnly" || cls === "unknown") return { outcome: "allow" }; // ungated: the mode decides
+  if (cls === "readOnly" || cls === "memory" || cls === "unknown") return { outcome: "allow" }; // ungated: the mode decides
 
   if (state.hasRequiredInfo === false) {
     return { outcome: "park", reason: "missing_info", detail: "required information is missing" };

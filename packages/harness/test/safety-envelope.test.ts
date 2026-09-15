@@ -34,9 +34,9 @@ describe("classifyAction", () => {
     expect(classifyAction(SAFETY, act("aws s3 describe-bucket"))).toBe("readOnly");
   });
 
-  test("a memory-tagged tool classes readOnly unless the HOP lists it explicitly (E5)", () => {
+  test("a memory-tagged tool classes memory unless the HOP lists it explicitly (E5)", () => {
     const claim: SafetyAction = { toolName: "mcp__memory__memory_write", command: "", tags: { memory: true } };
-    expect(classifyAction(SAFETY, claim)).toBe("readOnly");
+    expect(classifyAction(SAFETY, claim)).toBe("memory");
     expect(evaluateSafety(SAFETY, claim).outcome).toBe("allow");
     const gated: SafetyPolicy = { ...SAFETY, toolClasses: { ...SAFETY.toolClasses, mutative: [...SAFETY.toolClasses.mutative, "mcp__memory__memory_write"] } };
     expect(classifyAction(gated, claim)).toBe("mutative");
