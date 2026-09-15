@@ -711,7 +711,7 @@ describe("v1.1 §9.2 memory.policy", () => {
     expect(p.memory).toEqual({ workspace: "infra", policy: { record: ["refusal", "unmodelled"], feeds: ["tune", "evals"] } });
   });
   test("an unknown kind is a load error naming the value", () => {
-    expect(() => load(base + "memory:\n  policy:\n    record: [refusal, hiccup]\n")).toThrow(/unknown deviation kind "hiccup"/);
+    expect(() => load(base + "memory:\n  policy:\n    record: [refusal, hiccup]\n")).toThrow(/unknown kind "hiccup"/);
   });
   test("a policy that feeds nothing, or repeats a kind, is refused", () => {
     expect(() => load(base + "memory:\n  policy:\n    record: [refusal]\n    feeds: []\n")).toThrow(/at least one consumer/);
@@ -731,5 +731,59 @@ describe("v1.1 §9.2 memory.policy", () => {
       rmSync(parentDir, { recursive: true, force: true });
       rmSync(childDir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("v1.1 §9.3 memory.contract", () => {
+  const base = "spec: mlpal/hop-v1\nname: p\nversion: 0.0.1\ndescription: t\nextends: coding\n";
+  const load = (yaml: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "hop-mc-"));
+    writeFileSync(join(dir, "hop.yaml"), yaml);
+    try {
+      return loadProfile(dir, { cwd: dir, home: dir });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const contract = `memory:
+  workspace: infra
+  tenant: acme-infra
+  topics:
+    - { id: infra/state/cost-daily, kind: state, key: date, halfLife: 1d, read: company, inject: true }
+    - { id: "infra/state/watch/{target}", kind: state, key: target, read: company }
+    - { id: infra/learning, kind: learning, key: dedup, read: company }
+    - { id: "person/{me}/pref/infra", kind: preference, key: field, read: self }
+  reads: [company/ownership]
+  writes: ["infra/*", "person/{me}/pref/infra"]
+`;
+  test("loads the contract, fills half-life defaults, keeps writes and reads", () => {
+    const p = load(base + contract);
+    const c = p.memory!;
+    expect(c.tenant).toBe("acme-infra");
+    expect(c.topics!.map((t) => [t.id, t.halfLife, t.inject])).toEqual([
+      ["infra/state/cost-daily", "1d", true],
+      ["infra/state/watch/{target}", "2x", false],
+      ["infra/learning", "1y", false],
+      ["person/{me}/pref/infra", "none", false],
+    ]);
+    expect(c.reads).toEqual(["company/ownership"]);
+    expect(c.writes).toEqual(["infra/*", "person/{me}/pref/infra"]);
+  });
+  test("writes defaults to the declared topic ids when omitted", () => {
+    const p = load(base + "memory:\n  topics:\n    - { id: x/state/a, kind: state, key: date, read: owner }\n");
+    expect(p.memory!.writes).toEqual(["x/state/a"]);
+  });
+  test("refuses an unknown kind, an unknown read scope, a state topic keyed dedup, a duplicate id and an uncovered topic, naming the value", () => {
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/a, kind: blob, key: date, read: owner }\n")).toThrow(/unknown kind "blob"/);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/a, kind: state, key: date, read: everyone }\n")).toThrow(/unknown scope "everyone"/);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/a, kind: state, key: dedup, read: owner }\n")).toThrow(/needs a key other than dedup/);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/a, kind: state, key: date, read: owner }\n    - { id: x/a, kind: learning, key: dedup, read: owner }\n")).toThrow(/duplicate id "x\/a"/);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: y/a, kind: state, key: date, read: owner }\n  writes: [\"x/*\"]\n")).toThrow(/not covered by writes/);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/a, kind: state, key: date, read: owner, halfLife: soon }\n")).toThrow(/halfLife/);
+  });
+  test("policy accepts the positive kinds and the personalize feed", () => {
+    const p = load(base + "memory:\n  policy:\n    record: [refusal, outcome, preference]\n    feeds: [personalize]\n");
+    expect(p.memory!.policy).toEqual({ record: ["refusal", "outcome", "preference"], feeds: ["personalize"] });
   });
 });

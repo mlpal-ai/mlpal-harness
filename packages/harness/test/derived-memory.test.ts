@@ -189,5 +189,8 @@ describe("memory policy (hop-v1.1 §9.2)", () => {
     expect(s).not.toContain("`unmodelled`");
     expect(s).toContain("kind: <one of the kinds above>");
     expect(s).toContain("feed: tune (");
+    const pos = memoryPolicySection({ record: ["outcome", "preference"], feeds: ["personalize"] });
+    expect(pos).toContain("`outcome`: a person accepted");
+    expect(pos).toContain("`preference`: a person told you");
   });
 });

@@ -51,6 +51,19 @@ const evalSuiteSchema = z
 // v1.1 §9.2 — memory.policy: closed sets, loud on an unknown kind (the error names the value),
 // and a policy that feeds nothing is refused: recording deviations nobody reads is a mistake.
 const uniqueMembers = (xs: readonly string[]) => new Set(xs).size === xs.length;
+const memoryPolicySchema = z
+  .object({
+    record: z
+      .array(z.enum(RECORD_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown kind ${JSON.stringify(ctx.data)}; one of ${RECORD_KINDS.join(", ")}` }) }))
+      .min(1, "memory.policy.record must name at least one deviation kind")
+      .refine(uniqueMembers, "memory.policy.record lists a kind twice"),
+    feeds: z
+      .array(z.enum(MEMORY_FEEDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.feeds: unknown consumer ${JSON.stringify(ctx.data)}; one of ${MEMORY_FEEDS.join(", ")}` }) }))
+      .min(1, "memory.policy.feeds must name at least one consumer (tune, evals)")
+      .default(["tune", "evals"]),   // personalize is opt-in: a HOP says when a person's own memories may shape their sessions
+  })
+  .strict();
+
 // v1.1 §9.3 — the memory contract: topics are typed streams; a state topic needs a real key; every
 // declared topic must be covered by `writes`; ids are unique. Errors name the value.
 const HALF_LIFE = /^(none|\d+[dwy]|\d+x)$/;
@@ -66,9 +79,11 @@ const memoryTopicSchema = z
   .strict();
 const HALF_LIFE_DEFAULT: Record<string, string> = { state: "2x", record: "none", learning: "1y", preference: "none", deviation: "90d" };
 const globToRegExp = (g: string) => new RegExp("^" + g.split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-const memoryContractSchema = z
+const memorySchema = z
   .object({
+    workspace: z.string().min(1).optional(),
     tenant: z.string().min(1).optional(),
+    policy: memoryPolicySchema.optional(),
     topics: z.array(memoryTopicSchema).default([]),
     reads: z.array(z.string().min(1)).default([]),
     writes: z.array(z.string().min(1)).default([]),
@@ -86,18 +101,6 @@ const memoryContractSchema = z
   })
   .transform((c) => ({ ...c, topics: c.topics.map((t) => ({ ...t, halfLife: t.halfLife ?? HALF_LIFE_DEFAULT[t.kind]! })), writes: c.writes.length ? c.writes : c.topics.map((t) => t.id) }));
 
-const memoryPolicySchema = z
-  .object({
-    record: z
-      .array(z.enum(RECORD_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown kind ${JSON.stringify(ctx.data)}; one of ${RECORD_KINDS.join(", ")}` }) }))
-      .min(1, "memory.policy.record must name at least one deviation kind")
-      .refine(uniqueMembers, "memory.policy.record lists a kind twice"),
-    feeds: z
-      .array(z.enum(MEMORY_FEEDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.feeds: unknown consumer ${JSON.stringify(ctx.data)}; one of ${MEMORY_FEEDS.join(", ")}` }) }))
-      .min(1, "memory.policy.feeds must name at least one consumer (tune, evals)")
-      .default([...MEMORY_FEEDS]),
-  })
-  .strict();
 
 const tuningSchema = z
   .object({
@@ -270,7 +273,7 @@ export const profileYamlSchema = z
     model: modelSchema.optional(),
     requires: requiresSchema.optional(),
     safety: safetySchema.optional(),
-    memory: z.object({ workspace: z.string().min(1).optional(), policy: memoryPolicySchema.optional(), contract: memoryContractSchema.optional() }).strict().default({}),
+    memory: memorySchema.default({ topics: [], reads: [], writes: [] }),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -547,14 +550,22 @@ export function composeProfile(
   const memoryWorkspace = y.memory.workspace ?? parent.memory?.workspace;
   // §9.2: a child's policy replaces the parent's whole block (a closed set does not merge).
   const memoryPolicy = y.memory.policy ?? parent.memory?.policy;
-  // §9.3: a child's contract replaces the parent's whole block (topics are the HOP's own)
-  const memoryContract = y.memory.contract ?? parent.memory?.contract;
+  // §9.3: tenant, topics, reads and writes are the HOP's own; a child that declares topics replaces
+  // the parent's set (a closed set does not merge), a child without any inherits the parent's
+  const memoryTenant = y.memory.tenant ?? parent.memory?.tenant;
+  const ownTopics = y.memory.topics.length > 0 || y.memory.writes.length > 0 || y.memory.reads.length > 0;
+  const topics = ownTopics ? y.memory.topics : parent.memory?.topics ?? [];
+  const reads = ownTopics ? y.memory.reads : parent.memory?.reads ?? [];
+  const writes = ownTopics ? y.memory.writes : parent.memory?.writes ?? [];
   const memory =
-    memoryWorkspace || memoryPolicy || memoryContract
+    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length
       ? {
           ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}),
+          ...(memoryTenant ? { tenant: memoryTenant } : {}),
           ...(memoryPolicy ? { policy: memoryPolicy } : {}),
-          ...(memoryContract ? { contract: memoryContract } : {}),
+          ...(topics.length ? { topics } : {}),
+          ...(reads.length ? { reads } : {}),
+          ...(writes.length ? { writes } : {}),
         }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.

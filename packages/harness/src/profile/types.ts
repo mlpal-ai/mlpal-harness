@@ -276,7 +276,7 @@ export interface Profile {
   safety?: SafetyPolicy;
   /** v1.1 — working-memory identity. `workspace` names the notes workspace the HOP reads (the
    *  host's default is the working directory's basename; project settings may override). */
-  memory?: { workspace?: string; policy?: MemoryPolicy; contract?: MemoryContract };
+  memory?: { workspace?: string; tenant?: string; policy?: MemoryPolicy; topics?: MemoryTopic[]; reads?: string[]; writes?: string[] };
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
@@ -323,10 +323,4 @@ export interface MemoryTopic {
   halfLife: string;
   read: ReadScope;
   inject: boolean;
-}
-export interface MemoryContract {
-  tenant?: string;
-  topics: MemoryTopic[];
-  reads: string[];
-  writes: string[];
 }
