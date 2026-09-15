@@ -72,13 +72,23 @@ export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
  *  byte-identical to d11.2), so a d11.2 `cancelled` is unambiguously a true cancel, never a park.
  *  d11.4 adds `role` + `run_id` (+ optional `parent_run_id`): a d11.3 event may be a main run OR a
  *  sub-agent run (indistinguishable), so a distiller must not default an absent role to main.
+ *  d11.6 adds `memory_projection` (memory v6, E2): what the session-start projection from the memory
+ *  service gave the run — fact_count, estimated_tokens, truncated — so a report can show how much
+ *  memory each run started with. Absent when the run used the local topics (or no memory).
  *  d11.5 adds `memories_injected` (memory v6, E1a): the event_ids of the local memory topics that
  *  were rendered into the run's system prompt — absent on older events, never empty-by-default. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.5" as const;
+export const TELEMETRY_CONTRACT_VERSION = "d11.6" as const;
 
 /** Which loop emitted the event. Sub-agent runs (Task children, workflow agents) emit their own
  *  run.completed under the same HOP; without this a distiller counts them as main runs. */
 export type RunRole = "main" | "subagent";
+
+/** d11.6: session-start memory projection stats (memory v6 E2). Snake_case: it serializes verbatim. */
+export interface MemoryProjectionStat {
+  fact_count: number;
+  estimated_tokens: number;
+  truncated: boolean;
+}
 
 /**
  * Per-mechanism verification signal. The seam has four mechanisms (observe = command verifier,
@@ -108,6 +118,9 @@ export interface RunOutcomePayload {
   parent_run_id?: string;
   /** d11.5: event_ids of the memory topics injected into this run's system prompt (memory attribution). */
   memories_injected?: string[];
+  /** d11.6: the memory service's session-start projection this run began with (absent when the
+   *  local topics were used). Counts only, never content. */
+  memory_projection?: MemoryProjectionStat;
   task_type: string;
   run_result: RunResult;
   /** null iff run_result === "success"; a FAILURE_CLASS_VOCAB value otherwise. */
@@ -204,6 +217,7 @@ export interface RunOutcomeInput {
   runId: string;
   parentRunId?: string;
   memoriesInjected?: string[];
+  memoryProjection?: MemoryProjectionStat;
   taskType: string;
   runResult: RunResult;
   failureClass: FailureClass | null;
@@ -241,6 +255,7 @@ export function buildRunOutcome(i: RunOutcomeInput): RunOutcomeEvent {
       run_id: i.runId,
       ...(i.parentRunId ? { parent_run_id: i.parentRunId } : {}),
       ...(i.memoriesInjected ? { memories_injected: i.memoriesInjected } : {}),
+      ...(i.memoryProjection ? { memory_projection: i.memoryProjection } : {}),
       task_type: i.taskType,
       run_result: i.runResult,
       failure_class: i.failureClass,

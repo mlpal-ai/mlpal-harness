@@ -44,6 +44,7 @@ import { CODING_PROFILE } from "../profile/builtins/coding";
 import {
   buildRunOutcome,
   classifyFailure,
+  type MemoryProjectionStat,
   type RunResult,
   type RunRole,
   type TelemetrySink,
@@ -204,6 +205,8 @@ export interface AgentConfig {
     sourceRef?: string;
     /** d11.5: the event_ids of the memories the host injected into this run's prompt. */
     memoriesInjected?: () => string[];
+    /** d11.6: the memory service projection the run started with (counts), when one was used. */
+    memoryProjection?: () => MemoryProjectionStat | undefined;
     emit: TelemetrySink;
   };
 }
@@ -987,6 +990,7 @@ export class AgentSession {
               runId: cfg.sessionId,
               parentRunId: cfg.telemetry.parentRunId,
               memoriesInjected: cfg.telemetry.memoriesInjected?.(),
+              memoryProjection: cfg.telemetry.memoryProjection?.(),
               taskType: cfg.telemetry.taskType ?? loop.taskType,
               sourceRef: cfg.telemetry.sourceRef,
               runResult: outcome,

@@ -6,6 +6,7 @@ export { SyncingMemory, withMemory } from "./store/graph-memory";
 export * from "./store/sessions";
 export * from "./memory/memory";
 export * from "./memory/derived";
+export * from "./memory/projection";
 export * from "./tools";
 export * from "./permission/engine";
 export * from "./permission/safety-envelope";
