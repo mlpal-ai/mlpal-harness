@@ -49,6 +49,12 @@ export interface Tool<I = unknown> {
    *  Bash, or an infra MCP). Pairs with `applies` for the safety envelope; informational for
    *  routing/telemetry. */
   infra?: boolean;
+  /** Writes the run's working MEMORY (claims to the memory service), never the estate or the
+   *  workspace. Memory is not a change the modes guard: recon admits it, the safety envelope
+   *  classes it read-only unless the HOP lists it explicitly, and the actions risk gate ignores
+   *  it — the same standing the builtin Memorize tool has. Set by the host on the tools of the
+   *  MCP server it names as the memory server (memory v6, E5). */
+  memory?: boolean;
   /** Per-CALL read-only classification for tools whose safety depends on their input
    *  (Agent with read_only/run_in_background). The loop's concurrency gate prefers this
    *  over the static flag; permission policy still uses `readOnly`. */
@@ -98,6 +104,7 @@ export function defineTool<I>(def: {
   executes?: boolean;
   applies?: boolean;
   infra?: boolean;
+  memory?: boolean;
   isCallReadOnly?: (input: unknown) => boolean;
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
@@ -112,6 +119,7 @@ export function defineTool<I>(def: {
     executes: def.executes,
     applies: def.applies,
     infra: def.infra,
+    memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
     schema: def.schema,
     jsonSchema: js,

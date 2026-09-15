@@ -77,6 +77,21 @@ describe("McpManager", () => {
     expect("_meta" in (seen[1] as object)).toBe(false); // no host meta => nothing added
   });
 
+  test("tools of a named memory server carry the memory tag; other servers' tools do not (E5)", async () => {
+    const fake = { callTool: async () => ({ content: [{ type: "text", text: "ok" }] }) };
+    const client = fake as unknown as Parameters<typeof wrapMcpTool>[1];
+    const def = { name: "memory_write", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2];
+    const mem = wrapMcpTool("memory", client, def, undefined, undefined, { memory: true });
+    expect(mem.memory).toBe(true);
+    expect(mem.readOnly).toBe(false); // a write stays a write; the tag is what the modes honour
+    const other = wrapMcpTool("gmail", client, { name: "send", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2]);
+    expect(other.memory).toBeUndefined();
+    const mcp = new McpManager();
+    mcp.setMemoryServers(["memory"]);
+    // an unreachable server proves nothing about the tag; the wrapper test above does. Just the API.
+    await mcp.close();
+  });
+
   test("a tool call to a dead server is a TOOL error naming the server and endpoint, never a throw", async () => {
     const dead = { callTool: async () => { throw new Error("Was there a typo in the url or port?"); } };
     const tool = wrapMcpTool("memory", dead as unknown as Parameters<typeof wrapMcpTool>[1], { name: "memory_search", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2], "http://localhost:8011/mcp");

@@ -34,6 +34,18 @@ describe("classifyAction", () => {
     expect(classifyAction(SAFETY, act("aws s3 describe-bucket"))).toBe("readOnly");
   });
 
+  test("a memory-tagged tool classes readOnly unless the HOP lists it explicitly (E5)", () => {
+    const claim: SafetyAction = { toolName: "mcp__memory__memory_write", command: "", tags: { memory: true } };
+    expect(classifyAction(SAFETY, claim)).toBe("readOnly");
+    expect(evaluateSafety(SAFETY, claim).outcome).toBe("allow");
+    const gated: SafetyPolicy = { ...SAFETY, toolClasses: { ...SAFETY.toolClasses, mutative: [...SAFETY.toolClasses.mutative, "mcp__memory__memory_write"] } };
+    expect(classifyAction(gated, claim)).toBe("mutative");
+    // the tag never launders an `applies` tool: explicit lists and the memory tag are both checked
+    // before the applies default, but a memory server's tools are never applies-tagged.
+    const untagged: SafetyAction = { toolName: "mcp__memory__memory_write", command: "", tags: {} };
+    expect(classifyAction(SAFETY, untagged)).toBe("unknown");
+  });
+
   test("sub-command aware: a destructive sub-command in a chain classifies destructive", () => {
     expect(classifyAction(SAFETY, act("echo hi && terraform destroy"))).toBe("destructive");
   });

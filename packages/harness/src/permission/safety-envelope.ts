@@ -52,7 +52,7 @@ export interface SafetyAction {
   /** The command / representative arg used for toolClass matching. */
   command: string;
   /** Static capability tags of the tool. */
-  tags: { readOnly?: boolean; applies?: boolean; infra?: boolean };
+  tags: { readOnly?: boolean; applies?: boolean; infra?: boolean; memory?: boolean };
   plan?: PlanSignals;
 }
 
@@ -82,12 +82,15 @@ function anyMatch(patterns: string[], action: SafetyAction): boolean {
 
 /** Classify an action against the envelope's toolClasses. Precedence destructive > mutative >
  *  readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
- *  `destructive` — that must be explicit), everything else to `readOnly`. */
+ *  `destructive` — that must be explicit), everything else to `readOnly`. A `memory`-tagged tool
+ *  (a working-memory write, not an estate change) is `readOnly` unless the HOP lists it
+ *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes. */
 export function classifyAction(safety: SafetyPolicy, action: SafetyAction): SafetyClass {
   const tc = safety.toolClasses;
   if (anyMatch(tc.destructive, action)) return "destructive";
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
+  if (action.tags.memory) return "readOnly";
   if (action.tags.applies) return "mutative";
   return action.tags.readOnly ? "readOnly" : "unknown";
 }

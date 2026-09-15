@@ -11,9 +11,35 @@ function req(
   input: Record<string, unknown>,
   readOnly: boolean,
   isEdit = false,
+  isMemory = false,
 ): PermissionRequest {
-  return { toolName, input, readOnly, isEdit, principal: HUMAN };
+  return { toolName, input, readOnly, isEdit, isMemory, principal: HUMAN };
 }
+
+// memory v6 E5: a working-memory write (a `memory`-tagged tool) is not a change to the estate.
+describe("memory writes are ungated by every mode (E5)", () => {
+  const claim = req("mcp__memory__memory_write", { topic: "infra/state/watch", key: "today" }, false, false, true);
+  const bash = req("Bash", { command: "kubectl delete pod x" }, false);
+  test("recon admits a memory claim while still refusing an estate change", () => {
+    expect(defaultForMode("recon", claim).behavior).toBe("allow");
+    expect(defaultForMode("recon", bash)).toMatchObject({ behavior: "deny", source: "mode" });
+  });
+  test("manual and cruise admit it without a prompt", () => {
+    expect(defaultForMode("manual", claim).behavior).toBe("allow");
+    expect(defaultForMode("cruise", claim).behavior).toBe("allow");
+  });
+  test("a deny rule still wins over the memory tag (a HOP can gate its memory writes)", async () => {
+    const policy = createPolicy({ mode: "recon", deny: ["mcp__memory__memory_write"] });
+    expect(await policy(claim)).toMatchObject({ behavior: "deny", source: "deny_rule" });
+    const open = createPolicy({ mode: "recon" });
+    expect((await open(claim)).behavior).toBe("allow");
+  });
+  test("an untagged MCP write under recon is still denied (the tag is the only door)", async () => {
+    const policy = createPolicy({ mode: "recon" });
+    const untagged = req("mcp__memory__memory_write", { topic: "t" }, false);
+    expect(await policy(untagged)).toMatchObject({ behavior: "deny", source: "mode" });
+  });
+});
 
 // The interactive gate re-evaluates against the live mode via defaultForMode when the user raises
 // autonomy mid-run. These lock in the per-mode decision the gate depends on to clear a pending prompt.

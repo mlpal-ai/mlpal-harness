@@ -35,6 +35,9 @@ export interface PermissionRequest {
   readOnly: boolean;
   /** A file edit (Write/Edit) — auto-approved in accept-edits mode. */
   isEdit: boolean;
+  /** A working-memory write (a `memory`-tagged tool). Not a change to the estate, so no mode
+   *  guards it: recon admits it alongside reads. Deny rules and the hard denials still apply. */
+  isMemory?: boolean;
   principal: Author;
 }
 
@@ -117,6 +120,9 @@ function hardDeny(req: PermissionRequest): string | null {
  *  the time a prompt fires, rules have already been consulted (a deny/allow rule resolves before the
  *  gate), so the live mode's own decision is the whole answer. */
 export function defaultForMode(mode: PermissionMode, req: PermissionRequest): Decision {
+  // A memory claim is not a change to the estate (memory v6 E5): every mode admits it the way it
+  // admits a read. "recon never touches the estate" stays exact — Bash/Edit/infra remain blocked.
+  const ungated = req.readOnly || req.isMemory === true;
   switch (mode) {
     case "autopilot":
       // allow everything, no prompts (sandboxes, CI, autonomous runs).
@@ -124,13 +130,13 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
     case "cruise":
       // reads + file edits go through; command execution and anything else (Bash, MCP,
       // web) still asks — that's where irreversible damage lives.
-      return req.readOnly || req.isEdit ? { behavior: "allow" } : { behavior: "ask" };
+      return ungated || req.isEdit ? { behavior: "allow" } : { behavior: "ask" };
     case "recon":
-      return req.readOnly
+      return ungated
         ? { behavior: "allow" }
         : { behavior: "deny", reason: "recon mode is read-only: changes are blocked", source: "mode" };
     default: // manual
-      return req.readOnly ? { behavior: "allow" } : { behavior: "ask" };
+      return ungated ? { behavior: "allow" } : { behavior: "ask" };
   }
 }
 

@@ -1235,6 +1235,7 @@ export class AgentSession {
       input,
       readOnly: tool?.readOnly ?? false,
       isEdit: tool?.edits ?? false,
+      isMemory: tool?.memory ?? false,
       principal,
     };
     const { decision, via } = await this.resolve(permReq);

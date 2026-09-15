@@ -91,11 +91,22 @@ export class McpManager {
    *  ids it served to which run and joins them with run verdicts later (memory v6, E1b). */
   private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
 
+  /** Servers whose tools are working-MEMORY tools (memory v6 E5): every tool they expose is
+   *  tagged `memory`, so a claim write passes recon and the safety envelope like a read while
+   *  the estate stays untouched. The host names them (the `memory` entry of mcpServers). */
+  private readonly memoryServers = new Set<string>();
+
   /** authDir persists OAuth tokens per server (e.g. ~/.yodex/mcp-auth). */
   constructor(
     private readonly logger: Logger = silentLogger,
     private readonly authDir?: string,
   ) {}
+
+  /** Name the servers whose tools carry the `memory` tag. Call before connectAll. */
+  setMemoryServers(names: Iterable<string>): void {
+    this.memoryServers.clear();
+    for (const n of names) this.memoryServers.add(n);
+  }
 
   setCallMeta(fn: ((ctx: ToolContext) => Record<string, unknown>) | null): void {
     this.callMeta = fn;
@@ -194,7 +205,9 @@ export class McpManager {
     this.clientByName.set(name, client);
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
-    return result.tools.map((t) => wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null));
+    return result.tools.map((t) =>
+      wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, { memory: this.memoryServers.has(name) }),
+    );
   }
 
   /** Disconnect one server and remove its tools from the given registries (pack removal). */
@@ -226,6 +239,7 @@ export function wrapMcpTool(
   def: RawMcpTool,
   endpoint?: string,
   meta?: (ctx: ToolContext) => Record<string, unknown> | null,
+  opts: { memory?: boolean } = {},
 ): Tool<unknown> {
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
@@ -238,6 +252,7 @@ export function wrapMcpTool(
     // Honor the server's readOnlyHint (e.g. web search); otherwise assume mutating so the
     // permission layer gates it.
     readOnly: def.annotations?.readOnlyHint === true,
+    ...(opts.memory ? { memory: true } : {}),
     schema: z.record(z.unknown()) as unknown as Tool<unknown>["schema"],
     jsonSchema: js,
     async call(input, ctx): Promise<ToolResult> {
