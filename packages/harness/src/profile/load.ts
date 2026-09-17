@@ -568,8 +568,13 @@ export function composeProfile(
   const topics = ownTopics ? y.memory.topics : parent.memory?.topics ?? [];
   const reads = ownTopics ? y.memory.reads : parent.memory?.reads ?? [];
   const writes = ownTopics ? y.memory.writes : parent.memory?.writes ?? [];
+  // memory v7: the ontology extension and the registry fields inherit like tenant does
+  const ontology = y.memory.ontology.length ? y.memory.ontology : parent.memory?.ontology ?? [];
+  const memoryOwner = y.memory.owner ?? parent.memory?.owner;
+  const memoryMode = y.memory.mode ?? parent.memory?.mode;
+  const memorySharing = y.memory.sharing ?? parent.memory?.sharing;
   const memory =
-    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length
+    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length
       ? {
           ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}),
           ...(memoryTenant ? { tenant: memoryTenant } : {}),
@@ -577,6 +582,10 @@ export function composeProfile(
           ...(topics.length ? { topics } : {}),
           ...(reads.length ? { reads } : {}),
           ...(writes.length ? { writes } : {}),
+          ...(ontology.length ? { ontology } : {}),
+          ...(memoryOwner ? { owner: memoryOwner } : {}),
+          ...(memoryMode ? { mode: memoryMode } : {}),
+          ...(memorySharing ? { sharing: memorySharing } : {}),
         }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
