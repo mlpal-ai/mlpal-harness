@@ -75,6 +75,10 @@ const memoryTopicSchema = z
     halfLife: z.string().regex(HALF_LIFE, "memory.topics[].halfLife must be none, <n>d, <n>w, <n>y or <n>x (refresh cadences)").optional(),
     read: z.enum(READ_SCOPES, { errorMap: (_i, ctx) => ({ message: `memory.topics[].read: unknown scope ${JSON.stringify(ctx.data)}; one of ${READ_SCOPES.join(", ")}` }) }),
     inject: z.boolean().default(false),
+    // memory v7 (design §1 phase axis): build memory is the builder's (what users asked, what each
+    // version scored), deploy memory is the users'. Same store; the projection injects deploy
+    // topics, the builder's brief reads build topics. Default deploy.
+    phase: z.enum(["build", "deploy"]).default("deploy"),
   })
   .strict();
 const HALF_LIFE_DEFAULT: Record<string, string> = { state: "2x", record: "none", learning: "1y", preference: "none", deviation: "90d" };
@@ -87,6 +91,13 @@ const memorySchema = z
     topics: z.array(memoryTopicSchema).default([]),
     reads: z.array(z.string().min(1)).default([]),
     writes: z.array(z.string().min(1)).default([]),
+    // memory v7 WP7: the HOP's ontology extension — domain classes as subclasses of the core
+    // (`Volume: Artifact`); the memory service registers them per tenant and constrains extraction.
+    ontology: z.array(z.object({ name: z.string().regex(/^[A-Z][A-Za-z0-9]{1,40}$/), parent: z.string().min(1), description: z.string().max(200).optional() }).strict()).default([]),
+    // memory v7 WP8: registry fields the service keeps per HOP (owner, mode, sharing)
+    owner: z.string().min(1).optional(),
+    mode: z.enum(["auto", "review", "manual"]).optional(),
+    sharing: z.enum(["none", "org", "fleet"]).optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
