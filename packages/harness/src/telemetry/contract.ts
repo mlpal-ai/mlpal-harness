@@ -77,7 +77,12 @@ export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
  *  memory each run started with. Absent when the run used the local topics (or no memory).
  *  d11.5 adds `memories_injected` (memory v6, E1a): the event_ids of the local memory topics that
  *  were rendered into the run's system prompt — absent on older events, never empty-by-default. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.6" as const;
+export const TELEMETRY_CONTRACT_VERSION = "d11.7" as const;
+
+/** d11.7 (memory v7 WP1): tool calls per tool name for the run — counts only, no arguments, no
+ *  results. Lets the memory report say whether a run answered from memory without touching the
+ *  estate (no Bash/kubectl/aws call), which is the contribution metric the design meant. */
+export type ToolCallCounts = Record<string, number>;
 
 /** Which loop emitted the event. Sub-agent runs (Task children, workflow agents) emit their own
  *  run.completed under the same HOP; without this a distiller counts them as main runs. */
@@ -121,6 +126,8 @@ export interface RunOutcomePayload {
   /** d11.6: the memory service's session-start projection this run began with (absent when the
    *  local topics were used). Counts only, never content. */
   memory_projection?: MemoryProjectionStat;
+  /** d11.7: tool name → number of calls this run made. Absent on older events. */
+  tool_calls?: ToolCallCounts;
   task_type: string;
   run_result: RunResult;
   /** null iff run_result === "success"; a FAILURE_CLASS_VOCAB value otherwise. */
@@ -218,6 +225,7 @@ export interface RunOutcomeInput {
   parentRunId?: string;
   memoriesInjected?: string[];
   memoryProjection?: MemoryProjectionStat;
+  toolCalls?: ToolCallCounts;
   taskType: string;
   runResult: RunResult;
   failureClass: FailureClass | null;
@@ -256,6 +264,7 @@ export function buildRunOutcome(i: RunOutcomeInput): RunOutcomeEvent {
       ...(i.parentRunId ? { parent_run_id: i.parentRunId } : {}),
       ...(i.memoriesInjected ? { memories_injected: i.memoriesInjected } : {}),
       ...(i.memoryProjection ? { memory_projection: i.memoryProjection } : {}),
+      ...(i.toolCalls ? { tool_calls: i.toolCalls } : {}),
       task_type: i.taskType,
       run_result: i.runResult,
       failure_class: i.failureClass,

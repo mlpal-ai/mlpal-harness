@@ -154,7 +154,7 @@ describe("agentic loop", () => {
 
     expect(emitted).toHaveLength(1);
     const ev = emitted[0]!;
-    expect(ev.contract).toBe("d11.6");
+    expect(ev.contract).toBe("d11.7");
     expect(ev.action_type).toBe("run.completed");
     expect(ev.scope_id).toBe("acme");
     expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
@@ -303,7 +303,7 @@ describe("agentic loop", () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.payload.run_result).toBe("needs_approval");
     expect(emitted[0]!.payload.failure_class).toBe("approval_pending");
-    expect(emitted[0]!.contract).toBe("d11.6");
+    expect(emitted[0]!.contract).toBe("d11.7");
   });
 
   test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {

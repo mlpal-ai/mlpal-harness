@@ -69,7 +69,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.6",
+      contract: "d11.7",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -98,7 +98,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.6");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.7");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -119,6 +119,12 @@ describe("buildRunOutcome", () => {
     const withMem = buildRunOutcome({ ...baseInput, memoriesInjected: ["e1", "e2"] });
     expect(withMem.payload.memories_injected).toEqual(["e1", "e2"]);
     expect("memories_injected" in buildRunOutcome(baseInput).payload).toBe(false);
+  });
+
+  test("d11.7: tool_calls (names → counts) rides on the payload when given, absent otherwise", () => {
+    const withCalls = buildRunOutcome({ ...baseInput, toolCalls: { Bash: 3, mcp__memory__memory_search: 2 } });
+    expect(withCalls.payload.tool_calls).toEqual({ Bash: 3, mcp__memory__memory_search: 2 });
+    expect("tool_calls" in buildRunOutcome(baseInput).payload).toBe(false);
   });
 
   test("d11.6: memory_projection (counts only) rides on the payload when given, absent otherwise", () => {
@@ -142,6 +148,6 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.6");
+    expect(round.contract).toBe("d11.7");
   });
 });

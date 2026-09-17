@@ -435,6 +435,7 @@ export class AgentSession {
 
     let messages = await loadMessages(this.store, cfg.sessionId);
     let totalUsage: Usage = emptyUsage();
+    const toolCalls: Record<string, number> = {}; // d11.7: per-tool call counts, names only
     let turns = 0;
     let stopContinuations = 0;
     // Max-tokens recovery: a response cut off by the per-request output cap shouldn't be silently
@@ -623,6 +624,7 @@ export class AgentSession {
       const toolUses = (result.message.content as ContentBlock[]).filter(
         (b): b is ToolUseBlock => b.type === "tool_use",
       );
+      for (const tu of toolUses) toolCalls[tu.name] = (toolCalls[tu.name] ?? 0) + 1;
       const asstText = (result.message.content as ContentBlock[])
         .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
         .map((b) => b.text)
@@ -991,6 +993,7 @@ export class AgentSession {
               parentRunId: cfg.telemetry.parentRunId,
               memoriesInjected: cfg.telemetry.memoriesInjected?.(),
               memoryProjection: cfg.telemetry.memoryProjection?.(),
+              toolCalls,
               taskType: cfg.telemetry.taskType ?? loop.taskType,
               sourceRef: cfg.telemetry.sourceRef,
               runResult: outcome,
