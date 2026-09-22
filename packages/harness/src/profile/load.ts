@@ -277,6 +277,24 @@ export const profileYamlSchema = z
       .strict()
       .default({}),
     tools: z.object({ include: z.array(z.string()).optional() }).strict().default({}),
+    /** memory v10: capability modules — a named prompt section (and optional tools) the HOP carries
+     *  for one provider or domain, switchable as a whole. `enabled` is a tunable knob
+     *  (`modules.<name>.enabled`, range ["on","off"]) so the tune loop can propose switching an
+     *  unused provider off from the capability-mix facts, and the owner approves. Prompt text of
+     *  enabled modules is appended to the system prompt in declaration order; a module's tools join
+     *  `tools.include` when enabled. `off` keeps the module in the artifact for a later `on`. */
+    modules: z
+      .record(
+        z
+          .object({
+            prompt: z.string(),
+            tools: z.array(z.string()).optional(),
+            enabled: z.union([z.boolean(), z.enum(["on", "off"])]).default(true),
+            description: z.string().optional(),
+          })
+          .strict(),
+      )
+      .default({}),
     budgets: z.object({ maxTurns: z.number().int().positive().optional() }).strict().default({}),
     telemetry: z.object({ taskType: z.string().optional() }).strict().default({}),
     evals: z.array(evalSuiteSchema).default([]),
@@ -551,6 +569,19 @@ export function composeProfile(
   const observe = y.verification.observe ?? parent.verification.observe;
   const observed = OBSERVE_SOURCES[observe]!;
   const tunable = [...parent.tunable.filter((t) => !y.tunable.some((o) => o.path === t.path)), ...y.tunable];
+  // memory v10: modules are the artifact's own (a variant re-declares what it carries); prompt text
+  // resolves like prompts.system; `enabled` accepts on/off (the tune loop's enum knob) or a boolean
+  const modules: Record<string, { prompt: string; tools?: string[]; enabled: boolean; description?: string }> = Object.fromEntries(
+    Object.entries(y.modules).map(([n, m]) => [
+      n,
+      {
+        prompt: resolvePromptText(m.prompt, dir, `modules.${n}.prompt`),
+        ...(m.tools ? { tools: m.tools } : {}),
+        enabled: m.enabled === true || m.enabled === "on",
+        ...(m.description ? { description: m.description } : {}),
+      },
+    ]),
+  );
   const evals = withGatesDefaults(y.evals.length > 0 ? y.evals : parent.evals);
   const tuning = composeTuning(parent.tuning, y.tuning, y.name);
   if (tuning) validateTuning(tuning, evals, y.name);
@@ -615,8 +646,12 @@ export function composeProfile(
     source,
     dir,
     extendsChain: [...parent.extendsChain, parent.name],
+    modules,
     prompts: {
-      system: y.prompts.system ? resolvePromptText(y.prompts.system, dir, "prompts.system") : parent.prompts.system,
+      system: [
+        y.prompts.system ? resolvePromptText(y.prompts.system, dir, "prompts.system") : parent.prompts.system,
+        ...Object.entries(modules).filter(([, m]) => m.enabled).map(([n, m]) => `\n\n<!-- module: ${n} -->\n${m.prompt}`),
+      ].join(""),
       verifierAgent: y.prompts.verifierAgent
         ? resolvePromptText(y.prompts.verifierAgent, dir, "prompts.verifierAgent")
         : parent.prompts.verifierAgent,
@@ -675,7 +710,13 @@ export function composeProfile(
       allow: [...parent.permissions.allow, ...(y.permissions.allow ?? [])],
       deny: [...parent.permissions.deny, ...(y.permissions.deny ?? [])],
     },
-    tools: { include: y.tools.include ?? parent.tools.include },
+    tools: {
+      include: (() => {
+        const base = y.tools.include ?? parent.tools.include;
+        const extra = Object.values(modules).filter((m) => m.enabled).flatMap((m) => m.tools ?? []);
+        return extra.length ? [...new Set([...base, ...extra])] : base;
+      })(),
+    },
     budgets: { maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns },
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
     evals,

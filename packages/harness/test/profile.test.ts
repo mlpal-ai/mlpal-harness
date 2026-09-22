@@ -787,3 +787,50 @@ describe("v1.1 §9.3 memory.contract", () => {
     expect(p.memory!.policy).toEqual({ record: ["refusal", "outcome", "preference"], feeds: ["personalize"] });
   });
 });
+
+describe("capability modules (memory v10)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "yodex-modules-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const yamlFor = (gcloud: string) => `spec: mlpal/hop-v1
+name: cloudy
+version: 0.1.0
+extends: coding
+prompts:
+  system: file:prompts/system.md
+modules:
+  aws:
+    prompt: file:prompts/aws.md
+    tools: [Bash]
+  gcloud:
+    prompt: file:prompts/gcloud.md
+    enabled: ${gcloud}
+tunable:
+  - path: modules.gcloud.enabled
+    range: [on, off]
+`;
+  const files = { "prompts/system.md": "You manage clouds.", "prompts/aws.md": "AWS section: use aws cli.", "prompts/gcloud.md": "GCP section: use gcloud." };
+  function write(gcloud: string) {
+    const pdir = join(dir, "cloudy");
+    mkdirSync(join(pdir, "prompts"), { recursive: true });
+    writeFileSync(join(pdir, "hop.yaml"), yamlFor(gcloud));
+    for (const [n, c] of Object.entries(files)) writeFileSync(join(pdir, n), c);
+    return pdir;
+  }
+  test("enabled modules join the system prompt in order; a switched-off one stays out but in the artifact", () => {
+    const on = loadProfile(write("on"), { cwd: dir, home: join(dir, "home") });
+    expect(on.prompts.system).toContain("You manage clouds.");
+    expect(on.prompts.system.indexOf("AWS section")).toBeLessThan(on.prompts.system.indexOf("GCP section"));
+    expect(on.modules.gcloud!.enabled).toBe(true);
+    expect(on.tunable.some((t) => t.path === "modules.gcloud.enabled")).toBe(true);
+    const off = loadProfile(write("off"), { cwd: dir, home: join(dir, "home") });
+    expect(off.prompts.system).toContain("AWS section");
+    expect(off.prompts.system).not.toContain("GCP section");
+    expect(off.modules.gcloud!.enabled).toBe(false);
+    expect(Object.keys(off.modules)).toEqual(["aws", "gcloud"]);
+  });
+});

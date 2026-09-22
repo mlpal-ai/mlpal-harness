@@ -287,6 +287,8 @@ export interface Profile {
   /** Non-fatal load-time notices the host should surface (e.g. an unpinned model set, or a
    *  fallback of unknown tier). Errors throw; these inform. Absent => none. */
   warnings?: string[];
+  /** memory v10: capability modules (resolved prompt text, tools, enabled) keyed by name. */
+  modules: Record<string, { prompt: string; tools?: string[]; enabled: boolean; description?: string }>;
 }
 
 /** v1.1 §9.2 — the deviation kinds a HOP may oblige the agent to memorise. Closed set. */

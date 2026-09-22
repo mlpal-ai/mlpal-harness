@@ -169,6 +169,7 @@ export const CODING_PROFILE: Profile = {
   source: "builtin",
   dir: null,
   extendsChain: [],
+  modules: {},
   prompts: {
     system: CODING_SYSTEM_PROMPT,
     verifierAgent: CODING_VERIFIER_AGENT_PROMPT,

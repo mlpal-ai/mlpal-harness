@@ -140,6 +140,10 @@ export const settingsSchema = z.object({
   telemetry: z
     .object({
       push: z.enum(["off", "memory", "otel"]).default("off"),
+      /** `otel`: the OTLP/HTTP endpoint (the collector's base URL; records go to <base>/v1/logs as
+       *  log records, one per run, the same content-free fields). Headers for auth, if any. */
+      otelEndpoint: z.string().optional(),
+      otelHeaders: z.record(z.string()).optional(),
     })
     .default({ push: "off" }),
   memory: z

@@ -76,6 +76,7 @@ export const REVIEWER_PROFILE: Profile = {
   source: "builtin",
   dir: null,
   extendsChain: [],
+  modules: {},
   prompts: {
     system: REVIEWER_SYSTEM_PROMPT,
     verifierAgent: REVIEWER_VERIFIER_PROMPT,
