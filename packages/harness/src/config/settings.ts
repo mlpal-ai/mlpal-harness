@@ -12,6 +12,10 @@ export const settingsSchema = z.object({
   gateway: z
     .object({ baseUrl: z.string().default("https://models.mlpal.ai") })
     .default({}),
+  /** The auth service: HOP registrations and the HOP-key exchange (the keyring). */
+  auth: z
+    .object({ baseUrl: z.string().default("https://auth.mlpal.ai") })
+    .default({}),
   /** The pinned, harness-validated default. Deliberately concrete: the prompts/effort defaults
    *  are tuned and benchmarked against this model, so upgrades happen by release, not by a
    *  gateway routing edit. When a gateway doesn't serve it (small self-hosted boxes) and the
@@ -283,6 +287,8 @@ export function loadSettings(
   const envLayer: Obj = {};
   const gatewayUrl = hostEnv(inp.env, "GATEWAY_URL");
   if (gatewayUrl) envLayer.gateway = { baseUrl: gatewayUrl };
+  const authUrl = hostEnv(inp.env, "AUTH_URL");
+  if (authUrl) envLayer.auth = { baseUrl: authUrl };
   const envModel = hostEnv(inp.env, "MODEL");
   if (envModel) envLayer.model = envModel;
   const envMode = hostEnv(inp.env, "MODE");

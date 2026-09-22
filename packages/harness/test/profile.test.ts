@@ -517,6 +517,30 @@ describe("profile loading", () => {
     expect(p.model?.main).toBe("premium");
   });
 
+  test("requires keyring rungs: models/memory override, agents by name, skills union; absent stays absent", () => {
+    const parent = writeProfile("p/rungs-parent", [
+      "spec: mlpal/hop-v1",
+      "name: rungs-parent",
+      "version: 1.0.0",
+      "extends: coding",
+      "requires: { models: { tiers: [frontier] }, agents: [ { name: triage } ], skills: [docx], memory: { read: true } }",
+    ].join("\n"));
+    const child = writeProfile("p/rungs-child", [
+      "spec: mlpal/hop-v1",
+      "name: rungs-child",
+      "version: 1.0.0",
+      `extends: ${parent}`,
+      "requires: { models: { tiers: [frontier, cheap] }, agents: [ { name: triage, optional: true }, { name: fixer } ], skills: [hop-builder], memory: { read: true, write: true } }",
+    ].join("\n"));
+    const p = loadProfile(child, opts());
+    expect(p.requires?.models).toEqual({ tiers: ["frontier", "cheap"] });
+    expect(p.requires?.agents).toEqual([{ name: "triage", optional: true }, { name: "fixer" }]);
+    expect(p.requires?.skills).toEqual(["docx", "hop-builder"]);
+    expect(p.requires?.memory).toEqual({ read: true, write: true });
+    const plain = loadProfile(writeProfile("p/rungs-none", ["spec: mlpal/hop-v1", "name: rungs-none", "version: 1.0.0", "extends: coding", "requires: { mcp: [ { name: memory } ] }"].join("\n")), opts());
+    expect(plain.requires).toEqual({ binaries: [], mcp: [{ name: "memory" }] });
+  });
+
   test("requires block unions binaries + mcp by name down the chain", () => {
     writeProfile(".yodex/hops/base-req", [
       "spec: mlpal/hop-v1",

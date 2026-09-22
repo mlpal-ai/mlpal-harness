@@ -162,6 +162,11 @@ const requiresSchema = z
       )
       .default([]),
     mcp: z.array(z.object({ name: z.string().min(1) }).strict()).default([]),
+    // Keyring rungs (logical names; the platform resolves endpoints and mints the bundle).
+    models: z.object({ tiers: z.array(z.string().min(1)).min(1) }).strict().optional(),
+    agents: z.array(z.object({ name: z.string().min(1), optional: z.boolean().optional() }).strict()).default([]),
+    skills: z.array(z.string().min(1)).default([]),
+    memory: z.object({ read: z.boolean().default(true), write: z.boolean().default(false) }).strict().optional(),
   })
   .strict();
 
@@ -524,9 +529,17 @@ function composeRequires(
     for (const x of b) m.set(x.name, x);
     return [...m.values()];
   };
+  const models = child?.models ?? parent?.models;
+  const agents = mergeByName(parent?.agents ?? [], child?.agents ?? []);
+  const skills = [...new Set([...(parent?.skills ?? []), ...(child?.skills ?? [])])];
+  const memory = child?.memory ?? parent?.memory;
   return {
     binaries: mergeByName(parent?.binaries ?? [], child?.binaries ?? []),
     mcp: mergeByName(parent?.mcp ?? [], child?.mcp ?? []),
+    ...(models ? { models } : {}),
+    ...(agents.length ? { agents } : {}),
+    ...(skills.length ? { skills } : {}),
+    ...(memory ? { memory } : {}),
   };
 }
 
