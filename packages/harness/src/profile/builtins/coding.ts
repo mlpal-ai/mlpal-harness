@@ -210,6 +210,9 @@ export const CODING_PROFILE: Profile = {
   tools: { include: [] }, // empty = every registered tool, today's behavior
   budgets: { maxTurns: 200 },
   telemetry: { taskType: "coding" },
+  // The keyring a coding HOP key grants by default (founder direction 2026-09-22): every model
+  // tier and the platform web-search server. Memory joins when the managed service is live.
+  requires: { binaries: [], mcp: [{ name: "websearch" }], models: { tiers: ["cheap", "mid", "frontier", "max"] } },
   evals: [],
   locked: [],
   tunable: [

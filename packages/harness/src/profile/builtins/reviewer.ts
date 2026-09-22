@@ -140,6 +140,8 @@ export const REVIEWER_PROFILE: Profile = {
   },
   budgets: { maxTurns: 100 },
   telemetry: { taskType: "review" },
+  // Read-only and offline by design: models only.
+  requires: { binaries: [], mcp: [], models: { tiers: ["cheap", "mid", "frontier"] } },
   evals: [],
   locked: ["permissions.defaultMode", "permissions.deny", "verification.agent.failMode"],
   tunable: [
