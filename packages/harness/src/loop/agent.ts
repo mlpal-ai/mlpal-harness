@@ -637,6 +637,7 @@ export class AgentSession {
         stopReason: result.stopReason,
         usage: result.usage,
         ms: Date.now() - callStartMs,
+        tools: cfg.tools.schemas().length, // a changed tool set is a prompt-prefix change (cache miss cause)
         ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
         ...(result.effort ? { effort: result.effort } : {}),
       });

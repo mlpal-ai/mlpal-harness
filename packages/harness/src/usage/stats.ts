@@ -18,13 +18,15 @@ export interface ModelCall {
   ms?: number;
   computeUnits?: number;
   stopReason?: string;
+  /** Tool definitions sent with the call; a change between calls invalidates the cached prefix. */
+  tools?: number;
 }
 
 export interface CacheMiss {
   index: number;
   ts: string;
   model: string;
-  cause: "model switch" | "idle past the cache TTL" | "prompt prefix changed";
+  cause: "model switch" | "idle past the cache TTL" | "tool set changed" | "prompt prefix changed";
   /** Tokens re-cached by this call (its cache_creation), i.e. what the miss cost. */
   recached: number;
 }
@@ -113,6 +115,7 @@ function asCall(r: Record<string, unknown>): ModelCall | null {
     ms: typeof r.ms === "number" ? r.ms : undefined,
     computeUnits: typeof r.computeUnits === "number" ? r.computeUnits : undefined,
     stopReason: typeof r.stopReason === "string" ? r.stopReason : undefined,
+    tools: typeof r.tools === "number" ? r.tools : undefined,
   };
 }
 
@@ -133,7 +136,14 @@ export function cacheDiagnostics(calls: ModelCall[], ttlMs = CACHE_TTL_MS): Cach
     if (i === 0 || promptTokens(c.usage) < 2_000 || cr > 0) continue;
     const prev = calls[i - 1]!;
     const gap = Date.parse(c.ts) - Date.parse(prev.ts);
-    const cause: CacheMiss["cause"] = c.model !== prev.model ? "model switch" : Number.isFinite(gap) && gap > ttlMs ? "idle past the cache TTL" : "prompt prefix changed";
+    const cause: CacheMiss["cause"] =
+      c.model !== prev.model
+        ? "model switch"
+        : Number.isFinite(gap) && gap > ttlMs
+          ? "idle past the cache TTL"
+          : c.tools !== undefined && prev.tools !== undefined && c.tools !== prev.tools
+            ? "tool set changed"
+            : "prompt prefix changed";
     misses.push({ index: i, ts: c.ts, model: c.model, cause, recached: cw });
   }
   const last = calls[calls.length - 1];

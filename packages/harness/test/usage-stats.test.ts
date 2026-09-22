@@ -20,16 +20,17 @@ describe("cacheDiagnostics", () => {
       call("2026-09-22T10:00:00Z", "opus", u(10, 5, 0, 20_000)), // cold start
       call("2026-09-22T10:00:30Z", "opus", u(10, 5, 20_000, 100)), // hit
       call("2026-09-22T10:01:00Z", "sonnet", u(10, 5, 0, 20_100)), // model switch
-      call("2026-09-22T10:20:00Z", "sonnet", u(10, 5, 0, 20_200)), // 19 min idle
-      call("2026-09-22T10:20:20Z", "sonnet", u(10, 5, 0, 20_300)), // prefix changed
+      call("2026-09-22T10:20:00Z", "sonnet", u(10, 5, 0, 20_200), { tools: 7 }), // 19 min idle
+      call("2026-09-22T10:20:10Z", "sonnet", u(10, 5, 0, 20_250), { tools: 12 }), // MCP tools arrived: tool set changed
+      call("2026-09-22T10:20:20Z", "sonnet", u(10, 5, 0, 20_300), { tools: 12 }), // prefix changed
       call("2026-09-22T10:20:30Z", "sonnet", u(500, 5, 0, 0)), // tiny prompt: not counted
       call("2026-09-22T10:20:40Z", "sonnet", u(10, 5, 20_300, 0)), // warm again
     ];
     const d = cacheDiagnostics(calls);
-    expect(d.misses.map((m) => [m.index, m.cause, m.recached])).toEqual([[2, "model switch", 20_100], [3, "idle past the cache TTL", 20_200], [4, "prompt prefix changed", 20_300]]);
+    expect(d.misses.map((m) => [m.index, m.cause, m.recached])).toEqual([[2, "model switch", 20_100], [3, "idle past the cache TTL", 20_200], [4, "tool set changed", 20_250], [5, "prompt prefix changed", 20_300]]);
     expect(d.warm).toBe(true);
     expect(d.reads).toBe(40_300);
-    expect(d.hitRatio).toBeCloseTo(40_300 / (40_300 + 80_600 + 560), 3);
+    expect(d.hitRatio).toBeCloseTo(40_300 / (40_300 + 100_850 + 570), 3);
   });
 });
 
