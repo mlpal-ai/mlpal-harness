@@ -119,14 +119,15 @@ export interface Catalog {
 export const FALLBACK_CATALOG: Catalog = {
   schema: 1,
   profile: "coding",
-  updated: "2026-09-07",
+  updated: "2026-09-22",
   routing_ladder: ["cheap", "mid", "frontier", "max"],
   tiers: {
-    // Mirrors the gateway's universal `coding` profile as of 2026-09-07 (founder direction
-    // 2026-09-08: max defaults to gpt-6-astra). This copy is the OFFLINE fallback only; the live
+    // Mirrors the gateway's universal `coding` profile as of 2026-09-22 (founder direction
+    // 2026-09-08: max defaults to gpt-6-astra; 2026-09-22: frontier is claude-opus-5-5 with
+    // claude-opus-5 as its first fallback). This copy is the OFFLINE fallback only; the live
     // profile is revalidated by ETag on every load and wins whenever the gateway is reachable.
-    max: { model: "gpt-6-astra", provider: "openai", rel_cost: 100, good_for: "hardest reasoning, architecture, deep repo-level engineering - quality-first", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "claude-fable-5", provider: "anthropic", rel_cost: 100, available: true }, { model: "claude-opus-5", provider: "anthropic", rel_cost: 50, available: true }] },
-    frontier: { model: "claude-opus-5", provider: "anthropic", rel_cost: 50, good_for: "hard bounded coding + reasoning subtasks - frontier quality at lower cost; gpt-5.6-sol alternate for terminal long-horizon / max throughput", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "gpt-6-astra", provider: "openai", rel_cost: 100, available: true }, { model: "gpt-5.6-sol", provider: "openai", rel_cost: 40, available: true }, { model: "claude-fable-5", provider: "anthropic", rel_cost: 100, available: true }] },
+    max: { model: "gpt-6-astra", provider: "openai", rel_cost: 100, good_for: "hardest reasoning, architecture, deep repo-level engineering - quality-first", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "claude-opus-5-5", provider: "anthropic", rel_cost: 40, available: true }, { model: "claude-fable-5", provider: "anthropic", rel_cost: 100, available: true }, { model: "claude-opus-5", provider: "anthropic", rel_cost: 50, available: true }] },
+    frontier: { model: "claude-opus-5-5", provider: "anthropic", rel_cost: 40, good_for: "hard bounded coding + reasoning subtasks - Fable-class quality at 40% below Opus 5; gpt-5.6-sol alternate for terminal long-horizon / max throughput", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "claude-opus-5", provider: "anthropic", rel_cost: 50, available: true }, { model: "gpt-6-astra", provider: "openai", rel_cost: 100, available: true }, { model: "gpt-5.6-sol", provider: "openai", rel_cost: 40, available: true }, { model: "claude-fable-5", provider: "anthropic", rel_cost: 100, available: true }] },
     mid: { model: "gpt-5.6-terra", provider: "openai", rel_cost: 22, good_for: "most implementation, moderate reasoning, everyday agent work", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "claude-sonnet-5", provider: "anthropic", rel_cost: 20, available: true }, { model: "gpt-5.5", provider: "openai", rel_cost: 28, available: true }] },
     cheap: { model: "gpt-5.6-luna", provider: "openai", rel_cost: 2, good_for: "mechanical edits, extraction, search, summaries, classification - near-mid quality at a fraction of mid cost", caps: ["tools", "vision", "pdf", "streaming"], served_alternate: false, alternates: [{ model: "gemini-3.5-flash", provider: "google", rel_cost: 17, available: true }, { model: "claude-haiku-4-5-20251001", provider: "anthropic", rel_cost: 10, available: true }] },
   },

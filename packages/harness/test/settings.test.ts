@@ -21,7 +21,7 @@ afterEach(async () => {
 describe("loadSettings layering", () => {
   test("applies schema defaults when nothing is set", () => {
     const s = loadSettings({ home, cwd, env: {} });
-    expect(s.model).toBe("claude-opus-5"); // pinned, harness-validated default
+    expect(s.model).toBe("claude-opus-5-5"); // pinned, harness-validated default (2026-09-22: Opus 5.5)
     expect(s.modelPinned).toBe(false); // schema default, not a user choice
     expect(s.effort).toBeUndefined(); // unset by default — we don't override the model's own reasoning
     expect(s.mode).toBe("autopilot"); // full autonomy by default; deterministic safety still guards

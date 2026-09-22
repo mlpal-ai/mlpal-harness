@@ -102,12 +102,12 @@ describe("catalog client", () => {
     expect(tierFallbacks(FALLBACK_CATALOG, "gpt-5.6-luna")).toEqual(["gemini-3.5-flash", "claude-haiku-4-5-20251001"]);
     // asking about an alternate returns the primary + the other alternate
     expect(tierFallbacks(FALLBACK_CATALOG, "gemini-3.5-flash")).toEqual(["gpt-5.6-luna", "claude-haiku-4-5-20251001"]);
-    // max tier: primary gpt-6-astra, alternates fable-5 then opus-5 (2026-09-08 direction)
-    expect(tierFallbacks(FALLBACK_CATALOG, "gpt-6-astra")).toEqual(["claude-fable-5", "claude-opus-5"]);
+    // max tier: primary gpt-6-astra, alternates opus-5.5, fable-5, opus-5 (2026-09-22 direction)
+    expect(tierFallbacks(FALLBACK_CATALOG, "gpt-6-astra")).toEqual(["claude-opus-5-5", "claude-fable-5", "claude-opus-5"]);
     // the offline fallback mirrors the gateway's universal coding profile
     expect(FALLBACK_CATALOG.tiers.max.model).toBe("gpt-6-astra");
-    expect(FALLBACK_CATALOG.tiers.frontier.model).toBe("claude-opus-5");
-    expect(FALLBACK_CATALOG.tiers.frontier.alternates[0]!.model).toBe("gpt-6-astra");
+    expect(FALLBACK_CATALOG.tiers.frontier.model).toBe("claude-opus-5-5");
+    expect(FALLBACK_CATALOG.tiers.frontier.alternates[0]!.model).toBe("claude-opus-5"); // first fallback: the model it replaced
     // unknown model => no ladder
     expect(tierFallbacks(FALLBACK_CATALOG, "some-unknown-model")).toEqual([]);
   });

@@ -17,7 +17,7 @@ export const settingsSchema = z.object({
    *  gateway routing edit. When a gateway doesn't serve it (small self-hosted boxes) and the
    *  user didn't pin a model, the CLI falls back to the availability-aware `mlpal` router tag
    *  — defaults are ours to make robust; explicit choices are never substituted. */
-  model: z.string().default("claude-opus-5"),
+  model: z.string().default("claude-opus-5-5"),
   /** Reasoning effort for the main loop (output_config.effort). Unset by default — we don't override
    *  the model's own default reasoning; set it via --effort / YODEX_EFFORT (or here) to pin a level. */
   effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
