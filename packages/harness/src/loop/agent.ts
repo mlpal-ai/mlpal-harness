@@ -31,6 +31,7 @@ import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ToolResult } from "../tools/types";
 import { loadMessages } from "./messages";
+import { diffStat } from "../usage/stats";
 import { frameHandoff, postHandoffReply } from "./handoff";
 
 /**
@@ -586,6 +587,7 @@ export class AgentSession {
       metrics.increment("agent.turns", 1, { model: cfg.model });
 
       let result: ModelResult;
+      const callStartMs = Date.now();
       try {
         result = yield* cfg.model_client.stream({
           model: activeModel,
@@ -628,10 +630,14 @@ export class AgentSession {
         ts: now(),
       };
       parent = (await this.store.conversation.append(cfg.sessionId, asstEvt, parent)).uuid;
+      // The per-call ledger /usage reads: duration and the gateway's own compute units ride
+      // with the token counts, so session cost is the meter's figure, not an estimate.
       await this.store.logs.write(cfg.sessionId, "model", {
         model: result.model,
         stopReason: result.stopReason,
         usage: result.usage,
+        ms: Date.now() - callStartMs,
+        ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
         ...(result.effort ? { effort: result.effort } : {}),
       });
       yield asstEvt;
@@ -1323,6 +1329,7 @@ export class AgentSession {
       tool: tu.name,
       decision: decision.behavior,
       isError,
+      ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
     return make(display, isError, blocks, diff);

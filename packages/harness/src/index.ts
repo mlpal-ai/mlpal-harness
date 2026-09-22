@@ -7,6 +7,7 @@ export * from "./store/sessions";
 export * from "./memory/memory";
 export * from "./memory/derived";
 export * from "./memory/projection";
+export * from "./usage/stats";
 export { CheckpointStore, type CheckpointTurn, type CheckpointFile, type RewindResult } from "./checkpoints/store";
 export * from "./tools";
 export * from "./permission/engine";
