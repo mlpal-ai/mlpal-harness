@@ -437,6 +437,32 @@ describe("agentic loop", () => {
     expect(inner[0]!.type).toBe("image");
   });
 
+  test("UserPromptSubmit fires before the turn is persisted: it sees the prompt, can rewrite it, add context, or reject it", async () => {
+    const hooks = new HookEngine();
+    const seen: string[] = [];
+    hooks.register(
+      new FunctionHook("prompt", ["UserPromptSubmit"], (i) => {
+        if (i.event !== "UserPromptSubmit") return {};
+        seen.push(i.prompt);
+        if (i.prompt === "reject me") return { block: true, reason: "not today" };
+        if (i.prompt === "rewrite me") return { updatedPrompt: "rewritten", injectContext: "extra context" };
+        return {};
+      }),
+    );
+    const model = new ScriptedModel([textDone("ok"), textDone("ok")]);
+    const events = await collect(session(model, "cruise", { hooks }).run({ text: "rewrite me" }));
+    expect(seen).toEqual(["rewrite me"]);
+    const userEvt = events.find((e) => e.type === "user") as { message: { content: unknown } };
+    expect(userEvt.message.content).toBe("rewritten\n\nextra context"); // persisted + sent as rewritten
+    expect(model.seen[0]!.messages.at(-1)!.content).toBe("rewritten\n\nextra context");
+    const rejected = await collect(session(model, "cruise", { hooks }).run({ text: "reject me" }));
+    const res = rejected.find((e) => e.type === "result") as { subtype: string; reason?: string };
+    expect(res.subtype).toBe("error");
+    expect(res.reason).toContain("not today");
+    expect(rejected.some((e) => e.type === "user")).toBe(false); // nothing persisted for a rejected prompt
+    expect(model.seen).toHaveLength(1); // no model call for the rejected one
+  });
+
   test("a PreToolUse hook can block a tool", async () => {
     const hooks = new HookEngine();
     hooks.register(

@@ -409,10 +409,25 @@ export class AgentSession {
       }
     }
 
+    // UserPromptSubmit: a hook may reject the prompt (the run ends with the reason), rewrite it,
+    // or add context to it — before anything is persisted, so a rejected prompt leaves no turn.
+    let promptText = input.text;
+    if (cfg.hooks?.has("UserPromptSubmit")) {
+      const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
+      const blocker = results.find((r) => r.block);
+      if (blocker) {
+        yield { type: "result", subtype: "error", numTurns: 0, usage: emptyUsage(), ts: now(), reason: `prompt rejected by hook: ${blocker.reason ?? "no reason given"}` };
+        return;
+      }
+      for (const r of results) if (r.updatedPrompt) promptText = r.updatedPrompt;
+      const extra = results.map((r) => r.injectContext?.trim()).filter((c): c is string => Boolean(c));
+      if (extra.length) promptText = `${promptText}\n\n${extra.join("\n\n")}`;
+    }
+
     // Attachments (images/PDFs) ride ahead of the text in one user message.
     const userContent = input.blocks?.length
-      ? [...input.blocks, { type: "text" as const, text: input.text }]
-      : input.text;
+      ? [...input.blocks, { type: "text" as const, text: promptText }]
+      : promptText;
     const userEvt: UserEvent = {
       type: "user",
       message: { role: "user", content: userContent },
