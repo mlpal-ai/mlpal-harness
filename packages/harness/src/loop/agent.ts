@@ -588,12 +588,15 @@ export class AgentSession {
 
       let result: ModelResult;
       const callStartMs = Date.now();
+      // Snapshot the tool set SENT: MCP servers may connect during the call, and the ledger must
+      // record what the model saw, not what the registry holds afterwards.
+      const toolSchemas = cfg.tools.schemas();
       try {
         result = yield* cfg.model_client.stream({
           model: activeModel,
           system: cfg.systemPrompt,
           messages: [...messages], // snapshot — the model client never sees our mutable array
-          tools: cfg.tools.schemas(),
+          tools: toolSchemas,
           maxTokens: this.maxTokens,
           signal: cfg.signal,
           ...(activeModel === cfg.model && cfg.modelFallbacks ? { fallbackModels: cfg.modelFallbacks } : {}),
@@ -637,7 +640,7 @@ export class AgentSession {
         stopReason: result.stopReason,
         usage: result.usage,
         ms: Date.now() - callStartMs,
-        tools: cfg.tools.schemas().length, // a changed tool set is a prompt-prefix change (cache miss cause)
+        tools: toolSchemas.length, // a changed tool set is a prompt-prefix change (cache miss cause)
         ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
         ...(result.effort ? { effort: result.effort } : {}),
       });
