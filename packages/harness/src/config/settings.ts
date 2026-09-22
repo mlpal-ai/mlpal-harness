@@ -133,6 +133,15 @@ export const settingsSchema = z.object({
       classifyStart: z.boolean().optional(),
     })
     .default({}),
+  /** memory v10: where the content-free run records go beyond the local file. `off` (default) keeps
+   *  them on disk only; `memory` ships them to the memory service at session start and on every
+   *  scheduler tick (a cursor per file, idempotent on event_id) so the tuning loop can read them;
+   *  `otel` is reserved for an OTLP exporter. The person's choice, never the HOP's. */
+  telemetry: z
+    .object({
+      push: z.enum(["off", "memory", "otel"]).default("off"),
+    })
+    .default({ push: "off" }),
   memory: z
     .object({
       /** local (default): filesystem only. graph: also mirror writes to mlpal-memory-graph. */

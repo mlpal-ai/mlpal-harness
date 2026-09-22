@@ -77,7 +77,26 @@ export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
  *  memory each run started with. Absent when the run used the local topics (or no memory).
  *  d11.5 adds `memories_injected` (memory v6, E1a): the event_ids of the local memory topics that
  *  were rendered into the run's system prompt — absent on older events, never empty-by-default. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.7" as const;
+export const TELEMETRY_CONTRACT_VERSION = "d11.8" as const;
+
+/** d11.8 (memory v10): provider labels — how many Bash calls in the run started with each
+ *  infrastructure CLI (aws, az, gcloud, kubectl, helm, terraform, gh, docker). Counts of the first
+ *  word of a command, never the command: the capability mix a HOP specialises on. Absent when the
+ *  run made no such call. */
+export type ProviderLabels = Record<string, number>;
+export const PROVIDER_LABELS = ["aws", "az", "gcloud", "kubectl", "helm", "terraform", "gh", "docker"] as const;
+
+/** The provider label of one shell command, or undefined: the first word after any leading
+ *  environment assignments, `sudo`, `time` or `env`. `aws s3 ls` → aws; `FOO=1 kubectl get` → kubectl. */
+export function providerOfCommand(command: string): string | undefined {
+  const words = command.trim().split(/\s+/);
+  for (const w of words) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || w === "sudo" || w === "time" || w === "env" || w === "nohup") continue;
+    const base = w.replace(/^.*\//, "");
+    return (PROVIDER_LABELS as readonly string[]).includes(base) ? base : undefined;
+  }
+  return undefined;
+}
 
 /** d11.7 (memory v7 WP1): tool calls per tool name for the run — counts only, no arguments, no
  *  results. Lets the memory report say whether a run answered from memory without touching the
@@ -128,6 +147,8 @@ export interface RunOutcomePayload {
   memory_projection?: MemoryProjectionStat;
   /** d11.7: tool name → number of calls this run made. Absent on older events. */
   tool_calls?: ToolCallCounts;
+  /** d11.8: provider CLI → number of Bash calls that started with it. Absent when none did. */
+  labels?: ProviderLabels;
   task_type: string;
   run_result: RunResult;
   /** null iff run_result === "success"; a FAILURE_CLASS_VOCAB value otherwise. */
@@ -226,6 +247,7 @@ export interface RunOutcomeInput {
   memoriesInjected?: string[];
   memoryProjection?: MemoryProjectionStat;
   toolCalls?: ToolCallCounts;
+  labels?: ProviderLabels;
   taskType: string;
   runResult: RunResult;
   failureClass: FailureClass | null;
@@ -265,6 +287,7 @@ export function buildRunOutcome(i: RunOutcomeInput): RunOutcomeEvent {
       ...(i.memoriesInjected ? { memories_injected: i.memoriesInjected } : {}),
       ...(i.memoryProjection ? { memory_projection: i.memoryProjection } : {}),
       ...(i.toolCalls ? { tool_calls: i.toolCalls } : {}),
+      ...(i.labels && Object.keys(i.labels).length ? { labels: i.labels } : {}),
       task_type: i.taskType,
       run_result: i.runResult,
       failure_class: i.failureClass,

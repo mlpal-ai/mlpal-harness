@@ -69,7 +69,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.7",
+      contract: "d11.8",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -98,7 +98,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.7");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.8");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -148,6 +148,29 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.7");
+    expect(round.contract).toBe("d11.8");
+  });
+});
+
+
+import { providerOfCommand } from "../src/telemetry/contract";
+
+describe("d11.8 provider labels", () => {
+  test("the label is the first real word of a command, never the command", () => {
+    expect(providerOfCommand("aws s3 ls s3://bucket")).toBe("aws");
+    expect(providerOfCommand("AWS_PROFILE=prod kubectl get pods -A")).toBe("kubectl");
+    expect(providerOfCommand("sudo /usr/local/bin/gcloud auth list")).toBe("gcloud");
+    expect(providerOfCommand("cat results/tune/turn.log")).toBeUndefined();
+    expect(providerOfCommand("")).toBeUndefined();
+  });
+  test("labels ride the record only when a provider was called", () => {
+    const base = {
+      hop: { name: "infra-ro", version: "0.3.1" }, repo: "infra", model: "m", role: "main" as const, runId: "r", taskType: "infra",
+      runResult: "success" as const, failureClass: null, tokens: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 }, wallMs: 1, turns: 1,
+      checks: { selfCheckFired: false, antiChurnFired: false, observeRan: false, observePassed: false, agentVerdict: null },
+    };
+    expect(buildRunOutcome({ ...base, labels: { aws: 3 } }).payload.labels).toEqual({ aws: 3 });
+    expect(buildRunOutcome({ ...base, labels: {} }).payload.labels).toBeUndefined();
+    expect(buildRunOutcome(base).payload.labels).toBeUndefined();
   });
 });
