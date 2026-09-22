@@ -79,6 +79,17 @@ export interface ErrorEvent {
  * replay verbatim. This bounds the context a resumed/long session reloads instead of
  * replaying the whole DAG. `auto` = threshold-triggered in the loop; `manual` = /compact.
  */
+/** A rewind boundary: replay drops every entry after `toUuid` (null = everything) that was
+ *  persisted before this record, so a session continues from an earlier turn while the store
+ *  keeps the full history. Written by the host's /rewind together with the file restore. */
+export interface RewindEvent {
+  type: "rewind";
+  toUuid: string | null;
+  /** The checkpoint turn number rewound to (1-based), for display. */
+  turn: number;
+  ts: string;
+}
+
 export interface CompactEvent {
   type: "compact";
   summary: string;
@@ -93,6 +104,7 @@ export type SDKMessage =
   | SystemInitEvent
   | UserEvent
   | AssistantEvent
+  | RewindEvent
   | ToolResultEvent
   | ResultEvent
   | ErrorEvent
@@ -132,6 +144,7 @@ const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "assistant",
   "tool_result",
   "compact",
+  "rewind",
 ]);
 
 /** Runtime category: should this event be written to the conversation store?

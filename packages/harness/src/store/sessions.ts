@@ -1,5 +1,6 @@
 import { EVENTS_HEADER } from "../events/inbox";
 import type { SessionRecord, Store } from "./types";
+import { effectiveEntries } from "../loop/messages";
 
 /**
  * Resume helpers over the unified store. Sessions live in one place; we filter by `cwd`
@@ -14,7 +15,7 @@ export interface SessionInfo {
 }
 
 async function firstUserPreview(store: Store, sessionId: string): Promise<string> {
-  const entries = await store.conversation.read(sessionId);
+  const entries = effectiveEntries(await store.conversation.read(sessionId));
   const turn = entries.find((e) => e.payload.type === "user");
   if (!turn || turn.payload.type !== "user") return "(empty)";
   const content = turn.payload.message.content;
@@ -79,7 +80,7 @@ export async function recentPrompts(
 
   const collected: { ts: string; text: string }[] = [];
   for (const rec of recent) {
-    const entries = await store.conversation.read(rec.sessionId);
+    const entries = effectiveEntries(await store.conversation.read(rec.sessionId));
     for (const e of entries) {
       if (e.payload.type !== "user") continue;
       // Only turns the person actually typed — not peer agents' or system-injected turns.

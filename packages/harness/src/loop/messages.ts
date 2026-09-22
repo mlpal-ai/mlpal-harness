@@ -1,4 +1,4 @@
-import type { ContentBlock, Message, ToolResultBlock } from "@mlpal/harness-protocol";
+import type { ContentBlock, ConversationEntry, Message, ToolResultBlock } from "@mlpal/harness-protocol";
 import { summaryHeader } from "../context/compaction";
 import type { Store } from "../store/types";
 
@@ -12,8 +12,30 @@ import type { Store } from "../store/types";
  * its summary as a synthetic user turn. This bounds what a long/resumed session reloads —
  * everything before the boundary is represented by the summary, not replayed.
  */
+/** The entries a reader should see: every rewind record drops what came after its `toUuid`
+ *  (inclusive of nothing, exclusive of the target) among the entries before it, then vanishes
+ *  itself. Rewinds compose (rewind, continue, rewind again) and cross a compaction boundary. */
+export function effectiveEntries(entries: ConversationEntry[]): ConversationEntry[] {
+  const out: ConversationEntry[] = [];
+  for (const e of entries) {
+    if (e.payload.type !== "rewind") {
+      out.push(e);
+      continue;
+    }
+    const to = e.payload.toUuid;
+    if (to === null) {
+      out.length = 0;
+      continue;
+    }
+    const idx = out.findIndex((x) => x.uuid === to);
+    // An unknown target (a foreign or corrupted record) rewinds nothing rather than everything.
+    if (idx >= 0) out.length = idx + 1;
+  }
+  return out;
+}
+
 export async function loadMessages(store: Store, sessionId: string): Promise<Message[]> {
-  const entries = await store.conversation.read(sessionId);
+  const entries = effectiveEntries(await store.conversation.read(sessionId));
   const messages: Message[] = [];
   let pending: ToolResultBlock[] = [];
 
