@@ -1,3 +1,4 @@
+import { resolveApiKey, type KeyProvider } from "../gateway/client";
 /**
  * Model registry driven from the gateway catalog. yodex never hardcodes model IDs
  * or capabilities — it reads them at runtime, so new served models work with no
@@ -52,7 +53,7 @@ export interface ModelPolicyView {
 
 export interface ModelsConfig {
   baseUrl: string;
-  apiKey: string;
+  apiKey: KeyProvider;
   /** Rich catalog (metadata source). Default GET /v1/models. */
   modelsPath?: string;
   /** Authoritative served-set allow-list (what /v1/messages runs). Default /v1/messages/models. */
@@ -120,7 +121,7 @@ export class ModelRegistry {
 
   private headers(): Record<string, string> {
     return {
-      authorization: `Bearer ${this.cfg.apiKey}`,
+      authorization: `Bearer ${resolveApiKey(this.cfg.apiKey)}`,
       "anthropic-version": this.cfg.anthropicVersion ?? "2023-06-01",
     };
   }

@@ -1,3 +1,4 @@
+import { resolveApiKey, type KeyProvider } from "../gateway/client";
 import type { Logger } from "../obs/logger";
 import { silentLogger } from "../obs/logger";
 import { parseTopic, topicToEnvelope } from "../memory/derived";
@@ -13,7 +14,7 @@ import type { MemoryStore, Store } from "./types";
 export interface SyncingMemoryOptions {
   base: MemoryStore;
   endpoint: string;
-  apiKey?: string;
+  apiKey?: KeyProvider;
   logger?: Logger;
   /** Injectable for tests; defaults to fetch. Resolves to the HTTP status. */
   post?: (url: string, body: string, headers: Record<string, string>) => Promise<number>;
@@ -22,17 +23,14 @@ export interface SyncingMemoryOptions {
 export class SyncingMemory implements MemoryStore {
   private readonly base: MemoryStore;
   private readonly endpoint: string;
-  private readonly headers: Record<string, string>;
+  private readonly apiKey?: KeyProvider;
   private readonly log: Logger;
   private readonly post: NonNullable<SyncingMemoryOptions["post"]>;
 
   constructor(opts: SyncingMemoryOptions) {
     this.base = opts.base;
     this.endpoint = opts.endpoint.replace(/\/$/, "");
-    this.headers = {
-      "content-type": "application/json",
-      ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
-    };
+    this.apiKey = opts.apiKey;
     this.log = opts.logger ?? silentLogger;
     this.post =
       opts.post ??
@@ -40,6 +38,11 @@ export class SyncingMemory implements MemoryStore {
         const res = await fetch(url, { method: "POST", body, headers });
         return res.status;
       });
+  }
+
+  /** Built per request: the key may rotate under a keyring. */
+  private headers(): Record<string, string> {
+    return { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${resolveApiKey(this.apiKey)}` } : {}) };
   }
 
   readIndex(): Promise<string> {
@@ -59,7 +62,7 @@ export class SyncingMemory implements MemoryStore {
       const envelope = topicToEnvelope(name, parseTopic(content));
       // The ingest endpoint takes a LIST; the bare envelope was a 422 and every Memorize mirror
       // silently failed for weeks (the test pinned the wrong shape).
-      const status = await this.post(`${this.endpoint}/api/v1/episodes`, JSON.stringify({ episodes: [envelope] }), this.headers);
+      const status = await this.post(`${this.endpoint}/api/v1/episodes`, JSON.stringify({ episodes: [envelope] }), this.headers());
       if (status >= 200 && status < 300) {
         this.log.info("memory synced to graph", { topic: name, event_id: envelope.event_id });
       } else {

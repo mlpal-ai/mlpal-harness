@@ -1,3 +1,4 @@
+import { resolveApiKey, type KeyProvider } from "../gateway/client";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -151,7 +152,7 @@ export function isValidCatalog(x: unknown): x is Catalog {
 
 export interface LoadCatalogOptions {
   baseUrl: string;
-  apiKey: string;
+  apiKey: KeyProvider;
   profile?: string;
   /** Home dir for the on-disk copy (~/.yodex/catalog-<profile>.json) — the ETag/offline
    *  substrate, never a freshness authority: the endpoint is no-cache and every load
@@ -202,7 +203,7 @@ export async function loadCatalog(o: LoadCatalogOptions): Promise<{ catalog: Cat
   const cached = readCache(cachePath);
 
   try {
-    const headers: Record<string, string> = { Authorization: `Bearer ${o.apiKey}` };
+    const headers: Record<string, string> = { Authorization: `Bearer ${resolveApiKey(o.apiKey)}` };
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
     const res = await doFetch(`${o.baseUrl}/v1/catalog?profile=${encodeURIComponent(profile)}`, {
       headers,

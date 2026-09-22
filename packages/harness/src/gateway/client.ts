@@ -10,9 +10,17 @@ import { type Metrics, noopMetrics } from "../obs/metrics";
 import { MALFORMED_INPUT_KEY, parseJsonLenient } from "../tools/json";
 import { parseSSE } from "./sse";
 
+/** A static key or a function returning the current key (rotating credentials). */
+export type KeyProvider = string | (() => string);
+export function resolveApiKey(k: KeyProvider): string {
+  return typeof k === "function" ? k() : k;
+}
+
 export interface GatewayConfig {
   baseUrl: string;
-  apiKey: string;
+  /** The key, or a provider read at every request — a rotating credential (a HOP keyring whose
+   *  bundle is re-minted on a TTL) must never be captured at construction. */
+  apiKey: KeyProvider;
   /** Anthropic API version header. The gateway forwards it. */
   anthropicVersion?: string;
   maxRetries?: number;
@@ -212,7 +220,7 @@ export function withConversationCache(messages: Message[]): unknown[] {
 
 export class GatewayClient implements ModelClient {
   private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKey: KeyProvider;
   private readonly anthropicVersion: string;
   private readonly maxRetries: number;
   private readonly maxResume: number;
@@ -241,7 +249,7 @@ export class GatewayClient implements ModelClient {
     void fetch(`${this.baseUrl}/v1/feedback`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
         "content-type": "application/json",
         "anthropic-version": this.anthropicVersion,
       },
@@ -505,7 +513,7 @@ export class GatewayClient implements ModelClient {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
         "anthropic-version": this.anthropicVersion,
       },
       body: JSON.stringify(body),
