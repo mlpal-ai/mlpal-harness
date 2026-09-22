@@ -13,6 +13,10 @@ function harness(opts: { answer?: string; sources?: number; error?: string; avai
   const [webSearch, research] = createWebSearchTools({
     backend: async (kind, args): Promise<ToolResult> => {
       calls.push({ kind, args });
+      // the real server has a strict schema: anything but its own arguments is a validation error
+      const allowed = kind === "web_search_deep" ? ["query"] : ["query", "recency", "domains"];
+      const stray = Object.entries(args).filter(([k, v]) => v !== undefined && !allowed.includes(k)).map(([k]) => k);
+      if (stray.length) return { content: `validation error for ${kind}: unexpected keyword argument ${stray.join(", ")}`, isError: true };
       if (opts.error) return { content: opts.error, isError: true };
       return { content: backendJson(opts.answer ?? "the answer", opts.sources ?? 3) };
     },
@@ -69,16 +73,20 @@ describe("WebSearch", () => {
 describe("Research", () => {
   test("depth maps to the backend tier; pro/reasoning stay inline", async () => {
     const h = harness();
-    await h.research.call({ query: "q", depth: "pro" }, ctx);
-    await h.research.call({ query: "q", depth: "reasoning" }, ctx);
+    const a = await h.research.call({ query: "q", depth: "pro", recency: "week" }, ctx);
+    const b = await h.research.call({ query: "q", depth: "reasoning" }, ctx);
+    expect(a.isError).toBeFalsy(); // `depth` never reaches the backend (it was forwarded once: a 422 in production)
+    expect(b.isError).toBeFalsy();
     expect(h.calls.map((c) => c.kind)).toEqual(["web_search_pro", "web_search_reasoning"]);
+    expect(h.calls[0]!.args).toEqual({ query: "q", recency: "week", domains: undefined });
     expect(h.spilled).toHaveLength(0);
   });
   test("deep: the full report is spilled to a session artifact and the context gets the head + path", async () => {
     const long = "L".repeat(RESEARCH_HEAD_CHARS * 3);
     const h = harness({ answer: long, sources: 40 });
-    const r = await h.research.call({ query: "market", depth: "deep" }, ctx);
-    expect(h.calls[0]!.kind).toBe("web_search_deep");
+    const r = await h.research.call({ query: "market", depth: "deep", recency: "year" }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(h.calls[0]).toEqual({ kind: "web_search_deep", args: { query: "market" } }); // deep takes only the query
     expect(h.spilled).toHaveLength(1);
     expect(h.spilled[0]!.name).toBe("research-1.md");
     expect(h.spilled[0]!.text).toContain("# Research: market");

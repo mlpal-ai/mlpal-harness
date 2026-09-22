@@ -123,7 +123,10 @@ export function createWebSearchTools(deps: WebSearchDeps): Tool<unknown>[] {
       if (counts.research >= maxResearch) return err(`session research cap reached (${maxResearch})`);
       counts.research += 1;
       const kind: SearchKind = input.depth === "deep" ? "web_search_deep" : input.depth === "reasoning" ? "web_search_reasoning" : "web_search_pro";
-      const { raw, parsed } = await run(kind, input, ctx);
+      // The backend's tools take exactly their own arguments (a strict schema): `depth` is ours,
+      // and deep research takes only the query — a stray key is a validation error, not ignored.
+      const args = kind === "web_search_deep" ? { query: input.query } : { query: input.query, recency: input.recency, domains: input.domains };
+      const { raw, parsed } = await run(kind, args, ctx);
       if (raw.isError) return raw;
       const answer = parsed?.answer ?? textOf(raw);
       const sources = parsed?.sources ?? [];
