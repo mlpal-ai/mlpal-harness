@@ -92,6 +92,16 @@ describe("McpManager", () => {
     await mcp.close();
   });
 
+  test("callTool on a server that is not connected is a tool error naming the server, never a throw", async () => {
+    const mcp = new McpManager();
+    mcp.setHiddenServers(["websearch"]);
+    expect(mcp.hasTool("websearch", "web_search")).toBe(false);
+    const r = await mcp.callTool("websearch", "web_search", { query: "x" }, { cwd: process.cwd() } as Parameters<typeof mcp.callTool>[3]);
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('MCP server "websearch" is not connected');
+    await mcp.close();
+  });
+
   test("a tool call to a dead server is a TOOL error naming the server and endpoint, never a throw", async () => {
     const dead = { callTool: async () => { throw new Error("Was there a typo in the url or port?"); } };
     const tool = wrapMcpTool("memory", dead as unknown as Parameters<typeof wrapMcpTool>[1], { name: "memory_search", inputSchema: { type: "object" } } as Parameters<typeof wrapMcpTool>[2], "http://localhost:8011/mcp");

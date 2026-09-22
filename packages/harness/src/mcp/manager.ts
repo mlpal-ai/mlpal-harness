@@ -96,6 +96,12 @@ export class McpManager {
    *  the estate stays untouched. The host names them (the `memory` entry of mcpServers). */
   private readonly memoryServers = new Set<string>();
 
+  /** Servers whose tools are NOT registered for the model: a built-in tool fronts them (the
+   *  platform web-search server behind WebSearch/Research) and calls them through callTool, so
+   *  the model sees one stable tool instead of the server's raw surface. */
+  private readonly hiddenServers = new Set<string>();
+  private readonly toolsByServer = new Map<string, Map<string, Tool<unknown>>>();
+
   /** authDir persists OAuth tokens per server (e.g. ~/.yodex/mcp-auth). */
   constructor(
     private readonly logger: Logger = silentLogger,
@@ -106,6 +112,28 @@ export class McpManager {
   setMemoryServers(names: Iterable<string>): void {
     this.memoryServers.clear();
     for (const n of names) this.memoryServers.add(n);
+  }
+
+  /** Name the servers a built-in fronts: connected, callable via callTool, never registered. */
+  setHiddenServers(names: Iterable<string>): void {
+    this.hiddenServers.clear();
+    for (const n of names) this.hiddenServers.add(n);
+  }
+
+  /** True once `server` connected and exposes `tool`. */
+  hasTool(server: string, tool: string): boolean {
+    return this.toolsByServer.get(server)?.has(tool) ?? false;
+  }
+
+  /** Call one tool of a connected server directly (same wrapper as a registered tool: `_meta`,
+   *  timeouts, dead-server errors). A server that is not connected is a tool error, not a throw. */
+  async callTool(server: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolResult> {
+    const t = this.toolsByServer.get(server)?.get(tool);
+    if (!t) {
+      const s = this.statuses.get(server);
+      return { content: `MCP server "${server}" ${s?.ok ? `has no tool "${tool}"` : `is not connected${s?.error ? `: ${s.error}` : ""}`}`, isError: true };
+    }
+    return t.call(input, ctx);
   }
 
   setCallMeta(fn: ((ctx: ToolContext) => Record<string, unknown>) | null): void {
@@ -144,7 +172,8 @@ export class McpManager {
     }
     try {
       const wrapped = await this.connectOne(name, config);
-      for (const t of wrapped) registry.register(t);
+      this.toolsByServer.set(name, new Map(wrapped.map((t) => [t.name.slice(mcpToolPrefix(name).length), t])));
+      if (!this.hiddenServers.has(name)) for (const t of wrapped) registry.register(t);
       this.statuses.set(name, { server: name, ok: true, tools: wrapped.length });
       this.logger.info("mcp server connected", { server: name, tools: wrapped.length });
       return wrapped.length;
