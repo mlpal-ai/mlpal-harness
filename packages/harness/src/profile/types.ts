@@ -182,7 +182,7 @@ export interface RequiresPolicy {
   /** `detect` is a shell string or a `builtin:<domain>` detector; `timeoutMs` overrides the
    *  host's per-command preflight timeout. */
   binaries: { name: string; detect: string; setup?: string; timeoutMs?: number }[];
-  mcp: { name: string }[];
+  mcp: { name: string; optional?: boolean }[];
   /** Platform rungs the HOP needs its key bundle to carry (the keyring): the models tiers it
    *  names, static agents by name, skills by name, and whether it reads/writes memory. Logical
    *  names only — the bundle carries the endpoints. Absent => not required. */

@@ -161,7 +161,9 @@ const requiresSchema = z
           .strict(),
       )
       .default([]),
-    mcp: z.array(z.object({ name: z.string().min(1) }).strict()).default([]),
+    // `optional`: a local or org server the HOP degrades without (e.g. an alert channel) — a
+    // registration does not fail when it cannot resolve it, and preflight reports it softly.
+    mcp: z.array(z.object({ name: z.string().min(1), optional: z.boolean().optional() }).strict()).default([]),
     // Keyring rungs (logical names; the platform resolves endpoints and mints the bundle).
     models: z.object({ tiers: z.array(z.string().min(1)).min(1) }).strict().optional(),
     agents: z.array(z.object({ name: z.string().min(1), optional: z.boolean().optional() }).strict()).default([]),
