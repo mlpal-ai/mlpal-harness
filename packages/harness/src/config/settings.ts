@@ -18,7 +18,7 @@ export const settingsSchema = z.object({
     .default({}),
   /** The platform API (dashboard backend): the HOP catalog and artifacts. */
   platform: z
-    .object({ baseUrl: z.string().default("https://mlpal.ai") })
+    .object({ baseUrl: z.string().default("https://hops.mlpal.ai") })
     .default({}),
   /** The pinned, harness-validated default. Deliberately concrete: the prompts/effort defaults
    *  are tuned and benchmarked against this model, so upgrades happen by release, not by a
