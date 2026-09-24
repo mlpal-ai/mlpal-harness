@@ -45,7 +45,10 @@ function run(
 ): Promise<{ output: string; code: number; adoptedAs?: string }> {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn("/bin/bash", ["-c", SHELL_PRELUDE + command], { cwd: ctx.cwd });
+    // The sandbox (ctx.exec) confines the child and scrubs its environment; without one the
+    // command runs as the agent does.
+    const argv = ctx.exec ? ctx.exec.wrap(["/bin/bash", "-c", SHELL_PRELUDE + command]) : ["/bin/bash", "-c", SHELL_PRELUDE + command];
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(ctx.exec ? { env: ctx.exec.env() } : {}) });
     let output = "";
     let truncated = false;
     let settled = false;
@@ -144,7 +147,7 @@ export const bashTool = defineTool({
   }),
   async call(input, ctx) {
     if (input.run_in_background) {
-      const task = backgroundTasks.start(input.command, ctx.cwd, ctx.sessionId);
+      const task = backgroundTasks.start(input.command, ctx.cwd, ctx.sessionId, { exec: ctx.exec });
       return ok(
         `Started background task ${task.id}. You'll be notified when it finishes or if it looks ` +
           `stuck on a prompt; you can also read output anytime with BashOutput(id: "${task.id}").`,
@@ -215,6 +218,7 @@ export const monitorTool = defineTool({
     const task = backgroundTasks.start(input.command, ctx.cwd, ctx.sessionId, {
       monitor: true,
       timeoutMs,
+      exec: ctx.exec,
     });
     return ok(
       `Started monitor ${task.id} (timeout ${Math.round(timeoutMs / 1000)}s). Its output will reach you as events — keep working; do not poll or wait for it.`,

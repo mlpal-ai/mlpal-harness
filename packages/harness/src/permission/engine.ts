@@ -1,4 +1,5 @@
 import type { Author } from "@mlpal/harness-protocol";
+import { containmentDeny } from "./containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "./safety";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
@@ -73,6 +74,13 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // or model choice can override it. This is the whole point: allow is earned, deny is absolute.
     const hard = hardDeny(req);
     if (hard) return { behavior: "deny", reason: hard, source: "hard_deny" };
+    // Autopilot asks nobody, so the containment-escape routes (cloud metadata, curl-pipe-shell,
+    // privilege escalation, persistence, credential dumps) are refused outright there. In every
+    // other mode the same commands reach the human through the mode default.
+    if (config.mode === "autopilot" && req.toolName === "Bash") {
+      const c = containmentDeny(String(req.input.command ?? ""));
+      if (c) return { behavior: "deny", reason: c, source: "hard_deny" };
+    }
 
     for (const rule of deny) {
       if (denyMatches(rule, req)) return { behavior: "deny", reason: `denied by rule "${rule}"`, source: "deny_rule" };

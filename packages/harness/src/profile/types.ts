@@ -1,3 +1,4 @@
+import type { SandboxPolicy } from "../sandbox/spec";
 /**
  * HOPs — Harness Optimization Profiles: the declarative, versioned artifact that
  * configures the agent LOOP, not just its edges. A plugin adds capability (tools,
@@ -216,6 +217,9 @@ export interface SafetyPolicy {
   };
   /** Distinct read/write identities; the loop never self-grants the writer role. */
   identities: { read?: string; write?: string; neverSelfGrant: boolean };
+  /** §10.3 — the execution sandbox: what a command may touch once it runs. Absent = the host
+   *  default (workspace writes, credential paths unreadable, open network, env scrubbed). */
+  sandbox?: SandboxPolicy;
 }
 
 /** The composed, validated profile — what the loader hands the host. */

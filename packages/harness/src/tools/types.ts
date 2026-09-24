@@ -15,6 +15,17 @@ export interface ToolContext {
   /** The calling session — for tools that record provenance (e.g. Memorize → memory
    *  graph `subject.chat_id`) or scope by session. */
   sessionId?: string;
+  /** How command-running tools spawn: the execution sandbox (OS confinement + scrubbed env).
+   *  Absent = plain spawn with the agent's own environment. */
+  exec?: ExecPolicy;
+}
+
+/** What a command-running tool consults before it spawns. Implemented by the sandbox. */
+export interface ExecPolicy {
+  /** Wrap a command's argv in the OS confinement; identity when nothing confines. */
+  wrap(argv: string[]): string[];
+  /** The environment the child sees. */
+  env(): Record<string, string>;
 }
 
 export interface ToolResult {

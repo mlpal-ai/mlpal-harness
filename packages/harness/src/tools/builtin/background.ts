@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { EventInbox } from "../../events/inbox";
 import { commandLabel } from "../../events/inbox";
 import { hostEnvName } from "../../host";
+import type { ExecPolicy } from "../types";
 
 /**
  * Background command execution (dev servers, watchers, long builds). Bash with
@@ -114,6 +115,11 @@ function stallNote(t: BgTask, nowMs: number): string {
   );
 }
 
+/** The sandbox wraps the argv when one is in force; otherwise the command runs as the agent does. */
+function wrapArgv(exec: ExecPolicy | undefined, argv: string[]): string[] {
+  return exec ? exec.wrap(argv) : argv;
+}
+
 export class BackgroundTasks {
   private readonly tasks = new Map<string, BgTask>();
   private seq = 0;
@@ -155,7 +161,7 @@ export class BackgroundTasks {
     command: string,
     cwd: string,
     sessionId?: string,
-    opts?: { monitor?: boolean; timeoutMs?: number },
+    opts?: { monitor?: boolean; timeoutMs?: number; exec?: ExecPolicy },
   ): BgTask {
     const id = opts?.monitor ? `mon${++this.seq}` : `bg${++this.seq}`;
     const now = Date.now();
@@ -169,16 +175,17 @@ export class BackgroundTasks {
       // The command rides in an env var (eval "$YODEX_MONITOR_CMD") to dodge quoting entirely.
       const timeoutS = Math.max(1, Math.round((opts?.timeoutMs ?? 600_000) / 1000));
       const fd = openSync(outFile!, "a");
-      child = spawn(
+      const argv = wrapArgv(opts?.exec, [
         "/bin/bash",
-        ["-c", `( sleep ${timeoutS} && kill -TERM -$$ ) 2>/dev/null & eval "$${hostEnvName("MONITOR_CMD")}"`],
-        {
-          cwd,
-          detached: true,
-          stdio: ["ignore", fd, fd],
-          env: { ...process.env, [hostEnvName("MONITOR_CMD")]: command },
-        },
-      );
+        "-c",
+        `( sleep ${timeoutS} && kill -TERM -$$ ) 2>/dev/null & eval "$${hostEnvName("MONITOR_CMD")}"`,
+      ]);
+      child = spawn(argv[0]!, argv.slice(1), {
+        cwd,
+        detached: true,
+        stdio: ["ignore", fd, fd],
+        env: { ...(opts?.exec ? opts.exec.env() : process.env), [hostEnvName("MONITOR_CMD")]: command },
+      });
       closeSync(fd); // the child holds its own copy
       child.unref();
     } else {
@@ -187,7 +194,8 @@ export class BackgroundTasks {
       // it. Without this, kill signaled only the bash child; the grandchild kept running and
       // held its port (next run: EADDRINUSE). stdio stays piped for BashOutput; we do NOT
       // unref (this task is tracked, unlike a durable monitor).
-      child = spawn("/bin/bash", ["-c", command], { cwd, detached: true });
+      const argv = wrapArgv(opts?.exec, ["/bin/bash", "-c", command]);
+      child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, ...(opts?.exec ? { env: opts.exec.env() } : {}) });
     }
 
     const task: BgTask = {

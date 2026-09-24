@@ -1,5 +1,6 @@
 import type { ToolSchema } from "../gateway/client";
 import { MALFORMED_INPUT_KEY } from "./json";
+import { redactResult } from "../obs/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 export class ToolRegistry {
@@ -106,9 +107,11 @@ export async function runTool(
       isError: true,
     };
   }
+  // Every result passes the redactor: a registered secret (a loaded key, a scrubbed env value)
+  // never reaches the model, the conversation log or the terminal, whichever tool surfaced it.
   try {
-    return await tool.call(parsed.data, ctx);
+    return redactResult(await tool.call(parsed.data, ctx));
   } catch (e) {
-    return { content: `Tool ${name} threw: ${(e as Error).message}`, isError: true };
+    return redactResult({ content: `Tool ${name} threw: ${(e as Error).message}`, isError: true });
   }
 }

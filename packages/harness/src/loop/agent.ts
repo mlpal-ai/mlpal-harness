@@ -29,7 +29,7 @@ import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
-import type { ToolResult } from "../tools/types";
+import type { ExecPolicy, ToolResult } from "../tools/types";
 import { loadMessages } from "./messages";
 import { diffStat } from "../usage/stats";
 import { frameHandoff, postHandoffReply } from "./handoff";
@@ -60,6 +60,8 @@ export interface AgentConfig {
   cwd: string;
   /** Allowed filesystem roots for path-based tools. Defaults to [cwd]; --add-dir extends it. */
   roots?: string[];
+  /** Execution sandbox for command-running tools (Bash, background tasks, monitors). */
+  exec?: ExecPolicy;
   model: string;
   systemPrompt: string;
   tools: ToolRegistry;
@@ -1300,6 +1302,7 @@ export class AgentSession {
           roots: cfg.roots ?? [cfg.cwd],
           signal: cfg.signal,
           sessionId: cfg.sessionId,
+          exec: cfg.exec,
         }),
         cfg.signal,
       );

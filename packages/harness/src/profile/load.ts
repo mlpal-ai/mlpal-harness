@@ -207,6 +207,31 @@ const safetySchema = z
       .object({ read: z.string().optional(), write: z.string().optional(), neverSelfGrant: z.boolean().default(true) })
       .strict()
       .default({}),
+    // §10.3 — the execution sandbox. Optional inside the block so a v1.1 safety block without it
+    // keeps loading; when present it is locked with the rest of the envelope.
+    sandbox: z
+      .object({
+        filesystem: z
+          .object({
+            mode: z.enum(["workspace", "readOnly"]).optional(),
+            allowWrite: z.array(z.string().min(1)).optional(),
+            allowRead: z.array(z.string().min(1)).optional(),
+            denyRead: z.array(z.string().min(1)).optional(),
+          })
+          .strict()
+          .optional(),
+        network: z
+          .object({
+            mode: z.enum(["all", "none", "allowlist"]).optional(),
+            allow: z.array(z.string().min(1)).optional(),
+          })
+          .strict()
+          .optional(),
+        env: z.object({ keep: z.array(z.string().min(1)).optional() }).strict().optional(),
+        required: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

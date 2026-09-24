@@ -561,6 +561,34 @@ describe("profile loading", () => {
     expect(p.requires?.mcp.map((m) => m.name)).toEqual(["websearch", "aws-mcp"]); // inherited from coding, then base-req
   });
 
+  test("safety.sandbox (§10.3) loads with its defaults left to the host, and rejects unknown keys", () => {
+    const p = loadProfile(writeProfile("p/sbx", [
+      "spec: mlpal/hop-v1",
+      "name: sbx",
+      "version: 1.0.0",
+      "extends: coding",
+      "permissions: { defaultMode: cruise }",
+      "safety: { sandbox: { filesystem: { mode: readOnly, allowRead: ['~/.kube'] }, network: { mode: allowlist, allow: ['*.amazonaws.com'] }, env: { keep: [AWS_PROFILE] }, required: true } }",
+    ].join("\n")), opts());
+    expect(p.safety?.sandbox).toEqual({
+      filesystem: { mode: "readOnly", allowRead: ["~/.kube"] },
+      network: { mode: "allowlist", allow: ["*.amazonaws.com"] },
+      env: { keep: ["AWS_PROFILE"] },
+      required: true,
+    });
+    expect(p.locked).toContain("safety");
+    expect(() =>
+      loadProfile(writeProfile("p/sbx-bad", [
+        "spec: mlpal/hop-v1",
+        "name: sbx-bad",
+        "version: 1.0.0",
+        "extends: coding",
+        "permissions: { defaultMode: cruise }",
+        "safety: { sandbox: { network: { mode: firewall } } }",
+      ].join("\n")), opts()),
+    ).toThrow();
+  });
+
   test("safety block loads and is AUTO-LOCKED (child cannot override it)", () => {
     const p = loadProfile(writeProfile("p/saf", [
       "spec: mlpal/hop-v1",

@@ -62,6 +62,18 @@ export const settingsSchema = z.object({
     .object({
       allow: z.array(z.string()).default([]),
       deny: z.array(z.string()).default([]),
+      // The permission judge (a cheap-tier classifier that decides what cruise would otherwise
+      // ask). "auto": on in cruise, never in manual; "off": every ask reaches the human.
+      judge: z.enum(["auto", "off"]).default("auto"),
+    })
+    .default({}),
+  // The execution sandbox (HOP §10.3). "auto": confine commands whenever the run is autonomous
+  // (autopilot) or the HOP carries a safety block; "always": every run; "off": never (the env
+  // scrub and secret redaction still apply). A HOP's own `safety.sandbox` block is locked and
+  // cannot be switched off from here — only the host default for HOPs without one.
+  sandbox: z
+    .object({
+      mode: z.enum(["auto", "always", "off"]).default("auto"),
     })
     .default({}),
   hooks: z
