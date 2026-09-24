@@ -6,6 +6,7 @@ import { z } from "zod";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
 import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
+import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { StoredOAuthProvider } from "./oauth";
 import { host } from "../host";
 
@@ -254,10 +255,18 @@ export class McpManager {
             })
           : undefined;
       const url = new URL(config.url);
-      transport =
-        config.type === "sse"
-          ? new SSEClientTransport(url, { requestInit, authProvider })
-          : new StreamableHTTPClientTransport(url, { requestInit, authProvider });
+      if (config.type === "sse") {
+        transport = new SSEClientTransport(url, { requestInit, authProvider });
+      } else {
+        // A response the server never wrote (stream closed by a pod recycle or a wake) is
+        // delivered as a JSON-RPC error so the request rejects now; see lost-response.ts.
+        const http: StreamableHTTPClientTransport = new StreamableHTTPClientTransport(url, {
+          requestInit,
+          authProvider,
+          fetch: lostResponseFetch((message) => http.onmessage?.(message)),
+        });
+        transport = http;
+      }
     } else {
       transport = new StdioClientTransport({
         command: config.command,
@@ -336,12 +345,23 @@ export function wrapMcpTool(
       // Long-running tools (deep research runs 30-60s+) outlive the SDK's 60s default —
       // allow 10 minutes, and reset the clock whenever the server reports progress.
       const _meta = meta?.(ctx) ?? null;
-      try {
-        const res = (await client.callTool(
+      const call = async () =>
+        (await client.callTool(
           { name: def.name, arguments: (input ?? {}) as Record<string, unknown>, ...(_meta ? { _meta } : {}) },
           undefined,
           { timeout: 600_000, resetTimeoutOnProgress: true },
         )) as { content?: unknown; isError?: boolean };
+      try {
+        let res: { content?: unknown; isError?: boolean };
+        try {
+          res = await call();
+        } catch (e) {
+          // A hosted server that woke or was recycled mid-call closed the stream before answering.
+          // It is up now; one retry is cheap and, for a read-only tool, harmless. Anything that
+          // fails the second time surfaces as the tool error below.
+          if (!isLostResponse(e)) throw e;
+          res = await call();
+        }
         return { content: renderContent(res.content), isError: Boolean(res.isError) };
       } catch (e) {
         // A dead or unreachable server is a TOOL error the model can route around, never a run

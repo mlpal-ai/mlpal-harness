@@ -538,7 +538,8 @@ describe("profile loading", () => {
     expect(p.requires?.skills).toEqual(["docx", "hop-builder"]);
     expect(p.requires?.memory).toEqual({ read: true, write: true });
     const plain = loadProfile(writeProfile("p/rungs-none", ["spec: mlpal/hop-v1", "name: rungs-none", "version: 1.0.0", "extends: coding", "requires: { mcp: [ { name: memory } ] }"].join("\n")), opts());
-    expect(plain.requires).toEqual({ binaries: [], mcp: [{ name: "memory" }] });
+    // coding's own keyring defaults (every tier + the platform web-search server) are inherited
+    expect(plain.requires).toEqual({ binaries: [], mcp: [{ name: "websearch" }, { name: "memory" }], models: { tiers: ["cheap", "mid", "frontier", "max"] } });
   });
 
   test("requires block unions binaries + mcp by name down the chain", () => {
@@ -557,7 +558,7 @@ describe("profile loading", () => {
       "requires: { binaries: [ { name: terraform, detect: 'terraform version' } ] }",
     ].join("\n")), opts());
     expect(p.requires?.binaries.map((b) => b.name).sort()).toEqual(["aws", "terraform"]);
-    expect(p.requires?.mcp.map((m) => m.name)).toEqual(["aws-mcp"]); // inherited
+    expect(p.requires?.mcp.map((m) => m.name)).toEqual(["websearch", "aws-mcp"]); // inherited from coding, then base-req
   });
 
   test("safety block loads and is AUTO-LOCKED (child cannot override it)", () => {
