@@ -642,6 +642,8 @@ export class AgentSession {
         ms: Date.now() - callStartMs,
         tools: toolSchemas.length, // a changed tool set is a prompt-prefix change (cache miss cause)
         ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
+        ...(result.servingBackend ? { servingBackend: result.servingBackend } : {}),
+        ...(result.traceId ? { traceId: result.traceId } : {}),
         ...(result.effort ? { effort: result.effort } : {}),
       });
       yield asstEvt;

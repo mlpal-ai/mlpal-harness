@@ -85,6 +85,11 @@ export interface ModelResult {
    *  the body), so on yodex's streamed turns this is absent; derive from `usage` if a per-turn
    *  figure is needed. Absent ≠ 0: missing/unparseable means "unknown", never "free". */
   computeUnits?: number;
+  /** From the gateway's opt-in usage trailer (`event: mlpal_usage`, requested with
+   *  X-MLPal-Usage-Event: 1): where the call was served and its trace id, for attribution. */
+  servingBackend?: string;
+  traceId?: string;
+  reasoningTokens?: number;
   /** From the X-MLPal-Reasoning-Effort header ("requested->applied"): what the gateway actually ran
    *  after clamping to the model's supported rungs; `applied` is "unsupported" for a model with no
    *  effort lever. Present only when effort was sent. */
@@ -322,8 +327,8 @@ export class GatewayClient implements ModelClient {
         }
         this.metrics.histogram("gateway.stream_ms", Date.now() - started, { model });
         return {
-          ...step.value,
           ...(computeUnits === undefined ? {} : { computeUnits }),
+          ...step.value, // the trailer's compute units win over a header (streams carry none)
           ...(effortApplied ? { effort: effortApplied } : {}),
         };
       } catch (e) {
@@ -515,6 +520,9 @@ export class GatewayClient implements ModelClient {
         "content-type": "application/json",
         authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
         "anthropic-version": this.anthropicVersion,
+          // Opt-in usage trailer: one `mlpal_usage` SSE event after message_stop carrying the
+          // meter's compute units (headers precede the body, so no header can). Off => byte-identical.
+          "x-mlpal-usage-event": "1",
       },
       body: JSON.stringify(body),
       signal,
@@ -566,6 +574,7 @@ export class GatewayClient implements ModelClient {
     let usage: Usage = { input_tokens: 0, output_tokens: 0 };
     let stopReason: StopReason | null = null;
     let sawStop = false;
+    let trailer: { computeUnits?: number; servingBackend?: string; traceId?: string; reasoningTokens?: number } = {};
 
     for await (const ev of parseSSE(stream)) {
       onEvent?.(); // reset the idle-timeout clock: this stream is alive
@@ -623,6 +632,19 @@ export class GatewayClient implements ModelClient {
           const e = (ev.error ?? {}) as { type?: string; message?: string };
           throw new GatewayError(e.message ?? "stream error", 502, "stream", e.type);
         }
+        case "mlpal_usage": {
+          // The meter's own figures: CU as a decimal string (same value the non-streaming header
+          // carries), the serving backend, the trace id. Absent/unparseable CU stays absent.
+          const cu = typeof ev.compute_units === "string" || typeof ev.compute_units === "number" ? Number(ev.compute_units) : NaN;
+          const u = (ev.usage ?? {}) as { reasoning_tokens?: number };
+          trailer = {
+            ...(Number.isFinite(cu) ? { computeUnits: cu } : {}),
+            ...(typeof ev.serving_backend === "string" ? { servingBackend: ev.serving_backend } : {}),
+            ...(typeof ev.trace_id === "string" ? { traceId: ev.trace_id } : {}),
+            ...(typeof u.reasoning_tokens === "number" ? { reasoningTokens: u.reasoning_tokens } : {}),
+          };
+          break;
+        }
         default:
           break;
       }
@@ -642,6 +664,7 @@ export class GatewayClient implements ModelClient {
       message: { role: "assistant", content: assembleBlocks(blocks) },
       usage,
       stopReason,
+      ...trailer,
     };
   }
 }

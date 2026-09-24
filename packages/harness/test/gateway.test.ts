@@ -119,6 +119,29 @@ describe("compute-units cost header", () => {
     expect(parseComputeUnits(new Headers({ "X-MLPal-Compute-Units": "not-a-number" }))).toBeUndefined();
   });
 
+  test("the opt-in usage trailer: the request asks for it, and its compute units / backend / trace land on the result", async () => {
+    let sentHeaders: Record<string, string> = {};
+    const withTrailer = `${SSE}\nevent: mlpal_usage\ndata: {"type":"mlpal_usage","trace_id":"tr-1","model":"claude-opus-4-8","serving_backend":"bedrock","status_code":200,"compute_units":"0.000124540","usage":{"input_tokens":5418,"output_tokens":6,"cache_read_input_tokens":5407,"cache_creation_input_tokens":0,"reasoning_tokens":3}}\n\n`;
+    globalThis.fetch = (async (_u: string, init: RequestInit) => {
+      sentHeaders = init.headers as Record<string, string>;
+      return new Response(withTrailer, { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
+    const req: ModelRequest = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }], maxTokens: 100 };
+    const r = await drain(client.stream(req));
+    expect(sentHeaders["x-mlpal-usage-event"]).toBe("1");
+    expect(r.result.computeUnits).toBeCloseTo(0.00012454, 12);
+    expect(r.result.servingBackend).toBe("bedrock");
+    expect(r.result.traceId).toBe("tr-1");
+    expect(r.result.reasoningTokens).toBe(3);
+    // a trailer with a malformed CU leaves computeUnits absent, never 0
+    const bad = `${SSE}\nevent: mlpal_usage\ndata: {"type":"mlpal_usage","compute_units":"n/a","serving_backend":"anthropic"}\n\n`;
+    globalThis.fetch = (async () => new Response(bad, { status: 200 })) as unknown as typeof fetch;
+    const r2 = await drain(new GatewayClient({ baseUrl: "http://x", apiKey: "k" }).stream(req));
+    expect("computeUnits" in r2.result).toBe(false);
+    expect(r2.result.servingBackend).toBe("anthropic");
+  });
+
   test("stream result carries computeUnits when the response header is present, omits it when not", async () => {
     globalThis.fetch = (async () =>
       new Response(SSE, { status: 200, headers: { "X-MLPal-Compute-Units": "0.137" } })) as unknown as typeof fetch;
