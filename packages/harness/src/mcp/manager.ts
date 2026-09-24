@@ -146,13 +146,26 @@ export class McpManager {
 
   /** Call one tool of a connected server directly (same wrapper as a registered tool: `_meta`,
    *  timeouts, dead-server errors). A server that is not connected is a tool error, not a throw. */
-  async callTool(server: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolResult> {
+  async callTool(server: string, tool: string, input: unknown, ctx: ToolContext, opts: { timeoutMs?: number } = {}): Promise<ToolResult> {
     const t = this.toolsByServer.get(server)?.get(tool);
     if (!t) {
       const s = this.statuses.get(server);
       return { content: `MCP server "${server}" ${s?.ok ? `has no tool "${tool}"` : `is not connected${s?.error ? `: ${s.error}` : ""}`}`, isError: true };
     }
-    return t.call(input, ctx);
+    if (!opts.timeoutMs) return t.call(input, ctx);
+    // A caller that knows how long its call should take bounds it below the wrapper's 10-minute
+    // ceiling (a quick web search that never returns is a failure, not a long job).
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        t.call(input, ctx),
+        new Promise<ToolResult>((resolve) => {
+          timer = setTimeout(() => resolve({ content: `MCP server "${server}" tool "${tool}" did not answer within ${Math.round(opts.timeoutMs! / 1000)}s`, isError: true }), opts.timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   setCallMeta(fn: ((ctx: ToolContext) => Record<string, unknown>) | null): void {
