@@ -92,6 +92,23 @@ describe("McpManager", () => {
     await mcp.close();
   });
 
+  test("a server that never finishes connecting fails with a named timeout and settles; a sibling's whenSettled is independent", async () => {
+    const mcp = new McpManager();
+    mcp.connectTimeoutMs = 300;
+    const registry = new ToolRegistry();
+    // a stdio server that never speaks: `sleep` accepts the spawn and then says nothing
+    const t0 = Date.now();
+    const n = await mcp.connect("dead", { command: "sleep", args: ["30"] }, registry);
+    expect(n).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    const s = mcp.status().find((x) => x.server === "dead")!;
+    expect(s.ok).toBe(false);
+    expect(s.error).toContain("connect timed out");
+    await mcp.whenSettled("dead"); // resolved, not pending
+    await mcp.whenSettled("never-asked"); // resolves at once
+    await mcp.close();
+  });
+
   test("callTool on a server that is not connected is a tool error naming the server, never a throw", async () => {
     const mcp = new McpManager();
     mcp.setHiddenServers(["websearch"]);

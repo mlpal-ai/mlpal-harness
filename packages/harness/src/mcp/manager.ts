@@ -101,6 +101,13 @@ export class McpManager {
    *  the model sees one stable tool instead of the server's raw surface. */
   private readonly hiddenServers = new Set<string>();
   private readonly toolsByServer = new Map<string, Map<string, Tool<unknown>>>();
+  /** Per-server "connect attempt finished" (ok or not): a caller waits for ITS server, never for
+   *  every server — a stdio server that never comes up (npx under a stripped env) used to block
+   *  every other server's tool calls behind connectAll. */
+  private readonly settled = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+  /** Bound on one server's connect (transport + initialize + listTools). A hung server fails
+   *  with a named reason instead of holding the session. */
+  connectTimeoutMs = 45_000;
 
   /** authDir persists OAuth tokens per server (e.g. ~/.yodex/mcp-auth). */
   constructor(
@@ -118,6 +125,18 @@ export class McpManager {
   setHiddenServers(names: Iterable<string>): void {
     this.hiddenServers.clear();
     for (const n of names) this.hiddenServers.add(n);
+  }
+
+  /** Resolves when `server`'s connect attempt has finished, whichever way (a server never asked
+   *  to connect resolves at once). */
+  whenSettled(server: string): Promise<void> {
+    return this.settled.get(server)?.promise ?? Promise.resolve();
+  }
+
+  private markPending(server: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    this.settled.set(server, { promise, resolve });
   }
 
   /** True once `server` connected and exposes `tool`. */
@@ -154,6 +173,7 @@ export class McpManager {
     servers: Record<string, McpServerConfig>,
     registry: ToolRegistry,
   ): Promise<{ connected: number; tools: number }> {
+    for (const name of Object.keys(servers)) this.markPending(name);
     const counts = await Promise.all(
       Object.entries(servers).map(([name, config]) => this.connect(name, config, registry)),
     );
@@ -165,13 +185,28 @@ export class McpManager {
    *  can be retried from /mcp without restarting. Returns the tool count (0 on failure —
    *  the outcome lands in status()). */
   async connect(name: string, config: McpServerConfig, registry: ToolRegistry): Promise<number> {
+    if (!this.settled.has(name)) this.markPending(name);
+    try {
+      return await this.connectInner(name, config, registry);
+    } finally {
+      this.settled.get(name)?.resolve();
+    }
+  }
+
+  private async connectInner(name: string, config: McpServerConfig, registry: ToolRegistry): Promise<number> {
     const prev = this.clientByName.get(name);
     if (prev) {
       this.clientByName.delete(name);
       await prev.close().catch(() => undefined);
     }
     try {
-      const wrapped = await this.connectOne(name, config);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const wrapped = await Promise.race([
+        this.connectOne(name, config),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`connect timed out after ${this.connectTimeoutMs / 1000}s (the server never finished starting)`)), this.connectTimeoutMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
       this.toolsByServer.set(name, new Map(wrapped.map((t) => [t.name.slice(mcpToolPrefix(name).length), t])));
       if (!this.hiddenServers.has(name)) for (const t of wrapped) registry.register(t);
       this.statuses.set(name, { server: name, ok: true, tools: wrapped.length });
