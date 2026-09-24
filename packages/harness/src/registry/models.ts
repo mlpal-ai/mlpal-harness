@@ -211,9 +211,11 @@ export class ModelRegistry {
     return this.models.get(tag);
   }
 
-  /** A tag is usable if it's in the catalog or is a known meta-model alias. */
+  /** A tag is usable if it's a served model or a meta-model THIS gateway publishes an alias
+   *  for. A meta-model name alone is not enough: a self-hosted gateway with no alias table
+   *  rejects `mlpal` with a 400 at the first call. */
   isValid(tag: string): boolean {
-    return this.models.has(tag) || this.chatAliases.has(tag) || META_MODELS.has(tag);
+    return this.models.has(tag) || this.chatAliases.has(tag);
   }
 
   list(opts?: { chatOnly?: boolean; includeDeprecated?: boolean }): ModelInfo[] {

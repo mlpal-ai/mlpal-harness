@@ -68,10 +68,11 @@ describe("ModelRegistry (mocked)", () => {
     expect(chat.map((m) => m.tag)).not.toContain("old-model"); // deprecated
   });
 
-  test("isValid accepts catalog tags and meta-models, rejects unknown", async () => {
+  test("isValid accepts served tags and alias-backed meta-models only; a bare meta name on a gateway without aliases is invalid", async () => {
     const r = await loaded();
     expect(r.isValid("claude-haiku-4-5-20251001")).toBe(true);
-    expect(r.isValid("mlpal-flash")).toBe(true); // meta-model, not in catalog
+    // No alias table in this fixture: `mlpal-flash` would 400 at the first call, so it is not valid.
+    expect(r.isValid("mlpal-flash")).toBe(false);
     expect(r.isValid("gpt-does-not-exist")).toBe(false);
   });
 
