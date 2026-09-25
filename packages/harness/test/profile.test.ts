@@ -539,7 +539,7 @@ describe("profile loading", () => {
     expect(p.requires?.memory).toEqual({ read: true, write: true });
     const plain = loadProfile(writeProfile("p/rungs-none", ["spec: mlpal/hop-v1", "name: rungs-none", "version: 1.0.0", "extends: coding", "requires: { mcp: [ { name: memory } ] }"].join("\n")), opts());
     // coding's own keyring defaults (every tier + the platform web-search server) are inherited
-    expect(plain.requires).toEqual({ binaries: [], mcp: [{ name: "websearch" }, { name: "memory" }], models: { tiers: ["cheap", "mid", "frontier", "max"] } });
+    expect(plain.requires).toEqual({ binaries: [], mcp: [{ name: "websearch" }, { name: "memory" }], models: { tiers: ["cheap", "mid", "frontier", "max"] }, memory: { read: true, write: true } });
   });
 
   test("requires block unions binaries + mcp by name down the chain", () => {

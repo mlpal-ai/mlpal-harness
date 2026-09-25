@@ -212,7 +212,9 @@ export const CODING_PROFILE: Profile = {
   telemetry: { taskType: "coding" },
   // The keyring a coding HOP key grants by default (founder direction 2026-09-22): every model
   // tier and the platform web-search server. Memory joins when the managed service is live.
-  requires: { binaries: [], mcp: [{ name: "websearch" }], models: { tiers: ["cheap", "mid", "frontier", "max"] } },
+  // Default keyring grant (founder, 2026-09-22/25): every model tier, the platform web-search
+  // server, and — now that memory.mlpal.ai is back — the managed memory service, read and write.
+  requires: { binaries: [], mcp: [{ name: "websearch" }], models: { tiers: ["cheap", "mid", "frontier", "max"] }, memory: { read: true, write: true } },
   evals: [],
   locked: [],
   tunable: [
