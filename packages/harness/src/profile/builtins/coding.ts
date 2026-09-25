@@ -164,7 +164,7 @@ export function codingVerifierTask(task: string, _deliverable?: string): string 
 export const CODING_PROFILE: Profile = {
   spec: PROFILE_SPEC_ID,
   name: "coding",
-  version: "1.0.0",
+  version: "1.1.0",
   description: "Software engineering on real repositories — yodex's default.",
   source: "builtin",
   dir: null,
