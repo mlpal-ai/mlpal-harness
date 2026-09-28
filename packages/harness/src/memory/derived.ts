@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "../tools/types";
+import { hostRecordedKinds } from "./distill";
 import type { Store } from "../store/types";
 import type { MemoryPolicy } from "../profile/types";
 
@@ -299,13 +300,17 @@ const DEVIATION_WHEN: Record<string, string> = {
  */
 export function memoryPolicySection(policy: MemoryPolicy | undefined): string {
   if (!policy || policy.record.length === 0) return "";
-  const rows = policy.record.map((k) => `- \`${k}\`: ${DEVIATION_WHEN[k] ?? k}`).join("\n");
+  const hostKinds = hostRecordedKinds(policy);
+  const rows = policy.record.map((k) => `- \`${k}\`: ${DEVIATION_WHEN[k] ?? k}${hostKinds.includes(k as never) ? " (recorded by the host)" : ""}`).join("\n");
   return (
     "\n\n# Memory policy (when things do not go to plan)\n" +
     "Before a headless run ends, or before your next answer in a conversation, save one memory per distinct deviation of these kinds with the Memorize tool, " +
     "`type: deviation`, slug `dev-<kind>-<short-noun>`, project scope. One per deviation, not per retry. Never a secret value, token or kubeconfig material. " +
     "`observed` is what the tool result already showed you: never go looking for more (no reading the harness's trace, logs, settings or sibling directories; that is itself a deviation).\n" +
     rows +
+    (hostKinds.length
+      ? `\n\nThe host records ${hostKinds.map((k) => `\`${k}\``).join(", ")} itself from its own trace at the end of the run (§9.2 host obligation c); you record the rest.`
+      : "") +
     "\n\nBody, one field per line, in this order (a builder parses it without a model):\n" +
     "```\nkind: <one of the kinds above>\nexpected: <what the plan assumed>\nobserved: <what happened, with the exact refusal, error or status>\ncause: <your best reading, or unknown>\naction: <what would have made this go to plan>\nrun: <the run id if you know it>\n```\n" +
     `These memories feed: ${policy.feeds.join(", ")} (the builder's next tune turn reads them; do not write them anywhere else).`

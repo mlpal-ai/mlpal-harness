@@ -26,6 +26,7 @@ export * from "./hooks/types";
 export * from "./hooks/engine";
 export * from "./mcp/manager";
 export * from "./sandbox";
+export { distillDeviations, hostRecordedKinds, type Deviation, type DistillInput, type VerifierOutcome, type RunTerminal } from "./memory/distill";
 export { DeferredTools, schemaTokens } from "./tools/deferred";
 export { createToolSearchTool } from "./tools/builtin/toolsearch";
 export * from "./permission/judge";
