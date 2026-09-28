@@ -37,6 +37,21 @@ export async function recentSessions(
   );
 }
 
+/** Resolve a session reference: a full id, an id prefix (8+ chars), or a /rename'd name (exact,
+ *  case-insensitive; the most recently updated wins). Undefined when nothing matches. */
+export async function resolveSessionRef(store: Store, ref: string): Promise<string | undefined> {
+  const records = await store.registry.listSessions();
+  const exact = records.find((r) => r.sessionId === ref);
+  if (exact) return exact.sessionId;
+  const named = records.filter((r) => r.name && r.name.toLowerCase() === ref.toLowerCase()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (named[0]) return named[0].sessionId;
+  if (ref.length >= 8) {
+    const prefixed = records.filter((r) => r.sessionId.startsWith(ref));
+    if (prefixed.length === 1) return prefixed[0]!.sessionId;
+  }
+  return undefined;
+}
+
 export async function mostRecentSessionId(store: Store, cwd?: string): Promise<string | undefined> {
   // Prefer the newest HUMAN session: routine firings spawn sessions in the same cwd, and
   // "continue" must mean the user's own conversation, not last night's scheduled run.

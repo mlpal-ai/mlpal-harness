@@ -22,6 +22,8 @@ export interface SessionRecord {
   /** `active` = currently in a run; `listening` = a persistent worker idle-waiting on its mailbox
    *  (still a valid live-routing target, unlike `idle`); `idle` = run finished, no listener. */
   status: "active" | "listening" | "idle" | "done" | "error";
+  /** A person's name for the session (/rename): shown in listings and accepted wherever a session id is. */
+  name?: string;
   /** How the session came to exist: absent = a human started it; "routine:<name>" = a
    *  scheduler firing. `yodex -c` prefers human sessions — routine-spawned ones must not
    *  hijack "continue my conversation". */
