@@ -240,6 +240,25 @@ export const settingsSchema = z.object({
    * cancellable (fires on a pause, not per keystroke) and interactive-TTY only. It trades a small
    * per-pause call for faster composing, so it's off by default; enable when you want it.
    */
+  // Terminal UI preferences (host-only; never part of a HOP).
+  ui: z
+    .object({
+      /** Clock format for times the UI shows (prompt-waiting since, session listings). auto = the locale's. */
+      timeFormat: z.enum(["auto", "12h", "24h"]).default("auto"),
+      /** Rotating one-line tips in the footer while idle. */
+      tips: z.boolean().default(true),
+      /** dark | light | auto (auto asks the terminal for its background colour at startup). */
+      theme: z.enum(["auto", "dark", "light"]).default("auto"),
+      /** Screen-reader mode: no full-screen frame, no animation, plain progress lines. */
+      screenReader: z.boolean().default(false),
+    })
+    .default({}),
+  editor: z
+    .object({
+      /** Vim keys in the input: Esc for normal mode, i/a/A/I/o to insert, h j k l w b 0 $ x dd. */
+      vim: z.boolean().default(false),
+    })
+    .default({}),
   /** Output style: a named presentation addendum to the system prompt (built-ins default |
    *  explanatory | learning | concise, or a file under ~/.yodex/output-styles). /output-style switches per session. */
   outputStyle: z.string().optional(),
