@@ -296,14 +296,18 @@ function mergeDeep(a: Obj, b: Obj): Obj {
   return out;
 }
 
+/** A settings file that exists must parse: a typo silently ignoring the whole file is how a
+ *  person spends an hour on "my setting does nothing". Throws with the path and the parse error. */
 function readJsonFile(path: string): Obj | null {
   if (!existsSync(path)) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return isObj(parsed) ? parsed : null;
-  } catch {
-    return null;
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path} is not valid JSON: ${String((e as Error)?.message ?? e)}`);
   }
+  if (!isObj(parsed)) throw new Error(`${path} must contain a JSON object`);
+  return parsed;
 }
 
 /** Resolve effective settings. Throws (ZodError) on invalid values, e.g. a bad mode.

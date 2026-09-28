@@ -37,6 +37,13 @@ describe("loadSettings layering", () => {
     expect(s.mode).toBe("cruise"); // inherited from global
   });
 
+  test("a settings file that is not valid JSON is a named error, never a silent no-op", async () => {
+    await writeFile(join(cwd, ".yodex", "settings.json"), '{"statusline": {"command": "echo hi", }');
+    expect(() => loadSettings({ home, cwd, env: {} })).toThrow(/settings\.json is not valid JSON/);
+    await writeFile(join(cwd, ".yodex", "settings.json"), "[1,2]");
+    expect(() => loadSettings({ home, cwd, env: {} })).toThrow(/must contain a JSON object/);
+  });
+
   test("env overrides files; flags override env", async () => {
     await writeFile(join(cwd, ".yodex", "settings.json"), JSON.stringify({ model: "file-model" }));
     const s = loadSettings({
