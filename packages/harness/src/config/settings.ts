@@ -93,6 +93,16 @@ export const settingsSchema = z.object({
       }),
     )
     .default([]),
+  // Tool deferral: an MCP server's tools stay out of the model's tool list until ToolSearch
+  // loads them. "auto": defer a server whose schemas exceed `deferTokens` (estimated) — a
+  // twenty-tool server costs thousands of tokens on every call; "always": every MCP server
+  // without `alwaysLoad`; "off": never.
+  mcp: z
+    .object({
+      defer: z.enum(["auto", "always", "off"]).default("auto"),
+      deferTokens: z.number().int().positive().default(1500),
+    })
+    .default({}),
   mcpServers: z
     .record(
       z.union([
@@ -101,6 +111,7 @@ export const settingsSchema = z.object({
           command: z.string(),
           args: z.array(z.string()).optional(),
           env: z.record(z.string()).optional(),
+          alwaysLoad: z.boolean().optional(),
         }),
         // HTTP server: a URL + optional headers. Header values may reference env vars as
         // ${VAR} so secrets (API keys) stay out of settings files. `type` selects the wire
@@ -117,6 +128,8 @@ export const settingsSchema = z.object({
               clientId: z.string().optional(),
             })
             .optional(),
+          /** Never defer this server's tools. */
+          alwaysLoad: z.boolean().optional(),
         }),
       ]),
     )

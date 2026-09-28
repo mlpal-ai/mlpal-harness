@@ -7,6 +7,7 @@ import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
 import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import { isLostResponse, lostResponseFetch } from "./lost-response";
+import type { DeferredTools } from "../tools/deferred";
 import { StoredOAuthProvider } from "./oauth";
 import { host } from "../host";
 
@@ -22,6 +23,8 @@ export interface StdioServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Never defer this server's tools (they are always in the model's tool list). */
+  alwaysLoad?: boolean;
 }
 
 export interface HttpServerConfig {
@@ -32,6 +35,8 @@ export interface HttpServerConfig {
   headers?: Record<string, string>;
   /** OAuth 2.0: tokens persisted under the manager's authDir; refreshed silently by the SDK. */
   oauth?: { scope?: string; clientId?: string };
+  /** Never defer this server's tools (they are always in the model's tool list). */
+  alwaysLoad?: boolean;
 }
 
 export type McpServerConfig = StdioServerConfig | HttpServerConfig;
@@ -222,7 +227,16 @@ export class McpManager {
         }),
       ]).finally(() => clearTimeout(timer));
       this.toolsByServer.set(name, new Map(wrapped.map((t) => [t.name.slice(mcpToolPrefix(name).length), t])));
-      if (!this.hiddenServers.has(name)) for (const t of wrapped) registry.register(t);
+      if (!this.hiddenServers.has(name)) {
+        // Deferral is decided per server as it connects, from its own tools; the registry
+        // keeps the tools callable while the model sees them only once loaded.
+        const defer = Boolean(this.deferral && !config.alwaysLoad && this.deferral.policy(name, wrapped));
+        for (const t of wrapped) {
+          registry.register(t);
+          if (defer) this.deferral!.tools.defer(t.name, name);
+        }
+        if (defer) this.logger.info("mcp server tools deferred", { server: name, tools: wrapped.length });
+      }
       this.statuses.set(name, { server: name, ok: true, tools: wrapped.length });
       this.logger.info("mcp server connected", { server: name, tools: wrapped.length });
       return wrapped.length;
@@ -304,8 +318,21 @@ export class McpManager {
     await client?.close().catch(() => undefined);
     const prefix = mcpToolPrefix(name);
     for (const registry of registries) {
-      for (const t of registry.list()) if (t.name.startsWith(prefix)) registry.unregister(t.name);
+      for (const t of registry.list()) {
+        if (!t.name.startsWith(prefix)) continue;
+        registry.unregister(t.name);
+        this.deferral?.tools.forget(t.name);
+      }
     }
+  }
+
+  private deferral?: { tools: DeferredTools; policy: (server: string, tools: Tool<unknown>[]) => boolean };
+
+  /** Tool deferral: `policy` decides per connecting server (given its wrapped tools) whether
+   *  the model sees them only after ToolSearch; `tools` is the process's deferral ledger.
+   *  A server config with `alwaysLoad` is never deferred. */
+  setDeferral(tools: DeferredTools, policy: (server: string, tools: Tool<unknown>[]) => boolean): void {
+    this.deferral = { tools, policy };
   }
 
   async close(): Promise<void> {

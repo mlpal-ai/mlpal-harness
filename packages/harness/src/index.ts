@@ -26,6 +26,8 @@ export * from "./hooks/types";
 export * from "./hooks/engine";
 export * from "./mcp/manager";
 export * from "./sandbox";
+export { DeferredTools, schemaTokens } from "./tools/deferred";
+export { createToolSearchTool } from "./tools/builtin/toolsearch";
 export * from "./permission/judge";
 export { containmentDeny } from "./permission/containment";
 export { registerSecret, registerSecrets, redactText, redactResult, clearSecrets } from "./obs/redact";

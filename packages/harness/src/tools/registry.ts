@@ -6,6 +6,20 @@ import type { Tool, ToolContext, ToolResult } from "./types";
 export class ToolRegistry {
   private readonly map = new Map<string, Tool<unknown>>();
   private lateResolver?: (name: string) => Promise<void>;
+  /** Which registered tools the model is shown (tool deferral); default: all. */
+  private schemaFilter: (t: Tool<unknown>) => boolean = () => true;
+
+  /** Restrict `schemas()` to tools the predicate admits. A tool the filter hides stays
+   *  registered and resolvable, but calling it before it is shown is refused (see runTool),
+   *  so the model can never call a schema it has not seen. Propagated by filter(). */
+  setSchemaFilter(pred: (t: Tool<unknown>) => boolean): void {
+    this.schemaFilter = pred;
+  }
+
+  /** Whether the model currently sees this tool's schema. */
+  shown(t: Tool<unknown>): boolean {
+    return this.schemaFilter(t);
+  }
 
   register(tool: Tool<unknown>): void {
     this.map.set(tool.name, tool);
@@ -48,6 +62,7 @@ export class ToolRegistry {
    */
   filter(pred: (t: Tool<unknown>) => boolean): ToolRegistry {
     const out = new ToolRegistry();
+    out.setSchemaFilter(this.schemaFilter);
     for (const t of this.list()) if (pred(t)) out.register(t);
     const late = this.lateResolver;
     if (late) {
@@ -62,7 +77,7 @@ export class ToolRegistry {
 
   /** The tool definitions handed to the model as `tools`. */
   schemas(): ToolSchema[] {
-    return this.list().map((t) => ({
+    return this.list().filter(this.schemaFilter).map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.jsonSchema,
@@ -79,6 +94,9 @@ export async function runTool(
 ): Promise<ToolResult> {
   const tool = await registry.resolve(name);
   if (!tool) return { content: `Unknown tool: ${name}`, isError: true };
+  if (!registry.shown(tool)) {
+    return { content: `${name} is a deferred tool: load it first with ToolSearch (query "select:${name}"), then call it.`, isError: true };
+  }
   // The gateway plants this marker when a tool call's JSON was unparseable even leniently —
   // tell the model exactly what it sent so the retry is a correction, not a guess.
   if (rawInput && typeof rawInput === "object" && MALFORMED_INPUT_KEY in rawInput) {
