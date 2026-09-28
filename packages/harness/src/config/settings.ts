@@ -240,6 +240,9 @@ export const settingsSchema = z.object({
    * cancellable (fires on a pause, not per keystroke) and interactive-TTY only. It trades a small
    * per-pause call for faster composing, so it's off by default; enable when you want it.
    */
+  /** Output style: a named presentation addendum to the system prompt (built-ins default |
+   *  explanatory | learning | concise, or a file under ~/.yodex/output-styles). /output-style switches per session. */
+  outputStyle: z.string().optional(),
   // Status line: a user command whose first output line replaces the mode description in the
   // footer, re-run every refreshMs with a JSON context (model, mode, session, cwd, hop, tokens,
   // context, cost) on stdin — the same shape as the /status figures. Off unless `command` is set.
