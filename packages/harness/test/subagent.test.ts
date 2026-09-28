@@ -33,6 +33,20 @@ describe("Task tool", () => {
     expect(JSON.stringify(tool.jsonSchema)).toContain("model");
   });
 
+  test("isolation: worktree is passed through on both paths and changes the background wording", async () => {
+    const seen: { isolation?: string; background?: boolean }[] = [];
+    const tool = createTaskTool(async (args) => {
+      seen.push({ isolation: args.isolation, background: args.background });
+      return { text: "ok", sessionId: "c" };
+    });
+    await tool.call({ description: "edit", prompt: "change x", isolation: "worktree" }, { cwd: "/tmp" });
+    const bg = await tool.call({ description: "edit bg", prompt: "change y", run_in_background: true, isolation: "worktree" }, { cwd: "/tmp" });
+    expect(bg.content).toContain("in its own worktree and may edit there");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual([{ isolation: "worktree", background: undefined }, { isolation: "worktree", background: true }]);
+    expect(JSON.stringify(tool.jsonSchema)).toContain("worktree");
+  });
+
   test("empty sub-agent output yields a placeholder", async () => {
     const tool = createTaskTool(async () => ({ text: "", sessionId: "s" }));
     const r = await tool.call({ description: "x", prompt: "y" }, { cwd: "/tmp" });

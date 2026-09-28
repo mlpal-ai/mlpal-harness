@@ -37,6 +37,9 @@ export type SubagentRun = (
     readOnly?: boolean;
     /** Mid-run guidance for the child, drained by its loop at tool-step boundaries. */
     drainSteering?: () => string[];
+    /** "worktree": the host runs the child in its own git worktree on its own branch, so it may
+     *  edit even in the background — its changes come back committed on that branch. */
+    isolation?: "worktree";
   },
   signal?: AbortSignal,
 ) => Promise<{ text: string; sessionId: string }>;
@@ -45,14 +48,14 @@ export function createTaskTool(
   run: SubagentRun,
   agents: AgentDef[] = [],
   background: BackgroundAgents = backgroundAgents,
-): Tool<{ description: string; prompt: string; agent?: string; model?: string; run_in_background?: boolean; read_only?: boolean }> {
+): Tool<{ description: string; prompt: string; agent?: string; model?: string; run_in_background?: boolean; read_only?: boolean; isolation?: "worktree" }> {
   const catalog = agents.length
     ? ` Specialized agents available via \`agent\`: ${agents.map((a) => `${a.name} (${a.description})`).join("; ")}.`
     : "";
   return defineTool({
     name: "Agent",
     description:
-      "Delegate a focused, self-contained subtask to a sub-agent that works autonomously and returns a result. Use it for well-scoped or parallelizable work (research a question, implement a contained piece). Put COMPLETE instructions in `prompt` — the sub-agent does not see this conversation. It has the same tools but cannot spawn further sub-agents. `model` runs it on any gateway-served model (tier alias or id) — the way to get another model's take on something. Set run_in_background to start it detached and keep working: it runs READ-ONLY (research/verification/analysis, no edits) and its result is delivered to you when it finishes — check with AgentOutput, stop with Kill." +
+      "Delegate a focused, self-contained subtask to a sub-agent that works autonomously and returns a result. Use it for well-scoped or parallelizable work (research a question, implement a contained piece). Put COMPLETE instructions in `prompt` — the sub-agent does not see this conversation. It has the same tools but cannot spawn further sub-agents. `model` runs it on any gateway-served model (tier alias or id) — the way to get another model's take on something. Set run_in_background to start it detached and keep working: it runs READ-ONLY (research/verification/analysis, no edits) unless isolation is \"worktree\", and its result is delivered to you when it finishes — check with AgentOutput, stop with Kill. isolation: \"worktree\" gives the child its own git worktree and branch, so it can edit in parallel with you (and other isolated children) without touching your tree; its changes come back committed on that branch for you to merge or inspect." +
       catalog,
     readOnly: false,
     schema: z.object({
@@ -78,6 +81,10 @@ export function createTaskTool(
         .describe(
           "restrict this child to read-only tools. Set it on research/analysis children — a turn of ONLY read_only Agent calls runs them in PARALLEL instead of one after another",
         ),
+      isolation: z
+        .enum(["worktree"])
+        .optional()
+        .describe("\"worktree\": run the child in its own git worktree + branch so it may edit in parallel; changes return committed on that branch"),
     }),
     // The concurrency gate asks per call: read-only children can't write, so a batch of
     // them fans out concurrently; any write-capable child serializes the turn as before.
@@ -103,6 +110,7 @@ export function createTaskTool(
               agent: input.agent,
               model: input.model,
               background: true,
+              isolation: input.isolation,
               onProgress: (status) => background.reportProgress(task.id, status),
               onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
               onSessionId: (sid) => {
@@ -120,7 +128,7 @@ export function createTaskTool(
         task.prompt = input.prompt;
         return {
           content:
-            `Started background agent ${task.id}: "${input.description}". It runs read-only alongside you; ` +
+            `Started background agent ${task.id}: "${input.description}". It runs ${input.isolation === "worktree" ? "in its own worktree and may edit there" : "read-only"} alongside you; ` +
             `its result will be delivered when it finishes. Check with AgentOutput(id="${task.id}") or ` +
             `stop it with Kill(id="${task.id}").`,
         };
@@ -144,6 +152,7 @@ export function createTaskTool(
             agent: input.agent,
             model: input.model,
             readOnly: input.read_only,
+            isolation: input.isolation,
             onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
             onSessionId: (sid) => {
               task.sessionId = sid;
