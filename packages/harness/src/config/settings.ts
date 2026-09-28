@@ -240,6 +240,15 @@ export const settingsSchema = z.object({
    * cancellable (fires on a pause, not per keystroke) and interactive-TTY only. It trades a small
    * per-pause call for faster composing, so it's off by default; enable when you want it.
    */
+  // Status line: a user command whose first output line replaces the mode description in the
+  // footer, re-run every refreshMs with a JSON context (model, mode, session, cwd, hop, tokens,
+  // context, cost) on stdin — the same shape as the /status figures. Off unless `command` is set.
+  statusline: z
+    .object({
+      command: z.string().optional(),
+      refreshMs: z.number().int().min(500).default(5000),
+    })
+    .default({}),
   hints: z
     .object({
       enabled: z.boolean().default(false),
