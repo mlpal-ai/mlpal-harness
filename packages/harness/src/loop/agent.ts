@@ -1285,6 +1285,7 @@ export class AgentSession {
       principal,
     };
     const { decision, via } = await this.resolve(permReq);
+    const toolStartMs = Date.now();
 
     let raw: string | ToolResultBlocks;
     let isError: boolean;
@@ -1338,6 +1339,8 @@ export class AgentSession {
       tool: tu.name,
       decision: decision.behavior,
       isError,
+      // Wall time of the tool itself (absent on a denial: nothing ran); the OTLP tool span reads it.
+      ...(decision.behavior === "deny" ? {} : { ms: Date.now() - toolStartMs }),
       ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
