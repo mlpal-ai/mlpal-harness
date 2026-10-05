@@ -52,12 +52,17 @@ export interface SessionEndInput {
   event: "SessionEnd";
   reason: "exit" | "clear" | "error";
 }
-/** Fires when the loop is about to compact context (over budget). Observational —
- *  the full transcript is still in the store for a hook to snapshot. */
+/** Fires when the loop is about to summarise older turns (over budget). Observational — the
+ *  full transcript is still in the store for a hook to snapshot, and `transcript` is the
+ *  verbatim window about to be replaced by the summary, rendered as text, so a host can
+ *  checkpoint it to memory before it is gone (memory v13 DESIGN §3: "before compaction,
+ *  always"). `window` counts compactions within the session, for an idempotent event id. */
 export interface PreCompactInput {
   event: "PreCompact";
   trigger: "auto" | "manual";
   messageCount: number;
+  transcript?: string;
+  window?: number;
 }
 /** Fires after a Task subagent finishes, carrying its final result. Observational. */
 export interface SubagentStopInput {

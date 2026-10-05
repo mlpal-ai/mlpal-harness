@@ -40,9 +40,40 @@ export interface CreateSandboxOptions {
   platform?: NodeJS.Platform;
   /** Path to bubblewrap; null forces "unavailable" on Linux. Default: `bwrap` on PATH. */
   bwrapPath?: string | null;
+  /** Prove bubblewrap can actually confine here, not only that the binary exists. Default: spawn
+   *  one trivial command under the same namespaces the real wrap uses. Ubuntu 24.04 ships bwrap
+   *  but blocks unprivileged user namespaces (apparmor_restrict_unprivileged_userns=1), so the
+   *  binary is present, every wrapped command dies with "setting up uid map: Permission denied",
+   *  and a check on PATH alone reported the sandbox active (memory v13 experiment, F1). */
+  bwrapProbe?: (bwrap: string) => { ok: boolean; detail?: string };
   /** The environment to scrub; default process.env. */
   baseEnv?: NodeJS.ProcessEnv;
   onDeniedHost?: (host: string) => void;
+}
+
+/** Run one trivial command under bubblewrap with the namespaces the real wrap needs. A kernel or
+ *  policy that forbids them fails here, once, instead of on every Bash call of the run. */
+export function probeBwrap(bwrap: string): { ok: boolean; detail?: string } {
+  try {
+    const r = Bun.spawnSync([bwrap, "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "/bin/true"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+    });
+    if (r.exitCode === 0) return { ok: true };
+    const err = new TextDecoder().decode(r.stderr).trim().split("\n")[0] ?? "";
+    return { ok: false, detail: err || `exit ${r.exitCode}` };
+  } catch (e) {
+    return { ok: false, detail: String((e as Error)?.message ?? e) };
+  }
+}
+
+/** The known cause and its fix, when the probe's error names it. */
+export function bwrapHint(detail: string | undefined): string {
+  if (!detail) return "";
+  if (/uid map|user namespace|unshare/i.test(detail))
+    return " — unprivileged user namespaces are disabled (Ubuntu 24.04: kernel.apparmor_restrict_unprivileged_userns=1); run `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` or install an AppArmor profile for bwrap";
+  return "";
 }
 
 export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}): Sandbox {
@@ -66,8 +97,11 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
   } else if (platform === "linux") {
     const bwrap = opts.bwrapPath === undefined ? Bun.which("bwrap") : opts.bwrapPath;
     if (bwrap) {
-      confined = "bwrap";
-      wrap = (argv) => bwrapArgv(bwrap, spec, argv);
+      const probe = (opts.bwrapProbe ?? probeBwrap)(bwrap);
+      if (probe.ok) {
+        confined = "bwrap";
+        wrap = (argv) => bwrapArgv(bwrap, spec, argv);
+      } else reason = `bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail)}`;
     } else reason = "bubblewrap (bwrap) is not installed";
   } else {
     reason = `no sandbox for ${platform}`;

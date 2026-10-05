@@ -39,6 +39,9 @@ export interface LoopPolicy {
   churnThreshold: number;
   selfCheckNudge: (editsMade: number, verifyHint?: string) => string;
   antiChurnNudge: (path: string, edits: number) => string;
+  /** memory v13 (F5): what the host says every N turns to make the model checkpoint its working
+   *  notes to memory. Absent when the HOP has no memory contract. */
+  checkpointNudge?: (turns: number, workspace: string) => string;
   /** System prompt for the compaction summarizer side-call. */
   summarizerSystem: string;
   /** System prompt for the large-tool-output condenser side-call. */

@@ -8,8 +8,7 @@ import {
   codingClassifierSystem,
   codingSelfCheckNudge,
   CODING_ENV_BROKEN_RE,
-  CODING_VERIFY_CMD_RE,
-} from "../src/profile/builtins/coding";
+  CODING_VERIFY_CMD_RE, CODING_MEMORY_CONTRACT } from "../src/profile/builtins/coding";
 import { REVIEWER_PROFILE } from "../src/profile/builtins/reviewer";
 import { assertSettingsRespectLocks, builtinProfiles, loadProfile } from "../src/profile/load";
 import { bashTool } from "../src/tools/builtin/bash";
@@ -722,9 +721,13 @@ describe("v1.1 riskGate + memory.workspace", () => {
       );
       const p = loadProfile(dir, { cwd: dir, home: join(dir, "home") });
       expect(p.verification.agent.riskGate).toBe("actions");
-      expect(p.memory).toEqual({ workspace: "infra" });
+      // memory v13: coding carries the work-memory contract, so a child that names only a
+      // workspace inherits the parent's policy, topics and globs under its own workspace.
+      expect(p.memory?.workspace).toBe("infra");
+      expect(p.memory?.topics).toEqual(CODING_MEMORY_CONTRACT.topics);
+      expect(p.memory?.writes).toEqual(CODING_MEMORY_CONTRACT.writes);
       expect(builtinProfiles().coding!.verification.agent.riskGate).toBe("changed-lines");
-      expect(builtinProfiles().coding!.memory).toBeUndefined();
+      expect(builtinProfiles().coding!.memory).toEqual(CODING_MEMORY_CONTRACT);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -761,7 +764,9 @@ describe("v1.1 §9.2 memory.policy", () => {
   };
   test("loads the closed sets and defaults feeds to both consumers", () => {
     const p = load(base + "memory:\n  workspace: infra\n  policy:\n    record: [refusal, unmodelled]\n");
-    expect(p.memory).toEqual({ workspace: "infra", policy: { record: ["refusal", "unmodelled"], feeds: ["tune", "evals"] } });
+    expect(p.memory?.workspace).toBe("infra");
+    expect(p.memory?.policy).toEqual({ record: ["refusal", "unmodelled"], feeds: ["tune", "evals"] });
+    expect(p.memory?.topics).toEqual(CODING_MEMORY_CONTRACT.topics); // inherited from coding (memory v13)
   });
   test("an unknown kind is a load error naming the value", () => {
     expect(() => load(base + "memory:\n  policy:\n    record: [refusal, hiccup]\n")).toThrow(/unknown kind "hiccup"/);
@@ -772,14 +777,17 @@ describe("v1.1 §9.2 memory.policy", () => {
   });
   test("a policy without a workspace still loads; a child's policy replaces the parent's whole block", () => {
     const p = load(base + "memory:\n  policy:\n    record: [surprise]\n");
-    expect(p.memory).toEqual({ policy: { record: ["surprise"], feeds: ["tune", "evals"] } });
+    expect(p.memory?.policy).toEqual({ record: ["surprise"], feeds: ["tune", "evals"] });
+    expect(p.memory?.workspace).toBe("from-host"); // coding's placeholder, filled by the host
     const parentDir = mkdtempSync(join(tmpdir(), "hop-mem-parent-"));
     writeFileSync(join(parentDir, "hop.yaml"), base.replace("name: p", "name: parent") + "memory:\n  workspace: w\n  policy:\n    record: [refusal, escalation]\n    feeds: [tune]\n");
     const childDir = mkdtempSync(join(tmpdir(), "hop-mem-child-"));
     writeFileSync(join(childDir, "hop.yaml"), `spec: mlpal/hop-v1\nname: child\nversion: 0.0.1\ndescription: t\nextends: ${parentDir}\nmemory:\n  policy:\n    record: [correction]\n`);
     try {
       const c = loadProfile(childDir, { cwd: childDir, home: childDir });
-      expect(c.memory).toEqual({ workspace: "w", policy: { record: ["correction"], feeds: ["tune", "evals"] } });
+      expect(c.memory?.workspace).toBe("w");
+      expect(c.memory?.policy).toEqual({ record: ["correction"], feeds: ["tune", "evals"] });
+      expect(c.memory?.topics).toEqual(CODING_MEMORY_CONTRACT.topics); // inherited through the parent from coding
     } finally {
       rmSync(parentDir, { recursive: true, force: true });
       rmSync(childDir, { recursive: true, force: true });

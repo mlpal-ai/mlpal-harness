@@ -919,3 +919,30 @@ export function assertSettingsRespectLocks(
     }
   }
 }
+
+/**
+ * memory v13 (DESIGN §2, §5): a HOP's memory contract may name the feature workspace as
+ * `{workspace}` (the built-in coding HOP does, with `memory.workspace: from-host`). The host knows
+ * the workspace (settings, the HOP, or the directory name) and fills the placeholder once, at load,
+ * in every place the model or the service will read it: the system prompt (which carries the
+ * work-memory module), module prompts, topic ids, and the reads/writes globs. The memory service
+ * resolves `{me}` and `{target}` itself, so those stay. Pure: returns a new profile.
+ */
+export function fillWorkspace(profile: Profile, workspace: string): Profile {
+  const fill = (s: string) => s.replaceAll("{workspace}", workspace);
+  const memory = profile.memory
+    ? {
+        ...profile.memory,
+        workspace: profile.memory.workspace === undefined || profile.memory.workspace === "from-host" ? workspace : profile.memory.workspace,
+        topics: profile.memory.topics?.map((t) => ({ ...t, id: fill(t.id) })),
+        reads: profile.memory.reads?.map(fill),
+        writes: profile.memory.writes?.map(fill),
+      }
+    : profile.memory;
+  return {
+    ...profile,
+    memory,
+    modules: Object.fromEntries(Object.entries(profile.modules).map(([n, m]) => [n, { ...m, prompt: fill(m.prompt) }])),
+    prompts: { ...profile.prompts, system: fill(profile.prompts.system) },
+  };
+}

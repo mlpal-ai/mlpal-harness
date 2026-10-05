@@ -18,6 +18,11 @@ export interface SyncingMemoryOptions {
   logger?: Logger;
   /** Injectable for tests; defaults to fetch. Resolves to the HTTP status. */
   post?: (url: string, body: string, headers: Record<string, string>) => Promise<number>;
+  /** The identity headers every other memory call sends (the Bearer plus, under dev auth, the
+   *  X-Test-* tenant headers). Built per request so a rotating key is read at send time. Without
+   *  it the mirror carried a Bearer alone and, on a dev-auth service, every Memorize episode
+   *  landed in the fallback tenant (memory v13 experiment, F4). */
+  headers?: () => Record<string, string>;
 }
 
 export class SyncingMemory implements MemoryStore {
@@ -26,11 +31,13 @@ export class SyncingMemory implements MemoryStore {
   private readonly apiKey?: KeyProvider;
   private readonly log: Logger;
   private readonly post: NonNullable<SyncingMemoryOptions["post"]>;
+  private readonly identity?: () => Record<string, string>;
 
   constructor(opts: SyncingMemoryOptions) {
     this.base = opts.base;
     this.endpoint = opts.endpoint.replace(/\/$/, "");
     this.apiKey = opts.apiKey;
+    this.identity = opts.headers;
     this.log = opts.logger ?? silentLogger;
     this.post =
       opts.post ??
@@ -40,9 +47,11 @@ export class SyncingMemory implements MemoryStore {
       });
   }
 
-  /** Built per request: the key may rotate under a keyring. */
+  /** Built per request: the key may rotate under a keyring. The host's identity headers win when
+   *  supplied; the bare Bearer is the fallback for a host that has no tenant headers to send. */
   private headers(): Record<string, string> {
-    return { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${resolveApiKey(this.apiKey)}` } : {}) };
+    const identity = this.identity?.() ?? (this.apiKey ? { authorization: `Bearer ${resolveApiKey(this.apiKey)}` } : {});
+    return { "content-type": "application/json", ...identity };
   }
 
   readIndex(): Promise<string> {

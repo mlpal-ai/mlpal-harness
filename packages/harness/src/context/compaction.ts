@@ -58,9 +58,11 @@ export interface CompactionOptions {
   /** Recent messages kept verbatim (default 6). */
   keepRecentTurns?: number;
   summarize: (older: Message[]) => Promise<string>;
-  /** Fired once when compaction is about to happen (over budget), before any mutation.
-   *  The PreCompact lifecycle hook rides on this. */
+  /** Fired once when compaction is about to happen (over budget), before any mutation. */
   onBeforeCompact?: () => Promise<void>;
+  /** Fired with the verbatim older messages right before they are summarised away. The
+   *  PreCompact lifecycle hook rides on this, so a host can checkpoint exactly what is lost. */
+  onCompactWindow?: (older: Message[]) => Promise<void>;
   /** Tokens the char/4 estimate can't see: the tool-schema block and fixed request overhead.
    *  Added to every occupancy estimate so compaction accounts for them. */
   overheadTokens?: number;
@@ -185,6 +187,9 @@ export async function maybeCompact(
 
   const older = micro.slice(0, cut);
   const recent = micro.slice(cut);
+  // The hook sees the window as it was, before microcompaction stubbed its tool results:
+  // `micro` keeps the original's length and order, so the same cut selects the verbatim turns.
+  await opts.onCompactWindow?.(original.slice(0, cut));
   const summary = await opts.summarize(older);
   return {
     messages: prependSummary(recent, summary),

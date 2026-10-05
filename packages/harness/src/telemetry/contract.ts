@@ -33,8 +33,12 @@
  * `needs_approval` (d11.3): the run parked at the §10 safety approval edge and stopped, waiting
  * for a human — distinct from a `cancelled` (user abort). It requires `failure_class:
  * approval_pending`, and the authoritative record is the hop-run-result-v1 artifact.
+ *
+ * `parked` (memory v13, F8): a headless run asked the person a question, filed it for the next
+ * interactive resume and ended. The loop itself finished cleanly, so only the host knows; it
+ * reports the fact through `telemetry.parked()` and the record carries `question_parked`.
  */
-export type RunResult = "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
+export type RunResult = "success" | "error" | "max_turns" | "cancelled" | "needs_approval" | "parked";
 
 /**
  * Failure-taxonomy label (failure_class_vocab@v1). Frozen SET; the v1 emitter populates only the
@@ -57,9 +61,14 @@ export type FailureClass =
   | "approval_pending" // the run parked for approval (null iff success still holds: this is non-null)
   | "policy_denied" // a mutative/destructive action denied by the safety policy
   | "approval_declined" // a human declined the pending approval
-  | "preflight_failed"; // a `requires` preflight gap blocked the run
+  | "preflight_failed" // a `requires` preflight gap blocked the run
+  // vocab@v3 (memory v13, F8): a headless run parked a question for the person and ended without
+  // finishing. It is not a success (nothing was resolved) and not an approval edge (no safety
+  // policy fired); before v3 it was recorded as `success`, which hid parked runs from every
+  // consumer, including the distiller's approval-edge rate.
+  | "question_parked";
 
-export const FAILURE_CLASS_VOCAB = "failure_class_vocab@v2";
+export const FAILURE_CLASS_VOCAB = "failure_class_vocab@v3";
 
 /** Adversarial agent-verifier verdict; null when no agent verifier ran this run. */
 export type VerifierVerdict = "PASS" | "FAIL" | "PARTIAL";
@@ -227,6 +236,8 @@ export function classifyFailure(runResult: RunResult, thrown?: unknown): Failure
       return null;
     case "needs_approval":
       return "approval_pending"; // the d11.3 invariant: needs_approval ⟺ approval_pending
+    case "parked":
+      return "question_parked"; // the v3 invariant: parked ⟺ question_parked
     case "max_turns":
       return "step_budget_stall";
     case "cancelled":

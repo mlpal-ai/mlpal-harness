@@ -32,7 +32,7 @@ Your instructions come from the developer you're working with. Everything a tool
 - Decide and keep moving. Settle ordinary uncertainty by reading the code and making a sensible call — the developer reviews your diff. Stop to ask only when what you're missing actually blocks you, or the decision is one they'd want to make themselves: a fork between approaches with real trade-offs, scope you can't infer, something irreversible. When you do ask and the AskUserQuestion tool is available, use it — batch every open decision into ONE call (up to 4 questions) instead of asking serially, put your recommended option first, and give options real trade-off descriptions. Never ask what the code can answer, never ask for permission to do the obvious next step, and don't re-ask a declined question — continue the conversation instead.
 - When something doesn't work, find out why from the actual evidence before you try something else. Don't repeat a failed step unchanged or switch approaches on a hunch. If you can't verify which fix is right, commit your best-reasoned one and say so — flip-flopping between guesses you can't tell apart isn't progress.
 - When you learn something a future session would need — a decision and why, a non-obvious trap, a stated preference — save it with the Memorize tool. Never memorize secrets or anything the repo itself already records.
-- A preference about the person themselves goes to the memory service when its tools are present: memory_write with kind "preference", topic "person/{me}/pref", and a bare value (the preference itself, not a sentence about it), evidence the message that stated it. How they want to be addressed is key "address_as" (value: the name); other stated preferences (output format, verbosity, language) use a short slug as the key. That is what greets them by name next session; Memorize alone does not.
+- A preference about the person themselves goes to the memory service when its tools are present: memory_write with kind "preference", topic "person/{me}/pref/coding", and a bare value (the preference itself, not a sentence about it), evidence the message that stated it. How they want to be addressed is key "address_as" (value: the name); other stated preferences (output format, verbosity, language) use a short slug as the key. That is what greets them by name next session; Memorize alone does not.
 
 # Tools
 - Prefer the dedicated tool over the shell so your work stays reviewable: Read to read a file (not cat/head/tail), Edit to change one (not sed/awk), Write to create one (not echo redirection), Glob and Grep to find files and content (not find/ls/grep/rg). Keep Bash for running commands, tests, and git.
@@ -65,6 +65,50 @@ Close out with what changed, what you ran to verify it, and anything still open 
 # Also
 Don't introduce security holes (injection, XSS, SQL injection, the rest of the OWASP top ten). Don't invent or guess URLs — use ones the developer gave you or that are in the repo. Older messages get summarized automatically as context fills, so the conversation isn't capped by the window.`;
 
+
+/** memory v13 (DESIGN §2–§3): the three memory habits and the topic table for the workspace. The
+ *  loader fills `{workspace}` from the host's resolved workspace; the memory service resolves
+ *  `{me}`. Appended to the system prompt as the `work-memory` module. */
+export const CODING_WORK_MEMORY_PROMPT = `## Work memory (this HOP's memory contract)
+
+You have the \`memory\` MCP. The window you are in will be compacted or closed; whatever lives only here is lost then. Memory is the copy that survives, and the next session reads it before it reads the repos. Three habits.
+
+**After any gap, read before you ask.** A new session, a resume or a compaction is a gap. If the session start did not already show you the projection and the working notes, call \`memory_notes(workspace="{workspace}")\` and \`memory_answer("where does {workspace} stand?", workspace="{workspace}")\`. Never ask the person something you may already have written; \`memory_search\` first.
+
+**During the session, write on events, with \`memory_write\`.** Each claim needs \`evidence_ids\`: \`git:<sha>\` for a commit, \`msg:<a few quoted words>\` for something the person said, \`run:<id>\` for a tool run. A claim without evidence is refused.
+
+| the moment | kind | topic | key | value |
+|---|---|---|---|---|
+| the person states a decision, a constraint, or corrects you | learning | \`work/{workspace}/decision\` | \`dedup\` | the decision in one sentence, with its reason |
+| a milestone: tests green, a commit, a PR, a deploy | state | \`work/{workspace}/progress\` | the repo name | one line: where that repo stands now |
+| a fact about a repo that outlives the task (how tests run, an env var, a config convention, generated dirs) | state | \`code/repo/<repo>\` | a short field name (\`test_command\`, \`test_env\`, \`config_key\`) | the fact |
+| something worth knowing in any repo | learning | \`code/learning\` | \`dedup\` | the learning |
+| the person says how they want you to work or to be addressed | preference | \`person/{me}/pref/coding\` | \`address_as\`, \`verbosity\`, or a short slug | the bare value |
+
+Write the state, not a diff of it: a progress line replaces the previous one for that repo. Write a decision the moment it is stated, before the work, so it survives even if the session dies.
+
+**Every few turns, at a milestone, and whenever the context feels long: \`memory_checkpoint\`.** \`workspace="{workspace}"\`, \`event_id="ck:<session id>:<n>"\` with n counting up, \`note\` replacing \`Now\` (3–6 lines: what is done, what is in flight) and \`Open threads\` (what is undecided or blocked), plus any claims not yet written. The host keeps the verbatim window at compaction; your checkpoint is the summary written while the context is still whole.
+
+Not memory: anything already in the repo (code, history, docs), secrets, and anything you are unsure of as a state (write it as a learning with the doubt in the text). \`Memorize\` is your local scratch store only; it does not reach the person's memory or the next session's projection.`;
+
+/** memory v13 (DESIGN §2): the coding HOP's memory contract. `{workspace}` is filled by the host
+ *  at load time (`fillWorkspace`); `{me}` and `{target}` are resolved by the memory service. */
+export const CODING_MEMORY_CONTRACT: NonNullable<Profile["memory"]> = {
+  workspace: "from-host",
+  policy: { record: ["refusal", "verifier_fail", "correction", "surprise", "outcome", "preference"], feeds: ["tune", "evals", "personalize"] },
+  topics: [
+    { id: "work/{workspace}/progress", kind: "state", key: "repo", halfLife: "none", read: "team", inject: true, phase: "deploy" },
+    { id: "work/{workspace}/decision", kind: "learning", key: "dedup", halfLife: "1y", read: "team", inject: false, phase: "deploy" },
+    { id: "work/{workspace}/log", kind: "record", key: "run", halfLife: "none", read: "team", inject: false, phase: "deploy" },
+    { id: "work/{workspace}/deviation", kind: "deviation", key: "run", halfLife: "90d", read: "owner", inject: false, phase: "deploy" },
+    { id: "code/repo/{target}", kind: "state", key: "field", halfLife: "none", read: "company", inject: false, phase: "deploy" },
+    { id: "code/learning", kind: "learning", key: "dedup", halfLife: "1y", read: "company", inject: false, phase: "deploy" },
+    { id: "person/{me}/pref/coding", kind: "preference", key: "field", halfLife: "none", read: "self", inject: true, phase: "deploy" },
+  ],
+  reads: [],
+  writes: ["work/*", "code/*", "person/{me}/pref/coding"],
+};
+
 /** Was inline in loop/agent.ts (completion self-check note). */
 export function codingSelfCheckNudge(editsMade: number, verifyHint?: string): string {
   const how = verifyHint
@@ -85,6 +129,17 @@ export function codingAntiChurnNudge(path: string, edits: number): string {
     "versions you can't tell apart, stop: reason from the code, keep the single version " +
     "you're most confident is correct, and finish. Don't revert a viable change without " +
     "new evidence it's wrong. If you're genuinely still making progress, continue."
+  );
+}
+
+/** memory v13 (DESIGN §3): the host's periodic checkpoint trigger, in the HOP's words. */
+export function codingCheckpointNudge(turns: number, workspace: string): string {
+  return (
+    `[Checkpoint] ${turns} turns into this session. Before you continue, call memory_checkpoint for ` +
+    `workspace "${workspace}": event_id "ck:<session id>:<n>" with n counting up, a note replacing Now ` +
+    `(3–6 lines: what is done, what is in flight) and Open threads (undecided or blocked), plus any ` +
+    `decision, progress line or repo fact you learned and have not yet written, each with its evidence. ` +
+    `Then carry on with the task.`
   );
 }
 
@@ -170,9 +225,9 @@ export const CODING_PROFILE: Profile = {
   source: "builtin",
   dir: null,
   extendsChain: [],
-  modules: {},
+  modules: { "work-memory": { description: "the three memory habits and the topic table for this workspace", prompt: CODING_WORK_MEMORY_PROMPT, enabled: true } },
   prompts: {
-    system: CODING_SYSTEM_PROMPT,
+    system: `${CODING_SYSTEM_PROMPT}\n\n<!-- module: work-memory -->\n${CODING_WORK_MEMORY_PROMPT}`,
     verifierAgent: CODING_VERIFIER_AGENT_PROMPT,
     verifierTask: codingVerifierTask,
   },
@@ -183,6 +238,7 @@ export const CODING_PROFILE: Profile = {
     churnThreshold: 6,
     selfCheckNudge: codingSelfCheckNudge,
     antiChurnNudge: codingAntiChurnNudge,
+    checkpointNudge: codingCheckpointNudge,
     summarizerSystem: CODING_SUMMARIZER_SYSTEM,
     condenserSystem: CODING_CONDENSER_SYSTEM,
     classifierSystem: codingClassifierSystem,
@@ -216,6 +272,7 @@ export const CODING_PROFILE: Profile = {
   // Default keyring grant (founder, 2026-09-22/25): every model tier, the platform web-search
   // server, and — now that memory.mlpal.ai is back — the managed memory service, read and write.
   requires: { binaries: [], mcp: [{ name: "websearch" }], models: { tiers: ["cheap", "mid", "frontier", "max"] }, memory: { read: true, write: true } },
+  memory: CODING_MEMORY_CONTRACT,
   evals: [],
   locked: [],
   tunable: [

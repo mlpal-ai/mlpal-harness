@@ -84,7 +84,15 @@ export interface AgentConfig {
     keepRecentTurns?: number;
     /** Model used to summarize (defaults to the main model). */
     model?: string;
+    /** memory v13 (DESIGN §3): after a summary compaction the host rebuilds the context from
+     *  memory first — the projection, the workspace note, the last log records — and the text
+     *  returned here is appended as a system-authored user turn before the next model call. */
+    onAfterCompact?: (summary: string) => Promise<string | undefined>;
   };
+  /** memory v13 (DESIGN §3, F5): the model does not checkpoint on its own in short runs, so the
+   *  host asks every `everyTurns` turns. `nudge` is the HOP's wording; `enabled` is read at each
+   *  turn because the memory server may connect after the session was built. */
+  memoryCheckpoint?: { everyTurns: number; nudge: (turns: number) => string; enabled?: () => boolean };
   hooks?: HookEngine;
   /** Per-subtask model routing (summaries, sub-agents). Falls back to `model`. */
   router?: ModelRouter;
@@ -210,6 +218,9 @@ export interface AgentConfig {
     memoriesInjected?: () => string[];
     /** d11.6: the memory service projection the run started with (counts), when one was used. */
     memoryProjection?: () => MemoryProjectionStat | undefined;
+    /** memory v13 (F8): true when the host parked a question for the person during this run. A
+     *  run that ended cleanly after parking is recorded as `parked`, never `success`. */
+    parked?: () => boolean;
     emit: TelemetrySink;
   };
 }
@@ -485,6 +496,7 @@ export class AgentSession {
     const startMs = Date.now();
     let verifierVerdict: VerifierVerdict | null = null;
     let outcome: RunResult | null = null;
+    let compactions = 0; // summary compactions this run, for PreCompact's window ordinal
     let thrownError: unknown;
     // Cross-repo handoff: correlationIds of received task requests we owe a reply to when
     // this run finishes, and the latest assistant text to send back as that reply.
@@ -548,10 +560,13 @@ export class AgentSession {
           // model's hard limit.
           knownFloorTokens: lastInputTokens,
           summarize: (older) => this.summarize(older),
-          onBeforeCompact: cfg.hooks?.has("PreCompact")
-            ? async () => {
+          // PreCompact rides on the summarize seam, carrying the verbatim window about to be
+          // replaced, so a host checkpoints exactly what is lost (memory v13 DESIGN §3).
+          onCompactWindow: cfg.hooks?.has("PreCompact")
+            ? async (older) => {
+                compactions += 1;
                 await cfg.hooks!.run(
-                  { event: "PreCompact", trigger: "auto", messageCount: preCompactCount },
+                  { event: "PreCompact", trigger: "auto", messageCount: preCompactCount, transcript: renderTranscript(older), window: compactions },
                   this.hookCtx(),
                 );
               }
@@ -581,12 +596,36 @@ export class AgentSession {
             messages: messages.length,
           });
           metrics.increment("agent.compactions", 1, { model: cfg.model });
+          // memory v13 (DESIGN §3): after compaction the context is rebuilt from memory first.
+          if (cfg.compaction?.onAfterCompact) {
+            const rebuilt = await cfg.compaction.onAfterCompact(c.summary).catch((e) => {
+              log.warn("after-compaction memory rebuild failed", { error: String((e as Error)?.message ?? e) });
+              return undefined;
+            });
+            if (rebuilt?.trim()) {
+              const ue: UserEvent = { type: "user", message: { role: "user", content: rebuilt }, author: SYSTEM, ts: now() };
+              parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
+              yield ue;
+              messages.push({ role: "user", content: rebuilt });
+              metrics.increment("agent.memory_rebuilds", 1);
+            }
+          }
           }
         }
       }
 
       turns++;
       metrics.increment("agent.turns", 1, { model: cfg.model });
+      // memory v13 (F5): the periodic checkpoint is a host trigger, not a habit the model keeps.
+      if (cfg.memoryCheckpoint && cfg.memoryCheckpoint.everyTurns > 0 && turns % cfg.memoryCheckpoint.everyTurns === 0 && (cfg.memoryCheckpoint.enabled?.() ?? true)) {
+        const note = cfg.memoryCheckpoint.nudge(turns);
+        const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
+        parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
+        yield ue;
+        messages.push({ role: "user", content: note });
+        log.info("memory checkpoint nudge", { turns });
+        metrics.increment("agent.checkpoint_nudges", 1);
+      }
 
       let result: ModelResult;
       const callStartMs = Date.now();
@@ -1019,6 +1058,8 @@ export class AgentSession {
       // `outcome` is null only when the generator was abandoned before any terminal result — no
       // outcome to report, so skip. Fire-and-forget: never throws, never blocks the caller.
       if (cfg.telemetry && outcome) {
+        // A clean finish that parked a question for the person is not a success (F8).
+        const recorded: RunResult = outcome === "success" && cfg.telemetry.parked?.() ? "parked" : outcome;
         try {
           cfg.telemetry.emit(
             buildRunOutcome({
@@ -1035,8 +1076,8 @@ export class AgentSession {
               labels: providerLabels,
               taskType: cfg.telemetry.taskType ?? loop.taskType,
               sourceRef: cfg.telemetry.sourceRef,
-              runResult: outcome,
-              failureClass: classifyFailure(outcome, thrownError),
+              runResult: recorded,
+              failureClass: classifyFailure(recorded, thrownError),
               tokens: {
                 input: totalUsage.input_tokens ?? 0,
                 output: totalUsage.output_tokens ?? 0,
