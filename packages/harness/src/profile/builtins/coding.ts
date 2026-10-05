@@ -100,6 +100,9 @@ export const CODING_MEMORY_CONTRACT: NonNullable<Profile["memory"]> = {
     { id: "work/{workspace}/progress", kind: "state", key: "repo", halfLife: "none", read: "team", inject: true, phase: "deploy" },
     { id: "work/{workspace}/decision", kind: "learning", key: "dedup", halfLife: "1y", read: "team", inject: false, phase: "deploy" },
     { id: "work/{workspace}/log", kind: "record", key: "run", halfLife: "none", read: "team", inject: false, phase: "deploy" },
+    // F14: a fact the person stated about the world outside the code (a launch date, a sign-off),
+    // filed by the host's disclosure pass.
+    { id: "work/{workspace}/status", kind: "state", key: "field", halfLife: "none", read: "team", inject: false, phase: "deploy" },
     { id: "work/{workspace}/deviation", kind: "deviation", key: "run", halfLife: "90d", read: "owner", inject: false, phase: "deploy" },
     { id: "code/repo/{target}", kind: "state", key: "field", halfLife: "none", read: "company", inject: false, phase: "deploy" },
     { id: "code/learning", kind: "learning", key: "dedup", halfLife: "1y", read: "company", inject: false, phase: "deploy" },
