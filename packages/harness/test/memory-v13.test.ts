@@ -36,6 +36,30 @@ describe("memory v13 host obligations", () => {
     }
   });
 
+  test("F18: with a contract mapper, a Memorize is mirrored under its contract topic or kept local", async () => {
+    const root = join(tmpdir(), `yodex-v13-${crypto.randomUUID()}`);
+    const store = new LocalStore(root);
+    try {
+      const posted: { topic: string; key: string; kind: string }[] = [];
+      const mem = new SyncingMemory({
+        base: store.memory,
+        endpoint: "https://memory.example",
+        topicFor: ({ type, scope }) => (type === "decision" && scope === "project" ? "work/ledger/decision" : undefined),
+        post: async (_url, body) => {
+          const e = JSON.parse(body).episodes[0];
+          posted.push({ topic: e.payload.topic, key: e.payload.key, kind: e.payload.kind });
+          return 202;
+        },
+      });
+      await mem.writeTopic("ledger--eur-only", "---\ntype: decision\nscope: project\nworkspace: ledger\n---\nRefunds are EUR only.\n");
+      await mem.writeTopic("ledger--dev-preference-brevity", "---\ntype: deviation\nscope: project\nworkspace: ledger\n---\nkind: preference\n");
+      expect(posted).toEqual([{ topic: "work/ledger/decision", key: "eur-only", kind: "decision" }]);
+      expect(await store.memory.readTopic("ledger--dev-preference-brevity")).toContain("kind: preference"); // local still has it
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("F1: bubblewrap on PATH but unable to confine is reported, never claimed active", () => {
     const spec = resolveSandboxSpec(undefined, { roots: ["/work/repo"], home: "/home/u", hasSafetyBlock: false });
     const sb = createSandbox(spec, {

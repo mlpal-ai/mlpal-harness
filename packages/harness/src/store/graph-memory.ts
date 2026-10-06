@@ -23,6 +23,12 @@ export interface SyncingMemoryOptions {
    *  it the mirror carried a Bearer alone and, on a dev-auth service, every Memorize episode
    *  landed in the fallback tenant (memory v13 experiment, F4). */
   headers?: () => Record<string, string>;
+  /** The contract topic a Memorize entry is mirrored under, or undefined to keep it local only.
+   *  Without it every entry is mirrored under its file name (`<workspace>--<slug>`), which is no
+   *  contract topic: a preference Memorize once reached the service as a deviation claim named by
+   *  its slug and was dropped there (memory v13, F18). A host with a contract maps the types it
+   *  has topics for and keeps the rest local. */
+  topicFor?: (entry: { file: string; type: string; slug: string; scope: "global" | "project"; workspace?: string }) => string | undefined;
 }
 
 export class SyncingMemory implements MemoryStore {
@@ -32,12 +38,14 @@ export class SyncingMemory implements MemoryStore {
   private readonly log: Logger;
   private readonly post: NonNullable<SyncingMemoryOptions["post"]>;
   private readonly identity?: () => Record<string, string>;
+  private readonly topicFor?: SyncingMemoryOptions["topicFor"];
 
   constructor(opts: SyncingMemoryOptions) {
     this.base = opts.base;
     this.endpoint = opts.endpoint.replace(/\/$/, "");
     this.apiKey = opts.apiKey;
     this.identity = opts.headers;
+    this.topicFor = opts.topicFor;
     this.log = opts.logger ?? silentLogger;
     this.post =
       opts.post ??
@@ -68,7 +76,18 @@ export class SyncingMemory implements MemoryStore {
     await this.base.writeTopic(name, content); // local is source of truth — always persist
     // Best-effort mirror to the graph. Never let a sync failure surface to the agent.
     try {
-      const envelope = topicToEnvelope(name, parseTopic(content));
+      const parsed = parseTopic(content);
+      const envelope = topicToEnvelope(name, parsed);
+      if (this.topicFor) {
+        const slug = String(envelope.payload.key);
+        const target = this.topicFor({ file: name, type: parsed.meta.type ?? "fact", slug, scope: envelope.scope === "user" ? "global" : "project", workspace: parsed.meta.workspace });
+        if (!target) {
+          this.log.info("memorize kept local: no contract topic for its type", { topic: name, type: parsed.meta.type ?? "fact" });
+          return;
+        }
+        envelope.payload.topic = target;
+        envelope.payload.key = slug;
+      }
       // The ingest endpoint takes a LIST; the bare envelope was a 422 and every Memorize mirror
       // silently failed for weeks (the test pinned the wrong shape).
       const status = await this.post(`${this.endpoint}/api/v1/episodes`, JSON.stringify({ episodes: [envelope] }), this.headers());
