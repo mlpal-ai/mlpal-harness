@@ -84,6 +84,20 @@ async function resolveImports(
   return out.join("\n");
 }
 
+/** The memory files that exist, in the order they are loaded (user dirs first, then the
+ *  ancestor chain down to cwd). Raw paths only: `@import`s are not followed. */
+export function memoryFilePaths(opts: Pick<LoadMemoryOptions, "cwd" | "home" | "userDirs" | "filenames">): string[] {
+  const names = opts.filenames ?? defaultMemoryNames();
+  const out: string[] = [];
+  for (const dir of [...(opts.userDirs ?? []), ...ancestorsDownToCwd(opts.cwd, opts.home)]) {
+    for (const n of names) {
+      const p = resolve(join(dir, n));
+      if (existsSync(p) && !out.includes(p)) out.push(p);
+    }
+  }
+  return out;
+}
+
 export async function loadMemoryFiles(opts: LoadMemoryOptions): Promise<MemoryFile[]> {
   const names = opts.filenames ?? defaultMemoryNames();
   const maxDepth = opts.maxImportDepth ?? 5;

@@ -13,6 +13,7 @@ export * from "./tools";
 export * from "./permission/engine";
 export * from "./permission/safety-envelope";
 export * from "./permission/plan-gate";
+export * from "./doctor/prompt-audit";
 export * from "./loop/agent";
 export { effectiveEntries, loadMessages } from "./loop/messages";
 export * from "./registry/models";
