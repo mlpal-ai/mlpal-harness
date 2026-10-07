@@ -175,3 +175,22 @@ describe("ConversationStore.tail (telemetry v1, step 4)", () => {
     }
   });
 });
+
+describe("LocalStore with logs off (YODEX_LOG=off)", () => {
+  test("records are neither written nor read; the conversation still persists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "yodex-logoff-"));
+    try {
+      const store = new LocalStore(root, { logs: "off" });
+      await store.logs.write("s", "events", { kind: "run.start", run: "r" });
+      await store.conversation.append("s", { type: "user", message: { role: "user", content: "hi" }, author: { kind: "human" }, ts: "t" } as never, null);
+      await store.close();
+      expect(await store.logs.read("s", "events")).toEqual([]);
+      expect((await store.logs.tail!("s", "events", 0)).records).toEqual([]);
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(join(root, "logs"))).toBe(false);
+      expect(await store.conversation.read("s")).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

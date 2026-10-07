@@ -166,6 +166,8 @@ class LocalLogs implements LogStore {
   constructor(
     private readonly dir: string,
     private readonly queue: AppendQueue,
+    /** `off`: nothing is written or read (YODEX_LOG=off). The conversation is unaffected. */
+    private readonly mode: "on" | "off" = "on",
   ) {}
 
   private file(sessionId: string, channel: LogChannel): string {
@@ -177,6 +179,7 @@ class LocalLogs implements LogStore {
     channel: LogChannel,
     record: Record<string, unknown>,
   ): Promise<void> {
+    if (this.mode === "off") return;
     this.queue.push(this.file(sessionId, channel), JSON.stringify({ ts: nowIso(), ...record }));
   }
 
@@ -184,6 +187,7 @@ class LocalLogs implements LogStore {
     sessionId: string,
     channel: LogChannel,
   ): Promise<Record<string, unknown>[]> {
+    if (this.mode === "off") return [];
     await this.queue.flush();
     return readJsonl<Record<string, unknown>>(this.file(sessionId, channel));
   }
@@ -191,6 +195,7 @@ class LocalLogs implements LogStore {
   /** The cursor is a byte offset; only complete lines are returned, so a line still being
    *  written (or torn by a crash) is left for the next call. */
   async tail(sessionId: string, channel: LogChannel, cursor: number): Promise<{ records: Record<string, unknown>[]; cursor: number }> {
+    if (this.mode === "off") return { records: [], cursor };
     await this.queue.flush();
     const t = await tailJsonl<Record<string, unknown>>(this.file(sessionId, channel), cursor, (line) => ({ kind: "store.unparseable", bytes: line.length }));
     return { records: t.items, cursor: t.cursor };
@@ -410,7 +415,7 @@ export class LocalStore implements Store {
 
   constructor(
     readonly root: string,
-    opts: { logger?: Logger; flushMs?: number } = {},
+    opts: { logger?: Logger; flushMs?: number; logs?: "on" | "off" } = {},
   ) {
     let queue = LocalStore.queues.get(root);
     if (!queue) {
@@ -419,7 +424,7 @@ export class LocalStore implements Store {
     }
     this.queue = queue;
     this.conversation = new LocalConversation(join(root, "conversation"), this.queue);
-    this.logs = new LocalLogs(join(root, "logs"), this.queue);
+    this.logs = new LocalLogs(join(root, "logs"), this.queue, opts.logs ?? "on");
     this.memory = new LocalMemory(join(root, "memory"));
     this.registry = new LocalRegistry(join(root, "registry"));
     this.mailbox = new LocalMailbox(join(root, "mailbox"));
