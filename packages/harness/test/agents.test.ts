@@ -66,7 +66,8 @@ describe("Task tool with custom agents", () => {
       { description: "review it", prompt: "review x", agent: "reviewer" },
       { cwd: "/" },
     );
-    expect(r.content).toBe("done as reviewer");
+    expect(r.content).toContain("[Sub-agent result:");
+    expect(r.content).toContain("\ndone as reviewer");
     expect(runs.at(-1)).toMatchObject({ agent: "reviewer" });
   });
 

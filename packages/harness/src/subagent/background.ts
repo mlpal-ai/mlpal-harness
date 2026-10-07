@@ -13,6 +13,7 @@
  * on the blocking Task path, where ordering is guaranteed.
  */
 import type { EventInbox } from "../events/inbox";
+import { frameSubagentResult } from "../input/sanitize";
 
 export type TaskStatus = "running" | "done" | "failed" | "cancelled";
 
@@ -208,7 +209,7 @@ export class BackgroundAgents {
       if (t.status === "running" || t.reported) continue;
       t.reported = true;
       if (t.status === "done") {
-        out.push(`[Background task ${t.id} "${t.description}" finished. Result:]\n${t.result || "(no output)"}`);
+        out.push(`[Background task ${t.id} finished.]\n${frameSubagentResult(t.description, t.result ?? "")}`);
       } else if (t.status === "cancelled") {
         out.push(`[Background task ${t.id} "${t.description}" was cancelled.]`);
       } else {

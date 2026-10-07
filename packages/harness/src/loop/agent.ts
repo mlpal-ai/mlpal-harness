@@ -24,6 +24,7 @@ import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
+import { stripInvisible } from "../input/sanitize";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
@@ -430,7 +431,13 @@ export class AgentSession {
 
     // UserPromptSubmit: a hook may reject the prompt (the run ends with the reason), rewrite it,
     // or add context to it — before anything is persisted, so a rejected prompt leaves no turn.
-    let promptText = input.text;
+    // Invisible characters never reach the model: they hide instructions a person cannot see.
+    const stripped = stripInvisible(input.text);
+    let promptText = stripped.text;
+    if (stripped.removed) {
+      (cfg.logger ?? silentLogger).warn("prompt sanitized: invisible characters removed", { removed: stripped.removed, sessionId: cfg.sessionId });
+      (cfg.metrics ?? noopMetrics).increment("agent.prompt_sanitized", 1);
+    }
     if (cfg.hooks?.has("UserPromptSubmit")) {
       const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
       const blocker = results.find((r) => r.block);
@@ -751,7 +758,7 @@ export class AgentSession {
             for (const pm of peers) {
               // A correlated peer message is a cross-repo task request: reply is owed to its
               // private correlationId channel when we finish. Frame it so the model reports back.
-              const framed = frameHandoff(pm);
+              const framed = frameHandoff({ ...pm, text: stripInvisible(pm.text).text });
               if (pm.correlationId) owedReplies.push(pm.correlationId);
               const ue: UserEvent = {
                 type: "user",

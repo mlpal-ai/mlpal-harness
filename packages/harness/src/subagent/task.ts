@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { frameSubagentResult } from "../input/sanitize";
 import { defineTool, type Tool } from "../tools/types";
 import type { AgentDef } from "./agents";
 import { type BackgroundAgents, backgroundAgents } from "./background";
@@ -170,7 +171,7 @@ export function createTaskTool(
           task.result = text;
           task.endedAt = Date.now();
         }
-        return { content: text || "(sub-agent returned no output)" };
+        return { content: frameSubagentResult(input.description, text) };
       } catch (e) {
         if (task.status === "running") {
           task.status = "failed";
@@ -197,7 +198,7 @@ export const agentOutputTool = defineTool({
       return { content: `[${t.id} running (${Math.round((Date.now() - t.startedAt) / 1000)}s)] ${t.description}` };
     }
     if (t.status === "done") {
-      return { content: `[${t.id} finished] ${t.description}\n${t.result || "(no output)"}` };
+      return { content: `[${t.id} finished]\n${frameSubagentResult(t.description, t.result ?? "")}` };
     }
     if (t.status === "cancelled") return { content: `[${t.id} cancelled] ${t.description}` };
     return { content: `[${t.id} failed] ${t.description}: ${t.error ?? "unknown error"}`, isError: true };

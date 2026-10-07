@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { sanitizeNote, sanitizeText } from "../input/sanitize";
 import { dirname, join, resolve } from "node:path";
 import { host } from "../host";
 
@@ -19,6 +20,8 @@ import { host } from "../host";
 export interface MemoryFile {
   path: string;
   content: string;
+  /** What the sanitizer removed from this file, when anything (invisible characters, imitating markup). */
+  sanitized?: { removed: number; found: string[] };
 }
 
 /** Host's own file first (e.g. YODEX.md), then the cross-tool conventions. Resolved
@@ -98,7 +101,10 @@ export async function loadMemoryFiles(opts: LoadMemoryOptions): Promise<MemoryFi
       return;
     }
     if (!content.trim()) return;
-    files.push({ path: abs, content: await resolveImports(content, dirname(abs), 0, seen, maxDepth) });
+    // A memory file is data from outside the conversation: hidden characters and markup that
+    // imitates the harness are neutralized, and the section says what was removed.
+    const clean = sanitizeText(await resolveImports(content, dirname(abs), 0, seen, maxDepth));
+    files.push({ path: abs, content: clean.text, ...(clean.removed || clean.found.length ? { sanitized: { removed: clean.removed, found: clean.found } } : {}) });
   };
 
   // user/global (general) first, then project hierarchy (specific) last
@@ -114,6 +120,6 @@ export async function loadMemoryFiles(opts: LoadMemoryOptions): Promise<MemoryFi
 /** Format loaded memory for appending to the system prompt. */
 export function memorySection(files: MemoryFile[]): string {
   if (files.length === 0) return "";
-  const blocks = files.map((f) => `## ${f.path}\n${f.content.trim()}`).join("\n\n");
+  const blocks = files.map((f) => `## ${f.path}${f.sanitized ? `\n(sanitized: ${sanitizeNote(f.sanitized)})` : ""}\n${f.content.trim()}`).join("\n\n");
   return `\n\n# Project & user memory\nThese files define project conventions, commands, and the user's preferences. Treat them as authoritative.\n\n${blocks}`;
 }
