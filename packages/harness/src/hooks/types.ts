@@ -19,6 +19,8 @@ export interface HookContext {
   sessionId: string;
   agentId: string;
   cwd: string;
+  /** telemetry v1: the run (turn) in progress, when a hook fires inside one. */
+  runId?: string;
 }
 
 export interface UserPromptSubmitInput {

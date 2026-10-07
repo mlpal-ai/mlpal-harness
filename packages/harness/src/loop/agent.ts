@@ -23,6 +23,7 @@ import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
+import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
@@ -57,6 +58,10 @@ export interface AgentConfig {
   displayName?: string;
   sessionId: string;
   workspace: string;
+  /** telemetry v1: what every record and outbound call is stamped with, beyond session and run. */
+  stamp?: StampConfig;
+  /** telemetry v1: for a subagent, the parent's run (turn) that spawned it. */
+  parentRunId?: string;
   cwd: string;
   /** Allowed filesystem roots for path-based tools. Defaults to [cwd]; --add-dir extends it. */
   roots?: string[];
@@ -448,11 +453,19 @@ export class AgentSession {
       author,
       ts: now(),
     };
-    parent = (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
+    const userUuid = (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
+    parent = userUuid;
     yield userEvt;
 
+    // telemetry v1: one run per turn; the person's prompt names the run, a steer or a peer
+    // message keeps the prompt of the turn it lands in.
+    const runId = crypto.randomUUID();
+    this.currentRun = runId;
+    this.seq = 0; // record order within the run; (run, seq) is unique across processes
+    if (author.type === "human" || !this.currentPrompt) this.currentPrompt = runId;
+    await this.event("run.start", { author: author.type, ref: userUuid });
     const log = (cfg.logger ?? silentLogger).child({
-      runId: crypto.randomUUID(),
+      runId,
       sessionId: cfg.sessionId,
       agentId: cfg.agentId,
     });
@@ -589,6 +602,7 @@ export class AgentSession {
             ts: now(),
           };
           parent = (await this.store.conversation.append(cfg.sessionId, ce, parent)).uuid;
+          await this.event("compact", { trigger: "auto", replaced: c.replaced ?? 0, summaryTokens: c.summaryTokens, ref: parent });
           yield ce;
           log.info("compacted context", {
             summaryTokens: c.summaryTokens,
@@ -676,6 +690,8 @@ export class AgentSession {
       // The per-call ledger /usage reads: duration and the gateway's own compute units ride
       // with the token counts, so session cost is the meter's figure, not an estimate.
       await this.store.logs.write(cfg.sessionId, "model", {
+        ...this.stampFields(),
+        ref: parent,
         model: result.model,
         stopReason: result.stopReason,
         usage: result.usage,
@@ -1253,11 +1269,7 @@ export class AgentSession {
       ts: now(),
     };
     parent = (await this.store.conversation.append(cfg.sessionId, ce, parent)).uuid;
-    await this.store.logs.write(cfg.sessionId, "events", {
-      kind: "compact",
-      trigger: "manual",
-      replaced: messages.length,
-    });
+    await this.event("compact", { trigger: "manual", replaced: messages.length, ref: parent });
     if (cfg.compaction?.onAfterCompact) {
       const rebuilt = await cfg.compaction.onAfterCompact(summary).catch((e) => {
         (cfg.logger ?? silentLogger).warn("after-compaction memory rebuild failed", { error: String((e as Error)?.message ?? e) });
@@ -1276,7 +1288,7 @@ export class AgentSession {
   private compactions = 0;
 
   private hookCtx(): HookContext {
-    return { sessionId: this.cfg.sessionId, agentId: this.cfg.agentId, cwd: this.cfg.cwd };
+    return { sessionId: this.cfg.sessionId, agentId: this.cfg.agentId, cwd: this.cfg.cwd, ...(this.currentRun ? { runId: this.currentRun } : {}) };
   }
 
   /**
@@ -1328,6 +1340,7 @@ export class AgentSession {
       if (blocker) {
         log.info("tool blocked by hook", { tool: tu.name, reason: blocker.reason });
         await this.store.logs.write(cfg.sessionId, "exec", {
+          ...this.stampFields(),
           tool: tu.name,
           decision: "hook_block",
           isError: true,
@@ -1367,6 +1380,7 @@ export class AgentSession {
           roots: cfg.roots ?? [cfg.cwd],
           signal: cfg.signal,
           sessionId: cfg.sessionId,
+          ...(this.currentRun ? { runId: this.currentRun } : {}),
           exec: cfg.exec,
         }),
         cfg.signal,
@@ -1400,6 +1414,7 @@ export class AgentSession {
 
     log.info("tool", { tool: tu.name, decision: decision.behavior, isError });
     await this.store.logs.write(cfg.sessionId, "exec", {
+      ...this.stampFields(),
       tool: tu.name,
       decision: decision.behavior,
       isError,
@@ -1451,6 +1466,39 @@ export class AgentSession {
     usage: Usage,
     pendingApproval?: { command: string; reason: string },
   ): EngineEvent {
+    void this.event("run.end", { subtype, turns: numTurns, usage, ...(pendingApproval ? { pending: pendingApproval.reason } : {}) });
     return { type: "result", subtype, numTurns, usage, ts: now(), ...(pendingApproval ? { pendingApproval } : {}) };
+  }
+
+  // ---- telemetry v1: the stamp and the event log ----
+  private currentRun: string | null = null;
+  private currentPrompt: string | null = null;
+  private seq = 0;
+
+  /** The run (turn) in progress, for a host that spawns subagents or writes its own records. */
+  runId(): string | null {
+    return this.currentRun;
+  }
+
+  private stamp(): RunStamp {
+    const { cfg } = this;
+    return {
+      session: cfg.sessionId,
+      run: this.currentRun ?? "none",
+      ...(this.currentPrompt ? { prompt: this.currentPrompt } : {}),
+      ...(cfg.parentRunId ? { parent_run: cfg.parentRunId } : {}),
+      ...(cfg.stamp ?? {}),
+    };
+  }
+
+  /** The stamp plus `seq`, the record's order within its run (per run, so a continued session in
+   *  a new process never repeats a number; readers order by (run, seq), runs by their start). */
+  private stampFields(): Record<string, string | number> {
+    return { ...stampFields(this.stamp()), seq: ++this.seq };
+  }
+
+  /** One record in the session's events channel: what the harness did, stamped. Never content. */
+  private event(kind: string, fields: Record<string, unknown>): Promise<void> {
+    return this.store.logs.write(this.cfg.sessionId, "events", { ...this.stampFields(), kind, ...fields });
   }
 }

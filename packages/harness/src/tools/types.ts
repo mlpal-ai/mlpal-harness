@@ -15,6 +15,9 @@ export interface ToolContext {
   /** The calling session — for tools that record provenance (e.g. Memorize → memory
    *  graph `subject.chat_id`) or scope by session. */
   sessionId?: string;
+  /** telemetry v1: the run (turn) the call belongs to; a tool that spawns work or calls a service
+   *  stamps it on. */
+  runId?: string;
   /** How command-running tools spawn: the execution sandbox (OS confinement + scrubbed env).
    *  Absent = plain spawn with the agent's own environment. */
   exec?: ExecPolicy;
