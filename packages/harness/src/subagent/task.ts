@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { HookEngine } from "../hooks/engine";
 import { frameSubagentResult } from "../input/sanitize";
 import { defineTool, type Tool } from "../tools/types";
 import type { AgentDef } from "./agents";
@@ -51,6 +52,7 @@ export function createTaskTool(
   run: SubagentRun,
   agents: AgentDef[] = [],
   background: BackgroundAgents = backgroundAgents,
+  opts: { hooks?: HookEngine } = {},
 ): Tool<{ description: string; prompt: string; agent?: string; model?: string; run_in_background?: boolean; read_only?: boolean; isolation?: "worktree" }> {
   const catalog = agents.length
     ? ` Specialized agents available via \`agent\`: ${agents.map((a) => `${a.name} (${a.description})`).join("; ")}.`
@@ -104,6 +106,7 @@ export function createTaskTool(
         // Detached: use the task's OWN signal (not ctx.signal, which dies when this turn ends), so
         // the child outlives the turn and reports back later. Its mid-run statuses flow back as
         // throttled progress events keyed to this task id.
+        if (opts.hooks?.has("SubagentStart")) await opts.hooks.run({ event: "SubagentStart", description: input.description, ...(input.agent ? { agentType: input.agent } : {}), background: true }, { sessionId: ctx.sessionId ?? "", agentId: "", cwd: ctx.cwd, ...(ctx.runId ? { runId: ctx.runId } : {}) });
         const task = background.start(input.description, (signal) =>
           run(
             {
@@ -140,6 +143,7 @@ export function createTaskTool(
       // Foreground (blocking/parallel) children register too, so the agents panel shows
       // every running sub-agent — peek/steer/kill work the same; only delivery differs
       // (the result returns inline here instead of via the inbox).
+      if (opts.hooks?.has("SubagentStart")) await opts.hooks.run({ event: "SubagentStart", description: input.description, ...(input.agent ? { agentType: input.agent } : {}), background: false }, { sessionId: ctx.sessionId ?? "", agentId: "", cwd: ctx.cwd, ...(ctx.runId ? { runId: ctx.runId } : {}) });
       const task = background.track(input.description);
       task.agent = input.agent;
       task.prompt = input.prompt;

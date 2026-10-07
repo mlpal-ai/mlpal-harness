@@ -13,7 +13,35 @@ export type HookEvent =
   | "SessionStart"
   | "SessionEnd"
   | "PreCompact"
-  | "SubagentStop";
+  | "SubagentStop"
+  // gap refresh rows 6–7: the events people wire their own systems to
+  | "PermissionRequest"
+  | "Notification"
+  | "PostCompact"
+  | "SubagentStart"
+  | "StopFailure"
+  | "ConfigChange"
+  | "WorktreeCreate"
+  | "TeammateIdle";
+
+export const HOOK_EVENTS: readonly HookEvent[] = [
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "Stop",
+  "SessionStart",
+  "SessionEnd",
+  "PreCompact",
+  "SubagentStop",
+  "PermissionRequest",
+  "Notification",
+  "PostCompact",
+  "SubagentStart",
+  "StopFailure",
+  "ConfigChange",
+  "WorktreeCreate",
+  "TeammateIdle",
+];
 
 export interface HookContext {
   sessionId: string;
@@ -73,7 +101,72 @@ export interface SubagentStopInput {
   result: string;
 }
 
+/** Fires when the permission cascade would ASK the person. A hook may answer instead
+ *  (`decision: allow | deny` with a reason); without an answer the ask proceeds as before. */
+export interface PermissionRequestInput {
+  event: "PermissionRequest";
+  toolName: string;
+  input: Record<string, unknown>;
+  /** The cascade's reason for asking, and the §10 safety reason when the envelope raised it. */
+  reason?: string;
+  safetyReason?: string;
+}
+/** Something a person would want to hear about, from the loop's own view: a run parked on an
+ *  approval or a question, the turn limit, a cancellation. Observational. */
+export interface NotificationInput {
+  event: "Notification";
+  kind: "needs_approval" | "question_parked" | "max_turns" | "cancelled" | "error";
+  message: string;
+}
+/** Fires after a compaction landed: how many messages the summary replaced and its size. */
+export interface PostCompactInput {
+  event: "PostCompact";
+  trigger: "auto" | "manual";
+  replaced: number;
+  summaryChars: number;
+}
+/** Fires when a Task sub-agent starts, before its first model call. */
+export interface SubagentStartInput {
+  event: "SubagentStart";
+  description: string;
+  agentType?: string;
+  background: boolean;
+}
+/** Fires when a Stop hook (the verifier) blocked "done" and the loop continues. */
+export interface StopFailureInput {
+  event: "StopFailure";
+  reason: string;
+  verdict?: "PASS" | "FAIL" | "PARTIAL";
+  continuations: number;
+}
+/** Host-fired when a setting that shapes the run changes mid-session (model, effort, mode). */
+export interface ConfigChangeInput {
+  event: "ConfigChange";
+  setting: string;
+  from?: string;
+  to?: string;
+}
+/** Host-fired when a git worktree is created for an isolated agent. */
+export interface WorktreeCreateInput {
+  event: "WorktreeCreate";
+  path: string;
+  branch: string;
+}
+/** Fires when a listening worker finds nothing to do and goes idle (once per idle stretch). */
+export interface TeammateIdleInput {
+  event: "TeammateIdle";
+  idleMs: number;
+}
+
 export type HookInput =
+  | PermissionRequestInput
+  | NotificationInput
+  | PostCompactInput
+  | SubagentStartInput
+  | StopFailureInput
+  | ConfigChangeInput
+  | WorktreeCreateInput
+  | TeammateIdleInput
   | UserPromptSubmitInput
   | PreToolUseInput
   | PostToolUseInput
@@ -97,6 +190,19 @@ export interface HookResult {
   /** Stop (agent verifier): the raw verdict, surfaced even when it does not block, so the run
    *  loop can stamp it on telemetry (checks.agent.verdict). Absent for non-verifier hooks. */
   verdict?: "PASS" | "FAIL" | "PARTIAL";
+  /** PermissionRequest: answer in the person's place. */
+  decision?: "allow" | "deny";
+}
+
+/** A declarative filter on the event input (the `when` of a configured hook): every named field
+ *  must match. `command` and `prompt` are regular expressions over the matching input field. */
+export interface HookWhen {
+  toolName?: string | string[];
+  command?: string;
+  prompt?: string;
+  isError?: boolean;
+  kind?: string | string[];
+  agentType?: string | string[];
 }
 
 export interface Hook {

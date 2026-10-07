@@ -616,6 +616,7 @@ export class AgentSession {
             messages: messages.length,
           });
           metrics.increment("agent.compactions", 1, { model: cfg.model });
+          if (cfg.hooks?.has("PostCompact")) await cfg.hooks.run({ event: "PostCompact", trigger: "auto", replaced: c.replaced ?? 0, summaryChars: (c.summary ?? "").length }, this.hookCtx());
           // memory v13 (DESIGN §3): after compaction the context is rebuilt from memory first.
           if (cfg.compaction?.onAfterCompact) {
             const rebuilt = await cfg.compaction.onAfterCompact(c.summary).catch((e) => {
@@ -850,6 +851,9 @@ export class AgentSession {
           const blocker = results.find((r) => r.block);
           if (blocker) {
             stopContinuations += 1;
+            if (cfg.hooks?.has("StopFailure")) {
+              await cfg.hooks.run({ event: "StopFailure", reason: blocker.reason ?? "stop hook blocked", ...(v ? { verdict: v } : {}), continuations: stopContinuations }, this.hookCtx());
+            }
             // Climb the difficulty ladder, but only once the current rung has failed the
             // verifier `patience` times — a cheap model often fixes its own mistake from
             // the test feedback, so give it a couple of shots before paying for a stronger one.
@@ -1153,16 +1157,23 @@ export class AgentSession {
     });
     await this.store.registry.patchSession(cfg.sessionId, { status: "listening" });
     log.info("listening for handoffs");
+    let idleSince: number | null = null;
     try {
       while (!opts.signal.aborted) {
         const peers = await this.store.mailbox.drain(cfg.sessionId);
         if (peers.length === 0) {
           if (opts.once) return; // woke, drained, done — the whole point of once
+          // TeammateIdle: once per idle stretch, when the worker first finds nothing to do.
+          if (!idleSince) {
+            idleSince = Date.now();
+            if (cfg.hooks?.has("TeammateIdle")) await cfg.hooks.run({ event: "TeammateIdle", idleMs: 0 }, this.hookCtx());
+          }
           // Heartbeat: bump updatedAt so HandoffTask's freshness guard keeps seeing us as live.
           await this.store.registry.patchSession(cfg.sessionId, { status: "listening" });
           await interruptibleSleep(pollMs, opts.signal);
           continue;
         }
+        idleSince = null;
         for (const pm of peers) {
           // Process each drained message as its own run, seeded from the (framed) message and
           // authored by the sender. A second message arriving mid-run is caught by run()'s own
@@ -1281,6 +1292,7 @@ export class AgentSession {
     };
     parent = (await this.store.conversation.append(cfg.sessionId, ce, parent)).uuid;
     await this.event("compact", { trigger: "manual", replaced: messages.length, ref: parent });
+    if (cfg.hooks?.has("PostCompact")) await cfg.hooks.run({ event: "PostCompact", trigger: "manual", replaced: messages.length, summaryChars: summary.length }, this.hookCtx());
     if (cfg.compaction?.onAfterCompact) {
       const rebuilt = await cfg.compaction.onAfterCompact(summary).catch((e) => {
         (cfg.logger ?? silentLogger).warn("after-compaction memory rebuild failed", { error: String((e as Error)?.message ?? e) });
@@ -1442,6 +1454,16 @@ export class AgentSession {
   private async resolve(req: PermissionRequest): Promise<{ decision: Decision; via: DecisionVia }> {
     const d = await this.cfg.canUseTool(req);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
+    // PermissionRequest: a hook may answer in the person's place (the first answer wins);
+    // no answer means the ask proceeds exactly as before.
+    if (this.cfg.hooks?.has("PermissionRequest")) {
+      const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}) }, this.hookCtx());
+      const answer = results.find((r) => r.decision);
+      if (answer?.decision) {
+        const decided: Decision = answer.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: answer.reason ?? "denied by hook" };
+        return { decision: decided.behavior === "allow" ? decided : this.observed(req, decided, "policy"), via: "policy" };
+      }
+    }
     if (this.cfg.onAsk) {
       // null = "no answer from this answerer" (a policy file with no matching rule): fall through
       // to the headless handling below, exactly as if no answerer were installed.
@@ -1478,6 +1500,11 @@ export class AgentSession {
     pendingApproval?: { command: string; reason: string },
   ): EngineEvent {
     void this.event("run.end", { subtype, turns: numTurns, usage, ...(pendingApproval ? { pending: pendingApproval.reason } : {}) });
+    if (subtype !== "success" && this.cfg.hooks?.has("Notification")) {
+      const kind = subtype === "needs_approval" ? "needs_approval" : subtype === "max_turns" ? "max_turns" : subtype === "cancelled" ? "cancelled" : "error";
+      const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.command}` : `run ended: ${subtype}`;
+      void this.cfg.hooks.run({ event: "Notification", kind, message }, this.hookCtx()).catch(() => undefined);
+    }
     return { type: "result", subtype, numTurns, usage, ts: now(), ...(pendingApproval ? { pendingApproval } : {}) };
   }
 

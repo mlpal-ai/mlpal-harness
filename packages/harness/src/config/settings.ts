@@ -76,21 +76,49 @@ export const settingsSchema = z.object({
       mode: z.enum(["auto", "always", "off"]).default("auto"),
     })
     .default({}),
+  /** A hook is one of: `command` (a shell command; the event JSON on stdin, a JSON result on
+   *  stdout, exit 2 blocks), `url` (POST the event, read a JSON result), or `prompt` (a cheap
+   *  model judges the event against a rule in plain words). `when` filters by tool name, a
+   *  regular expression over the command or the prompt, error state, kind or agent type. */
   hooks: z
     .array(
-      z.object({
-        event: z.enum([
-          "UserPromptSubmit",
-          "PreToolUse",
-          "PostToolUse",
-          "Stop",
-          "SessionStart",
-          "SessionEnd",
-          "PreCompact",
-          "SubagentStop",
-        ]),
-        command: z.string(),
-      }),
+      z
+        .object({
+          event: z.enum([
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "SessionStart",
+            "SessionEnd",
+            "PreCompact",
+            "SubagentStop",
+            "PermissionRequest",
+            "Notification",
+            "PostCompact",
+            "SubagentStart",
+            "StopFailure",
+            "ConfigChange",
+            "WorktreeCreate",
+            "TeammateIdle",
+          ]),
+          command: z.string().optional(),
+          url: z.string().url().optional(),
+          headers: z.record(z.string()).optional(),
+          prompt: z.string().optional(),
+          when: z
+            .object({
+              toolName: z.union([z.string(), z.array(z.string())]).optional(),
+              command: z.string().optional(),
+              prompt: z.string().optional(),
+              isError: z.boolean().optional(),
+              kind: z.union([z.string(), z.array(z.string())]).optional(),
+              agentType: z.union([z.string(), z.array(z.string())]).optional(),
+            })
+            .optional(),
+          timeoutMs: z.number().int().positive().optional(),
+        })
+        .refine((h) => [h.command, h.url, h.prompt].filter(Boolean).length === 1, { message: "a hook needs exactly one of command, url or prompt" }),
     )
     .default([]),
   // Tool deferral: an MCP server's tools stay out of the model's tool list until ToolSearch
