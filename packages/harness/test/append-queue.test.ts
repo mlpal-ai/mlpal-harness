@@ -154,3 +154,24 @@ describe("LogStore.tail (telemetry v1, step 2)", () => {
     }
   });
 });
+
+describe("ConversationStore.tail (telemetry v1, step 4)", () => {
+  test("entries since a cursor, attachments left as references", async () => {
+    const root = mkdtempSync(join(tmpdir(), "yodex-ctail-"));
+    try {
+      const store = new LocalStore(root);
+      const data = Buffer.alloc(100_000, 1).toString("base64");
+      const a = await store.conversation.append("s", { type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }, { type: "image", source: { type: "base64", media_type: "image/png", data } }] }, author: { kind: "human" }, ts: "t" } as never, null);
+      const t1 = await store.conversation.tail!("s", 0);
+      expect(t1.entries.map((e) => e.uuid)).toEqual([a.uuid]);
+      const img = (t1.entries[0]!.payload as { message: { content: { source: { type: string } }[] } }).message.content[1]!.source;
+      expect(img.type).toBe("blob"); // not rebuilt: the indexer wants text only
+      const b = await store.conversation.append("s", { type: "assistant", message: { role: "assistant", content: "ok" }, ts: "t" } as never, a.uuid);
+      const t2 = await store.conversation.tail!("s", t1.cursor);
+      expect(t2.entries.map((e) => e.uuid)).toEqual([b.uuid]);
+      expect((await store.conversation.tail!("s", t2.cursor)).entries).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

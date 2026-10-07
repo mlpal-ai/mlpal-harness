@@ -55,6 +55,9 @@ export interface ConversationStore {
   ): Promise<ConversationEntry>;
   read(sessionId: string): Promise<ConversationEntry[]>;
   head(sessionId: string): Promise<string | null>;
+  /** telemetry v1: entries appended since `cursor` (an opaque position, 0 to start), without
+   *  rebuilding attachments (a blob stays a reference), for an indexer that reads text only. */
+  tail?(sessionId: string, cursor: number): Promise<{ entries: ConversationEntry[]; cursor: number }>;
 }
 
 export interface LogStore {
