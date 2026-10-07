@@ -62,6 +62,8 @@ export interface SafetyAction {
 export interface SafetyEvalState {
   /** A reviewed plan artifact matching this apply exists (the stateful preApply check). */
   planApproved?: boolean;
+  /** Why, in a sentence (which field differed, or that no plan was recorded), for the person. */
+  planDetail?: string;
   /** Required information for the action is present. */
   hasRequiredInfo?: boolean;
 }
@@ -136,7 +138,7 @@ export function evaluateSafety(
   // A mutative/destructive apply requires a reviewed plan artifact (stateful preApply). No plan
   // on record => hard deny, never a silent apply of an unreviewed change.
   if (safety.preApply.requirePlanArtifact && state.planApproved === false) {
-    return { outcome: "deny", reason: "policy_denied", detail: "no reviewed plan artifact for this apply (preApply)" };
+    return { outcome: "deny", reason: "policy_denied", detail: `no reviewed plan artifact for this apply (preApply)${state.planDetail ? `: ${state.planDetail}` : ""}` };
   }
 
   // A reviewed destructive plan still stops at the approval edge.
