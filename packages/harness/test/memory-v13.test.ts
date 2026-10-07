@@ -36,6 +36,14 @@ describe("memory v13 host obligations", () => {
     }
   });
 
+  test("F54: the coding HOP's memory module tells the model how to settle a contested memory", async () => {
+    const { CODING_WORK_MEMORY_PROMPT } = await import("../src/profile/builtins/coding");
+    expect(CODING_WORK_MEMORY_PROMPT).toContain("contested, ask the person: 'A' [memory://node/<a>] vs 'B' [memory://node/<b>]");
+    expect(CODING_WORK_MEMORY_PROMPT).toContain("memory_resolve(keep=<the confirmed id>, retire=[<the other id>], reason=<the person's words>)");
+    expect(CODING_WORK_MEMORY_PROMPT).toContain("do not write a third fact");
+    expect(CODING_WORK_MEMORY_PROMPT).toContain("(disputed, unconfirmed against");
+  });
+
   test("F18: with a contract mapper, a Memorize is mirrored under its contract topic or kept local", async () => {
     const root = join(tmpdir(), `yodex-v13-${crypto.randomUUID()}`);
     const store = new LocalStore(root);
