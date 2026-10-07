@@ -254,6 +254,23 @@ export const settingsSchema = z.object({
     })
     .default({}),
   /**
+   * The ambient watcher ("you should know"): after each turn, a side read on the person's behalf
+   * that names what the agent did not say — a claim the tool log does not support, edits nothing
+   * was run to check, a rule not followed, a part of the request not addressed. It never blocks
+   * the loop or talks to the agent. The deterministic layer is free; the model layer is one
+   * bounded call on the cheap tier and only for turns that acted or claimed. Off by default: it
+   * is a per-turn call, and the person who wants a second pair of eyes turns it on.
+   */
+  watcher: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Tier alias or model id for the model layer; default: the subtasks (cheap) model. */
+      model: z.string().optional(),
+      /** Skip the model layer: only the free claim-versus-log checks run. */
+      hostOnly: z.boolean().default(false),
+    })
+    .default({}),
+  /**
    * Condense oversized tool outputs with a cheap side-model before they enter the main context.
    * A separate one-shot call (cache-safe — never a turn of the main conversation), it shrinks huge
    * reads/logs to what matters (errors + relevant lines preserved verbatim), saving cost AND keeping
