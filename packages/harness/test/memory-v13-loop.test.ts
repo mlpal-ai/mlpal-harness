@@ -97,6 +97,51 @@ describe("memory v13 host triggers (F5)", () => {
     expect(userTexts(events).some((t) => t.startsWith("[Memory after compaction]"))).toBe(true);
   });
 
+  test("a manual /compact fires PreCompact with the whole context and rebuilds from memory behind the boundary", async () => {
+    const seen: { trigger: string; window?: number; transcript?: string }[] = [];
+    const hooks = new HookEngine();
+    hooks.register(
+      new FunctionHook("ckpt", ["PreCompact"], (input) => {
+        if (input.event === "PreCompact") seen.push({ trigger: input.trigger, window: input.window, transcript: input.transcript });
+        return {};
+      }),
+    );
+    const model: ModelClient = {
+      async *stream(req): AsyncGenerator<never, ModelResult, void> {
+        if (req.system?.includes("compress a coding session")) return textDone("SUMMARY");
+        return textDone("done");
+      },
+    };
+    const store = new LocalStore(root);
+    const sess = new AgentSession({
+      agentId: "ag1",
+      sessionId: "s-v13-manual",
+      workspace: "w",
+      cwd,
+      model: "main-model",
+      systemPrompt: "t",
+      tools: defaultRegistry(),
+      store,
+      model_client: model,
+      canUseTool: createPolicy({ mode: "autopilot" }),
+      maxTokens: 200,
+      contextWindow: 200000,
+      compaction: { onAfterCompact: async () => "[Memory after compaction]\nNow: a thing." },
+      hooks,
+    });
+    await collect(sess.run({ text: "remember the EUR rule" }));
+    expect(seen).toHaveLength(0); // nothing automatic in a 200k window
+    const r = await sess.compact();
+    expect(r?.summary).toBe("SUMMARY");
+    expect(seen).toEqual([{ trigger: "manual", window: 1, transcript: expect.stringContaining("user: remember the EUR rule") }]);
+    // the rebuilt context sits behind the boundary, so the next run loads summary then memory
+    const entries = await store.conversation.read("s-v13-manual");
+    const tail = entries.slice(-2).map((e) => e.payload.type);
+    expect(tail).toEqual(["compact", "user"]);
+    const last = entries[entries.length - 1]!.payload;
+    expect(last.type === "user" && typeof last.message.content === "string" && last.message.content.startsWith("[Memory after compaction]")).toBe(true);
+  });
+
   test("the host nudges a checkpoint every N turns, only while the memory tool is present", async () => {
     let turn = 0;
     const model: ModelClient = {

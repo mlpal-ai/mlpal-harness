@@ -496,7 +496,6 @@ export class AgentSession {
     const startMs = Date.now();
     let verifierVerdict: VerifierVerdict | null = null;
     let outcome: RunResult | null = null;
-    let compactions = 0; // summary compactions this run, for PreCompact's window ordinal
     let thrownError: unknown;
     // Cross-repo handoff: correlationIds of received task requests we owe a reply to when
     // this run finishes, and the latest assistant text to send back as that reply.
@@ -564,9 +563,9 @@ export class AgentSession {
           // replaced, so a host checkpoints exactly what is lost (memory v13 DESIGN §3).
           onCompactWindow: cfg.hooks?.has("PreCompact")
             ? async (older) => {
-                compactions += 1;
+                this.compactions += 1;
                 await cfg.hooks!.run(
-                  { event: "PreCompact", trigger: "auto", messageCount: preCompactCount, transcript: renderTranscript(older), window: compactions },
+                  { event: "PreCompact", trigger: "auto", messageCount: preCompactCount, transcript: renderTranscript(older), window: this.compactions },
                   this.hookCtx(),
                 );
               }
@@ -1234,8 +1233,18 @@ export class AgentSession {
     const { cfg } = this;
     const messages = await loadMessages(this.store, cfg.sessionId);
     if (messages.length < 2) return null;
+    // The same host seams as an automatic compaction (memory v13 DESIGN §3): the verbatim window
+    // goes to PreCompact before it is summarised away, and the context is rebuilt from memory
+    // after, as a system-authored turn behind the boundary so the next run loads it.
+    if (cfg.hooks?.has("PreCompact")) {
+      this.compactions += 1;
+      await cfg.hooks.run(
+        { event: "PreCompact", trigger: "manual", messageCount: messages.length, transcript: renderTranscript(messages), window: this.compactions },
+        this.hookCtx(),
+      );
+    }
     const summary = await this.summarize(messages, instructions);
-    const parent = await this.store.conversation.head(cfg.sessionId);
+    let parent = await this.store.conversation.head(cfg.sessionId);
     const ce = {
       type: "compact" as const,
       summary,
@@ -1243,14 +1252,28 @@ export class AgentSession {
       replacedMessages: messages.length,
       ts: now(),
     };
-    await this.store.conversation.append(cfg.sessionId, ce, parent);
+    parent = (await this.store.conversation.append(cfg.sessionId, ce, parent)).uuid;
     await this.store.logs.write(cfg.sessionId, "events", {
       kind: "compact",
       trigger: "manual",
       replaced: messages.length,
     });
+    if (cfg.compaction?.onAfterCompact) {
+      const rebuilt = await cfg.compaction.onAfterCompact(summary).catch((e) => {
+        (cfg.logger ?? silentLogger).warn("after-compaction memory rebuild failed", { error: String((e as Error)?.message ?? e) });
+        return undefined;
+      });
+      if (rebuilt?.trim()) {
+        const ue: UserEvent = { type: "user", message: { role: "user", content: rebuilt }, author: SYSTEM, ts: now() };
+        await this.store.conversation.append(cfg.sessionId, ue, parent);
+        (cfg.metrics ?? noopMetrics).increment("agent.memory_rebuilds", 1);
+      }
+    }
     return { summary, replaced: messages.length };
   }
+
+  /** Summary compactions this session (automatic and manual), the PreCompact window ordinal. */
+  private compactions = 0;
 
   private hookCtx(): HookContext {
     return { sessionId: this.cfg.sessionId, agentId: this.cfg.agentId, cwd: this.cfg.cwd };
