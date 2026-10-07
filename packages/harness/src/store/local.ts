@@ -181,6 +181,38 @@ class LocalLogs implements LogStore {
     await this.queue.flush();
     return readJsonl<Record<string, unknown>>(this.file(sessionId, channel));
   }
+
+  /** The cursor is a byte offset; only complete lines are returned, so a line still being
+   *  written (or torn by a crash) is left for the next call. */
+  async tail(sessionId: string, channel: LogChannel, cursor: number): Promise<{ records: Record<string, unknown>[]; cursor: number }> {
+    await this.queue.flush();
+    const file = this.file(sessionId, channel);
+    if (!existsSync(file)) return { records: [], cursor };
+    const size = (await stat(file)).size;
+    if (size <= cursor) return { records: [], cursor };
+    const fh = await open(file, "r");
+    let text: string;
+    try {
+      const buf = Buffer.alloc(size - cursor);
+      await fh.read(buf, 0, buf.length, cursor);
+      text = buf.toString("utf8");
+    } finally {
+      await fh.close();
+    }
+    const lastNl = text.lastIndexOf("\n");
+    if (lastNl < 0) return { records: [], cursor };
+    const complete = text.slice(0, lastNl);
+    const records: Record<string, unknown>[] = [];
+    for (const line of complete.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        records.push({ kind: "store.unparseable", bytes: line.length });
+      }
+    }
+    return { records, cursor: cursor + Buffer.byteLength(complete, "utf8") + 1 };
+  }
 }
 
 class LocalMemory implements MemoryStore {

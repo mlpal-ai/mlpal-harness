@@ -64,6 +64,10 @@ export interface LogStore {
     record: Record<string, unknown>,
   ): Promise<void>;
   read(sessionId: string, channel: LogChannel): Promise<Record<string, unknown>[]>;
+  /** telemetry v1: the records written since `cursor` (an opaque position, 0 to start), and the
+   *  position after them, so a live reader (the exporter, the dashboard) never re-reads a file.
+   *  Optional: a backend without a cheap tail leaves it out and the reader does nothing. */
+  tail?(sessionId: string, channel: LogChannel, cursor: number): Promise<{ records: Record<string, unknown>[]; cursor: number }>;
 }
 
 export interface MemoryStore {

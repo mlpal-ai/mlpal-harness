@@ -177,6 +177,11 @@ export const settingsSchema = z.object({
        *  log records, one per run, the same content-free fields). Headers for auth, if any. */
       otelEndpoint: z.string().optional(),
       otelHeaders: z.record(z.string()).optional(),
+      /** telemetry v1: `full` (default) exports a trace per run plus metrics; `metrics` exports
+       *  the metrics only. Content never leaves the machine either way. */
+      otelMode: z.enum(["full", "metrics"]).default("full"),
+      /** telemetry v1: how often the live exporter ships what landed (ms); the end of a run ships at once. */
+      otelFlushMs: z.number().int().positive().default(5000),
     })
     .default({ push: "off" }),
   memory: z

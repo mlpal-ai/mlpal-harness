@@ -125,3 +125,32 @@ describe("attachments out of line (telemetry v1, step 1d)", () => {
     }
   });
 });
+
+describe("LogStore.tail (telemetry v1, step 2)", () => {
+  test("returns only new complete lines and a byte cursor; a torn last line waits", async () => {
+    const root = mkdtempSync(join(tmpdir(), "yodex-tail-"));
+    try {
+      const store = new LocalStore(root);
+      await store.logs.write("s", "events", { kind: "a" });
+      await store.logs.write("s", "events", { kind: "b" });
+      const t1 = await store.logs.tail!("s", "events", 0);
+      expect(t1.records.map((r) => r.kind)).toEqual(["a", "b"]);
+      expect(t1.cursor).toBeGreaterThan(0);
+      const t2 = await store.logs.tail!("s", "events", t1.cursor);
+      expect(t2.records).toEqual([]);
+      expect(t2.cursor).toBe(t1.cursor);
+      await store.logs.write("s", "events", { kind: "c" });
+      const t3 = await store.logs.tail!("s", "events", t1.cursor);
+      expect(t3.records.map((r) => r.kind)).toEqual(["c"]);
+      // a torn line (crash mid-write) is not returned and the cursor does not pass it
+      const { appendFileSync } = await import("node:fs");
+      appendFileSync(join(root, "logs", "s.events.jsonl"), '{"kind":"d"');
+      const t4 = await store.logs.tail!("s", "events", t3.cursor);
+      expect(t4.records).toEqual([]);
+      expect(t4.cursor).toBe(t3.cursor);
+      expect((await store.logs.tail!("s", "model", 0)).records).toEqual([]); // no file yet
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
