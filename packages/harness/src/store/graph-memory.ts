@@ -123,5 +123,6 @@ export function withMemory(base: Store, memory: MemoryStore): Store {
     },
     memory,
     artifactPath: (sessionId, name) => base.artifactPath(sessionId, name),
+    ...(base.close ? { close: () => base.close!() } : {}),
   };
 }

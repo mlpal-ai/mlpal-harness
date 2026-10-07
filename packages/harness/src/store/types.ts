@@ -102,4 +102,6 @@ export interface Store {
   readonly registry: Registry;
   readonly mailbox: Mailbox;
   artifactPath(sessionId: string, name: string): string;
+  /** Flush any buffered writes; the host calls it on exit. Optional: a synchronous backend has nothing to flush. */
+  close?(): Promise<void>;
 }

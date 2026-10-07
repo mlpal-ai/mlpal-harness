@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
+import type { Logger } from "../obs/logger";
+import { AppendQueue } from "./append-queue";
 import type {
   AgentRecord,
   ConversationStore,
@@ -16,6 +18,16 @@ import type {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Strictly increasing within the process: two patches issued back to back used to be serialized
+ *  on one chain and so ordered by time; per-record chains run them concurrently, and "the newest
+ *  same-named session wins" must still mean the one patched last. */
+let lastPatchMs = 0;
+function monotonicNowIso(): string {
+  const ms = Math.max(Date.now(), lastPatchMs + 1);
+  lastPatchMs = ms;
+  return new Date(ms).toISOString();
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -36,6 +48,32 @@ async function readJsonl<T>(file: string): Promise<T[]> {
     .map((l) => JSON.parse(l) as T);
 }
 
+/** The last complete line of a file without reading the whole file: the tail is read in growing
+ *  chunks until a newline precedes the final line. A conversation's head is one id at the end
+ *  of a file that can be megabytes (inline attachments), and it was parsed in full at every run
+ *  start. */
+export async function lastLine(file: string): Promise<string | null> {
+  if (!existsSync(file)) return null;
+  const size = (await stat(file)).size;
+  if (size === 0) return null;
+  const fh = await open(file, "r");
+  try {
+    let chunk = 64 * 1024;
+    for (;;) {
+      const start = Math.max(0, size - chunk);
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      const text = buf.toString("utf8").replace(/\n+$/, "");
+      const cut = text.lastIndexOf("\n");
+      // A newline inside the chunk, or the chunk is the whole file: the last line is complete.
+      if (cut >= 0 || start === 0) return (cut >= 0 ? text.slice(cut + 1) : text) || null;
+      chunk *= 4;
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   if (!existsSync(file)) return fallback;
   return JSON.parse(await readFile(file, "utf8")) as T;
@@ -51,7 +89,13 @@ async function writeJson(file: string, obj: unknown): Promise<void> {
 }
 
 class LocalConversation implements ConversationStore {
-  constructor(private readonly dir: string) {}
+  /** The last entry's id per session, so a run start never parses the file for it. */
+  private readonly heads = new Map<string, string | null>();
+
+  constructor(
+    private readonly dir: string,
+    private readonly queue: AppendQueue,
+  ) {}
 
   private file(sessionId: string): string {
     return join(this.dir, `${sessionId}.jsonl`);
@@ -68,22 +112,39 @@ class LocalConversation implements ConversationStore {
       ts: nowIso(),
       payload,
     };
-    await appendJsonl(this.file(sessionId), entry);
+    this.queue.push(this.file(sessionId), JSON.stringify(entry));
+    this.heads.set(sessionId, entry.uuid);
     return entry;
   }
 
   async read(sessionId: string): Promise<ConversationEntry[]> {
+    await this.queue.flush();
     return readJsonl<ConversationEntry>(this.file(sessionId));
   }
 
   async head(sessionId: string): Promise<string | null> {
-    const entries = await this.read(sessionId);
-    return entries.length ? entries[entries.length - 1]!.uuid : null;
+    const cached = this.heads.get(sessionId);
+    if (cached !== undefined) return cached;
+    await this.queue.flush();
+    const line = await lastLine(this.file(sessionId));
+    let head: string | null = null;
+    if (line) {
+      try {
+        head = (JSON.parse(line) as ConversationEntry).uuid ?? null;
+      } catch {
+        head = null; // a torn final line (crash mid-write): the next append starts a new chain segment
+      }
+    }
+    this.heads.set(sessionId, head);
+    return head;
   }
 }
 
 class LocalLogs implements LogStore {
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    private readonly queue: AppendQueue,
+  ) {}
 
   private file(sessionId: string, channel: LogChannel): string {
     return join(this.dir, `${sessionId}.${channel}.jsonl`);
@@ -94,13 +155,14 @@ class LocalLogs implements LogStore {
     channel: LogChannel,
     record: Record<string, unknown>,
   ): Promise<void> {
-    await appendJsonl(this.file(sessionId, channel), { ts: nowIso(), ...record });
+    this.queue.push(this.file(sessionId, channel), JSON.stringify({ ts: nowIso(), ...record }));
   }
 
   async read(
     sessionId: string,
     channel: LogChannel,
   ): Promise<Record<string, unknown>[]> {
+    await this.queue.flush();
     return readJsonl<Record<string, unknown>>(this.file(sessionId, channel));
   }
 }
@@ -135,28 +197,53 @@ class LocalMemory implements MemoryStore {
 class LocalRegistry implements Registry {
   constructor(private readonly dir: string) {}
 
-  // Serialize read-modify-write on each JSON map: without it, concurrent async writers in
-  // one process (a listen() heartbeat every 1.5s, sub-agent session patches, the main loop's
-  // status updates) interleave read→read→write→write and the loser's patch vanishes. The
-  // queue makes each patch atomic against others in this process. (Cross-process contention
+  // Serialize read-modify-write per record: without it, concurrent async writers in one process
+  // (a listen() heartbeat every 1.5s, sub-agent session patches, the main loop's status updates)
+  // interleave read→read→write→write and the loser's patch vanishes. Cross-process contention
   // between separate yodex instances is still last-write-wins — the atomic rename prevents
-  // corruption, not a lost patch; true multi-process needs advisory file locking, deferred.)
-  private writeChain: Promise<unknown> = Promise.resolve();
-  private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.writeChain.then(fn, fn);
-    this.writeChain = next.catch(() => {});
+  // corruption, not a lost patch; true multi-process needs advisory file locking, deferred.
+  private readonly chains = new Map<string, Promise<unknown>>();
+  private serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.chains.set(
+      key,
+      next.catch(() => {}),
+    );
     return next;
   }
 
   private get agentsFile(): string {
     return join(this.dir, "agents.json");
   }
-  private get sessionsFile(): string {
-    return join(this.dir, "sessions.json");
+  /** One file per session. The old single map (`sessions.json`) was read, parsed and rewritten
+   *  in full for every status flip of every session: 1.6 MB twice per turn on a machine with
+   *  3,000 sessions. It is split into per-session files on first use and kept as `.migrated`. */
+  private get sessionsDir(): string {
+    return join(this.dir, "sessions");
+  }
+  private sessionFile(sessionId: string): string {
+    return join(this.sessionsDir, `${sessionId}.json`);
+  }
+  private migrated: Promise<void> | null = null;
+  private migrate(): Promise<void> {
+    if (!this.migrated) {
+      this.migrated = (async () => {
+        const legacy = join(this.dir, "sessions.json");
+        if (!existsSync(legacy)) return;
+        const map = await readJson<Record<string, SessionRecord>>(legacy, {});
+        await ensureDir(this.sessionsDir);
+        for (const rec of Object.values(map)) {
+          if (!existsSync(this.sessionFile(rec.sessionId))) await writeJson(this.sessionFile(rec.sessionId), rec);
+        }
+        await rename(legacy, `${legacy}.migrated`);
+      })();
+    }
+    return this.migrated;
   }
 
   async putAgent(a: AgentRecord): Promise<void> {
-    return this.serialize(async () => {
+    return this.serialize("agents", async () => {
       const map = await readJson<Record<string, AgentRecord>>(this.agentsFile, {});
       map[a.agentId] = a;
       await writeJson(this.agentsFile, map);
@@ -164,30 +251,37 @@ class LocalRegistry implements Registry {
   }
 
   async putSession(s: SessionRecord): Promise<void> {
-    return this.serialize(async () => {
-      const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
-      map[s.sessionId] = s;
-      await writeJson(this.sessionsFile, map);
-    });
+    await this.migrate();
+    return this.serialize(s.sessionId, () => writeJson(this.sessionFile(s.sessionId), s));
   }
 
   async patchSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void> {
-    return this.serialize(async () => {
-      const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
-      const cur = map[sessionId];
+    await this.migrate();
+    return this.serialize(sessionId, async () => {
+      const cur = await readJson<SessionRecord | null>(this.sessionFile(sessionId), null);
       if (!cur) return;
-      map[sessionId] = { ...cur, ...patch, updatedAt: nowIso() };
-      await writeJson(this.sessionsFile, map);
+      await writeJson(this.sessionFile(sessionId), { ...cur, ...patch, updatedAt: monotonicNowIso() });
     });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
-    const map = await readJson<Record<string, SessionRecord>>(this.sessionsFile, {});
-    return map[sessionId] ?? null;
+    await this.migrate();
+    return readJson<SessionRecord | null>(this.sessionFile(sessionId), null);
   }
 
   async listSessions(): Promise<SessionRecord[]> {
-    return Object.values(await readJson<Record<string, SessionRecord>>(this.sessionsFile, {}));
+    await this.migrate();
+    if (!existsSync(this.sessionsDir)) return [];
+    const files = (await readdir(this.sessionsDir)).filter((f) => f.endsWith(".json"));
+    const out: SessionRecord[] = [];
+    // Bounded parallelism: thousands of small files, never thousands of open handles.
+    for (let i = 0; i < files.length; i += 64) {
+      const recs = await Promise.all(
+        files.slice(i, i + 64).map((f) => readJson<SessionRecord | null>(join(this.sessionsDir, f), null).catch(() => null)),
+      );
+      for (const r of recs) if (r) out.push(r);
+    }
+    return out;
   }
 
   async listAgents(): Promise<AgentRecord[]> {
@@ -237,10 +331,25 @@ export class LocalStore implements Store {
   readonly memory: MemoryStore;
   readonly registry: Registry;
   readonly mailbox: Mailbox;
+  /** The background writer behind conversation and logs: appends never wait on the disk. */
+  readonly queue: AppendQueue;
 
-  constructor(readonly root: string) {
-    this.conversation = new LocalConversation(join(root, "conversation"));
-    this.logs = new LocalLogs(join(root, "logs"));
+  /** One writer per root per process: a second LocalStore on the same root (a reader, a test, a
+   *  subagent) shares the queue, so its reads flush the same pending writes. */
+  private static readonly queues = new Map<string, AppendQueue>();
+
+  constructor(
+    readonly root: string,
+    opts: { logger?: Logger; flushMs?: number } = {},
+  ) {
+    let queue = LocalStore.queues.get(root);
+    if (!queue) {
+      queue = new AppendQueue({ logger: opts.logger, flushMs: opts.flushMs });
+      LocalStore.queues.set(root, queue);
+    }
+    this.queue = queue;
+    this.conversation = new LocalConversation(join(root, "conversation"), this.queue);
+    this.logs = new LocalLogs(join(root, "logs"), this.queue);
     this.memory = new LocalMemory(join(root, "memory"));
     this.registry = new LocalRegistry(join(root, "registry"));
     this.mailbox = new LocalMailbox(join(root, "mailbox"));
@@ -248,5 +357,11 @@ export class LocalStore implements Store {
 
   artifactPath(sessionId: string, name: string): string {
     return join(this.root, "artifacts", sessionId, name);
+  }
+
+  /** Write everything pending. The host calls this on every exit path; a reader of the store's own
+   *  files (read, head) flushes for itself. */
+  async close(): Promise<void> {
+    await this.queue.flush();
   }
 }
