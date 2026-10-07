@@ -42,6 +42,7 @@ describe("memory v13 host obligations", () => {
     expect(CODING_WORK_MEMORY_PROMPT).toContain("memory_resolve(keep=<the confirmed id>, retire=[<the other id>], reason=<the person's words>)");
     expect(CODING_WORK_MEMORY_PROMPT).toContain("do not write a third fact");
     expect(CODING_WORK_MEMORY_PROMPT).toContain("(disputed, unconfirmed against");
+    expect(CODING_WORK_MEMORY_PROMPT).toContain("after it, do not `memory_write` the same decision again");
   });
 
   test("F18: with a contract mapper, a Memorize is mirrored under its contract topic or kept local", async () => {
