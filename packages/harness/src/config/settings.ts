@@ -271,6 +271,19 @@ export const settingsSchema = z.object({
     })
     .default({}),
   /**
+   * Code intelligence (the Lsp tool): a language server per language, started on the first
+   * question and kept for the session. Defaults cover typescript/javascript, python, go, rust
+   * and c/c++ by their conventional binaries; `servers` overrides or adds by key
+   * (`{ typescript: { command, args } }`). A missing binary is reported with its install.
+   */
+  lsp: z
+    .object({
+      enabled: z.boolean().default(true),
+      servers: z.record(z.object({ command: z.string(), args: z.array(z.string()).optional(), languages: z.array(z.string()).optional() })).default({}),
+      requestTimeoutMs: z.number().int().positive().default(15_000),
+    })
+    .default({}),
+  /**
    * Condense oversized tool outputs with a cheap side-model before they enter the main context.
    * A separate one-shot call (cache-safe — never a turn of the main conversation), it shrinks huge
    * reads/logs to what matters (errors + relevant lines preserved verbatim), saving cost AND keeping
