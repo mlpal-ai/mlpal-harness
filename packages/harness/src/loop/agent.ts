@@ -438,10 +438,17 @@ export class AgentSession {
       (cfg.logger ?? silentLogger).warn("prompt sanitized: invisible characters removed", { removed: stripped.removed, sessionId: cfg.sessionId });
       (cfg.metrics ?? noopMetrics).increment("agent.prompt_sanitized", 1);
     }
+    // telemetry v1: one run per turn. The id is minted before the UserPromptSubmit hook so a
+    // host that stamps its own records (an MCP call, a checkpoint, a verdict) from that hook's
+    // context joins the run that is starting, not the one that ended.
+    const runId = crypto.randomUUID();
+    const previousRun = this.currentRun;
+    this.currentRun = runId;
     if (cfg.hooks?.has("UserPromptSubmit")) {
       const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
       const blocker = results.find((r) => r.block);
       if (blocker) {
+        this.currentRun = previousRun; // a rejected prompt leaves no turn and no run
         yield { type: "result", subtype: "error", numTurns: 0, usage: emptyUsage(), ts: now(), reason: `prompt rejected by hook: ${blocker.reason ?? "no reason given"}` };
         return;
       }
@@ -464,10 +471,8 @@ export class AgentSession {
     parent = userUuid;
     yield userEvt;
 
-    // telemetry v1: one run per turn; the person's prompt names the run, a steer or a peer
-    // message keeps the prompt of the turn it lands in.
-    const runId = crypto.randomUUID();
-    this.currentRun = runId;
+    // The person's prompt names the run; a steer or a peer message keeps the prompt of the turn
+    // it lands in.
     this.seq = 0; // record order within the run; (run, seq) is unique across processes
     if (author.type === "human" || !this.currentPrompt) this.currentPrompt = runId;
     await this.event("run.start", { author: author.type, ref: userUuid });

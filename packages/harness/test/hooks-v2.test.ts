@@ -172,6 +172,38 @@ describe("hooks v2: the new events fire at their seams", () => {
     expect(fired.find((f) => f.event === "Notification")).toMatchObject({ event: "Notification", kind: "max_turns" });
   });
 
+  test("UserPromptSubmit sees the run that is starting, the same id the tools see; a rejected prompt leaves the previous run in place", async () => {
+    const seen: { event: string; runId?: string }[] = [];
+    let reject = false;
+    const hooks = new HookEngine();
+    hooks.register(new FunctionHook("rec", ["UserPromptSubmit", "PreToolUse"], (input, ctx) => {
+      seen.push({ event: input.event, runId: ctx.runId });
+      return input.event === "UserPromptSubmit" && reject ? { block: true, reason: "no" } : {};
+    }));
+    let turn = 0;
+    const model: ModelClient = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        turn += 1;
+        return turn % 2 === 1 ? toolUse("Bash", { command: "echo run" }) : textDone("ok");
+      },
+    };
+    const sess = new AgentSession({ agentId: "ag", sessionId: "s-hooks2-runid", workspace: "w", cwd, model: "m", systemPrompt: "t", tools: defaultRegistry(), store: new LocalStore(root), model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), maxTokens: 100, hooks });
+    await drain(sess.run({ text: "one" }));
+    expect(seen[0]!.event).toBe("UserPromptSubmit");
+    expect(seen[0]!.runId).toBeDefined();
+    expect(seen[1]).toEqual({ event: "PreToolUse", runId: seen[0]!.runId });
+    const first = sess.runId();
+    expect(first).toBe(seen[0]!.runId!);
+    await drain(sess.run({ text: "two" }));
+    expect(seen[2]!.runId).not.toBe(first);
+    expect(seen[3]!.runId).toBe(seen[2]!.runId);
+    const second = sess.runId();
+    reject = true;
+    const r = await drain(sess.run({ text: "three" }));
+    expect(r.at(-1)).toMatchObject({ type: "result", subtype: "error" });
+    expect(sess.runId()).toBe(second);
+  });
+
   test("PostCompact fires after a manual compaction; SubagentStart fires from the Task tool", async () => {
     const fired: HookInput[] = [];
     const hooks = new HookEngine();
