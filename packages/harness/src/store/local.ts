@@ -252,17 +252,25 @@ class LocalRegistry implements Registry {
 
   async putSession(s: SessionRecord): Promise<void> {
     await this.migrate();
+    this.listing = null;
     return this.serialize(s.sessionId, () => writeJson(this.sessionFile(s.sessionId), s));
   }
 
   async patchSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void> {
     await this.migrate();
+    this.listing = null;
     return this.serialize(sessionId, async () => {
       const cur = await readJson<SessionRecord | null>(this.sessionFile(sessionId), null);
       if (!cur) return;
       await writeJson(this.sessionFile(sessionId), { ...cur, ...patch, updatedAt: monotonicNowIso() });
     });
   }
+
+  /** A listing is thousands of small reads (about 130 ms for 3,000 sessions); callers in one
+   *  command often list more than once, so the result is kept for a second and dropped on any
+   *  write from this process. Another process's writes show up within the second. */
+  private listing: { at: number; records: SessionRecord[] } | null = null;
+  private static readonly LISTING_TTL_MS = 1000;
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     await this.migrate();
@@ -271,16 +279,18 @@ class LocalRegistry implements Registry {
 
   async listSessions(): Promise<SessionRecord[]> {
     await this.migrate();
+    if (this.listing && Date.now() - this.listing.at < LocalRegistry.LISTING_TTL_MS) return this.listing.records;
     if (!existsSync(this.sessionsDir)) return [];
     const files = (await readdir(this.sessionsDir)).filter((f) => f.endsWith(".json"));
     const out: SessionRecord[] = [];
     // Bounded parallelism: thousands of small files, never thousands of open handles.
-    for (let i = 0; i < files.length; i += 64) {
+    for (let i = 0; i < files.length; i += 256) {
       const recs = await Promise.all(
-        files.slice(i, i + 64).map((f) => readJson<SessionRecord | null>(join(this.sessionsDir, f), null).catch(() => null)),
+        files.slice(i, i + 256).map((f) => readJson<SessionRecord | null>(join(this.sessionsDir, f), null).catch(() => null)),
       );
       for (const r of recs) if (r) out.push(r);
     }
+    this.listing = { at: Date.now(), records: out };
     return out;
   }
 
