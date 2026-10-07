@@ -1,4 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ToolResultBlocks } from "@mlpal/harness-protocol";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -72,12 +74,58 @@ function renderContent(content: unknown): string {
     .join("\n");
 }
 
+/** An MCP result as the model should see it (gap refresh row 15): text-only results stay a
+ *  string; a result with an image, a document, or a blob resource becomes rich blocks, so a
+ *  screenshot or a PDF a server returns reaches the model instead of a "[image]" placeholder.
+ *  Unknown block types stay a placeholder. The store keeps large blocks as blob files. */
+export function toToolResultContent(content: unknown): string | ToolResultBlocks {
+  if (!Array.isArray(content)) return renderContent(content);
+  const blocks: ToolResultBlocks = [];
+  let rich = false;
+  for (const c of content) {
+    const b = c as { type?: string; text?: string; data?: string; mimeType?: string; resource?: { blob?: string; text?: string; mimeType?: string; uri?: string } };
+    if (b.type === "text") blocks.push({ type: "text", text: b.text ?? "" });
+    else if (b.type === "image" && typeof b.data === "string") {
+      rich = true;
+      blocks.push({ type: "image", source: { type: "base64", media_type: b.mimeType ?? "image/png", data: b.data } });
+    } else if (b.type === "resource" && b.resource) {
+      const r = b.resource;
+      if (typeof r.blob === "string" && r.mimeType === "application/pdf") {
+        rich = true;
+        blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: r.blob } });
+      } else if (typeof r.blob === "string" && r.mimeType?.startsWith("image/")) {
+        rich = true;
+        blocks.push({ type: "image", source: { type: "base64", media_type: r.mimeType, data: r.blob } });
+      } else blocks.push({ type: "text", text: typeof r.text === "string" ? r.text : `[resource ${r.uri ?? ""}${r.mimeType ? ` ${r.mimeType}` : ""}]` });
+    } else blocks.push({ type: "text", text: `[${b.type ?? "content"}]` });
+  }
+  return rich ? blocks : blocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+}
+
+/** A server's answer that the token lacks a scope: the tool error names the scope and the fix
+ *  instead of a bare 403, and the server's status says it needs reauthorization. */
+export function scopeUpgradeOf(error: unknown): string | null {
+  const msg = String((error as Error)?.message ?? error ?? "");
+  if (!/insufficient_scope|403/i.test(msg)) return null;
+  const m = msg.match(/scope="?([^",\s]+(?:\s+[^",\s]+)*)"?/i);
+  return m?.[1] ?? "(unspecified)";
+}
+
+/** Tool descriptions longer than this are cut: a server that pastes its manual into every
+ *  description costs the model thousands of tokens per call (gap refresh row 15). */
+export const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048;
+
 export interface McpServerStatus {
   server: string;
   ok: boolean;
   tools: number;
   error?: string;
+  /** The server refused a call for a scope the token lacks: log in again with it. */
+  needsReauth?: { scope: string };
 }
+
+/** What a server asks the person mid-call (MCP elicitation): the host answers or declines. */
+export type ElicitationHandler = (server: string, params: { message: string; mode: "form" | "url"; requestedSchema?: unknown; url?: string }) => Promise<ElicitResult>;
 
 /** Tool-name prefix for a server. Server KEYS may contain characters tool names can't
  *  (pack servers are keyed `plugin:<pack>:<server>`), so the key is sanitized here — the
@@ -96,6 +144,10 @@ export class McpManager {
    *  per-request `_meta` can, and MCP reserves it for exactly this. A memory server logs which
    *  ids it served to which run and joins them with run verdicts later (memory v6, E1b). */
   private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
+  private onElicit: ElicitationHandler | null = null;
+  private maxDescriptionLength = DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
+  /** The last config each server connected with, for reconnectAll. */
+  private readonly configByName = new Map<string, McpServerConfig>();
 
   /** Servers whose tools are working-MEMORY tools (memory v6 E5): every tool they expose is
    *  tagged `memory`, so a claim write passes recon and the safety envelope like a read while
@@ -174,6 +226,27 @@ export class McpManager {
     }
   }
 
+  /** The host's answer to a server's elicitation request; without one every request is declined. */
+  setElicitationHandler(fn: ElicitationHandler | null): void {
+    this.onElicit = fn;
+  }
+
+  setMaxDescriptionLength(n: number): void {
+    this.maxDescriptionLength = Math.max(64, n);
+  }
+
+  /** Reconnect every server this manager has connected, with the config it last used. */
+  async reconnectAll(registries: ToolRegistry[]): Promise<McpServerStatus[]> {
+    const names = [...this.configByName.keys()];
+    for (const name of names) {
+      const config = this.configByName.get(name)!;
+      await this.disconnect(name, registries);
+      this.markPending(name);
+      await this.connect(name, config, registries[0]!).catch(() => undefined);
+    }
+    return names.map((n) => this.statuses.get(n) ?? { server: n, ok: false, tools: 0, error: "not connected" });
+  }
+
   setCallMeta(fn: ((ctx: ToolContext) => Record<string, unknown>) | null): void {
     this.callMeta = fn;
   }
@@ -213,6 +286,7 @@ export class McpManager {
   }
 
   private async connectInner(name: string, config: McpServerConfig, registry: ToolRegistry): Promise<number> {
+    this.configByName.set(name, config);
     const prev = this.clientByName.get(name);
     if (prev) {
       this.clientByName.delete(name);
@@ -293,7 +367,20 @@ export class McpManager {
           : undefined,
       });
     }
-    const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: {} });
+    const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });
+    // Elicitation (gap refresh row 15): a server may ask the person for a value mid-call. The host
+    // answers through its own question path; with no handler, or headless, the request is declined
+    // and the server carries on, never a hang.
+    client.setRequestHandler(ElicitRequestSchema, async (req) => {
+      if (!this.onElicit) return { action: "decline" };
+      try {
+        const p = req.params as { message: string; requestedSchema?: unknown; url?: string; mode?: string };
+        return await this.onElicit(name, { message: p.message, mode: p.mode === "url" ? "url" : "form", ...(p.requestedSchema !== undefined ? { requestedSchema: p.requestedSchema } : {}), ...(typeof p.url === "string" ? { url: p.url } : {}) });
+      } catch (e) {
+        this.logger.warn("elicitation handler failed; declined", { server: name, error: String((e as Error)?.message ?? e) });
+        return { action: "decline" };
+      }
+    });
     // Transport/protocol errors after connect (a server that dies mid-run, a failed SSE
     // reconnect) are reported here instead of being dropped or escaping as an unhandled
     // rejection: the status flips to not-ok with the endpoint named, and the run goes on.
@@ -306,7 +393,14 @@ export class McpManager {
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
     return result.tools.map((t) =>
-      wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, { memory: this.memoryServers.has(name) }),
+      wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, {
+        memory: this.memoryServers.has(name),
+        maxDescriptionLength: this.maxDescriptionLength,
+        onScopeUpgrade: (scope) => {
+          const cur = this.statuses.get(name);
+          this.statuses.set(name, { server: name, ok: cur?.ok ?? true, tools: cur?.tools ?? 0, error: `needs reauthorization: scope ${scope}`, needsReauth: { scope } });
+        },
+      }),
     );
   }
 
@@ -352,8 +446,11 @@ export function wrapMcpTool(
   def: RawMcpTool,
   endpoint?: string,
   meta?: (ctx: ToolContext) => Record<string, unknown> | null,
-  opts: { memory?: boolean } = {},
+  opts: { memory?: boolean; maxDescriptionLength?: number; onScopeUpgrade?: (scope: string) => void } = {},
 ): Tool<unknown> {
+  const cap = opts.maxDescriptionLength ?? DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
+  const rawDescription = def.description ?? `${def.name} (via ${server} MCP server)`;
+  const description = rawDescription.length > cap ? `${rawDescription.slice(0, cap)}… [description cut at ${cap} characters]` : rawDescription;
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
@@ -361,7 +458,7 @@ export function wrapMcpTool(
 
   return {
     name: `${mcpToolPrefix(server)}${def.name}`,
-    description: def.description ?? `${def.name} (via ${server} MCP server)`,
+    description,
     // Honor the server's readOnlyHint (e.g. web search); otherwise assume mutating so the
     // permission layer gates it.
     readOnly: def.annotations?.readOnlyHint === true,
@@ -389,8 +486,13 @@ export function wrapMcpTool(
           if (!isLostResponse(e)) throw e;
           res = await call();
         }
-        return { content: renderContent(res.content), isError: Boolean(res.isError) };
+        return { content: toToolResultContent(res.content), isError: Boolean(res.isError) };
       } catch (e) {
+        const scope = scopeUpgradeOf(e);
+        if (scope) {
+          opts.onScopeUpgrade?.(scope);
+          return { content: `MCP server "${server}" refused "${def.name}": the token lacks the scope ${scope}. Log in to the server again to grant it (the host's mcp login), then retry.`, isError: true };
+        }
         // A dead or unreachable server is a TOOL error the model can route around, never a run
         // terminator: 13 routine firings died with Bun's bare "Was there a typo in the url or
         // port?" while the memory stack was down. Name the server and where it lives.
