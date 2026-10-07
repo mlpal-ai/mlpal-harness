@@ -642,6 +642,7 @@ export class AgentSession {
 
       let result: ModelResult;
       const callStartMs = Date.now();
+      const callId = crypto.randomUUID(); // names the model span; the gateway sees it in traceparent
       // Snapshot the tool set SENT: MCP servers may connect during the call, and the ledger must
       // record what the model saw, not what the registry holds afterwards.
       const toolSchemas = cfg.tools.schemas();
@@ -653,6 +654,7 @@ export class AgentSession {
           tools: toolSchemas,
           maxTokens: this.maxTokens,
           signal: cfg.signal,
+          trace: { stamp: this.stamp(), callId },
           ...(activeModel === cfg.model && cfg.modelFallbacks ? { fallbackModels: cfg.modelFallbacks } : {}),
           ...(cfg.effort ? { effort: cfg.effort } : {}),
         });
@@ -691,6 +693,7 @@ export class AgentSession {
       // with the token counts, so session cost is the meter's figure, not an estimate.
       await this.store.logs.write(cfg.sessionId, "model", {
         ...this.stampFields(),
+        callId,
         ref: parent,
         model: result.model,
         stopReason: result.stopReason,
@@ -1190,6 +1193,7 @@ export class AgentSession {
   private async condenseOutput(text: string, model: string, log: Logger): Promise<string> {
     try {
       const gen = this.cfg.model_client.stream({
+        trace: { stamp: this.stamp(), callId: `summarize:${this.compactions + 1}` },
         model,
         system: (this.cfg.loop ?? CODING_PROFILE.loop).condenserSystem,
         messages: [{ role: "user", content: text }],

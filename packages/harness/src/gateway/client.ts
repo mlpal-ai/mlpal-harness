@@ -5,7 +5,9 @@ import type {
   StreamDelta,
   Usage,
 } from "@mlpal/harness-protocol";
+import { createHash } from "node:crypto";
 import { type Logger, silentLogger } from "../obs/logger";
+import { type RunStamp, traceHeaders } from "../telemetry/stamp";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import { MALFORMED_INPUT_KEY, parseJsonLenient } from "../tools/json";
 import { parseSSE } from "./sse";
@@ -67,6 +69,9 @@ export interface ModelRequest {
   effort?: Effort;
   /** Per-call cancellation, combined with the client-level signal + timeout. */
   signal?: AbortSignal;
+  /** telemetry v1: the stamp and a per-call id; the request carries W3C `traceparent`/`baggage`
+   *  derived from them, so the gateway's own span and usage row join the harness's run trace. */
+  trace?: { stamp: RunStamp; callId: string };
   /**
    * Ordered same-tier fallback models. If the primary `model` fails transiently *before* emitting
    * any content, the stream fails over to the next one instead of erroring — same-tier resilience
@@ -297,7 +302,13 @@ export class GatewayClient implements ModelClient {
       let emitted = false;
       const idle = this.idleTimeout(userSignal);
       try {
-        const res = await this.connect(this.buildBody({ ...req, model }), model, userSignal, idle);
+        const res = await this.connect(
+          this.buildBody({ ...req, model }),
+          model,
+          userSignal,
+          idle,
+          req.trace ? traceHeaders(req.trace.stamp, req.trace.callId, (t) => createHash("sha256").update(t).digest("hex")) : {},
+        );
         if (!res.body) throw new GatewayError("no response body", 502, "http");
         // A 200 whose body is a plain JSON error (the gateway rejects a request field AFTER
         // opening the stream, e.g. an effort rung the wire's schema lacks) is not an SSE stream:
@@ -433,6 +444,7 @@ export class GatewayClient implements ModelClient {
     model: string,
     userSignal: AbortSignal | undefined,
     idle: { signal: AbortSignal; reset: () => void },
+    traceHdrs: Record<string, string> = {},
   ): Promise<Response> {
     let attempt = 0;
     for (;;) {
@@ -441,7 +453,7 @@ export class GatewayClient implements ModelClient {
       }
       try {
         idle.reset(); // each handshake attempt gets a fresh idle window
-        const res = await this.fetchOnce(body, idle.signal);
+        const res = await this.fetchOnce(body, idle.signal, traceHdrs);
         if (res.ok) return res;
         const err = await this.toError(res);
         if (!err.retryable || attempt >= this.maxRetries) throw err;
@@ -513,10 +525,11 @@ export class GatewayClient implements ModelClient {
     };
   }
 
-  private fetchOnce(body: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
+  private fetchOnce(body: Record<string, unknown>, signal: AbortSignal, extraHeaders: Record<string, string> = {}): Promise<Response> {
     return fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
+        ...extraHeaders,
         "content-type": "application/json",
         authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
         "anthropic-version": this.anthropicVersion,

@@ -82,6 +82,7 @@ describe("telemetry v1: the stamp on every record", () => {
       expect(r.hop).toBe("coding@1.0.0");
     }
     expect(models.every((m) => typeof m.ref === "string")).toBe(true); // points at the assistant entry
+    expect(models.every((m) => typeof m.callId === "string" && m.callId.length > 0)).toBe(true); // the id the gateway saw in traceparent
     // seq orders every record of the session across channels
     const seqs = [...events, ...models, ...execs].map((r) => r.seq as number).sort((a, b) => a - b);
     expect(new Set(seqs).size).toBe(seqs.length);
