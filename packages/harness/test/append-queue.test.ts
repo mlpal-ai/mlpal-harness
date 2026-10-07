@@ -91,3 +91,37 @@ describe("LocalStore reads after queued writes", () => {
     }
   });
 });
+
+describe("attachments out of line (telemetry v1, step 1d)", () => {
+  test("a large image is stored as a blob by hash; the line is small; read rebuilds the block; a missing blob reads as a note", async () => {
+    const { externalizeBlobs, rehydrateBlobs, hasBlobRefs } = await import("../src/store/blobs");
+    const root = mkdtempSync(join(tmpdir(), "yodex-blobs-"));
+    try {
+      const store = new LocalStore(root);
+      const data = Buffer.alloc(300_000, 7).toString("base64");
+      const small = Buffer.alloc(100, 1).toString("base64");
+      const payload = { type: "user", message: { role: "user", content: [{ type: "text", text: "look" }, { type: "image", source: { type: "base64", media_type: "image/png", data } }, { type: "image", source: { type: "base64", media_type: "image/png", data: small } }] }, author: { kind: "human" }, ts: "t" } as never;
+      const ext = externalizeBlobs(payload);
+      expect(ext.blobs).toHaveLength(1); // the small one stays inline
+      expect(hasBlobRefs(ext.payload)).toBe(true);
+      expect(hasBlobRefs(payload)).toBe(false);
+      await store.conversation.append("s1", payload, null);
+      await store.close();
+      const line = readFileSync(join(root, "conversation", "s1.jsonl"), "utf8");
+      expect(line.length).toBeLessThan(2000);
+      expect(line).toContain(`"ref":"${ext.blobs[0]!.ref}"`);
+      const { statSync, rmSync: rmf } = await import("node:fs");
+      expect(statSync(join(root, "conversation", "s1.blobs", ext.blobs[0]!.ref)).size).toBe(300_000);
+      const back = (await store.conversation.read("s1"))[0]!.payload as { message: { content: { type: string; source?: { data?: string } }[] } };
+      expect(back.message.content[1]!.source!.data).toBe(data); // byte-identical
+      expect(back.message.content[2]!.source!.data).toBe(small);
+      rmf(join(root, "conversation", "s1.blobs", ext.blobs[0]!.ref));
+      const gone = (await store.conversation.read("s1"))[0]!.payload as { message: { content: { type: string; text?: string }[] } };
+      expect(gone.message.content[1]!.type).toBe("text");
+      expect(gone.message.content[1]!.text).toContain("attachment missing");
+      expect(await rehydrateBlobs({ a: 1 }, async () => null)).toEqual({ a: 1 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

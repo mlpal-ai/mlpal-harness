@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
 import type { Logger } from "../obs/logger";
 import { AppendQueue } from "./append-queue";
+import { externalizeBlobs, hasBlobRefs, rehydrateBlobs } from "./blobs";
 import type {
   AgentRecord,
   ConversationStore,
@@ -100,6 +101,9 @@ class LocalConversation implements ConversationStore {
   private file(sessionId: string): string {
     return join(this.dir, `${sessionId}.jsonl`);
   }
+  private blobFile(sessionId: string, ref: string): string {
+    return join(this.dir, `${sessionId}.blobs`, ref);
+  }
 
   async append(
     sessionId: string,
@@ -112,14 +116,26 @@ class LocalConversation implements ConversationStore {
       ts: nowIso(),
       payload,
     };
-    this.queue.push(this.file(sessionId), JSON.stringify(entry));
+    // Large attachments go beside the file as blobs; the line keeps a reference (see blobs.ts).
+    const ext = externalizeBlobs(payload);
+    for (const b of ext.blobs) this.queue.pushFile(this.blobFile(sessionId, b.ref), b.data);
+    this.queue.push(this.file(sessionId), JSON.stringify(ext.blobs.length ? { ...entry, payload: ext.payload } : entry));
     this.heads.set(sessionId, entry.uuid);
     return entry;
   }
 
   async read(sessionId: string): Promise<ConversationEntry[]> {
     await this.queue.flush();
-    return readJsonl<ConversationEntry>(this.file(sessionId));
+    const entries = await readJsonl<ConversationEntry>(this.file(sessionId));
+    const readBlob = async (ref: string): Promise<Uint8Array | null> => {
+      const f = this.blobFile(sessionId, ref);
+      return existsSync(f) ? new Uint8Array(await readFile(f)) : null;
+    };
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i]!;
+      if (hasBlobRefs(e.payload)) entries[i] = { ...e, payload: await rehydrateBlobs(e.payload, readBlob) };
+    }
+    return entries;
   }
 
   async head(sessionId: string): Promise<string | null> {

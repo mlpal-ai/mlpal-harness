@@ -9,7 +9,7 @@
  * (resume, the usage panel, tests) calls flush() first; the store does that in its read paths.
  * On a clean exit the host flushes; on a crash at most one flush interval is lost.
  */
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Logger } from "../obs/logger";
 import { silentLogger } from "../obs/logger";
@@ -24,6 +24,8 @@ export interface AppendQueueOptions {
   logger?: Logger;
   /** Injectable for tests. */
   append?: (file: string, text: string) => Promise<void>;
+  /** Injectable for tests: a whole-file write (a blob). */
+  write?: (file: string, data: Uint8Array) => Promise<void>;
 }
 
 interface Pending {
@@ -43,6 +45,9 @@ export class AppendQueue {
   private readonly maxPendingBytes: number;
   private readonly log: Logger;
   private readonly appendImpl: (file: string, text: string) => Promise<void>;
+  private readonly writeImpl: (file: string, data: Uint8Array) => Promise<void>;
+  /** Whole files to write once (blobs), drained before the lines that reference them. */
+  private readonly files = new Map<string, Uint8Array>();
   /** Lines dropped since construction, for the host's own health line. */
   dropped = 0;
   /** Write failures since construction; the lines are lost and the error is logged once per file. */
@@ -64,6 +69,23 @@ export class AppendQueue {
         }
         await appendFile(file, text, "utf8");
       });
+    this.writeImpl =
+      opts.write ??
+      (async (file, data) => {
+        const dir = dirname(file);
+        if (!this.knownDirs.has(dir)) {
+          await mkdir(dir, { recursive: true });
+          this.knownDirs.add(dir);
+        }
+        await writeFile(file, data);
+      });
+  }
+
+  /** Enqueue a whole file (a blob): written once, before any line queued after it. Blob bytes do
+   *  not count against the line cap; they are bounded by what the model was sent anyway. */
+  pushFile(file: string, data: Uint8Array): void {
+    this.files.set(file, data);
+    this.schedule();
   }
 
   /** Enqueue one line (without its newline). Never blocks, never throws. */
@@ -78,9 +100,9 @@ export class AppendQueue {
     this.schedule();
   }
 
-  /** Lines waiting to be written. */
+  /** Lines and files waiting to be written. */
   size(): number {
-    return this.totalLines;
+    return this.totalLines + this.files.size;
   }
 
   /** Write everything pending now and wait for it. */
@@ -91,7 +113,7 @@ export class AppendQueue {
     }
     // A drain in flight may have taken a snapshot before the latest push: wait for it, then drain again.
     if (this.draining) await this.draining;
-    while (this.totalLines > 0) await this.drain();
+    while (this.totalLines > 0 || this.files.size > 0) await this.drain();
   }
 
   private schedule(): void {
@@ -107,6 +129,16 @@ export class AppendQueue {
   private drain(): Promise<void> {
     if (this.draining) return this.draining;
     this.draining = (async () => {
+      const files = [...this.files.entries()];
+      this.files.clear();
+      for (const [file, data] of files) {
+        try {
+          await this.writeImpl(file, data);
+        } catch (e) {
+          this.failures += 1;
+          this.log.warn("store blob write failed; attachment lost", { file, bytes: data.length, error: String((e as Error)?.message ?? e) });
+        }
+      }
       const batch = [...this.pending.entries()];
       this.pending.clear();
       this.totalLines = 0;
@@ -125,7 +157,7 @@ export class AppendQueue {
       }
     })().finally(() => {
       this.draining = null;
-      if (this.totalLines > 0) this.schedule();
+      if (this.totalLines > 0 || this.files.size > 0) this.schedule();
     });
     return this.draining;
   }
