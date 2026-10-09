@@ -292,7 +292,9 @@ export interface Profile {
    *  host's default is the working directory's basename; project settings may override). */
   memory?: { workspace?: string; tenant?: string; policy?: MemoryPolicy; topics?: MemoryTopic[]; reads?: string[]; writes?: string[];
     /** memory v7: the HOP's ontology extension (domain classes under a core parent) and its registry fields. */
-    ontology?: { name: string; parent: string; description?: string }[]; owner?: string; mode?: "auto" | "review" | "manual"; sharing?: "none" | "org" | "fleet" };
+    ontology?: { name: string; parent: string; description?: string }[]; owner?: string; mode?: "auto" | "review" | "manual"; sharing?: "none" | "org" | "fleet";
+    /** managed HOPs: the publication this HOP version is published as; consented feedback goes to its HOP store. */
+    publication?: string };
 
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
@@ -343,4 +345,8 @@ export interface MemoryTopic {
   inject: boolean;
   /** memory v7 (phase axis): build memory feeds the next build, deploy memory the next session. */
   phase?: "build" | "deploy";
+  /** managed HOPs: what of this topic may cross into the publisher's HOP store (default off). */
+  feedback?: FeedbackScope;
 }
+export const FEEDBACK_SCOPES = ["off", "declared-only", "ask"] as const;
+export type FeedbackScope = (typeof FEEDBACK_SCOPES)[number];

@@ -79,6 +79,10 @@ const memoryTopicSchema = z
     // version scored), deploy memory is the users'. Same store; the projection injects deploy
     // topics, the builder's brief reads build topics. Default deploy.
     phase: z.enum(["build", "deploy"]).default("deploy"),
+    // managed HOPs (decided model 2026-10-08): what of this topic may cross from a runner's
+    // instance into the publisher's HOP store. off = nothing; declared-only = the publication's
+    // own distillation path; ask = consented items too (the host asks the person). Default off.
+    feedback: z.enum(["off", "declared-only", "ask"], { errorMap: (_i, ctx) => ({ message: `memory.topics[].feedback: ${JSON.stringify(ctx.data)} is not one of off, declared-only, ask` }) }).optional(),
   })
   .strict();
 const HALF_LIFE_DEFAULT: Record<string, string> = { state: "2x", record: "none", learning: "1y", preference: "none", deviation: "90d" };
@@ -98,9 +102,14 @@ const memorySchema = z
     owner: z.string().min(1).optional(),
     mode: z.enum(["auto", "review", "manual"]).optional(),
     sharing: z.enum(["none", "org", "fleet"]).optional(),
+    // managed HOPs: the publication this HOP version is published as (hop-service id); the
+    // consent call names it and the HOP store is keyed by it.
+    publication: z.string().min(1).optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
+    if (c.topics.some((t) => t.feedback === "ask") && !c.publication)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "memory.topics: a topic with feedback: ask needs memory.publication (the publication the consent goes to)" });
     const seen = new Set<string>();
     for (const t of c.topics) {
       if (seen.has(t.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `memory.topics: duplicate id ${JSON.stringify(t.id)}` });
@@ -644,6 +653,8 @@ export function composeProfile(
   const memoryOwner = y.memory.owner ?? parent.memory?.owner;
   const memoryMode = y.memory.mode ?? parent.memory?.mode;
   const memorySharing = y.memory.sharing ?? parent.memory?.sharing;
+  // A publication is this HOP version's own (hop-service id); a child never inherits a parent's.
+  const memoryPublication = y.memory.publication;
   const memory =
     memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length
       ? {
@@ -657,6 +668,7 @@ export function composeProfile(
           ...(memoryOwner ? { owner: memoryOwner } : {}),
           ...(memoryMode ? { mode: memoryMode } : {}),
           ...(memorySharing ? { sharing: memorySharing } : {}),
+          ...(memoryPublication ? { publication: memoryPublication } : {}),
         }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.

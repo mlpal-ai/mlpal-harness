@@ -818,6 +818,15 @@ describe("v1.1 §9.3 memory.contract", () => {
   reads: [company/ownership]
   writes: ["infra/*", "person/{me}/pref/infra"]
 `;
+  test("managed HOPs: a topic may say what feeds back to the publisher; ask needs the publication", () => {
+    const yaml = base + "memory:\n  publication: \"5\"\n  topics:\n    - { id: x/feedback, kind: learning, key: dedup, read: owner, feedback: ask }\n    - { id: x/dev, kind: deviation, key: dedup, read: owner, feedback: declared-only }\n    - { id: x/state/a, kind: state, key: date, read: owner }\n";
+    const p = load(yaml);
+    expect(p.memory!.publication).toBe("5");
+    expect(p.memory!.topics!.map((t) => t.feedback)).toEqual(["ask", "declared-only", undefined]);
+    expect(() => load(base + "memory:\n  topics:\n    - { id: x/feedback, kind: learning, key: dedup, read: owner, feedback: ask }\n")).toThrow(/needs memory.publication/);
+    expect(() => load(base + "memory:\n  publication: \"5\"\n  topics:\n    - { id: x/feedback, kind: learning, key: dedup, read: owner, feedback: always }\n")).toThrow(/not one of off, declared-only, ask/);
+  });
+
   test("loads the contract, fills half-life defaults, keeps writes and reads", () => {
     const p = load(base + contract);
     const c = p.memory!;
