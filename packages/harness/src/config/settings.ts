@@ -74,6 +74,24 @@ export const settingsSchema = z.object({
   sandbox: z
     .object({
       mode: z.enum(["auto", "always", "off"]).default("auto"),
+      /**
+       * Remote hands (SANDBOX-HANDS.md): run the file and shell tools in a microVM session of
+       * the MLPal sandbox service instead of the local filesystem. `routerUrl` or the
+       * `--sandbox <url>` flag turns it on; the credential comes from `YODEX_SANDBOX_KEY` (a
+       * HOP key's sandbox rung or a service key), never from here.
+       */
+      remote: z
+        .object({
+          routerUrl: z.string().url().optional(),
+          tenant: z.string().regex(/^(org|user):/).optional(),
+          template: z.string().default("hands"),
+          size: z.string().default("2c4g"),
+          ttlS: z.number().int().positive().default(4 * 3600),
+          idleAfterS: z.number().int().positive().default(900),
+          /** The guest working directory relative tool paths resolve against. */
+          cwd: z.string().default("/workspace"),
+        })
+        .default({}),
     })
     .default({}),
   /** A hook is one of: `command` (a shell command; the event JSON on stdin, a JSON result on
