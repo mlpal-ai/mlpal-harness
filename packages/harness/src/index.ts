@@ -18,6 +18,7 @@ export * from "./watcher/watcher";
 export { LspClient, uriOf as lspUriOf, pathOf as lspPathOf, type LspServerSpec } from "./lsp/client";
 export { LspManager, DEFAULT_LSP_SERVERS, languageOf, projectRootOf, type LspServerConfig } from "./lsp/manager";
 export { createLspTool, type LspToolInput } from "./tools/builtin/lsp";
+export { createSandboxHands, guestPath, GUEST_CWD, SANDBOX_HANDS_NAMES, type HandsClient, type HandsExecOptions, type HandsExecResult, type SandboxHandsOptions } from "./tools/remote/sandbox-hands";
 export * from "./loop/agent";
 export { effectiveEntries, loadMessages } from "./loop/messages";
 export * from "./registry/models";
