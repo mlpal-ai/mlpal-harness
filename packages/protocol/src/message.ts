@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { contentBlockSchema } from "./content";
+import { contentBlockSchema } from "./content.js";
 
 export const roleSchema = z.enum(["user", "assistant"]);
 export type Role = z.infer<typeof roleSchema>;

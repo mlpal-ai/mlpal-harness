@@ -1,4 +1,4 @@
-import type { Author } from "./author";
+import type { Author } from "./author.js";
 
 /**
  * Control channel: permission round-trips and peer-message injection ride here.

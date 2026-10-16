@@ -1,4 +1,4 @@
-import type { EngineEvent, SDKMessage } from "./sdk";
+import type { EngineEvent, SDKMessage } from "./sdk.js";
 
 /**
  * The wire protocol between a yodex frontend (web, VS Code, remote CLI) and a running

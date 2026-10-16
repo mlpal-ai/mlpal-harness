@@ -1,7 +1,7 @@
-import type { Author } from "./author";
-import type { ToolResultBlocks } from "./content";
-import type { Message, StopReason } from "./message";
-import type { Usage } from "./usage";
+import type { Author } from "./author.js";
+import type { ToolResultBlocks } from "./content.js";
+import type { Message, StopReason } from "./message.js";
+import type { Usage } from "./usage.js";
 
 /**
  * The engine↔frontend seam. The agentic loop yields a stream of EngineEvents;
