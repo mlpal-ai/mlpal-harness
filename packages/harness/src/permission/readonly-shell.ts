@@ -2,8 +2,8 @@ import { splitShellCommands } from "./safety";
 
 /**
  * Deterministic read-only classification of a shell command, for cruise mode: a command whose
- * every simple command is a known read-only program, with no redirection, substitution or
- * escalation, runs without a prompt. Anything unrecognised is NOT read-only; the mode then asks.
+ * every simple command is a known read-only program, with no redirection (other than to /dev/null
+ * or another fd), substitution or escalation, runs without a prompt. Anything unrecognised is NOT read-only; the mode then asks.
  * The deny-list safety guard runs before any mode decision and is untouched by this.
  */
 
@@ -11,7 +11,7 @@ import { splitShellCommands } from "./safety";
 const READ_ONLY = new Set([
   "ls", "pwd", "cat", "head", "tail", "wc", "stat", "file", "du", "df", "echo", "printf", "date", "uname", "whoami", "id",
   "hostname", "which", "type", "command", "readlink", "realpath", "basename", "dirname", "env", "printenv", "ps", "pgrep",
-  "lsof", "uptime", "true", "false", "tr", "cut", "sort", "uniq", "grep", "egrep", "fgrep", "rg", "ag", "awk", "jq", "diff",
+  "lsof", "netstat", "uptime", "true", "false", "tr", "cut", "sort", "uniq", "grep", "egrep", "fgrep", "rg", "ag", "awk", "jq", "diff",
   "cmp", "comm", "less", "more", "strings", "od", "hexdump", "xxd", "md5", "md5sum", "sha1sum", "sha256sum", "shasum",
   "nproc", "sw_vers", "arch", "locale", "tty", "sleep", "test", "[", "column", "nl", "fold", "tee_never",
 ]);
@@ -20,6 +20,23 @@ const VERSION_ONLY = new Set(["node", "bun", "npm", "pnpm", "yarn", "python", "p
 const VERSION_FLAGS = new Set(["--version", "-v", "-V", "version", "--help", "-h", "help"]);
 /** git subcommands that never write, with the argument checks that keep them so. */
 const GIT_READ = new Set(["status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "describe", "grep", "cat-file", "shortlog", "reflog", "rev-list", "name-rev", "count-objects", "var", "check-ignore", "merge-base", "for-each-ref", "symbolic-ref", "show-ref", "whatchanged", "diff-tree", "diff-index", "diff-files", "worktree"]);
+
+/** Redirections that cannot write into the workspace: output to /dev/null (`>`, `>>`, `2>`, `&>`) and
+ *  fd duplication (`2>&1`, `1>&2`). A leading fd digit counts only as its own word, as in the shell. */
+const HARMLESS_REDIRECT = /(?:(?<=^|\s)\d)?(?:>>?|&>>?)\s*\/dev\/null(?=\s|$|[;|&])|(?:(?<=^|\s)\d)?>&\d(?=\s|$|[;|&])/g;
+
+/** Blank harmless redirections outside quotes so the remaining text is the command proper. */
+function stripHarmlessRedirects(cmd: string): string {
+  let out = "";
+  let i = 0;
+  const quoted = /'[^']*'|"[^"]*"/g;
+  let m: RegExpExecArray | null;
+  while ((m = quoted.exec(cmd))) {
+    out += cmd.slice(i, m.index).replace(HARMLESS_REDIRECT, " ") + m[0];
+    i = m.index + m[0].length;
+  }
+  return out + cmd.slice(i).replace(HARMLESS_REDIRECT, " ");
+}
 
 /** Tokenise one simple command on whitespace, honouring quotes. Returns null on anything this
  *  classifier does not model (substitution, redirection, globs are fine). */
@@ -63,19 +80,21 @@ function simpleIsReadOnly(cmd: string): boolean {
   if (base === "sed") return !args.some((a) => /^-i|^--in-place/.test(a)) && !args.some((a) => /(^|[;\n])\s*w\b/.test(a) || /^-[a-zA-Z]*s.*w$/.test(a));
   if (base === "awk" || base === "gawk") return !args.some((a) => />\s*"|^-v\s*$/.test(a)) && !args.some((a) => a.includes("system("));
   if (base === "tee" || base === "tee_never") return false;
+  // `ss -K` / `--kill` closes sockets; every other `ss` form only lists them.
+  if (base === "ss") return !args.some((a) => a === "--kill" || /^-[a-zA-Z]*K/.test(a));
   if (VERSION_ONLY.has(base)) return args.length === 1 && VERSION_FLAGS.has(args[0]!);
   if (READ_ONLY.has(base)) return true;
   return false;
 }
 
 /** True when every simple command of `command` is read-only: pipes and `&&`/`||`/`;` between
- *  read-only commands are fine; a redirection, a substitution, a background `&`, or any program
+ *  read-only commands are fine; a redirection to anything but /dev/null or an fd, a substitution, a background `&`, or any program
  *  outside the known set makes the whole command "not read-only". */
 export function isReadOnlyShell(command: string): boolean {
-  const trimmed = command.trim();
+  const trimmed = stripHarmlessRedirects(command.trim()).trim();
   if (!trimmed) return false;
-  // Redirections and `tee` write; command substitution runs arbitrary code; a trailing `&` is a
-  // background job we do not reason about. Check outside quotes.
+  // Remaining redirections and `tee` write; command substitution runs arbitrary code; a trailing
+  // `&` is a background job we do not reason about. Check outside quotes.
   const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "");
   if (/[<>]|`|\$\(/.test(unquoted)) return false;
   if (/&/.test(unquoted.replace(/&&/g, ""))) return false;
