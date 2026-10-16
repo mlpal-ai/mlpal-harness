@@ -10,9 +10,12 @@ import type { Usage } from "./usage.js";
  * store; StreamDeltas are ephemeral (live rendering only). See docs/05 §8.
  */
 
+/** Persisted events carry the conversation entry's uuid (yodex/2): a frontend keys a turn by it,
+ *  session_history replays it, and a rewind names it. Absent on a stream from an older engine. */
 export interface SystemInitEvent {
   type: "system";
   subtype: "init";
+  uuid?: string;
   sessionId: string;
   agentId: string;
   model: string;
@@ -22,6 +25,7 @@ export interface SystemInitEvent {
 
 export interface UserEvent {
   type: "user";
+  uuid?: string;
   message: Message;
   author: Author;
   ts: string;
@@ -29,6 +33,7 @@ export interface UserEvent {
 
 export interface AssistantEvent {
   type: "assistant";
+  uuid?: string;
   message: Message; // complete assistant message (text + tool_use blocks)
   usage: Usage;
   stopReason: StopReason | null;
@@ -41,6 +46,7 @@ export interface AssistantEvent {
 
 export interface ToolResultEvent {
   type: "tool_result";
+  uuid?: string;
   toolUseId: string;
   toolName: string;
   /** Display/summary string (always present). */
@@ -94,6 +100,7 @@ export interface RewindEvent {
 
 export interface CompactEvent {
   type: "compact";
+  uuid?: string;
   summary: string;
   trigger: "auto" | "manual";
   /** Messages the summary stands in for, at compaction time (for reporting only). */

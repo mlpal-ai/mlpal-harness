@@ -402,7 +402,7 @@ export class AgentSession {
       };
       const e = await this.store.conversation.append(cfg.sessionId, sys, parent);
       parent = e.uuid;
-      yield sys;
+      yield { ...sys, uuid: parent };
     }
 
     // SessionStart hook — fires once, when a session's conversation is first created.
@@ -428,7 +428,7 @@ export class AgentSession {
           ts: now(),
         };
         parent = (await this.store.conversation.append(cfg.sessionId, se, parent)).uuid;
-        yield se;
+        yield { ...se, uuid: parent };
       }
     }
 
@@ -472,7 +472,7 @@ export class AgentSession {
     };
     const userUuid = (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
     parent = userUuid;
-    yield userEvt;
+    yield { ...userEvt, uuid: parent };
 
     // The person's prompt names the run; a steer or a peer message keeps the prompt of the turn
     // it lands in.
@@ -618,7 +618,7 @@ export class AgentSession {
           };
           parent = (await this.store.conversation.append(cfg.sessionId, ce, parent)).uuid;
           await this.event("compact", { trigger: "auto", replaced: c.replaced ?? 0, summaryTokens: c.summaryTokens, ref: parent });
-          yield ce;
+          yield { ...ce, uuid: parent };
           log.info("compacted context", {
             summaryTokens: c.summaryTokens,
             messages: messages.length,
@@ -634,7 +634,7 @@ export class AgentSession {
             if (rebuilt?.trim()) {
               const ue: UserEvent = { type: "user", message: { role: "user", content: rebuilt }, author: SYSTEM, ts: now() };
               parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-              yield ue;
+              yield { ...ue, uuid: parent };
               messages.push({ role: "user", content: rebuilt });
               metrics.increment("agent.memory_rebuilds", 1);
             }
@@ -650,7 +650,7 @@ export class AgentSession {
         const note = cfg.memoryCheckpoint.nudge(turns);
         const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
         parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-        yield ue;
+        yield { ...ue, uuid: parent };
         messages.push({ role: "user", content: note });
         log.info("memory checkpoint nudge", { turns });
         metrics.increment("agent.checkpoint_nudges", 1);
@@ -721,7 +721,7 @@ export class AgentSession {
         ...(result.traceId ? { traceId: result.traceId } : {}),
         ...(result.effort ? { effort: result.effort } : {}),
       });
-      yield asstEvt;
+      yield { ...asstEvt, uuid: parent };
       messages.push(result.message);
 
       const toolUses = (result.message.content as ContentBlock[]).filter(
@@ -752,7 +752,7 @@ export class AgentSession {
             "(a file, a long list), split it into smaller pieces across multiple steps.";
           const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
           parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-          yield ue;
+          yield { ...ue, uuid: parent };
           messages.push({ role: "user", content: note });
           log.info("max_tokens recovery: resuming truncated output", { recoveries: maxTokensRecoveries });
           metrics.increment("agent.max_tokens_recovery", 1);
@@ -776,7 +776,7 @@ export class AgentSession {
                 ts: now(),
               };
               parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-              yield ue;
+              yield { ...ue, uuid: parent };
               messages.push({ role: "user", content: framed });
               log.info("peer message injected", { from: pm.from.id ?? pm.from.type, handoff: Boolean(pm.correlationId) });
               metrics.increment("agent.peer_messages", 1);
@@ -795,7 +795,7 @@ export class AgentSession {
             for (const steer of steers) {
               const ue: UserEvent = { type: "user", message: { role: "user", content: steer }, author, ts: now() };
               parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-              yield ue;
+              yield { ...ue, uuid: parent };
               messages.push({ role: "user", content: steer });
             }
             log.info("user steer injected at finish", { count: steers.length });
@@ -812,7 +812,7 @@ export class AgentSession {
             for (const text of notes) {
               const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
               parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-              yield ue;
+              yield { ...ue, uuid: parent };
               messages.push({ role: "user", content: text });
             }
             log.info("background notifications injected at finish", { count: notes.length });
@@ -837,7 +837,7 @@ export class AgentSession {
             const text = renderEvents(events);
             const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
             parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-            yield ue;
+            yield { ...ue, uuid: parent };
             messages.push({ role: "user", content: text });
             log.info("inbox events injected at finish", {
               count: events.length,
@@ -894,7 +894,7 @@ export class AgentSession {
               ts: now(),
             };
             parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-            yield ue;
+            yield { ...ue, uuid: parent };
             messages.push({ role: "user", content: note });
             continue;
           }
@@ -914,7 +914,7 @@ export class AgentSession {
             ts: now(),
           };
           parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-          yield ue;
+          yield { ...ue, uuid: parent };
           messages.push({ role: "user", content: note });
           continue;
         }
@@ -996,7 +996,7 @@ export class AgentSession {
       const toolResults: ToolResultBlock[] = [];
       for (const trEvt of trEvts) {
         parent = (await this.store.conversation.append(cfg.sessionId, trEvt, parent)).uuid;
-        yield trEvt;
+        yield { ...trEvt, uuid: parent };
         toolResults.push({
           type: "tool_result",
           tool_use_id: trEvt.toolUseId,
@@ -1027,7 +1027,7 @@ export class AgentSession {
           if (!steer) continue;
           const ue: UserEvent = { type: "user", message: { role: "user", content: steer }, author, ts: now() };
           parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-          yield ue;
+          yield { ...ue, uuid: parent };
           turnContent.push({ type: "text", text: steer });
           log.info("user steer injected mid-loop");
           metrics.increment("agent.steer", 1, { at: "midloop" });
@@ -1043,7 +1043,7 @@ export class AgentSession {
           if (pm.correlationId) owedReplies.push(pm.correlationId);
           const ue: UserEvent = { type: "user", message: { role: "user", content: framed }, author: pm.from, ts: now() };
           parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-          yield ue;
+          yield { ...ue, uuid: parent };
           turnContent.push({ type: "text", text: framed });
           log.info("peer message injected mid-loop", { from: pm.from.id ?? pm.from.type });
           metrics.increment("agent.peer_messages", 1);
@@ -1057,7 +1057,7 @@ export class AgentSession {
         const text = renderEvents(events);
         const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
         parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-        yield ue;
+        yield { ...ue, uuid: parent };
         turnContent.push({ type: "text", text });
         log.info("inbox events injected mid-loop", {
           count: events.length,
