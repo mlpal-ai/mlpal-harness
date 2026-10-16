@@ -1,4 +1,5 @@
 import type { Author } from "@mlpal/harness-protocol";
+import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "./safety";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
@@ -136,9 +137,12 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
       // allow everything, no prompts (sandboxes, CI, autonomous runs).
       return { behavior: "allow" };
     case "cruise":
-      // reads + file edits go through; command execution and anything else (Bash, MCP,
-      // web) still asks — that's where irreversible damage lives.
-      return ungated || req.isEdit ? { behavior: "allow" } : { behavior: "ask" };
+      // reads + file edits go through, and so does a shell command every part of which is a known
+      // read-only program (ls, git status, ps…: readonly-shell.ts); command execution that could
+      // change anything, and MCP/web, still ask — that's where irreversible damage lives.
+      if (ungated || req.isEdit) return { behavior: "allow" };
+      if (req.toolName === "Bash" && typeof req.input.command === "string" && isReadOnlyShell(req.input.command)) return { behavior: "allow" };
+      return { behavior: "ask" };
     case "recon":
       return ungated
         ? { behavior: "allow" }

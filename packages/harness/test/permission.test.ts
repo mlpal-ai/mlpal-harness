@@ -44,15 +44,17 @@ describe("memory writes are ungated by every mode (E5)", () => {
 // The interactive gate re-evaluates against the live mode via defaultForMode when the user raises
 // autonomy mid-run. These lock in the per-mode decision the gate depends on to clear a pending prompt.
 describe("defaultForMode (live re-check for a mid-run mode raise)", () => {
-  const bash = req("Bash", { command: "ls" }, false);
+  // A command that changes something: a read-only one (ls, git status) no longer asks in cruise.
+  const bash = req("Bash", { command: "npm run build" }, false);
   const edit = req("Write", { path: "a" }, false, true);
   const read = req("Read", { path: "a" }, true);
   test("autopilot allows anything — raising to it clears a pending prompt", () => {
     expect(defaultForMode("autopilot", bash).behavior).toBe("allow");
     expect(defaultForMode("autopilot", edit).behavior).toBe("allow");
   });
-  test("cruise still asks for a command (so the prompt stays), allows edits/reads", () => {
+  test("cruise still asks for a mutating command (so the prompt stays), allows edits/reads and read-only commands", () => {
     expect(defaultForMode("cruise", bash).behavior).toBe("ask");
+    expect(defaultForMode("cruise", req("Bash", { command: "ls -la && git status" }, false)).behavior).toBe("allow");
     expect(defaultForMode("cruise", edit).behavior).toBe("allow");
     expect(defaultForMode("cruise", read).behavior).toBe("allow");
   });
