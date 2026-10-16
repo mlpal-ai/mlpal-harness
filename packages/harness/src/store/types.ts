@@ -24,6 +24,8 @@ export interface SessionRecord {
   status: "active" | "listening" | "idle" | "done" | "error";
   /** A person's name for the session (/rename): shown in listings and accepted wherever a session id is. */
   name?: string;
+  /** The HOP the session runs under (`name@version`), from the host's telemetry stamp. */
+  hop?: string;
   /** How the session came to exist: absent = a human started it; "routine:<name>" = a
    *  scheduler firing. `yodex -c` prefers human sessions — routine-spawned ones must not
    *  hijack "continue my conversation". */

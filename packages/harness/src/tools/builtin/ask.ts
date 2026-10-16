@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseJsonLenient } from "../json";
-import { defineTool, type Tool } from "../types";
+import { defineTool, type Tool, type ToolContext } from "../types";
 
 /**
  * AskUserQuestion — structured questions when a decision is genuinely the developer's to make.
@@ -76,7 +76,9 @@ export interface AskOutcome {
   answers: AskAnswer[];
 }
 
-export type PresentQuestions = (questions: AskQuestion[]) => Promise<AskOutcome | { parked: true }>;
+/** The host renders the questionnaire. `ctx` names the asking session, so a host serving many
+ *  sessions (yodex serve) routes the form to the right connection. */
+export type PresentQuestions = (questions: AskQuestion[], ctx?: ToolContext) => Promise<AskOutcome | { parked: true }>;
 
 /** Render the outcome the model reads. Kept deterministic and compact — it lands in context. */
 export function formatOutcome(outcome: AskOutcome | { parked: true }): string {
@@ -109,7 +111,7 @@ export function createAskUserQuestionTool(present: PresentQuestions): Tool<{ que
       "Ask the developer up to 4 structured questions when you are blocked on a decision that is genuinely theirs to make — ambiguous requirements, a fork between approaches, missing context you cannot read from the repo. Each question is its own tab and picks its shape: 2–5 labeled options for a choice (put your recommended one FIRST with '(Recommended)' appended to its label), multiSelect for several answers, option previews to compare concrete artifacts (UI mockups, code variants, configs), or NO options at all for an open-ended question — the form then shows a free-text field. Every choice question also gets free-text entry and notes automatically, so answers may contain text you didn't list. Batch related decisions into ONE call rather than asking serially. Do NOT use it for choices with an obvious default, facts the code answers, or permission to proceed.",
     readOnly: true,
     schema: z.object({ questions: questionsField }),
-    async call(input) {
+    async call(input, ctx) {
       const questions = input.questions.map((q) => ({
         ...q,
         // An empty/omitted header derives from the question itself — never a blank tab.
@@ -131,7 +133,7 @@ export function createAskUserQuestionTool(present: PresentQuestions): Tool<{ que
           };
         }
       }
-      const outcome = await present(questions);
+      const outcome = await present(questions, ctx);
       return { content: formatOutcome(outcome) };
     },
   });

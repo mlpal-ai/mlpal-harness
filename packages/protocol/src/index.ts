@@ -4,4 +4,5 @@ export * from "./usage.js";
 export * from "./author.js";
 export * from "./sdk.js";
 export * from "./control.js";
+export * from "./questions.js";
 export * from "./transport.js";

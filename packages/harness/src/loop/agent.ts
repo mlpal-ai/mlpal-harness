@@ -369,9 +369,12 @@ export class AgentSession {
         status: "active",
         head: null,
         model: cfg.model,
+        ...(cfg.stamp?.hop ? { hop: cfg.stamp.hop } : {}),
         createdAt: ts,
         updatedAt: ts,
       });
+    } else if (cfg.stamp?.hop && existing.hop !== cfg.stamp.hop) {
+      await store.registry.patchSession(cfg.sessionId, { hop: cfg.stamp.hop });
     }
   }
 

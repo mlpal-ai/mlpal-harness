@@ -58,3 +58,24 @@ describe("recentSessions", () => {
     expect(await mostRecentSessionId(store)).toBe("s2");
   });
 });
+
+describe("recentSessions lastReply", () => {
+  test("carries the last assistant text, trimmed, and empty when the agent never replied", async () => {
+    await seed("s1", "/proj/a", "2026-06-27T10:00:00Z", "build feature X");
+    const head = await store.conversation.head("s1");
+    const a1 = await store.conversation.append(
+      "s1",
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "  first   reply " }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "m", ts: "2026-06-27T10:01:00Z" },
+      head,
+    );
+    await store.conversation.append(
+      "s1",
+      { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Bash", input: {} }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use", model: "m", ts: "2026-06-27T10:02:00Z" },
+      a1.uuid,
+    );
+    await seed("s2", "/proj/a", "2026-06-27T11:00:00Z", "no reply yet");
+    const rows = await recentSessions(store, { cwd: "/proj/a" });
+    expect(rows.find((r) => r.record.sessionId === "s1")!.lastReply).toBe("first reply"); // the tool-only turn has no text
+    expect(rows.find((r) => r.record.sessionId === "s2")!.lastReply).toBe("");
+  });
+});

@@ -12,16 +12,33 @@ export interface SessionInfo {
   record: SessionRecord;
   /** First user message, trimmed — for the resume picker. */
   preview: string;
+  /** Last assistant reply, trimmed — what the session is up to. Empty when none. */
+  lastReply: string;
 }
 
-async function firstUserPreview(store: Store, sessionId: string): Promise<string> {
+function clip(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
+}
+
+async function previews(store: Store, sessionId: string): Promise<{ first: string; last: string }> {
   const entries = effectiveEntries(await store.conversation.read(sessionId));
   const turn = entries.find((e) => e.payload.type === "user");
-  if (!turn || turn.payload.type !== "user") return "(empty)";
-  const content = turn.payload.message.content;
-  const text = typeof content === "string" ? content : "[content]";
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat || "(empty)";
+  let first = "(empty)";
+  if (turn && turn.payload.type === "user") {
+    const content = turn.payload.message.content;
+    first = clip(typeof content === "string" ? content : "[content]") || "(empty)";
+  }
+  let last = "";
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const p = entries[i]!.payload;
+    if (p.type !== "assistant") continue;
+    const content = p.message.content;
+    const text = typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
+    last = clip(text);
+    if (last) break;
+  }
+  return { first, last };
 }
 
 export async function recentSessions(
@@ -33,7 +50,10 @@ export async function recentSessions(
   records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   if (opts.limit) records = records.slice(0, opts.limit);
   return Promise.all(
-    records.map(async (record) => ({ record, preview: await firstUserPreview(store, record.sessionId) })),
+    records.map(async (record) => {
+      const p = await previews(store, record.sessionId);
+      return { record, preview: p.first, lastReply: p.last };
+    }),
   );
 }
 
