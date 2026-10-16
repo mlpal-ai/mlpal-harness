@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mlpal-ai/mlpal-harness.git",
+    "url": "git+https://github.com/mlpal-ai/mlpal-harness.git",
     "directory": "packages/protocol"
   },
   "type": "module",
