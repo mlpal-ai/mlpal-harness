@@ -7,7 +7,8 @@ import type { Usage } from "@mlpal/harness-protocol";
  * registry (wall time). Pure aggregation — a host renders it as /usage. Cost is the gateway's
  * meter (1 CU = $10) whenever a call carried it; nothing here estimates from a rate card.
  */
-export const USD_PER_CU = 10;
+export { USD_PER_CU } from "@mlpal/harness-protocol";
+import { USD_PER_CU } from "@mlpal/harness-protocol";
 /** The gateway's default prompt-cache TTL; an idle gap past it is the commonest miss cause. */
 export const CACHE_TTL_MS = 5 * 60_000;
 

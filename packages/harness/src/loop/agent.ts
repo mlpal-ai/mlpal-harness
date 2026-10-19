@@ -724,7 +724,10 @@ export class AgentSession {
         throw e;
       }
 
-      totalUsage = addUsage(totalUsage, result.usage);
+      // The gateway's charge rides with the token counts (protocol 0.17.0): per call on the
+      // assistant event, summed on the run's result.
+      const callUsage: Usage = { ...result.usage, ...(result.computeUnits !== undefined ? { compute_units: result.computeUnits } : {}) };
+      totalUsage = addUsage(totalUsage, callUsage);
       // Real occupancy of the request just sent (input + cache), the floor for the NEXT
       // turn's compaction check. Cache-read counts against the window too.
       lastInputTokens =
@@ -734,7 +737,7 @@ export class AgentSession {
       const asstEvt: AssistantEvent = {
         type: "assistant",
         message: result.message,
-        usage: result.usage,
+        usage: callUsage,
         stopReason: result.stopReason,
         model: result.model,
         ...(result.effort ? { effort: result.effort } : {}),

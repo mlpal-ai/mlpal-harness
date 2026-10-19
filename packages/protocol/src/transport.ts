@@ -55,7 +55,8 @@ export type ServerCapability =
   | "files" // list_files
   | "subagents" // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
   | "mail" // `mail` frames for an idle session's peer messages; `send` answers with send_result
-  | "checkpoints"; // `checkpoints` listing and `rewind` to before a message (files + conversation)
+  | "checkpoints" // `checkpoints` listing and `rewind` to before a message (files + conversation)
+  | "usage"; // `compute_units` on usage, `session_usage` totals per session and model
 
 /** One HOP a serve can run (capability "hop_per_run"). `current` is the serve's own, in-process;
  *  `warm` means a host for it is already up, so a run on it starts without the spawn delay. */
@@ -117,6 +118,8 @@ export type ClientMessage =
   | { type: "rewind"; requestId?: string; sessionId: string; beforeUuid: string }
   /** yodex/2 (capability "hop_per_run"): the HOPs this serve can run, for a HOP picker. */
   | { type: "list_hops"; requestId?: string }
+  /** yodex/2 (capability "usage"): a session's spend so far, from the per-call ledger. */
+  | { type: "session_usage"; requestId?: string; sessionId: string }
   /** yodex/2: receive a session's idle events (a background child's end, a rewind) on this
    *  connection without loading its history. A run or load_session watches implicitly. */
   | { type: "watch"; sessionId: string }
@@ -170,6 +173,9 @@ export type ServerMessage =
   | { type: "rewound"; requestId?: string; sessionId: string; turn: number; toUuid: string | null; restored: string[]; deleted: string[]; failed: Array<{ path: string; error: string }> }
   /** yodex/2 (capability "hop_per_run"): the HOPs this serve can run. */
   | { type: "hops"; requestId?: string; hops: HopInfo[] }
+  /** yodex/2 (capability "usage"): totals over every model call of the session. `usd` is
+   *  `compute_units * USD_PER_CU`, present when the gateway metered any call. */
+  | { type: "session_usage"; requestId?: string; sessionId: string; calls: number; usage: Usage; usd?: number; models: Record<string, { calls: number; usage: Usage }> }
   /** yodex/2 (capability "mail"): a peer message that reached an idle session the client is
    *  watching. The model sees it at the session's next run; a run in progress sees its mail
    *  itself, as a `user` event authored by the peer. */
