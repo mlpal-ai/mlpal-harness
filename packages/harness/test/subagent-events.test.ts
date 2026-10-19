@@ -149,6 +149,52 @@ describe("sub-agent events on the parent stream", () => {
     expect((await store.registry.getSession("parent"))?.head).toBe(last.uuid);
   });
 
+  test("background: child events raised while the parent's run finishes are not lost; they reach the idle listener in order (E1-2)", async () => {
+    const store = new LocalStore(root);
+    const bus = new SessionEventBus(store);
+    const bg = new BackgroundAgents(0);
+    // Hold the parent's `result` append until the child has spoken: the child's first events land
+    // after the run's last flush, the window a real serve hits when the parent finishes first.
+    let finishing!: () => void;
+    const parentFinishing = new Promise<void>((r) => (finishing = r));
+    let spoke!: () => void;
+    const childSpoke = new Promise<void>((r) => (spoke = r));
+    const append = store.conversation.append.bind(store.conversation);
+    store.conversation.append = async (sid, payload, parent) => {
+      if (sid === "parent" && payload.type === "result") {
+        finishing();
+        await childSpoke;
+      }
+      return append(sid, payload, parent);
+    };
+    const first: EngineEvent[] = [
+      { type: "system", subtype: "init", sessionId: "child-late", agentId: "a", model: "test", cwd: root, ts: "t" },
+      { type: "user", message: { role: "user", content: "later" }, author: { type: "human" }, ts: "t" },
+    ];
+    const run: SubagentRun = async (args) => {
+      queueMicrotask(() => args.onSessionId?.("child-late"));
+      await parentFinishing;
+      for (const ev of first) args.onEvent?.(ev);
+      spoke();
+      return { text: "child result", sessionId: "child-late" };
+    };
+    const tools = new ToolRegistry();
+    tools.register(createTaskTool(run, [], bg));
+    const idle: Array<SubagentEvent | SubagentStreamEvent> = [];
+    bus.onIdle((_sid, e) => idle.push(e));
+
+    const events = await collect(session(store, new ScriptedModel([agentCall({ description: "bg child", prompt: "later", run_in_background: true }), textDone("started")]), tools, { events: bus }));
+    expect(events.some((e) => e.type === "subagent_event")).toBe(false);
+    await Bun.sleep(10);
+    await bus.settled();
+    const forwarded = idle.filter((e): e is SubagentStreamEvent => e.type === "subagent_event");
+    expect(forwarded.map((e) => [e.childSessionId, e.event.type])).toEqual([
+      ["child-late", "system"],
+      ["child-late", "user"],
+    ]);
+    expect(idle.filter((e) => e.type === "subagent").map((e) => (e as SubagentEvent).kind)).toEqual(["end"]);
+  });
+
   test("a killed child ends with outcome cancelled, by session id", async () => {
     const store = new LocalStore(root);
     const bus = new SessionEventBus(store);

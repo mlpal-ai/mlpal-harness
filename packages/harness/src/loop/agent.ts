@@ -1123,7 +1123,6 @@ export class AgentSession {
         throw e;
       }
     } finally {
-      unsubscribe?.();
       // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
       // Previously only the success branch reset status/head and answered owed handoffs,
       // so a cancelled or errored run left the session advertised "active" forever (a
@@ -1135,6 +1134,12 @@ export class AgentSession {
       }
       owedReplies.length = 0;
       await this.store.registry.patchSession(cfg.sessionId, { head: parent, status: "idle" }).catch(() => {});
+      // Side events raised after the run's last flush (a background child starting while this run
+      // finishes) would die in this run's queue: once unsubscribed they go back through the bus,
+      // which now finds no running loop, persists the persisted kinds at the head and tells the
+      // idle listeners, in the order they arrived.
+      unsubscribe?.();
+      if (cfg.events) for (const e of this.side.drain()) cfg.events.emit(cfg.sessionId, e);
 
       // HOP telemetry Capture (D11.2): emit one content-free run-outcome at the finish point.
       // `outcome` is null only when the generator was abandoned before any terminal result — no
