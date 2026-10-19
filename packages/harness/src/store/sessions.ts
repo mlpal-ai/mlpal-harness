@@ -27,7 +27,13 @@ async function previews(store: Store, sessionId: string): Promise<{ first: strin
   let first = "(empty)";
   if (turn && turn.payload.type === "user") {
     const content = turn.payload.message.content;
-    first = clip(typeof content === "string" ? content : "[content]") || "(empty)";
+    if (typeof content === "string") first = clip(content) || "(empty)";
+    else {
+      // A turn with attachments: its text names it; an attachment-only turn says what it holds.
+      const text = content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
+      const kinds = content.filter((b) => b.type !== "text").map((b) => (b.type === "image" ? "image" : b.type === "document" ? "document" : b.type));
+      first = clip(text) || (kinds.length ? `[${[...new Set(kinds)].join(", ")}]` : "(empty)");
+    }
   }
   let last = "";
   for (let i = entries.length - 1; i >= 0; i--) {

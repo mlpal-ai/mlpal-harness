@@ -11,6 +11,7 @@ import {
   CODING_VERIFY_CMD_RE, CODING_MEMORY_CONTRACT } from "../src/profile/builtins/coding";
 import { REVIEWER_PROFILE } from "../src/profile/builtins/reviewer";
 import { assertSettingsRespectLocks, builtinProfiles, loadProfile } from "../src/profile/load";
+import { describeProfile } from "../src/profile/describe";
 import { bashTool } from "../src/tools/builtin/bash";
 import { editTool, writeTool } from "../src/tools/builtin/files";
 
@@ -913,5 +914,21 @@ describe("builtin HOPs pinned by version", () => {
     expect(loadProfile(`reviewer@${loadProfile("reviewer", opts).version}`, opts).name).toBe("reviewer");
     expect(() => loadProfile("coding@0.0.1", opts)).toThrow(/version .* in this build/);
     expect(() => loadProfile("nope@1.0.0", opts)).toThrow(/unknown HOP/);
+  });
+});
+
+describe("describeProfile", () => {
+  test("every builtin describes to plain data that survives JSON, with the prompts, the lock list and the loop's regexes as source", () => {
+    for (const p of Object.values(builtinProfiles())) {
+      const view = describeProfile(p);
+      const round = JSON.parse(JSON.stringify(view)) as typeof view;
+      expect(round).toEqual(view);
+      expect(round.name).toBe(p.name);
+      expect(round.prompts.system).toBe(p.prompts.system);
+      expect(round.locked).toEqual(p.locked);
+      expect(round.loop.verifyCommand).toBe(p.loop.verifyCommandRe?.source ?? null);
+      expect(JSON.stringify(round)).not.toContain("=>");
+    }
+    expect(describeProfile(loadProfile("reviewer", { cwd: "/x", home: "/y" })).permissions.defaultMode).toBe("recon");
   });
 });

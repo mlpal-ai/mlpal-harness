@@ -79,3 +79,23 @@ describe("recentSessions lastReply", () => {
     expect(rows.find((r) => r.record.sessionId === "s2")!.lastReply).toBe("");
   });
 });
+
+describe("session titles with attachments (gap 14)", () => {
+  test("a first turn with text and an image is titled by its text; an attachment-only turn names what it holds", async () => {
+    const dir = join(tmpdir(), `yx-titles-${crypto.randomUUID().slice(0, 8)}`);
+    const store = new LocalStore(dir);
+    const seedBlocks = async (id: string, content: unknown) => {
+      await store.registry.putSession({ sessionId: id, agentId: "a", workspace: "w", cwd: dir, status: "idle", head: null, model: "m", createdAt: "2026-06-27T10:00:00Z", updatedAt: "2026-06-27T10:00:00Z" });
+      await store.conversation.append(id, { type: "user", message: { role: "user", content }, author: HUMAN, ts: "2026-06-27T10:00:00Z" } as never, null);
+    };
+    const img = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+    await seedBlocks("t1", [img, { type: "text", text: "  what is in this screenshot?  " }]);
+    await seedBlocks("t2", [img]);
+    await seedBlocks("t3", [img, { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" } }]);
+    const rows = await recentSessions(store, { limit: 10 });
+    const title = (id: string) => rows.find((r) => r.record.sessionId === id)!.preview;
+    expect(title("t1")).toBe("what is in this screenshot?");
+    expect(title("t2")).toBe("[image]");
+    expect(title("t3")).toBe("[image, document]");
+  });
+});

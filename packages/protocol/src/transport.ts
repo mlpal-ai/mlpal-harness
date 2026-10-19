@@ -56,7 +56,56 @@ export type ServerCapability =
   | "subagents" // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
   | "mail" // `mail` frames for an idle session's peer messages; `send` answers with send_result
   | "checkpoints" // `checkpoints` listing and `rewind` to before a message (files + conversation)
-  | "usage"; // `compute_units` on usage, `session_usage` totals per session and model
+  | "usage" // `compute_units` on usage, `session_usage` totals per session and model
+  | "effort" // run.effort, set_session_defaults / session_defaults
+  | "describe_hop"; // describe_hop → hop: the serialisable view of a HOP
+
+/** The gateway's reasoning-effort ladder; a rung a model lacks is clamped and reported on the
+ *  assistant event's `effort.applied`. */
+export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** What a client may set once per session instead of on every run (capability "effort"). */
+export interface SessionDefaults {
+  model?: string;
+  effort?: EffortLevel;
+  mode?: string;
+}
+
+/**
+ * The serialisable view of a composed HOP (capability "describe_hop"): the profile minus what
+ * cannot cross a wire (nudge functions, regexes shown as source). Policy blocks are the HOP's
+ * own data, as hop.yaml declares them; see the harness `Profile` type for their shapes.
+ */
+export interface HopView {
+  name: string;
+  version: string;
+  description: string;
+  source: "builtin" | "user" | "project" | "path";
+  dir: string | null;
+  /** Parent chain, root first. */
+  extendsChain: string[];
+  prompts: { system: string; verifierAgent: string };
+  loop: { taskType: string; verifyCommand: string | null; envBroken: string | null; churnThreshold: number; summarizerSystem: string; condenserSystem: string; checkpointNudge: boolean };
+  verification: Record<string, unknown>;
+  catalog: { profile: string };
+  routing: Record<string, unknown>;
+  permissions: { defaultMode: string; allow: string[]; deny: string[] };
+  tools: { include: string[] };
+  budgets: { maxTurns: number };
+  telemetry: { taskType: string };
+  evals: Array<Record<string, unknown>>;
+  tuning?: Record<string, unknown>;
+  model?: Record<string, unknown>;
+  requires?: Record<string, unknown>;
+  safety?: Record<string, unknown>;
+  memory?: Record<string, unknown>;
+  /** Setting paths a user or the tuner may not touch. */
+  locked: string[];
+  /** The declared optimization surface. */
+  tunable: Array<{ path: string; range: [number, number] | string[] }>;
+  modules: Record<string, { prompt: string; tools?: string[]; enabled: boolean; description?: string }>;
+  warnings?: string[];
+}
 
 /** One HOP a serve can run (capability "hop_per_run"). `current` is the serve's own, in-process;
  *  `warm` means a host for it is already up, so a run on it starts without the spawn delay. */
@@ -90,6 +139,9 @@ export type ClientMessage =
       hop?: string;
       /** yodex/2: working directory for this run, under the server's workspace root. */
       cwd?: string;
+      /** yodex/2 (capability "effort"): reasoning effort for this run; else the session's
+       *  default, else the server's. */
+      effort?: EffortLevel;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -120,6 +172,11 @@ export type ClientMessage =
   | { type: "list_hops"; requestId?: string }
   /** yodex/2 (capability "usage"): a session's spend so far, from the per-call ledger. */
   | { type: "session_usage"; requestId?: string; sessionId: string }
+  /** yodex/2 (capability "effort"): defaults for later runs of the session; a field given as
+   *  null clears it. Answered with session_defaults; a mode the HOP forbids is an error. */
+  | { type: "set_session_defaults"; requestId?: string; sessionId: string; model?: string | null; effort?: EffortLevel | null; mode?: string | null }
+  /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed. */
+  | { type: "describe_hop"; requestId?: string; hop?: string }
   /** yodex/2: receive a session's idle events (a background child's end, a rewind) on this
    *  connection without loading its history. A run or load_session watches implicitly. */
   | { type: "watch"; sessionId: string }
@@ -173,6 +230,10 @@ export type ServerMessage =
   | { type: "rewound"; requestId?: string; sessionId: string; turn: number; toUuid: string | null; restored: string[]; deleted: string[]; failed: Array<{ path: string; error: string }> }
   /** yodex/2 (capability "hop_per_run"): the HOPs this serve can run. */
   | { type: "hops"; requestId?: string; hops: HopInfo[] }
+  /** yodex/2 (capability "effort"): the session's defaults after a set_session_defaults. */
+  | { type: "session_defaults"; requestId?: string; sessionId: string; defaults: SessionDefaults }
+  /** yodex/2 (capability "describe_hop"). */
+  | { type: "hop"; requestId?: string; hop: HopView }
   /** yodex/2 (capability "usage"): totals over every model call of the session. `usd` is
    *  `compute_units * USD_PER_CU`, present when the gateway metered any call. */
   | { type: "session_usage"; requestId?: string; sessionId: string; calls: number; usage: Usage; usd?: number; models: Record<string, { calls: number; usage: Usage }> }
