@@ -129,6 +129,8 @@ export interface SubagentStreamEvent {
  *  keeps the full history. Written by the host's /rewind together with the file restore. */
 export interface RewindEvent {
   type: "rewind";
+  /** The entry's uuid, as on every persisted event (replayed and on the watcher frame). */
+  uuid?: string;
   toUuid: string | null;
   /** The checkpoint turn number rewound to (1-based), for display. */
   turn: number;
