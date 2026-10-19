@@ -98,7 +98,9 @@ export type ClientMessage =
   | { type: "list_sessions"; requestId?: string; includeChildren?: boolean }
   | { type: "list_models"; requestId?: string }
   | { type: "list_skills"; requestId?: string }
-  | { type: "load_session"; requestId?: string; sessionId: string }
+  /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
+   *  given); `session_history.hasMore` says whether older entries exist. */
+  | { type: "load_session"; requestId?: string; sessionId: string; before?: string; limit?: number }
   | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string }
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
   | { type: "question_response"; id: string; outcome: AskOutcome }
@@ -151,6 +153,8 @@ export type ServerMessage =
       pendingApproval?: PendingApproval;
       /** yodex/2: a run is streaming on this session on another connection. */
       live?: boolean;
+      /** yodex/2: older entries exist before the first one returned (paged load). */
+      hasMore?: boolean;
     }
   | { type: "models"; requestId?: string; models: Array<{ tag: string; displayName: string }> }
   /** yodex/2 (capability "mail"): how a `send` was delivered. `sent` = a run is live on the

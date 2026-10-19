@@ -131,11 +131,20 @@ describe("agentic loop", () => {
     const lastMsg = secondCall.messages.at(-1)!;
     expect(lastMsg.role).toBe("user");
 
-    // store persisted the full DAG (system, user, assistant, tool_result, assistant)
+    // store persisted the full DAG (system, user, assistant, tool_result, assistant, result)
     const entries = await new LocalStore(root).conversation.read("s1");
-    expect(entries.length).toBe(5);
+    expect(entries.map((e) => e.payload.type)).toEqual(["system", "user", "assistant", "tool_result", "assistant", "result"]);
     expect(entries[0]!.parentUuid).toBeNull();
     expect(entries[1]!.parentUuid).toBe(entries[0]!.uuid);
+    // The run's result is persisted (protocol 0.16.0): chained at the head, with its uuid on the
+    // stream, carrying the run's usage; the model's replay never sees it.
+    const last = entries[5]!;
+    expect(last.parentUuid).toBe(entries[4]!.uuid);
+    expect(last.payload).toMatchObject({ type: "result", subtype: "success", usage: { output_tokens: 9 } });
+    const streamed = events.find((e) => e.type === "result");
+    expect((streamed as { uuid?: string }).uuid).toBe(last.uuid);
+    expect((await new LocalStore(root).registry.getSession("s1"))?.head).toBe(last.uuid);
+    expect((await loadMessages(new LocalStore(root), "s1")).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
   test("HOP telemetry: a successful run emits one content-free run-outcome at the finish", async () => {

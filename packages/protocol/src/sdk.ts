@@ -62,6 +62,8 @@ export interface ToolResultEvent {
 
 export interface ResultEvent {
   type: "result";
+  /** Persisted since 0.16.0: the entry's uuid on the stream and in session_history. */
+  uuid?: string;
   /** `needs_approval` (HOP §10): the run parked at the safety approval edge and stopped, waiting
    *  for a human — distinct from a user-initiated `cancelled`. */
   subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
@@ -77,6 +79,7 @@ export interface ResultEvent {
 
 export interface ErrorEvent {
   type: "error";
+  uuid?: string;
   message: string;
   ts: string;
 }
@@ -192,11 +195,13 @@ const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "compact",
   "rewind",
   "subagent",
+  "result",
+  "error",
 ]);
 
-/** Runtime category: should this event be written to the conversation store?
- *  Note: `result` is a turn summary (an SDKMessage) that is NOT persisted, and a `subagent`
- *  progress line is not either. */
+/** Runtime category: should this event be written to the conversation store? Since protocol
+ *  0.16.0 a run's `result` and a host-reported `error` are persisted too, so a replay carries
+ *  run boundaries and usage; a `subagent` progress line is not. */
 export function isPersisted(e: EngineEvent): boolean {
   if (e.type === "subagent") return e.kind !== "progress";
   return PERSISTED_TYPES.has(e.type);

@@ -599,13 +599,13 @@ export class AgentSession {
       if (cfg.signal?.aborted) {
         log.warn("run cancelled");
         outcome = "cancelled";
-        yield this.result("cancelled", turns, totalUsage);
+        parent = yield* this.finish("cancelled", turns, totalUsage, parent);
         return;
       }
       if (turns >= this.maxTurns) {
         log.warn("run hit max turns", { maxTurns: this.maxTurns });
         outcome = "max_turns";
-        yield this.result("max_turns", turns, totalUsage);
+        parent = yield* this.finish("max_turns", turns, totalUsage, parent);
         break;
       }
       // Auto-compaction: summarize older turns before they overflow the window.
@@ -714,7 +714,7 @@ export class AgentSession {
         if (e instanceof GatewayError && e.kind === "cancelled") {
           log.warn("run cancelled mid-stream");
           outcome = "cancelled";
-          yield this.result("cancelled", turns, totalUsage);
+          parent = yield* this.finish("cancelled", turns, totalUsage, parent);
           return;
         }
         log.error("model call failed", { error: String(e) });
@@ -970,7 +970,7 @@ export class AgentSession {
         });
         outcome = "success";
         parent = yield* this.flushSide(this.side.drain(), parent);
-        yield this.result("success", turns, totalUsage);
+        parent = yield* this.finish("success", turns, totalUsage, parent);
         break;
       }
 
@@ -1115,7 +1115,7 @@ export class AgentSession {
         outcome = "needs_approval";
         log.info("run parked for approval", { reason: e.reason });
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
-        yield this.result("needs_approval", turns, totalUsage, { command: e.command, reason: e.reason });
+        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason });
       } else {
         throw e;
       }
@@ -1543,6 +1543,23 @@ export class AgentSession {
       // the trace is for grading; a failing observer must never affect the gate
     }
     return decision;
+  }
+
+  /** End the run: the result is persisted at the conversation head (a replay then carries run
+   *  boundaries and usage), the session's head moves to it, and it is yielded with its uuid. */
+  private async *finish(
+    subtype: "success" | "max_turns" | "cancelled" | "needs_approval",
+    numTurns: number,
+    usage: Usage,
+    parent: string | null,
+    pendingApproval?: { command: string; reason: string },
+  ): AsyncGenerator<EngineEvent, string | null, void> {
+    const ev = this.result(subtype, numTurns, usage, pendingApproval);
+    if (ev.type !== "result") return parent;
+    const entry = await this.store.conversation.append(this.cfg.sessionId, ev, parent);
+    await this.store.registry.patchSession(this.cfg.sessionId, { head: entry.uuid }).catch(() => undefined);
+    yield { ...ev, uuid: entry.uuid };
+    return entry.uuid;
   }
 
   private result(
