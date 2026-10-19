@@ -53,7 +53,8 @@ export type ServerCapability =
   | "commands" // list_commands
   | "files" // list_files
   | "subagents" // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
-  | "mail"; // `mail` frames for an idle session's peer messages; `send` answers with send_result
+  | "mail" // `mail` frames for an idle session's peer messages; `send` answers with send_result
+  | "checkpoints"; // `checkpoints` listing and `rewind` to before a message (files + conversation)
 
 export interface PendingApproval {
   command: string;
@@ -91,7 +92,13 @@ export type ClientMessage =
   | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
-  | { type: "stop_subagent"; childSessionId: string };
+  | { type: "stop_subagent"; childSessionId: string }
+  /** yodex/2 (capability "checkpoints"): the session's turns a rewind can go back to. */
+  | { type: "checkpoints"; requestId?: string; sessionId: string }
+  /** yodex/2 (capability "checkpoints"): restore files to before the human turn `beforeUuid`
+   *  (a `user` event's uuid from the stream or session_history) and drop it and everything
+   *  after from the conversation; the store keeps the history. Refused while a run is live. */
+  | { type: "rewind"; requestId?: string; sessionId: string; beforeUuid: string };
 
 export type ServerMessage =
   | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string }
@@ -128,6 +135,13 @@ export type ServerMessage =
    *  session and folds the text in at its next boundary; `queued` = the session is idle and the
    *  text waits in its event inbox for the next run. */
   | { type: "send_result"; requestId?: string; sessionId: string; status: "sent" | "queued" }
+  /** yodex/2 (capability "checkpoints"): one row per human turn that opened a checkpoint.
+   *  `userUuid` is the turn's `user` event, what `rewind.beforeUuid` names; `files` counts the
+   *  pre-images kept for Write/Edit in that turn (shell edits are not tracked). */
+  | { type: "checkpoints"; requestId?: string; sessionId: string; turns: Array<{ turn: number; ts: string; prompt: string; userUuid: string | null; files: number }> }
+  /** yodex/2 (capability "checkpoints"): a rewind happened. Watchers of the session also get
+   *  the persisted `rewind` event frame; the conversation now ends at `toUuid`. */
+  | { type: "rewound"; requestId?: string; sessionId: string; turn: number; toUuid: string | null; restored: string[]; deleted: string[]; failed: Array<{ path: string; error: string }> }
   /** yodex/2 (capability "mail"): a peer message that reached an idle session the client is
    *  watching. The model sees it at the session's next run; a run in progress sees its mail
    *  itself, as a `user` event authored by the peer. */
