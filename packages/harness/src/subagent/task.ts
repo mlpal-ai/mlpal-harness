@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { HookEngine } from "../hooks/engine";
+import type { EngineEvent, SubagentEvent } from "@mlpal/harness-protocol";
 import { frameSubagentResult } from "../input/sanitize";
-import { defineTool, type Tool } from "../tools/types";
+import { defineTool, type Tool, type ToolContext } from "../tools/types";
 import type { AgentDef } from "./agents";
 import { type BackgroundAgents, backgroundAgents } from "./background";
 
@@ -24,6 +25,8 @@ export type SubagentRun = (
     callerSessionId?: string;
     /** The caller's run (turn) at the time of the Task call (telemetry v1 `parent_run`). */
     callerRunId?: string;
+    /** The caller's `Agent` tool_use id: the child's session record names it as its parent step. */
+    callerToolUseId?: string;
     /** Pin the child to a specific gateway-served model or tier alias (cheap|mid|frontier|max).
      *  The gateway is a multi-model surface: consulting a different provider's model is a
      *  delegation, never a hand-rolled API call. */
@@ -36,6 +39,9 @@ export type SubagentRun = (
     /** The child's session id, reported the moment it's minted (before any model call) —
      *  lets a live viewer (agents panel peek) start tailing the transcript immediately. */
     onSessionId?: (sessionId: string) => void;
+    /** Every event of the child's own stream, as it happens — forwarded onto the parent's
+     *  stream tagged with the child's session id. */
+    onEvent?: (event: EngineEvent) => void;
     /** Restrict the child to read-only tools (safe parallel fan-out; also implied by
      *  background). The host applies the same registry filter it uses for background. */
     readOnly?: boolean;
@@ -47,6 +53,42 @@ export type SubagentRun = (
   },
   signal?: AbortSignal,
 ) => Promise<{ text: string; sessionId: string }>;
+
+/**
+ * The child's lifecycle on the parent's stream, through the tool context's `emit`. `start` waits
+ * for the child's session id (the host reports it the moment it is minted); `end` fires once,
+ * with the outcome, even for a child killed mid-run. Nothing is emitted when the host carries no
+ * stream (`emit` absent).
+ */
+function lifecycle(ctx: ToolContext, description: string, background: boolean) {
+  let sid: string | undefined;
+  let model: string | undefined;
+  let ended = false;
+  const base = (): Omit<SubagentEvent, "kind" | "ts"> => ({ type: "subagent", toolUseId: ctx.toolUseId ?? "", childSessionId: sid ?? "", description, ...(model ? { model } : {}), background });
+  const ts = () => new Date().toISOString();
+  return {
+    started(id: string) {
+      sid = id;
+      ctx.emit?.({ ...base(), kind: "start", ts: ts() });
+    },
+    progress(status: string) {
+      if (sid) ctx.emit?.({ ...base(), kind: "progress", status, ts: ts() });
+    },
+    model(m?: string) {
+      if (m) model = m;
+    },
+    event(event: EngineEvent) {
+      if (sid) ctx.emit?.({ type: "subagent_event", childSessionId: sid, event });
+    },
+    ended(outcome: NonNullable<SubagentEvent["outcome"]>, fallbackSid?: string) {
+      if (ended) return;
+      ended = true;
+      sid ??= fallbackSid;
+      if (!sid) return;
+      ctx.emit?.({ ...base(), kind: "end", outcome, ts: ts() });
+    },
+  };
+}
 
 export function createTaskTool(
   run: SubagentRun,
@@ -102,34 +144,47 @@ export function createTaskTool(
         const names = agents.map((a) => a.name).join(", ") || "(none)";
         return { content: `Unknown agent "${input.agent}". Available: ${names}`, isError: true };
       }
+      const lc = lifecycle(ctx, input.description, Boolean(input.run_in_background));
       if (input.run_in_background) {
         // Detached: use the task's OWN signal (not ctx.signal, which dies when this turn ends), so
         // the child outlives the turn and reports back later. Its mid-run statuses flow back as
         // throttled progress events keyed to this task id.
         if (opts.hooks?.has("SubagentStart")) await opts.hooks.run({ event: "SubagentStart", description: input.description, ...(input.agent ? { agentType: input.agent } : {}), background: true }, { sessionId: ctx.sessionId ?? "", agentId: "", cwd: ctx.cwd, ...(ctx.runId ? { runId: ctx.runId } : {}) });
-        const task = background.start(input.description, (signal) =>
-          run(
-            {
-              description: input.description,
-              callerSessionId: ctx.sessionId,
-              callerRunId: ctx.runId,
-              prompt: input.prompt,
-              agent: input.agent,
-              model: input.model,
-              background: true,
-              isolation: input.isolation,
-              onProgress: (status) => background.reportProgress(task.id, status),
-              onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
-              onSessionId: (sid) => {
-                task.sessionId = sid;
+        const task = background.start(
+          input.description,
+          (signal) =>
+            run(
+              {
+                description: input.description,
+                callerSessionId: ctx.sessionId,
+                callerRunId: ctx.runId,
+                callerToolUseId: ctx.toolUseId,
+                prompt: input.prompt,
+                agent: input.agent,
+                model: input.model,
+                background: true,
+                isolation: input.isolation,
+                onProgress: (status) => {
+                  background.reportProgress(task.id, status);
+                  lc.progress(status);
+                },
+                onUsage: (tok, model) => {
+                  background.reportUsage(task.id, tok, model);
+                  lc.model(model);
+                },
+                onSessionId: (sid) => {
+                  task.sessionId = sid;
+                  lc.started(sid);
+                },
+                onEvent: (ev) => lc.event(ev),
+                drainSteering: () => task.steerQueue.splice(0),
               },
-              drainSteering: () => task.steerQueue.splice(0),
-            },
-            signal,
-          ).then((r) => {
-            task.sessionId ??= r.sessionId;
-            return r.text;
-          }),
+              signal,
+            ).then((r) => {
+              task.sessionId ??= r.sessionId;
+              return r.text;
+            }),
+          (t) => lc.ended(t.status === "done" ? "success" : t.status === "cancelled" ? "cancelled" : "error", t.sessionId),
         );
         task.agent = input.agent;
         task.prompt = input.prompt;
@@ -152,20 +207,27 @@ export function createTaskTool(
           ? AbortSignal.any([ctx.signal, task.abort.signal])
           : (ctx.signal ?? task.abort.signal);
       try {
-        const { text } = await run(
+        const { text, sessionId } = await run(
           {
             description: input.description,
             callerSessionId: ctx.sessionId,
             callerRunId: ctx.runId,
+            callerToolUseId: ctx.toolUseId,
             prompt: input.prompt,
             agent: input.agent,
             model: input.model,
             readOnly: input.read_only,
             isolation: input.isolation,
-            onUsage: (tok, model) => background.reportUsage(task.id, tok, model),
+            onProgress: (status) => lc.progress(status),
+            onUsage: (tok, model) => {
+              background.reportUsage(task.id, tok, model);
+              lc.model(model);
+            },
             onSessionId: (sid) => {
               task.sessionId = sid;
+              lc.started(sid);
             },
+            onEvent: (ev) => lc.event(ev),
             drainSteering: () => task.steerQueue.splice(0),
           },
           signal,
@@ -175,6 +237,7 @@ export function createTaskTool(
           task.result = text;
           task.endedAt = Date.now();
         }
+        lc.ended(task.status === "cancelled" ? "cancelled" : "success", sessionId);
         return { content: frameSubagentResult(input.description, text) };
       } catch (e) {
         if (task.status === "running") {
@@ -182,6 +245,7 @@ export function createTaskTool(
           task.error = e instanceof Error ? e.message : String(e);
           task.endedAt = Date.now();
         }
+        lc.ended(task.status === "cancelled" ? "cancelled" : "error");
         throw e;
       }
     },

@@ -34,6 +34,9 @@ export interface SessionRecord {
    *  Lets peers distinguish a genuinely live session from the ghost record a killed
    *  process leaves behind (freshness alone has a 120s blind spot). */
   pid?: number;
+  /** A sub-agent: the session and the `Agent` tool_use that spawned it. Absent on a top-level
+   *  session. Listings hide children unless asked. */
+  parent?: { sessionId: string; toolUseId: string };
   head: string | null;
   model: string;
   createdAt: string;

@@ -37,6 +37,9 @@ export interface SessionSummary {
   pendingQuestion?: boolean;
   /** yodex/2: a run is streaming on this session right now. */
   live?: boolean;
+  /** yodex/2 (capability "subagents"): this session is a sub-agent spawned by `sessionId`'s
+   *  `Agent` call `toolUseId`. Listed only when `list_sessions.includeChildren` is set. */
+  parent?: { sessionId: string; toolUseId: string };
 }
 
 /** What a server can do beyond yodex/1. Absent from `ready` on a yodex/1 server. */
@@ -47,7 +50,8 @@ export type ServerCapability =
   | "sessions_v2" // the optional SessionSummary fields; list_sessions covers the whole workspace
   | "hop_per_run" // run.hop may name a HOP other than the server's own
   | "commands" // list_commands
-  | "files"; // list_files
+  | "files" // list_files
+  | "subagents"; // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
 
 export interface PendingApproval {
   command: string;
@@ -72,7 +76,8 @@ export type ClientMessage =
     }
   | { type: "send"; sessionId: string; text: string }
   | { type: "interrupt" }
-  | { type: "list_sessions"; requestId?: string }
+  /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents"). */
+  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean }
   | { type: "list_models"; requestId?: string }
   | { type: "list_skills"; requestId?: string }
   | { type: "load_session"; requestId?: string; sessionId: string }
@@ -80,11 +85,16 @@ export type ClientMessage =
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
   | { type: "question_response"; id: string; outcome: AskOutcome }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
-  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string };
+  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string }
+  /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
+   *  reports `cancelled`. The parent run continues. */
+  | { type: "stop_subagent"; childSessionId: string };
 
 export type ServerMessage =
   | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string }
-  | { type: "event"; sessionId: string; event: EngineEvent }
+  /** `childSessionId` (capability "subagents"): `event` belongs to that sub-agent of `sessionId`
+   *  and rides the parent's connection while the child runs. */
+  | { type: "event"; sessionId: string; childSessionId?: string; event: EngineEvent }
   | {
       type: "permission_request";
       id: string;

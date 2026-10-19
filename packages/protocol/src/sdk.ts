@@ -80,6 +80,40 @@ export interface ErrorEvent {
   message: string;
   ts: string;
 }
+/**
+ * A sub-agent's lifecycle on its PARENT's stream (yodex/2, capability "subagents"). `start` and
+ * `end` are persisted in the parent's conversation so a replay can find the child by
+ * `childSessionId` and load its own session; `progress` is ephemeral. `toolUseId` is the parent's
+ * `Agent` tool_use that spawned the child, so a frontend can nest the child under that step.
+ */
+export interface SubagentEvent {
+  type: "subagent";
+  uuid?: string;
+  kind: "start" | "progress" | "end";
+  toolUseId: string;
+  childSessionId: string;
+  /** The Agent call's 3-5 word label. */
+  description: string;
+  /** The model the child was routed to, once known. */
+  model?: string;
+  /** Detached (`run_in_background`): `end` may arrive after the parent's run, at the start of
+   *  its next run or, on a server, as an idle event. */
+  background: boolean;
+  /** `progress`: one line of what the child is doing right now. */
+  status?: string;
+  /** `end`: how the child finished. */
+  outcome?: "success" | "error" | "cancelled";
+  ts: string;
+}
+/**
+ * One of a child's own events, carried on the parent's stream while the child runs. Ephemeral:
+ * the child persists it in its own session; the parent's transcript keeps only `subagent`.
+ */
+export interface SubagentStreamEvent {
+  type: "subagent_event";
+  childSessionId: string;
+  event: EngineEvent;
+}
 
 /**
  * A persisted compaction boundary. Everything in the session up to this entry's parent
@@ -117,7 +151,8 @@ export type SDKMessage =
   | ToolResultEvent
   | ResultEvent
   | ErrorEvent
-  | CompactEvent;
+  | CompactEvent
+  | SubagentEvent;
 
 export interface TextDelta {
   type: "text_delta";
@@ -127,6 +162,8 @@ export interface ThinkingDelta {
   type: "thinking_delta";
   text: string;
 }
+/** `id` is the tool_use id: the same value the later `tool_result.toolUseId` carries, so a
+ *  frontend can time a step from this delta to its result. */
 export interface ToolUseStart {
   type: "tool_use_start";
   id: string;
@@ -145,7 +182,7 @@ export interface ResetDelta {
 /** Ephemeral streaming — rendered live, never persisted. */
 export type StreamDelta = TextDelta | ThinkingDelta | ToolUseStart | ResetDelta;
 
-export type EngineEvent = SDKMessage | StreamDelta;
+export type EngineEvent = SDKMessage | StreamDelta | SubagentStreamEvent;
 
 const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "system",
@@ -154,11 +191,14 @@ const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "tool_result",
   "compact",
   "rewind",
+  "subagent",
 ]);
 
 /** Runtime category: should this event be written to the conversation store?
- *  Note: `result` is a turn summary (an SDKMessage) that is NOT persisted. */
+ *  Note: `result` is a turn summary (an SDKMessage) that is NOT persisted, and a `subagent`
+ *  progress line is not either. */
 export function isPersisted(e: EngineEvent): boolean {
+  if (e.type === "subagent") return e.kind !== "progress";
   return PERSISTED_TYPES.has(e.type);
 }
 

@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { ToolResultBlocks } from "@mlpal/harness-protocol";
+import type { SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -21,6 +21,12 @@ export interface ToolContext {
   /** How command-running tools spawn: the execution sandbox (OS confinement + scrubbed env).
    *  Absent = plain spawn with the agent's own environment. */
   exec?: ExecPolicy;
+  /** The tool_use id of this call, for a tool that spawns work the stream should attribute to
+   *  this step (the Agent tool stamps it on its sub-agent events). */
+  toolUseId?: string;
+  /** Raise an event on the calling session's stream while this call runs (a sub-agent's
+   *  lifecycle, a child's forwarded events). Absent when the host has no stream to carry it. */
+  emit?: (e: SubagentEvent | SubagentStreamEvent) => void;
 }
 
 /** What a command-running tool consults before it spawns. Implemented by the sandbox. */

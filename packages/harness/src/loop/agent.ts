@@ -7,6 +7,7 @@ import {
   HUMAN,
   SYSTEM,
   type EngineEvent,
+  isPersisted,
   type Message,
   type ToolResultBlock,
   type ToolResultBlocks,
@@ -17,6 +18,7 @@ import {
 } from "@mlpal/harness-protocol";
 import { maybeCompact, renderTranscript } from "../context/compaction";
 import { type EventInbox, renderEvents, waitForEvent } from "../events/inbox";
+import { type SessionEventBus, type SideEvent, SideQueue } from "../events/session-bus";
 import type { HookEngine } from "../hooks/engine";
 import type { HookContext, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
@@ -63,6 +65,13 @@ export interface AgentConfig {
   stamp?: StampConfig;
   /** telemetry v1: for a subagent, the parent's run (turn) that spawned it. */
   parentRunId?: string;
+  /** A sub-agent: the session and the `Agent` tool_use that spawned it; written to the session
+   *  record so listings can hide or nest it. */
+  parent?: { sessionId: string; toolUseId: string };
+  /** Routes side events (a sub-agent's lifecycle, a child's forwarded events) to this session
+   *  whether or not its loop is running. Without it, side events raised while a tool runs still
+   *  reach the stream; those raised after the run (a background child's end) are dropped. */
+  events?: SessionEventBus;
   cwd: string;
   /** Allowed filesystem roots for path-based tools. Defaults to [cwd]; --add-dir extends it. */
   roots?: string[];
@@ -334,6 +343,9 @@ export class AgentSession {
   /** SessionStart fires once per session instance (not per turn). */
   private sessionStartFired = false;
 
+  /** Side events raised while this run's tools execute, yielded on the stream as they arrive. */
+  private readonly side = new SideQueue();
+
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
     this.maxTurns = cfg.maxTurns ?? 50;
@@ -370,6 +382,7 @@ export class AgentSession {
         head: null,
         model: cfg.model,
         ...(cfg.stamp?.hop ? { hop: cfg.stamp.hop } : {}),
+        ...(cfg.parent ? { parent: cfg.parent } : {}),
         createdAt: ts,
         updatedAt: ts,
       });
@@ -382,11 +395,34 @@ export class AgentSession {
     return this.cfg.store;
   }
 
+  /** A tool's side event: through the bus when the host has one (so it reaches this session
+   *  even after the run), else straight onto this run's queue. */
+  private emitSide(e: SideEvent): void {
+    if (this.cfg.events) this.cfg.events.emit(this.cfg.sessionId, e);
+    else this.side.push(e);
+  }
+
+  /** Yield side events on the stream; the persisted ones (a sub-agent's start and end) join the
+   *  conversation's parent chain and carry their uuid. Returns the new chain head. */
+  private async *flushSide(events: Iterable<SideEvent>, parent: string | null): AsyncGenerator<EngineEvent, string | null, void> {
+    for (const e of events) {
+      if (e.type === "subagent" && isPersisted(e)) {
+        parent = (await this.store.conversation.append(this.cfg.sessionId, e, parent)).uuid;
+        yield { ...e, uuid: parent };
+      } else {
+        yield e;
+      }
+    }
+    return parent;
+  }
+
   /** Run one turn to completion, yielding the live event stream. */
   async *run(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
     await this.init();
     const { cfg } = this;
     const author = input.author ?? HUMAN;
+    // Events for this session raised through the bus during the run land on this run's queue.
+    const unsubscribe = cfg.events?.subscribe(cfg.sessionId, (e) => this.side.push(e));
     let parent = await this.store.conversation.head(cfg.sessionId);
     const isNewSession = parent === null;
 
@@ -933,6 +969,7 @@ export class AgentSession {
           outputTokens: totalUsage.output_tokens,
         });
         outcome = "success";
+        parent = yield* this.flushSide(this.side.drain(), parent);
         yield this.result("success", turns, totalUsage);
         break;
       }
@@ -946,10 +983,14 @@ export class AgentSession {
         if (!tool) return false;
         return tool.isCallReadOnly?.(tu.input) ?? tool.readOnly;
       });
-      const trEvts: ToolResultEvent[] =
+      const work: Promise<ToolResultEvent[]> =
         allReadOnly && toolUses.length > 1
-          ? await Promise.all(toolUses.map((tu) => this.executeTool(tu, author, log)))
-          : await serial(toolUses, (tu) => this.executeTool(tu, author, log));
+          ? Promise.all(toolUses.map((tu) => this.executeTool(tu, author, log)))
+          : serial(toolUses, (tu) => this.executeTool(tu, author, log));
+      // A sub-agent's lifecycle and its forwarded events arrive while the Agent tool blocks;
+      // they go out as they happen, not when the tool returns.
+      for await (const side of this.side.until(work)) parent = yield* this.flushSide([side], parent);
+      const trEvts = await work;
 
       // Verification signals for the completion self-check and the anti-churn breaker: count
       // successful edits (total and per-file) and note whether a real check command ran.
@@ -1079,6 +1120,7 @@ export class AgentSession {
         throw e;
       }
     } finally {
+      unsubscribe?.();
       // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
       // Previously only the success branch reset status/head and answered owed handoffs,
       // so a cancelled or errored run left the session advertised "active" forever (a
@@ -1413,6 +1455,8 @@ export class AgentSession {
           sessionId: cfg.sessionId,
           ...(this.currentRun ? { runId: this.currentRun } : {}),
           exec: cfg.exec,
+          toolUseId: tu.id,
+          emit: (e) => this.emitSide(e),
         }),
         cfg.signal,
       );

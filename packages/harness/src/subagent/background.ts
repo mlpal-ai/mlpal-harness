@@ -87,31 +87,47 @@ export class BackgroundAgents {
     return task;
   }
 
-  /** Start a detached child. `runner` receives an abort signal wired to this agent's Kill. */
-  start(description: string, runner: (signal: AbortSignal) => Promise<string>): BgAgentTask {
+  /** Start a detached child. `runner` receives an abort signal wired to this agent's Kill.
+   *  `onEnd` fires once when the runner settles, whatever the outcome (a kill included), so the
+   *  parent's stream can carry the child's `end` even after the parent's run is over. */
+  start(description: string, runner: (signal: AbortSignal) => Promise<string>, onEnd?: (task: BgAgentTask) => void): BgAgentTask {
     const id = `agent${++this.seq}`;
     const abort = new AbortController();
     const task: BgAgentTask = { id, description, status: "running", startedAt: Date.now(), reported: false, abort, outputTokens: 0, steerQueue: [] };
     this.tasks.set(id, task);
     // Detached on purpose — not awaited. The result/error lands on the record for drain/AgentOutput.
     // Guard each transition on status === "running" so a kill (which sets "cancelled" up front) wins.
-    void runner(abort.signal).then(
-      (text) => {
-        if (task.status !== "running") return;
-        task.status = "done";
-        task.result = text;
-        task.endedAt = Date.now();
-        this.push(task);
-      },
-      (e) => {
-        if (task.status !== "running") return;
-        task.status = "failed";
-        task.error = e instanceof Error ? e.message : String(e);
-        task.endedAt = Date.now();
-        this.push(task);
-      },
-    );
+    void runner(abort.signal)
+      .then(
+        (text) => {
+          if (task.status !== "running") return;
+          task.status = "done";
+          task.result = text;
+          task.endedAt = Date.now();
+          this.push(task);
+        },
+        (e) => {
+          if (task.status !== "running") return;
+          task.status = "failed";
+          task.error = e instanceof Error ? e.message : String(e);
+          task.endedAt = Date.now();
+          this.push(task);
+        },
+      )
+      .finally(() => onEnd?.(task));
     return task;
+  }
+
+  /** The task that runs `sessionId` as its child, if any. */
+  bySession(sessionId: string): BgAgentTask | undefined {
+    for (const t of this.tasks.values()) if (t.sessionId === sessionId) return t;
+    return undefined;
+  }
+
+  /** Cancel the running child whose session is `sessionId`. False when none is running. */
+  killBySession(sessionId: string): boolean {
+    const t = this.bySession(sessionId);
+    return t ? this.kill(t.id) : false;
   }
 
   /** Per-task last-emit clock — a chatty child can't flood the inbox. */

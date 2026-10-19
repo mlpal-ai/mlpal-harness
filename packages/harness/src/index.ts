@@ -59,6 +59,7 @@ export {
   type InboxSnapshot,
 } from "./events/inbox";
 export { persistInbox, restoreInbox, type LiveWorkRef } from "./events/persist";
+export { SessionEventBus, SideQueue, type SideEvent } from "./events/session-bus";
 export * from "./verifiers/index";
 export * from "./verify/detect";
 export * from "./catalog/catalog";
