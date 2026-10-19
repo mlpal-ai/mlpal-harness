@@ -1,5 +1,6 @@
 import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
+import type { PeerMessage } from "./control.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, SDKMessage } from "./sdk.js";
 import type { Usage } from "./usage.js";
@@ -56,6 +57,18 @@ export type ServerCapability =
   | "mail" // `mail` frames for an idle session's peer messages; `send` answers with send_result
   | "checkpoints"; // `checkpoints` listing and `rewind` to before a message (files + conversation)
 
+/** One HOP a serve can run (capability "hop_per_run"). `current` is the serve's own, in-process;
+ *  `warm` means a host for it is already up, so a run on it starts without the spawn delay. */
+export interface HopInfo {
+  name: string;
+  version: string;
+  description?: string;
+  /** builtin, or the directory it was installed in (project/user). */
+  source: "builtin" | "project" | "user";
+  current: boolean;
+  warm: boolean;
+}
+
 export interface PendingApproval {
   command: string;
   reason: string;
@@ -79,7 +92,8 @@ export type ClientMessage =
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
-  | { type: "interrupt" }
+  /** Abort the run(s) on this connection; with `sessionId` (yodex/2) only that session's. */
+  | { type: "interrupt"; sessionId?: string }
   /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents"). */
   | { type: "list_sessions"; requestId?: string; includeChildren?: boolean }
   | { type: "list_models"; requestId?: string }
@@ -98,7 +112,15 @@ export type ClientMessage =
   /** yodex/2 (capability "checkpoints"): restore files to before the human turn `beforeUuid`
    *  (a `user` event's uuid from the stream or session_history) and drop it and everything
    *  after from the conversation; the store keeps the history. Refused while a run is live. */
-  | { type: "rewind"; requestId?: string; sessionId: string; beforeUuid: string };
+  | { type: "rewind"; requestId?: string; sessionId: string; beforeUuid: string }
+  /** yodex/2 (capability "hop_per_run"): the HOPs this serve can run, for a HOP picker. */
+  | { type: "list_hops"; requestId?: string }
+  /** yodex/2: receive a session's idle events (a background child's end, a rewind) on this
+   *  connection without loading its history. A run or load_session watches implicitly. */
+  | { type: "watch"; sessionId: string }
+  /** Internal to a front serve and its per-HOP children: a peer message for an idle session,
+   *  delivered by the process that owns the session's inbox. Not for clients. */
+  | { type: "deliver_mail"; sessionId: string; message: PeerMessage };
 
 export type ServerMessage =
   | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string }
@@ -142,6 +164,8 @@ export type ServerMessage =
   /** yodex/2 (capability "checkpoints"): a rewind happened. Watchers of the session also get
    *  the persisted `rewind` event frame; the conversation now ends at `toUuid`. */
   | { type: "rewound"; requestId?: string; sessionId: string; turn: number; toUuid: string | null; restored: string[]; deleted: string[]; failed: Array<{ path: string; error: string }> }
+  /** yodex/2 (capability "hop_per_run"): the HOPs this serve can run. */
+  | { type: "hops"; requestId?: string; hops: HopInfo[] }
   /** yodex/2 (capability "mail"): a peer message that reached an idle session the client is
    *  watching. The model sees it at the session's next run; a run in progress sees its mail
    *  itself, as a `user` event authored by the peer. */
