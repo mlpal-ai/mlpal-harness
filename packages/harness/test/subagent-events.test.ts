@@ -7,6 +7,7 @@ import { SessionEventBus, SideQueue } from "../src/events/session-bus";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { AgentSession } from "../src/loop/agent";
 import { loadMessages } from "../src/loop/messages";
+import { FunctionHook, HookEngine } from "../src/hooks/engine";
 import { createPolicy } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
 import { BackgroundAgents } from "../src/subagent/background";
@@ -341,5 +342,54 @@ describe("SideQueue.until", () => {
     const seen: unknown[] = [];
     for await (const e of q.until(work)) seen.push(e);
     expect(seen).toEqual([]);
+  });
+});
+
+describe("mail that lands after a sub-agent's last mailbox read", () => {
+  test("goes to the delegating session's mailbox, marked, instead of waiting in a mailbox nobody reads again", async () => {
+    const store = new LocalStore(root);
+    // A Stop hook fires after the finish-boundary mailbox drain: a message posted from it lands in
+    // exactly the window a server's `send` can hit while the loop shuts down.
+    const hooks = new HookEngine();
+    hooks.register(
+      new FunctionHook("late-mail", ["Stop"], async () => {
+        await store.mailbox.post("child-late", { type: "peer_message", from: { type: "agent", id: "web", displayName: "web" }, toSession: "child-late", text: "one more thing" });
+        return {};
+      }),
+    );
+    const child = new AgentSession({
+      agentId: "a",
+      sessionId: "child-late",
+      workspace: "w",
+      cwd: root,
+      model: "test",
+      systemPrompt: "t",
+      tools: new ToolRegistry(),
+      store,
+      model_client: new ScriptedModel([textDone("done")]),
+      canUseTool: createPolicy({ mode: "autopilot" }),
+      parent: { sessionId: "parent-of-late", toolUseId: "tu_1" },
+      hooks,
+    });
+    await collect(child);
+    expect(await store.mailbox.drain("child-late")).toEqual([]);
+    const forwarded = await store.mailbox.drain("parent-of-late");
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]).toMatchObject({ toSession: "parent-of-late", from: { id: "web" } });
+    expect(forwarded[0]!.text).toBe("[sent to sub-agent child-la after it finished] one more thing");
+  });
+
+  test("a top-level session keeps its late mail in its own mailbox for the next run", async () => {
+    const store = new LocalStore(root);
+    const hooks = new HookEngine();
+    hooks.register(
+      new FunctionHook("late-mail", ["Stop"], async () => {
+        await store.mailbox.post("top-late", { type: "peer_message", from: { type: "agent", id: "web", displayName: "web" }, toSession: "top-late", text: "later" });
+        return {};
+      }),
+    );
+    const top = new AgentSession({ agentId: "a", sessionId: "top-late", workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools: new ToolRegistry(), store, model_client: new ScriptedModel([textDone("done")]), canUseTool: createPolicy({ mode: "autopilot" }), hooks });
+    await collect(top);
+    expect((await store.mailbox.drain("top-late")).map((m) => m.text)).toEqual(["later"]);
   });
 });

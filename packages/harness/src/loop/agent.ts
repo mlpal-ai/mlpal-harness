@@ -1140,6 +1140,18 @@ export class AgentSession {
       // idle listeners, in the order they arrived.
       unsubscribe?.();
       if (cfg.events) for (const e of this.side.drain()) cfg.events.emit(cfg.sessionId, e);
+      // A peer message that arrived after this run's last mailbox read (the window a server's
+      // `send` can hit while the loop shuts down) stays in a top-level session's mailbox for its
+      // next run or its idle poller. A sub-agent never runs again, so its late mail goes to the
+      // session that delegated it, marked as such, instead of waiting forever.
+      if (cfg.parent && cfg.enablePeerMessages !== false) {
+        const late = await this.store.mailbox.drain(cfg.sessionId).catch(() => []);
+        for (const pm of late) {
+          await this.store.mailbox
+            .post(cfg.parent.sessionId, { ...pm, toSession: cfg.parent.sessionId, text: `[sent to sub-agent ${cfg.sessionId.slice(0, 8)} after it finished] ${pm.text}` })
+            .catch(() => undefined);
+        }
+      }
 
       // HOP telemetry Capture (D11.2): emit one content-free run-outcome at the finish point.
       // `outcome` is null only when the generator was abandoned before any terminal result — no
