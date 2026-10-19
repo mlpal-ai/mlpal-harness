@@ -123,8 +123,8 @@ function wrapArgv(exec: ExecPolicy | undefined, argv: string[]): string[] {
 export class BackgroundTasks {
   private readonly tasks = new Map<string, BgTask>();
   private seq = 0;
-  private inbox: EventInbox | null = null;
-  private inboxSessionId: string | undefined;
+  /** Push targets by owning session: a task's events go to its session's inbox, if attached. */
+  private readonly inboxes = new Map<string, EventInbox>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /** When set, monitors run DURABLE: detached process group + file-backed output, so they
    *  survive a CLI exit and can be re-attached on resume. Unset (tests, embedded) => pipe mode. */
@@ -136,22 +136,23 @@ export class BackgroundTasks {
   }
 
   /**
-   * Route events for tasks owned by `sessionId` to `inbox` (push). Starts the stall sweep —
-   * pull mode detects stalls lazily at drain time, but a push consumer may never poll.
+   * Route events for tasks owned by `sessionId` to `inbox` (push); any number of sessions may
+   * be attached at once (a server runs many). Starts the stall sweep — pull mode detects stalls
+   * lazily at drain time, but a push consumer may never poll.
    */
   attachInbox(inbox: EventInbox, sessionId: string): void {
-    this.inbox = inbox;
-    this.inboxSessionId = sessionId;
+    this.inboxes.set(sessionId, inbox);
     if (!this.sweepTimer) {
       this.sweepTimer = setInterval(() => this.sweep(), SWEEP_MS);
       this.sweepTimer.unref?.();
     }
   }
 
-  detachInbox(): void {
-    this.inbox = null;
-    this.inboxSessionId = undefined;
-    if (this.sweepTimer) {
+  /** Detach one session's inbox, or every inbox when no session is named. */
+  detachInbox(sessionId?: string): void {
+    if (sessionId === undefined) this.inboxes.clear();
+    else this.inboxes.delete(sessionId);
+    if (this.inboxes.size === 0 && this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
@@ -409,7 +410,7 @@ export class BackgroundTasks {
     t.progressTimer = setTimeout(() => {
       t.progressTimer = null;
       if (t.exitCode !== null || !this.routes(t)) return; // exit event carries the final tail
-      this.inbox!.emit({
+      this.inboxFor(t).emit({
         id: `${t.id}#p${++t.progressSeq!}`,
         source: t.id,
         sourceType: "monitor",
@@ -426,7 +427,7 @@ export class BackgroundTasks {
   private pushExit(t: BgTask): void {
     if (!this.routes(t) || t.exitReported) return;
     t.exitReported = true;
-    this.inbox!.emit({
+    this.inboxFor(t).emit({
       id: `${t.id}#exit`,
       source: t.id,
       sourceType: t.monitor ? "monitor" : "shell",
@@ -451,7 +452,7 @@ export class BackgroundTasks {
         if (t.timeoutAt !== undefined && nowMs >= t.timeoutAt && !t.exitReported) {
           t.exitReported = true; // claim before kill so the close handler doesn't double-report
           if (this.routes(t)) {
-            this.inbox!.emit({
+            this.inboxFor(t).emit({
               id: `${t.id}#timeout`,
               source: t.id,
               sourceType: "monitor",
@@ -470,7 +471,7 @@ export class BackgroundTasks {
       if (!this.routes(t) || t.stallReported) continue;
       if (nowMs - t.lastOutputAt >= STALL_MS && looksLikePrompt(t.output.slice(-STALL_TAIL))) {
         t.stallReported = true;
-        this.inbox!.emit({
+        this.inboxFor(t).emit({
           id: `${t.id}#stall`,
           source: t.id,
           sourceType: "shell",
@@ -484,7 +485,12 @@ export class BackgroundTasks {
   }
 
   private routes(t: BgTask): boolean {
-    return this.inbox !== null && t.sessionId !== undefined && t.sessionId === this.inboxSessionId;
+    return t.sessionId !== undefined && this.inboxes.has(t.sessionId);
+  }
+
+  /** The inbox of the task's owning session; call only after `routes(t)`. */
+  private inboxFor(t: BgTask): EventInbox {
+    return this.inboxes.get(t.sessionId!)!;
   }
 
   get(id: string): BgTask | undefined {

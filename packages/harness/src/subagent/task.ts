@@ -184,7 +184,7 @@ export function createTaskTool(
               task.sessionId ??= r.sessionId;
               return r.text;
             }),
-          (t) => lc.ended(t.status === "done" ? "success" : t.status === "cancelled" ? "cancelled" : "error", t.sessionId),
+          { onEnd: (t) => lc.ended(t.status === "done" ? "success" : t.status === "cancelled" ? "cancelled" : "error", t.sessionId), ownerSessionId: ctx.sessionId },
         );
         task.agent = input.agent;
         task.prompt = input.prompt;
@@ -199,7 +199,7 @@ export function createTaskTool(
       // every running sub-agent — peek/steer/kill work the same; only delivery differs
       // (the result returns inline here instead of via the inbox).
       if (opts.hooks?.has("SubagentStart")) await opts.hooks.run({ event: "SubagentStart", description: input.description, ...(input.agent ? { agentType: input.agent } : {}), background: false }, { sessionId: ctx.sessionId ?? "", agentId: "", cwd: ctx.cwd, ...(ctx.runId ? { runId: ctx.runId } : {}) });
-      const task = background.track(input.description);
+      const task = background.track(input.description, ctx.sessionId);
       task.agent = input.agent;
       task.prompt = input.prompt;
       const signal =

@@ -46,31 +46,47 @@ export interface BgAgentTask {
    *  in the panel like any worker but are NOT "background" work: excluded from bg counts,
    *  born `reported` (inline delivery). */
   foreground?: boolean;
+  /** The session whose Agent call started this child: its completion goes to that session's
+   *  inbox, and only that session's notifications list it. */
+  ownerSessionId?: string;
 }
 
 export class BackgroundAgents {
   private readonly tasks = new Map<string, BgAgentTask>();
   private seq = 0;
-  private inbox: EventInbox | null = null;
+  /** Push targets by owning session; `defaultInbox` takes tasks with no owner or no own inbox. */
+  private readonly inboxes = new Map<string, EventInbox>();
+  private defaultInbox: EventInbox | null = null;
 
   /** `progressMinMs` is injectable for tests; production uses the default. */
   constructor(private readonly progressMinMs = 2_000) {}
 
-  /** Push completions to `inbox` instead of the pull-based drainNotifications. The Task tool
-   *  only exists on the main loop (children can't recurse), so no per-session routing needed. */
-  attachInbox(inbox: EventInbox): void {
-    this.inbox = inbox;
+  /** Push completions to `inbox` instead of the pull-based drainNotifications: for the tasks
+   *  `sessionId` owns, or, with no session, for every task without an inbox of its own. A
+   *  server attaches one inbox per served session. */
+  attachInbox(inbox: EventInbox, sessionId?: string): void {
+    if (sessionId === undefined) this.defaultInbox = inbox;
+    else this.inboxes.set(sessionId, inbox);
   }
 
-  detachInbox(): void {
-    this.inbox = null;
+  detachInbox(sessionId?: string): void {
+    if (sessionId === undefined) {
+      this.defaultInbox = null;
+      this.inboxes.clear();
+    } else {
+      this.inboxes.delete(sessionId);
+    }
+  }
+
+  private inboxFor(t: BgAgentTask): EventInbox | null {
+    return (t.ownerSessionId !== undefined ? this.inboxes.get(t.ownerSessionId) : undefined) ?? this.defaultInbox;
   }
 
   /** Register a FOREGROUND (blocking/parallel) child so the agents panel can see, peek,
    *  steer, and kill it while it runs. Its result returns inline as the tool_result, so the
    *  record is born `reported` — the inbox/drain paths must never double-deliver it. The
    *  caller completes the record itself (guarding on status === "running" so kill wins). */
-  track(description: string): BgAgentTask {
+  track(description: string, ownerSessionId?: string): BgAgentTask {
     const id = `agent${++this.seq}`;
     const task: BgAgentTask = {
       id,
@@ -82,6 +98,7 @@ export class BackgroundAgents {
       outputTokens: 0,
       steerQueue: [],
       foreground: true,
+      ...(ownerSessionId !== undefined ? { ownerSessionId } : {}),
     };
     this.tasks.set(id, task);
     return task;
@@ -90,10 +107,10 @@ export class BackgroundAgents {
   /** Start a detached child. `runner` receives an abort signal wired to this agent's Kill.
    *  `onEnd` fires once when the runner settles, whatever the outcome (a kill included), so the
    *  parent's stream can carry the child's `end` even after the parent's run is over. */
-  start(description: string, runner: (signal: AbortSignal) => Promise<string>, onEnd?: (task: BgAgentTask) => void): BgAgentTask {
+  start(description: string, runner: (signal: AbortSignal) => Promise<string>, opts: { onEnd?: (task: BgAgentTask) => void; ownerSessionId?: string } = {}): BgAgentTask {
     const id = `agent${++this.seq}`;
     const abort = new AbortController();
-    const task: BgAgentTask = { id, description, status: "running", startedAt: Date.now(), reported: false, abort, outputTokens: 0, steerQueue: [] };
+    const task: BgAgentTask = { id, description, status: "running", startedAt: Date.now(), reported: false, abort, outputTokens: 0, steerQueue: [], ...(opts.ownerSessionId !== undefined ? { ownerSessionId: opts.ownerSessionId } : {}) };
     this.tasks.set(id, task);
     // Detached on purpose — not awaited. The result/error lands on the record for drain/AgentOutput.
     // Guard each transition on status === "running" so a kill (which sets "cancelled" up front) wins.
@@ -114,7 +131,7 @@ export class BackgroundAgents {
           this.push(task);
         },
       )
-      .finally(() => onEnd?.(task));
+      .finally(() => opts.onEnd?.(task));
     return task;
   }
 
@@ -155,11 +172,13 @@ export class BackgroundAgents {
    *  id per emission means inbox coalescing keeps only the newest pending snapshot. */
   reportProgress(id: string, status: string): void {
     const t = this.tasks.get(id);
-    if (!t || t.status !== "running" || !this.inbox) return;
+    if (!t || t.status !== "running") return;
+    const inbox = this.inboxFor(t);
+    if (!inbox) return;
     const now = Date.now();
     if (now - (this.lastProgressAt.get(id) ?? 0) < this.progressMinMs) return;
     this.lastProgressAt.set(id, now);
-    this.inbox.emit({
+    inbox.emit({
       id: `${id}#p${++this.progressSeq}`,
       source: id,
       sourceType: "agent",
@@ -173,9 +192,10 @@ export class BackgroundAgents {
   /** Push path: emit the terminal event and claim the report so drainNotifications skips it.
    *  A cancelled task is NOT pushed — the model initiated the kill, it already knows. */
   private push(t: BgAgentTask): void {
-    if (!this.inbox || t.reported) return;
+    const inbox = this.inboxFor(t);
+    if (!inbox || t.reported) return;
     t.reported = true;
-    this.inbox.emit({
+    inbox.emit({
       id: `${t.id}#end`,
       source: t.id,
       sourceType: "agent",
@@ -219,9 +239,10 @@ export class BackgroundAgents {
 
   /** One-shot notifications for tasks that ended and haven't been surfaced yet — injected into the
    *  main loop so the agent learns a background task it started finished, without polling. */
-  drainNotifications(): string[] {
+  drainNotifications(ownerSessionId?: string): string[] {
     const out: string[] = [];
     for (const t of this.tasks.values()) {
+      if (ownerSessionId !== undefined && t.ownerSessionId !== ownerSessionId) continue;
       if (t.status === "running" || t.reported) continue;
       t.reported = true;
       if (t.status === "done") {
