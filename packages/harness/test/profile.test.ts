@@ -904,3 +904,14 @@ tunable:
     expect(Object.keys(off.modules)).toEqual(["aws", "gcloud"]);
   });
 });
+
+describe("builtin HOPs pinned by version", () => {
+  test("coding@<its version> loads the builtin; another version is refused by name", () => {
+    const opts = { cwd: "/nonexistent-cwd", home: "/nonexistent-home" };
+    const coding = loadProfile("coding", opts);
+    expect(loadProfile(`coding@${coding.version}`, opts).name).toBe("coding");
+    expect(loadProfile(`reviewer@${loadProfile("reviewer", opts).version}`, opts).name).toBe("reviewer");
+    expect(() => loadProfile("coding@0.0.1", opts)).toThrow(/version .* in this build/);
+    expect(() => loadProfile("nope@1.0.0", opts)).toThrow(/unknown HOP/);
+  });
+});

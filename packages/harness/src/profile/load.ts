@@ -863,6 +863,16 @@ function resolveNamedHopDir(root: string, ref: string): string | null {
 function resolveProfile(ref: string, opts: LoadProfileOptions, depth: number, fromDir?: string): Profile {
   const builtins = builtinProfiles();
   if (builtins[ref]) return builtins[ref]!;
+  // A builtin pinned by version (`coding@1.1.0`, as a session record or a serve names it): the
+  // builtin when the version is the one compiled in, an error naming it otherwise.
+  if (!ref.includes("/") && ref.includes("@")) {
+    const { name, version } = parseHopRef(ref);
+    const builtin = builtins[name];
+    if (builtin) {
+      if (version && version !== builtin.version) throw new Error(`builtin HOP "${name}" is version ${builtin.version} in this build; "${ref}" is not available`);
+      return builtin;
+    }
+  }
   // Explicit or extends-relative path (contains a separator, or is absolute).
   if (ref.includes("/") || isAbsolute(ref)) {
     const base = isAbsolute(ref) ? ref : resolve(fromDir ?? opts.cwd, ref);
