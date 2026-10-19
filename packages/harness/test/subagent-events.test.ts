@@ -12,6 +12,8 @@ import { LocalStore } from "../src/store/local";
 import { BackgroundAgents } from "../src/subagent/background";
 import { createTaskTool, type SubagentRun } from "../src/subagent/task";
 import { ToolRegistry } from "../src/tools/registry";
+import { defineTool } from "../src/tools/types";
+import { z } from "zod";
 
 let root: string;
 beforeEach(async () => {
@@ -201,6 +203,68 @@ describe("sub-agent events on the parent stream", () => {
     const tool = createTaskTool(run, [], bg);
     const r = await tool.call({ description: "d", prompt: "p" }, { cwd: root });
     expect(String(r.content)).toContain("child result");
+  });
+});
+
+const WEB = { type: "agent" as const, id: "web", displayName: "web" };
+const userText = (e: EngineEvent): string => (e.type === "user" ? (typeof e.message.content === "string" ? e.message.content : JSON.stringify(e.message.content)) : "");
+
+describe("messaging a running sub-agent", () => {
+  test("a child session drains its own mailbox after a tool round and at the finish boundary; each message is a sender-authored turn on the parent's stream and in the child's history", async () => {
+    const store = new LocalStore(root);
+    const bg = new BackgroundAgents(0);
+    const childId = "child-mail";
+    const post = (text: string) => store.mailbox.post(childId, { type: "peer_message", from: WEB, toSession: childId, text });
+    // The child's one tool: while it works, a message lands in the child's mailbox.
+    const childTools = new ToolRegistry();
+    childTools.register(
+      defineTool({
+        name: "Work",
+        description: "test tool",
+        readOnly: true,
+        schema: z.object({}),
+        call: async () => {
+          await post("mid-run note");
+          return { content: "worked" };
+        },
+      }),
+    );
+    const seenByChild: string[] = [];
+    let turn = 0;
+    const childModel: ModelClient = {
+      async *stream(req): AsyncGenerator<never, ModelResult, void> {
+        seenByChild.push(JSON.stringify(req.messages));
+        turn++;
+        if (turn === 1) return { model: "test", message: { role: "assistant", content: [{ type: "tool_use", id: "tu_w", name: "Work", input: {} }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" };
+        // The child is about to finish: a second message arrives during this model call.
+        if (turn === 2) await post("late note");
+        return textDone(`child turn ${turn}`);
+      },
+    };
+    const run: SubagentRun = async (args, signal) => {
+      queueMicrotask(() => args.onSessionId?.(childId));
+      const child = new AgentSession({ agentId: "a", sessionId: childId, workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools: childTools, store, model_client: childModel, canUseTool: createPolicy({ mode: "autopilot" }), ...(signal ? { signal } : {}) });
+      let text = "";
+      for await (const ev of child.run({ text: args.prompt })) {
+        args.onEvent?.(ev);
+        if (ev.type === "assistant") text = JSON.stringify(ev.message.content);
+      }
+      return { text, sessionId: childId };
+    };
+    const tools = new ToolRegistry();
+    tools.register(createTaskTool(run, [], bg));
+    const events = await collect(session(store, new ScriptedModel([agentCall({ description: "fg child", prompt: "work" }), textDone("parent done")]), tools));
+
+    const forwarded = events.filter((e): e is SubagentStreamEvent => e.type === "subagent_event" && e.childSessionId === childId).map((e) => e.event);
+    const fromWeb = forwarded.filter((e) => e.type === "user" && e.author.type === "agent" && e.author.id === "web");
+    expect(fromWeb.map(userText)).toEqual(["mid-run note", "late note"]);
+    expect(fromWeb.every((e) => typeof (e as { uuid?: string }).uuid === "string")).toBe(true);
+    // The mid-run note reached the child's very next model call; the late one kept it going.
+    expect(seenByChild[1]).toContain("mid-run note");
+    expect(seenByChild[2]).toContain("late note");
+    const persisted = (await store.conversation.read(childId)).map((e) => e.payload).filter((p) => p.type === "user" && p.author.type === "agent");
+    expect(persisted.map((p) => userText(p as EngineEvent))).toEqual(["mid-run note", "late note"]);
+    expect(await store.mailbox.drain(childId)).toEqual([]);
   });
 });
 
