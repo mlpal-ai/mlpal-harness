@@ -1,3 +1,4 @@
+import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, SDKMessage } from "./sdk.js";
@@ -51,7 +52,8 @@ export type ServerCapability =
   | "hop_per_run" // run.hop may name a HOP other than the server's own
   | "commands" // list_commands
   | "files" // list_files
-  | "subagents"; // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
+  | "subagents" // `subagent` events, child frames tagged `childSessionId`, stop_subagent, list_sessions.includeChildren
+  | "mail"; // `mail` frames for an idle session's peer messages; `send` answers with send_result
 
 export interface PendingApproval {
   command: string;
@@ -74,7 +76,8 @@ export type ClientMessage =
       /** yodex/2: working directory for this run, under the server's workspace root. */
       cwd?: string;
     }
-  | { type: "send"; sessionId: string; text: string }
+  /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
+  | { type: "send"; requestId?: string; sessionId: string; text: string }
   | { type: "interrupt" }
   /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents"). */
   | { type: "list_sessions"; requestId?: string; includeChildren?: boolean }
@@ -121,6 +124,14 @@ export type ServerMessage =
       live?: boolean;
     }
   | { type: "models"; requestId?: string; models: Array<{ tag: string; displayName: string }> }
+  /** yodex/2 (capability "mail"): how a `send` was delivered. `sent` = a run is live on the
+   *  session and folds the text in at its next boundary; `queued` = the session is idle and the
+   *  text waits in its event inbox for the next run. */
+  | { type: "send_result"; requestId?: string; sessionId: string; status: "sent" | "queued" }
+  /** yodex/2 (capability "mail"): a peer message that reached an idle session the client is
+   *  watching. The model sees it at the session's next run; a run in progress sees its mail
+   *  itself, as a `user` event authored by the peer. */
+  | { type: "mail"; sessionId: string; from: Author; text: string; correlationId?: string; ts: string }
   | { type: "skills"; requestId?: string; skills: Array<{ name: string; description: string }> }
   | {
       type: "done";

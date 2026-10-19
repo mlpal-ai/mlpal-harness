@@ -16,14 +16,16 @@ import { z } from "zod";
 import { agentAuthor } from "@mlpal/harness-protocol";
 import { host } from "../../host";
 import type { Mailbox, Registry, SessionRecord } from "../../store/types";
-import { defineTool, type Tool } from "../types";
+import { defineTool, type Tool, type ToolContext } from "../types";
 import type { BackgroundAgents } from "../../subagent/background";
 
 export interface PeerToolsDeps {
   registry: Registry;
   mailbox: Mailbox;
   agents: BackgroundAgents;
-  selfSessionId: () => string;
+  /** The calling session: from the tool context when the host serves many sessions at once,
+   *  else the host's one active session. */
+  selfSessionId: (ctx?: ToolContext) => string;
   selfWorkspace: string;
   /** Spawn a detached resume of a not-running session so it processes its queued mail with
    *  full conversation context, then exits. Returns a human-readable confirmation. */
@@ -128,12 +130,12 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
       "have a current name — rows go stale as sessions finish.",
     readOnly: true,
     schema: z.object({}),
-    call: async () => {
+    call: async (_input, ctx) => {
       const lines: string[] = [];
       // Self-identity first: peers reply to THIS session, and the model cannot otherwise
       // know its own id — without this line it guesses from the peer list and hands out a
       // stale session id as its reply address (observed in the field).
-      lines.push(`You are: ${deps.selfWorkspace} [${deps.selfSessionId().slice(0, 8)}] — peers reach you by this workspace name or id.`);
+      lines.push(`You are: ${deps.selfWorkspace} [${deps.selfSessionId(ctx).slice(0, 8)}] — peers reach you by this workspace name or id.`);
       const own = deps.agents.list();
       if (own.length > 0) {
         lines.push("This session's agents (SendMessage steers them):");
@@ -142,7 +144,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
         }
       }
       const all = await deps.registry.listSessions();
-      const peers = livePeers(all, deps.selfSessionId());
+      const peers = livePeers(all, deps.selfSessionId(ctx));
       if (peers.length > 0) {
         lines.push(`Other ${host().name} sessions on this machine, LIVE (kind: cross-session):`);
         for (const p of peers) {
@@ -152,7 +154,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
         }
         lines.push("Address by workspace name, or by [id] when two share a name.");
       }
-      const wakeable = wakeCandidates(all, deps.selfSessionId(), new Set(peers.map((p) => p.sessionId))).slice(0, 8);
+      const wakeable = wakeCandidates(all, deps.selfSessionId(ctx), new Set(peers.map((p) => p.sessionId))).slice(0, 8);
       if (wakeable.length > 0) {
         lines.push("Recent sessions, not running — SendMessage WAKES the newest per repo:");
         for (const w of wakeable) {
@@ -177,7 +179,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
       to: z.string().min(1).describe("agent id, workspace name, or session id (prefix ok)"),
       message: z.string().min(1),
     }),
-    call: async ({ to, message }) => {
+    call: async ({ to, message }, ctx) => {
       const own = deps.agents.list().find((a) => a.id === to);
       if (own) {
         if (own.status !== "running") {
@@ -187,12 +189,12 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
         return { content: `steered ${to} — it folds the message in at its next turn boundary.` };
       }
       const all = await deps.registry.listSessions();
-      const peers = livePeers(all, deps.selfSessionId());
+      const peers = livePeers(all, deps.selfSessionId(ctx));
       const { peer, error } = resolvePeer(peers, to);
       const post = (sid: string) =>
         deps.mailbox.post(sid, {
           type: "peer_message",
-          from: agentAuthor(`sess-${deps.selfSessionId().slice(0, 8)}`, deps.selfWorkspace),
+          from: agentAuthor(`sess-${deps.selfSessionId(ctx).slice(0, 8)}`, deps.selfWorkspace),
           toSession: sid,
           text: message,
         });
@@ -207,7 +209,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
       // it); a workspace NAME resolves like `yodex -c` — the newest session in that repo,
       // within a recency window, and only when the name maps to ONE repo. Dozens of stale
       // sessions per repo must never make name-targeting a guess.
-      const known = all.filter((s) => s.sessionId !== deps.selfSessionId());
+      const known = all.filter((s) => s.sessionId !== deps.selfSessionId(ctx));
       const byId =
         known.find((s) => s.sessionId === to) ??
         (/^[0-9a-f-]{4,}$/i.test(to)
@@ -216,7 +218,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
               return m.length === 1 ? m[0] : undefined;
             })()
           : undefined);
-      const candidates = wakeCandidates(all, deps.selfSessionId(), new Set());
+      const candidates = wakeCandidates(all, deps.selfSessionId(ctx), new Set());
       const byName = candidates.filter((s) => s.workspace === to);
       let target = byId;
       if (!target) {
