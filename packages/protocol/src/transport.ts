@@ -58,7 +58,9 @@ export type ServerCapability =
   | "checkpoints" // `checkpoints` listing and `rewind` to before a message (files + conversation)
   | "usage" // `compute_units` on usage, `session_usage` totals per session and model
   | "effort" // run.effort, set_session_defaults / session_defaults
-  | "describe_hop"; // describe_hop → hop: the serialisable view of a HOP
+  | "describe_hop" // describe_hop → hop: the serialisable view of a HOP
+  | "daemon" // the pod daemon's UI routes are reachable at `daemon/` beside the page, behind the same cookie
+  | "terminal"; // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
 
 /** The gateway's reasoning-effort ladder; a rung a model lacks is clamped and reported on the
  *  assistant event's `effort.applied`. */
