@@ -42,6 +42,8 @@ export interface SessionSummary {
   /** yodex/2 (capability "subagents"): this session is a sub-agent spawned by `sessionId`'s
    *  `Agent` call `toolUseId`. Listed only when `list_sessions.includeChildren` is set. */
   parent?: { sessionId: string; toolUseId: string };
+  /** 0.20.0: when the session was created (ISO 8601). */
+  createdAt?: string;
 }
 
 /** What a server can do beyond yodex/1. Absent from `ready` on a yodex/1 server. */
@@ -60,7 +62,8 @@ export type ServerCapability =
   | "effort" // run.effort, set_session_defaults / session_defaults
   | "describe_hop" // describe_hop → hop: the serialisable view of a HOP
   | "daemon" // the pod daemon's UI routes are reachable at `daemon/` beside the page, behind the same cookie
-  | "terminal"; // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
+  | "terminal" // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
+  | "workspace_stats"; // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
 
 /** The gateway's reasoning-effort ladder; a rung a model lacks is clamped and reported on the
  *  assistant event's `effort.applied`. */
@@ -121,6 +124,140 @@ export interface HopInfo {
   warm: boolean;
 }
 
+/** The engine that answers on this socket (0.20.0, on `ready`). `harnessProtocol` is this
+ *  package's version the engine was built with; gate features on capabilities, not on it. */
+export interface EngineInfo {
+  name: string;
+  version: string;
+  /** The engine's build commit, when the build recorded one. */
+  sha?: string;
+  harnessProtocol: string;
+}
+
+/** The window a workspace_stats request covers, in the client's time zone: `24h` is the current
+ *  local hour and the 23 before it; `7d`/`30d` are today and the 6/29 local days before it;
+ *  `all` is everything recorded. */
+export type StatsRange = "24h" | "7d" | "30d" | "all";
+
+/** Token counts for a bucket: input excludes cache reads and writes, as on `Usage`. */
+export type StatsUsage = Required<Omit<Usage, "compute_units">>;
+
+export interface StatsModelSlice {
+  /** Input (incl. cache reads and writes) plus output tokens. */
+  tokens: number;
+  cu: number;
+}
+
+export interface StatsDay {
+  /** The local date in the request's `tz`, `YYYY-MM-DD`. */
+  day: string;
+  usage: StatsUsage;
+  computeUnits: number;
+  /** Top-level sessions with any record that day; sub-agent sessions are `subagents`. */
+  sessions: number;
+  subagents: number;
+  /** Runs that started that day. */
+  runs: number;
+  calls: number;
+  byModel: Record<string, StatsModelSlice>;
+}
+
+export interface StatsHour extends Omit<StatsDay, "day"> {
+  /** The hour's first instant, ISO 8601 UTC; it is a whole local hour in the request's `tz`. */
+  hour: string;
+}
+
+export interface StatsRollup {
+  /** Sessions with any record in the window. */
+  sessions: number;
+  /** Runs that started in the window. */
+  runs: number;
+  computeUnits: number;
+  /** The newest record in the window, ISO 8601. */
+  lastAt: string | null;
+}
+
+export interface StatsTopSession {
+  sessionId: string;
+  /** First user message, trimmed (as SessionSummary.title). */
+  title: string;
+  name?: string;
+  hop?: string;
+  model: string;
+  status: string;
+  /** Present on a sub-agent session. */
+  parent?: { sessionId: string; toolUseId: string };
+  computeUnits: number;
+  /** Input (incl. cache) plus output tokens in the window. */
+  tokens: number;
+  runs: number;
+  updatedAt: string;
+}
+
+/** workspace_stats's answer (capability "workspace_stats"). Every figure comes from records the
+ *  engine stamped with a run (telemetry v1); `coverage` says how many sessions had none. All
+ *  totals, per-* rollups and `days`/`hours` cover the window; `history`, `modelSlots` and
+ *  `streak` do not (see each). Cost: `usd = computeUnits * USD_PER_CU`. */
+export interface WorkspaceStats {
+  generatedAt: string;
+  range: StatsRange;
+  tz: string;
+  /** The window's first and last instant, ISO 8601 (`since` is null for `all`). */
+  window: { since: string | null; until: string };
+  scope: { hop?: string; project?: string };
+  /** `sessions`: in-scope sessions updated in the window; `counted`: those with stamped records
+   *  in it; `unstamped`: those with model calls but no stamped record (an older engine). */
+  coverage: { sessions: number; counted: number; unstamped: number };
+  totals: {
+    usage: StatsUsage;
+    computeUnits: number;
+    usd: number;
+    /** Top-level sessions with any record in the window. */
+    sessions: number;
+    subagents: number;
+    runs: number;
+    calls: number;
+    /** Every tool request, refused ones included. */
+    toolRuns: number;
+    /** Tool runs that ran and failed. */
+    toolErrors: number;
+    /** Tool requests refused (policy, a person, a hook). */
+    denied: number;
+    compactions: number;
+    checkpoints: number;
+    parked: number;
+    /** cache reads / (input + cache reads + cache writes); 0 without prompt tokens. */
+    cacheHitRatio: number;
+    code: { added: number; removed: number };
+  };
+  /** One row per local day of the window, oldest first, zero days included (`all`: from the
+   *  first active day). */
+  days: StatsDay[];
+  /** `range: "24h"` only: 24 local hours, oldest first. */
+  hours?: StatsHour[];
+  /** The last 182 local days ending today, oldest first, whatever the range (the heatmap). */
+  history: Array<{ day: string; usage: StatsUsage; computeUnits: number }>;
+  /** `ms` sums call durations; `share` is of all tokens in the window. */
+  perModel: Record<string, { calls: number; usage: StatsUsage; computeUnits: number; ms: number; share: number }>;
+  /** The workspace's top three models by tokens, all time and unscoped: stable colour slots. */
+  modelSlots: string[];
+  /** By the run's HOP label (`name@version`; `(none)` when a run had none). */
+  perHop: Record<string, StatsRollup>;
+  /** By project: relCwd's first segment, or the workspace name at the root. */
+  perProject: Record<string, StatsRollup>;
+  /** `runs` counts requests; `ms` sums the ones that ran (a refused one has no duration). */
+  perTool: Record<string, { runs: number; errors: number; denied: number; ms: number }>;
+  /** Runs that started in the window, by how they ended; a run still going is in none. */
+  outcomes: { success: number; error: number; max_turns: number; cancelled: number; needs_approval: number };
+  /** Consecutive local days with a model call, all time in scope: `current` ends today, or
+   *  yesterday when today has none yet. */
+  streak: { current: number; longest: number };
+  /** Sessions with records in the window by compute units, then tokens (a page of them). */
+  topSessions: StatsTopSession[];
+  /** How many sessions the ranking holds, for paging `topSessions`. */
+  sessionsTotal: number;
+}
+
 export interface PendingApproval {
   command: string;
   reason: string;
@@ -149,8 +286,10 @@ export type ClientMessage =
   | { type: "send"; requestId?: string; sessionId: string; text: string }
   /** Abort the run(s) on this connection; with `sessionId` (yodex/2) only that session's. */
   | { type: "interrupt"; sessionId?: string }
-  /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents"). */
-  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean }
+  /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents").
+   *  0.20.0: newest first by `updatedAt`; `limit` (1–500, default 200) rows after the session
+   *  `before` (the last row of the previous page); `sessions.hasMore` says whether more exist. */
+  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string; limit?: number }
   | { type: "list_models"; requestId?: string }
   | { type: "list_skills"; requestId?: string }
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
@@ -179,6 +318,10 @@ export type ClientMessage =
   | { type: "set_session_defaults"; requestId?: string; sessionId: string; model?: string | null; effort?: EffortLevel | null; mode?: string | null }
   /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed. */
   | { type: "describe_hop"; requestId?: string; hop?: string }
+  /** 0.20.0 (capability "workspace_stats"): the aggregate over the server's workspace, days
+   *  bucketed in `tz` (an IANA zone). `hop` (a name or `name@version`) or `project` narrows the
+   *  scope; `sessions` pages `topSessions` (offset ≥ 0, limit 1–50, default 0/20). */
+  | { type: "workspace_stats"; requestId?: string; range: StatsRange; tz: string; hop?: string; project?: string; sessions?: { offset: number; limit: number } }
   /** yodex/2: receive a session's idle events (a background child's end, a rewind) on this
    *  connection without loading its history. A run or load_session watches implicitly. */
   | { type: "watch"; sessionId: string }
@@ -187,7 +330,7 @@ export type ClientMessage =
   | { type: "deliver_mail"; sessionId: string; message: PeerMessage };
 
 export type ServerMessage =
-  | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string }
+  | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string; /** 0.20.0 */ engine?: EngineInfo }
   /** `childSessionId` (capability "subagents"): `event` belongs to that sub-agent of `sessionId`
    *  and rides the parent's connection while the child runs. */
   | { type: "event"; sessionId: string; childSessionId?: string; event: EngineEvent }
@@ -203,7 +346,8 @@ export type ServerMessage =
     }
   /** yodex/2: the engine asks the person structured questions mid-run. */
   | { type: "question_request"; id: string; sessionId: string; questions: AskQuestion[] }
-  | { type: "sessions"; requestId?: string; sessions: SessionSummary[] }
+  /** 0.20.0: `hasMore` when rows exist past this page. */
+  | { type: "sessions"; requestId?: string; sessions: SessionSummary[]; hasMore?: boolean }
   | {
       type: "session_history";
       requestId?: string;
@@ -238,7 +382,25 @@ export type ServerMessage =
   | { type: "hop"; requestId?: string; hop: HopView }
   /** yodex/2 (capability "usage"): totals over every model call of the session. `usd` is
    *  `compute_units * USD_PER_CU`, present when the gateway metered any call. */
-  | { type: "session_usage"; requestId?: string; sessionId: string; calls: number; usage: Usage; usd?: number; models: Record<string, { calls: number; usage: Usage }> }
+  | {
+      type: "session_usage";
+      requestId?: string;
+      sessionId: string;
+      calls: number;
+      usage: Usage;
+      usd?: number;
+      /** 0.20.0: per model, `ms` sums call durations and `computeUnits` the gateway's meter. */
+      models: Record<string, { calls: number; usage: Usage; ms?: number; computeUnits?: number }>;
+      /** 0.20.0: summed model-call time, and the session's created-to-updated span. */
+      apiMs?: number;
+      wallMs?: number;
+      /** 0.20.0: tool requests by name. */
+      tools?: Record<string, number>;
+      /** 0.20.0: lines added and removed by edits, and the edit count. */
+      code?: { added: number; removed: number; edits: number };
+      /** 0.20.0: cache reads / prompt tokens over the session. */
+      cache?: { hitRatio: number };
+    }
   /** yodex/2 (capability "mail"): a peer message that reached an idle session the client is
    *  watching. The model sees it at the session's next run; a run in progress sees its mail
    *  itself, as a `user` event authored by the peer. */
@@ -253,6 +415,12 @@ export type ServerMessage =
       usage?: Usage;
       pendingApproval?: PendingApproval;
     }
+  /** 0.20.0 (capability "workspace_stats"). */
+  | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
   | { type: "error"; message: string; requestId?: string };
 
 export const PROTOCOL_VERSION = "yodex/2";
+
+/** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
+ *  (a test checks). */
+export const HARNESS_PROTOCOL_VERSION = "0.20.0";

@@ -21,7 +21,8 @@ function clip(text: string): string {
   return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
 }
 
-async function previews(store: Store, sessionId: string): Promise<{ first: string; last: string }> {
+/** A session's first user message and last assistant reply, trimmed: its title and what it is up to. */
+export async function sessionPreviews(store: Store, sessionId: string): Promise<{ first: string; last: string }> {
   const entries = effectiveEntries(await store.conversation.read(sessionId));
   const turn = entries.find((e) => e.payload.type === "user");
   let first = "(empty)";
@@ -57,7 +58,7 @@ export async function recentSessions(
   if (opts.limit) records = records.slice(0, opts.limit);
   return Promise.all(
     records.map(async (record) => {
-      const p = await previews(store, record.sessionId);
+      const p = await sessionPreviews(store, record.sessionId);
       return { record, preview: p.first, lastReply: p.last };
     }),
   );
