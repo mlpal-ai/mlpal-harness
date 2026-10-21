@@ -159,6 +159,7 @@ export interface StatsDay {
   /** Runs that started that day. */
   runs: number;
   calls: number;
+  /** 0.20.1: keyed by the models in `modelSlots`; every other model is summed under `(other)`. */
   byModel: Record<string, StatsModelSlice>;
 }
 
@@ -197,7 +198,8 @@ export interface StatsTopSession {
 /** workspace_stats's answer (capability "workspace_stats"). Every figure comes from records the
  *  engine stamped with a run (telemetry v1); `coverage` says how many sessions had none. All
  *  totals, per-* rollups and `days`/`hours` cover the window; `history`, `modelSlots` and
- *  `streak` do not (see each). Cost: `usd = computeUnits * USD_PER_CU`. */
+ *  `streak` do not (see each). Cost: `usd = computeUnits * USD_PER_CU` at the protocol's fixed
+ *  rate; the gateway's rate is configurable, so cross-check compute units, not dollars. */
 export interface WorkspaceStats {
   generatedAt: string;
   range: StatsRange;
@@ -205,9 +207,11 @@ export interface WorkspaceStats {
   /** The window's first and last instant, ISO 8601 (`since` is null for `all`). */
   window: { since: string | null; until: string };
   scope: { hop?: string; project?: string };
-  /** `sessions`: in-scope sessions updated in the window; `counted`: those with stamped records
-   *  in it; `unstamped`: those with model calls but no stamped record (an older engine). */
-  coverage: { sessions: number; counted: number; unstamped: number };
+  /** `sessions`: in-scope sessions updated in the window or with records in it; `counted`: those
+   *  with stamped records in the window; `unstamped`: those with model calls but no stamped
+   *  record anywhere (an older engine); `partial` (0.20.1): counted sessions that also have
+   *  unstamped calls, which the totals leave out (the figures may undercount them). */
+  coverage: { sessions: number; counted: number; unstamped: number; partial?: number };
   totals: {
     usage: StatsUsage;
     computeUnits: number;
@@ -215,6 +219,7 @@ export interface WorkspaceStats {
     /** Top-level sessions with any record in the window. */
     sessions: number;
     subagents: number;
+    /** Runs that started in the window. */
     runs: number;
     calls: number;
     /** Every tool request, refused ones included. */
@@ -247,7 +252,9 @@ export interface WorkspaceStats {
   perProject: Record<string, StatsRollup>;
   /** `runs` counts requests; `ms` sums the ones that ran (a refused one has no duration). */
   perTool: Record<string, { runs: number; errors: number; denied: number; ms: number }>;
-  /** Runs that started in the window, by how they ended; a run still going is in none. */
+  /** Runs that started in the window, by how they ended. `totals.runs` minus these five is "No
+   *  result recorded": a run still going, one that crashed before its end, or an end with another
+   *  subtype. */
   outcomes: { success: number; error: number; max_turns: number; cancelled: number; needs_approval: number };
   /** Consecutive local days with a model call, all time in scope: `current` ends today, or
    *  yesterday when today has none yet. */
@@ -287,9 +294,12 @@ export type ClientMessage =
   /** Abort the run(s) on this connection; with `sessionId` (yodex/2) only that session's. */
   | { type: "interrupt"; sessionId?: string }
   /** yodex/2: sub-agent sessions are hidden unless `includeChildren` (capability "subagents").
-   *  0.20.0: newest first by `updatedAt`; `limit` (1–500, default 200) rows after the session
-   *  `before` (the last row of the previous page); `sessions.hasMore` says whether more exist. */
-  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string; limit?: number }
+   *  0.20.0: newest first by `updatedAt` (ties by id); `limit` (1–500, default 200) rows after
+   *  `before`, the last row of the previous page; `sessions.hasMore` says whether more exist.
+   *  `before` as that row's `{updatedAt, sessionId}` (0.20.1) seeks by position and survives the
+   *  row being updated in between; as a bare id it is looked up, so an updated row restarts the
+   *  order (refetch from the top on a repeat). */
+  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number }
   | { type: "list_models"; requestId?: string }
   | { type: "list_skills"; requestId?: string }
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
@@ -423,4 +433,4 @@ export const PROTOCOL_VERSION = "yodex/2";
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.0";
+export const HARNESS_PROTOCOL_VERSION = "0.20.1";

@@ -5,7 +5,7 @@ import { type ClientMessage, HARNESS_PROTOCOL_VERSION, type ServerCapability, ty
 
 const zero = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
-describe("protocol 0.20.0", () => {
+describe("protocol 0.20", () => {
   test("HARNESS_PROTOCOL_VERSION is the package's version", () => {
     const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string };
     expect(HARNESS_PROTOCOL_VERSION).toBe(pkg.version);
@@ -20,7 +20,7 @@ describe("protocol 0.20.0", () => {
       tz: "America/Los_Angeles",
       window: { since: "2026-10-14T07:00:00.000Z", until: "2026-10-20T12:00:00.000Z" },
       scope: { hop: "coding" },
-      coverage: { sessions: 3, counted: 2, unstamped: 1 },
+      coverage: { sessions: 3, counted: 2, unstamped: 1, partial: 0 },
       totals: { usage: zero, computeUnits: 0, usd: 0, sessions: 2, subagents: 0, runs: 2, calls: 3, toolRuns: 1, toolErrors: 0, denied: 0, compactions: 0, checkpoints: 0, parked: 0, cacheHitRatio: 0, code: { added: 0, removed: 0 } },
       days: [{ day: "2026-10-20", usage: zero, computeUnits: 0, sessions: 2, subagents: 0, runs: 2, calls: 3, byModel: { m: { tokens: 0, cu: 0 } } }],
       history: [{ day: "2026-10-20", usage: zero, computeUnits: 0 }],
@@ -37,8 +37,9 @@ describe("protocol 0.20.0", () => {
     const reply: ServerMessage = { type: "workspace_stats", requestId: "r1", ...stats };
     const ready: ServerMessage = { type: "ready", protocol: "yodex/2", capabilities: [cap], engine: { name: "yodex", version: "0.8.0", sha: "abc", harnessProtocol: HARNESS_PROTOCOL_VERSION } };
     const page: ClientMessage = { type: "list_sessions", includeChildren: true, before: "s", limit: 50 };
+    const seek: ClientMessage = { type: "list_sessions", before: { updatedAt: "2026-10-20T00:00:00.000Z", sessionId: "s" }, limit: 50 };
     const sessions: ServerMessage = { type: "sessions", sessions: [{ sessionId: "s", agentId: "a", status: "idle", model: "m", updatedAt: "x", title: "t", createdAt: "w" }], hasMore: false };
     const usage: ServerMessage = { type: "session_usage", sessionId: "s", calls: 1, usage: zero, models: { m: { calls: 1, usage: zero, ms: 4, computeUnits: 0.1 } }, apiMs: 4, wallMs: 9, tools: { Bash: 1 }, code: { added: 1, removed: 0, edits: 1 }, cache: { hitRatio: 0.5 } };
-    for (const m of [req, reply, ready, page, sessions, usage]) expect(JSON.parse(JSON.stringify(m))).toEqual(m);
+    for (const m of [req, reply, ready, page, seek, sessions, usage]) expect(JSON.parse(JSON.stringify(m))).toEqual(m);
   });
 });
