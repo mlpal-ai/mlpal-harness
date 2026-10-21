@@ -242,15 +242,23 @@ export interface WorkspaceStats {
   hours?: StatsHour[];
   /** The last 182 local days ending today, oldest first, whatever the range (the heatmap). */
   history: Array<{ day: string; usage: StatsUsage; computeUnits: number }>;
-  /** `ms` sums call durations; `share` is of all tokens in the window. */
-  perModel: Record<string, { calls: number; usage: StatsUsage; computeUnits: number; ms: number; share: number }>;
+  /** Per model. `share` is of all tokens in the window.
+   *  - `ms`: the sum of each call's wall time, the time a run waited from issuing the call to its
+   *    result, with every gateway retry, failover and host suspension included ("Model time").
+   *    Calls without a recorded time add nothing. Never divide it by `calls`.
+   *  - `avgCallMs` (0.20.2): the mean of those wall times when every call in the window was one
+   *    request with a recorded time, i.e. the average latency. Absent otherwise: a call that
+   *    retried, failed over, or came from an engine that does not count requests. */
+  perModel: Record<string, { calls: number; usage: StatsUsage; computeUnits: number; ms: number; avgCallMs?: number; share: number }>;
   /** The workspace's top three models by tokens, all time and unscoped: stable colour slots. */
   modelSlots: string[];
   /** By the run's HOP label (`name@version`; `(none)` when a run had none). */
   perHop: Record<string, StatsRollup>;
   /** By project: relCwd's first segment, or the workspace name at the root. */
   perProject: Record<string, StatsRollup>;
-  /** `runs` counts requests; `ms` sums the ones that ran (a refused one has no duration). */
+  /** `runs` counts requests. `ms` sums the wall time of the ones that ran, each from the
+   *  permission decision to the result with PostToolUse hooks included; a refused one has no
+   *  duration, so an average divides by `runs - denied`. */
   perTool: Record<string, { runs: number; errors: number; denied: number; ms: number }>;
   /** Runs that started in the window, by how they ended. `totals.runs` minus these five is "No
    *  result recorded": a run still going, one that crashed before its end, or an end with another
@@ -433,4 +441,4 @@ export const PROTOCOL_VERSION = "yodex/2";
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.1";
+export const HARNESS_PROTOCOL_VERSION = "0.20.2";
