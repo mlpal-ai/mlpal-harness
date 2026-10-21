@@ -746,6 +746,9 @@ export class AgentSession {
       parent = (await this.store.conversation.append(cfg.sessionId, asstEvt, parent)).uuid;
       // The per-call ledger /usage reads: duration and the gateway's own compute units ride
       // with the token counts, so session cost is the meter's figure, not an estimate.
+      // `ms` is the wall-clock time the run waited for this call, from issuing it to its result:
+      // every gateway attempt, backoff and failover, and any host suspension, included. It is one
+      // request's latency only when `attempts` is 1 (absent: the client does not count them).
       await this.store.logs.write(cfg.sessionId, "model", {
         ...this.stampFields(),
         callId,
@@ -759,6 +762,7 @@ export class AgentSession {
         ...(result.servingBackend ? { servingBackend: result.servingBackend } : {}),
         ...(result.traceId ? { traceId: result.traceId } : {}),
         ...(result.effort ? { effort: result.effort } : {}),
+        ...(result.attempts === undefined ? {} : { attempts: result.attempts }),
       });
       yield { ...asstEvt, uuid: parent };
       messages.push(result.message);

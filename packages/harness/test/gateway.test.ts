@@ -626,6 +626,39 @@ describe("GatewayClient model failover", () => {
   });
 });
 
+/** What a model call's wall time is made of (U10a-ms): the loop's `ms` is one request's latency
+ *  only when `attempts` is 1, so the client counts every request it sent for the result. */
+describe("GatewayClient attempts", () => {
+  const ask = (client: GatewayClient, extra: Partial<ModelRequest> = {}) => drain(client.stream({ model: "primary", messages: [{ role: "user", content: "hi" }], maxTokens: 50, ...extra }));
+  const busy = () => new Response(JSON.stringify({ error: { message: "busy" } }), { status: 429, headers: { "retry-after": "0" } });
+
+  test("1 when the first request answers", async () => {
+    globalThis.fetch = (async () => new Response(SSE, { status: 200 })) as unknown as typeof fetch;
+    expect((await ask(new GatewayClient({ baseUrl: "http://x", apiKey: "k" }))).result.attempts).toBe(1);
+  });
+
+  test("a handshake retry counts each request", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => (++calls < 3 ? busy() : new Response(SSE, { status: 200 }))) as unknown as typeof fetch;
+    expect((await ask(new GatewayClient({ baseUrl: "http://x", apiKey: "k" }))).result.attempts).toBe(3);
+  });
+
+  test("a failover counts the primary's requests and the fallback's", async () => {
+    globalThis.fetch = (async (_u: string, init: RequestInit) =>
+      JSON.parse(init.body as string).model === "primary" ? new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }) : new Response(SSE, { status: 200 })) as unknown as typeof fetch;
+    // maxRetries 0: one handshake per stream attempt; 3 stream attempts on the primary, then 1 on the fallback.
+    const { result } = await ask(new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 }), { fallbackModels: ["fallback"] });
+    expect(result.attempts).toBe(4);
+  }, 10_000);
+
+  test("a mid-stream resume counts the re-sent request", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () =>
+      ++calls === 1 ? new Response(streamThenError(MID_DROP_PREFIX, new TypeError("fetch failed")), { status: 200 }) : new Response(SSE, { status: 200 })) as unknown as typeof fetch;
+    expect((await ask(new GatewayClient({ baseUrl: "http://x", apiKey: "k" }))).result.attempts).toBe(2);
+  });
+});
+
 describe("withConversationCache (Anthropic sliding-window breakpoints)", () => {
   test("marks the last two messages' final block, leaves earlier ones untouched", () => {
     const msgs = [

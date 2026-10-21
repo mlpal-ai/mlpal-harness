@@ -95,6 +95,10 @@ export interface ModelResult {
   servingBackend?: string;
   traceId?: string;
   reasoningTokens?: number;
+  /** Requests sent to produce this result: 1 when the first one answered. More means handshake
+   *  retries, pre-content stream retries, mid-stream resumes or a model failover, and the caller's
+   *  wall time for the call includes their waits (a hung attempt is up to `timeoutMs` of silence). */
+  attempts?: number;
   /** From the X-MLPal-Reasoning-Effort header ("requested->applied"): what the gateway actually ran
    *  after clamping to the model's supported rungs; `applied` is "unsupported" for a model with no
    *  effort lever. Present only when effort was sent. */
@@ -293,6 +297,7 @@ export class GatewayClient implements ModelClient {
     // `reset`) is as safe as a connectivity resume. Budgeted tighter than connectivity drops, though:
     // a persistent upstream error should surface after a couple of tries, not eight full re-runs.
     const maxStreamResume = 2;
+    const sent = { requests: 0 };
     let modelIdx = 0;
     let attempt = 0;
     let resume = 0;
@@ -307,6 +312,7 @@ export class GatewayClient implements ModelClient {
           model,
           userSignal,
           idle,
+          sent,
           req.trace ? traceHeaders(req.trace.stamp, req.trace.callId, (t) => createHash("sha256").update(t).digest("hex")) : {},
         );
         if (!res.body) throw new GatewayError("no response body", 502, "http");
@@ -341,6 +347,7 @@ export class GatewayClient implements ModelClient {
           ...(computeUnits === undefined ? {} : { computeUnits }),
           ...step.value, // the trailer's compute units win over a header (streams carry none)
           ...(effortApplied ? { effort: effortApplied } : {}),
+          attempts: sent.requests,
         };
       } catch (e) {
         const err = this.normalizeError(e, userSignal);
@@ -444,6 +451,7 @@ export class GatewayClient implements ModelClient {
     model: string,
     userSignal: AbortSignal | undefined,
     idle: { signal: AbortSignal; reset: () => void },
+    sent: { requests: number },
     traceHdrs: Record<string, string> = {},
   ): Promise<Response> {
     let attempt = 0;
@@ -453,6 +461,7 @@ export class GatewayClient implements ModelClient {
       }
       try {
         idle.reset(); // each handshake attempt gets a fresh idle window
+        sent.requests++;
         const res = await this.fetchOnce(body, idle.signal, traceHdrs);
         if (res.ok) return res;
         const err = await this.toError(res);

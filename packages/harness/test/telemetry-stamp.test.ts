@@ -96,6 +96,28 @@ describe("telemetry v1: the stamp on every record", () => {
     expect(events2[0]!.seq).toBe(1); // seq restarts with the run
   });
 
+  test("a model record's ms is the loop's wall time for the call, and attempts is the client's count (U10a-ms)", async () => {
+    let turn = 0;
+    const model: ModelClient = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        turn += 1;
+        await Bun.sleep(60); // the call's own wait, inside the measured span
+        return turn === 1 ? { ...textDone("first"), attempts: 3 } : textDone("second");
+      },
+    };
+    const store = new LocalStore(root);
+    const sess = new AgentSession({ agentId: "ag-ms", sessionId: "s-ms", workspace: "w", cwd, model: "m", systemPrompt: "t", tools: defaultRegistry(), store, model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), maxTokens: 50 });
+    await drain(sess.run({ text: "one" }));
+    await drain(sess.run({ text: "two" }));
+    const [a, b] = await store.logs.read("s-ms", "model");
+    expect(a!.attempts).toBe(3);
+    expect("attempts" in b!).toBe(false); // a client that does not count leaves it absent, never 1
+    for (const r of [a!, b!]) {
+      expect(r.ms as number).toBeGreaterThanOrEqual(55);
+      expect(r.ms as number).toBeLessThan(5_000);
+    }
+  });
+
   test("a subagent carries its parent's run; an agent-authored turn keeps the prompt of the turn it lands in", async () => {
     const model: ModelClient = {
       async *stream(): AsyncGenerator<never, ModelResult, void> {
