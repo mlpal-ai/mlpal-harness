@@ -144,3 +144,39 @@ describe("McpManager", () => {
     }
   }, 15000);
 });
+
+describe("a stdio server's environment (E-W2 E3)", () => {
+  const SECRETS = { YODEX_API_KEY: "sk-gateway", YODEX_SERVER_TOKEN: "serve-token", MLPAL_STORE_KEY: "store-key", MLPAL_MCP_KG_TOKEN: "mcp-token", YODEX_WEBSEARCH_KEY: "search-key" };
+
+  /** The environment the child was spawned with: it writes `env` to a file, then never speaks. */
+  async function childEnv(env: Record<string, string> | undefined): Promise<Map<string, string>> {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const dir = await mkdtemp(join(tmpdir(), "mcp-env-"));
+    const out = join(dir, "env");
+    const saved = Object.fromEntries(Object.keys(SECRETS).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, SECRETS, { E3_DECLARED_SOURCE: "from-serve" });
+    const mcp = new McpManager();
+    mcp.connectTimeoutMs = 1500;
+    try {
+      await mcp.connect("probe", { command: "/bin/sh", args: ["-c", 'env > "$0"; exec sleep 30', out], ...(env ? { env } : {}) }, new ToolRegistry());
+      const text = await readFile(out, "utf8");
+      return new Map(text.split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    } finally {
+      await mcp.close();
+      for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+      delete process.env.E3_DECLARED_SOURCE;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  for (const [label, env] of [["no env", undefined], ["env: {}", {}], ['env: {FOO: "bar"}', { FOO: "bar", FROM: "${E3_DECLARED_SOURCE}", DEF: "${E3_UNSET_VAR:-fallback}" }]] as const) {
+    test(`${label}: none of serve's secrets reach the child; the SDK's safe set and the declared values do`, async () => {
+      const seen = await childEnv(env as Record<string, string> | undefined);
+      for (const k of Object.keys(SECRETS)) expect(seen.has(k)).toBe(false);
+      expect(seen.has("E3_DECLARED_SOURCE")).toBe(false);
+      expect(seen.get("PATH")).toBe(process.env.PATH);
+      if (env && "FOO" in env) expect([seen.get("FOO"), seen.get("FROM"), seen.get("DEF")]).toEqual(["bar", "from-serve", "fallback"]);
+    }, 10000);
+  }
+});

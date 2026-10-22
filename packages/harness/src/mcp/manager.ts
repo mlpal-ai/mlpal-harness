@@ -356,15 +356,13 @@ export class McpManager {
         transport = http;
       }
     } else {
+      // The child gets the declared env only (values expanded from ours); the SDK adds its safe
+      // set (HOME, LOGNAME, PATH, SHELL, TERM, USER). Never our own environment: it holds the
+      // gateway key, serve's token and the other servers' credentials.
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args ?? [],
-        env: config.env
-          ? {
-              ...(process.env as Record<string, string>),
-              ...Object.fromEntries(Object.entries(config.env).map(([k, v]) => [k, expandEnv(v)])),
-            }
-          : undefined,
+        env: config.env ? Object.fromEntries(Object.entries(config.env).map(([k, v]) => [k, expandEnv(v)])) : undefined,
       });
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });
