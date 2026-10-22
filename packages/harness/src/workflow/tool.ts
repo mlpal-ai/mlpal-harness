@@ -17,6 +17,9 @@ export type WorkflowRunner = (
   name: string,
   args: unknown,
   background?: boolean,
+  /** The session running the workflow, so the host gives its agents no more autonomy than that
+   *  session has (and routes their asks there). `sessionId` is absent when the context has none. */
+  caller?: { sessionId?: string },
 ) => Promise<{ result?: unknown; agents?: number; taskId?: string }>;
 
 export function createWorkflowTool(
@@ -42,14 +45,14 @@ export function createWorkflowTool(
         .optional()
         .describe("run detached and return a task id immediately; read its result later with BashOutput"),
     }),
-    async call(input) {
+    async call(input, ctx) {
       if (!catalog.some((w) => w.name === input.name)) {
         return {
           content: `Unknown workflow "${input.name}". Available: ${catalog.map((w) => w.name).join(", ") || "(none)"}`,
           isError: true,
         };
       }
-      const { result, agents, taskId } = await run(input.name, input.args, input.background);
+      const { result, agents, taskId } = await run(input.name, input.args, input.background, ctx.sessionId ? { sessionId: ctx.sessionId } : {});
       if (taskId) {
         return {
           content: `Started workflow "${input.name}" in the background as task ${taskId}. Keep working; read its result with BashOutput(${taskId}) or stop it with Kill(${taskId}).`,

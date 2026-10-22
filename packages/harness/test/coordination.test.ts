@@ -74,6 +74,18 @@ describe("HandoffTask", () => {
     expect(out.content).toContain("GET /health");
   });
 
+  test("tells the host which session handed off, so its peer gets no more autonomy (E-W2 R1)", async () => {
+    const seen: unknown[] = [];
+    const run: HandoffRun = async (args) => {
+      seen.push(args.callerSessionId);
+      return { text: "ok", sessionId: "s", via: "dispatch" };
+    };
+    const r = reg(createHandoffTool(run));
+    await runTool(r, "HandoffTask", { repo: "backend", task: "x" }, { ...ctx, sessionId: "parent-1" });
+    await runTool(r, "HandoffTask", { repo: "backend", task: "x" }, ctx);
+    expect(seen).toEqual(["parent-1", undefined]);
+  });
+
   test("labels a live-agent handoff distinctly", async () => {
     const run: HandoffRun = async () => ({ text: "done", sessionId: "s", via: "live-agent" });
     const r = reg(createHandoffTool(run));
@@ -89,5 +101,21 @@ describe("HandoffTask", () => {
     const out = await runTool(r, "HandoffTask", { repo: "nope", task: "x" }, ctx);
     expect(out.isError).toBe(true);
     expect(out.content).toContain("could not resolve repo");
+  });
+});
+
+describe("Workflow tool (E-W2 R1)", () => {
+  test("tells the host which session runs the workflow, so its agents get no more autonomy", async () => {
+    const { createWorkflowTool } = await import("../src/workflow/tool");
+    const seen: unknown[] = [];
+    const r = reg(
+      createWorkflowTool(async (_name, _args, _background, caller) => {
+        seen.push(caller);
+        return { result: "done", agents: 1 };
+      }, [{ name: "probe", description: "p" }]),
+    );
+    await runTool(r, "Workflow", { name: "probe" }, { ...ctx, sessionId: "parent-2" });
+    await runTool(r, "Workflow", { name: "probe" }, ctx);
+    expect(seen).toEqual([{ sessionId: "parent-2" }, {}]);
   });
 });

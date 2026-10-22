@@ -26,7 +26,9 @@ export interface PeerInfo {
 export type ListPeers = () => Promise<PeerInfo[]>;
 
 export type HandoffRun = (
-  args: { repo: string; task: string },
+  /** `callerSessionId`: the session handing off, so the host gives the peer no more autonomy
+   *  than that session has (and routes its asks there). Absent when the context has none. */
+  args: { repo: string; task: string; callerSessionId?: string },
   signal?: AbortSignal,
 ) => Promise<{ text: string; sessionId: string; via: "live-agent" | "dispatch" }>;
 
@@ -79,7 +81,7 @@ export function createHandoffTool(run: HandoffRun): Tool<{ repo: string; task: s
     }),
     async call(input, ctx) {
       try {
-        const { text, via } = await run({ repo: input.repo, task: input.task }, ctx.signal);
+        const { text, via } = await run({ repo: input.repo, task: input.task, ...(ctx.sessionId ? { callerSessionId: ctx.sessionId } : {}) }, ctx.signal);
         const tag = via === "live-agent" ? "the agent already working there" : "a freshly dispatched agent";
         return { content: `[Handoff to ${input.repo}, handled by ${tag}]\n\n${text || "(no result returned)"}` };
       } catch (e) {
