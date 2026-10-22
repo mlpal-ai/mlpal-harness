@@ -180,3 +180,41 @@ describe("a stdio server's environment (E-W2 E3)", () => {
     }, 10000);
   }
 });
+
+describe("a declared variable that is unset (E-W2 fix round 1, O3)", () => {
+  test("one warn per missing variable, naming the server and the variable, never a value; the expansion is unchanged", async () => {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const dir = await mkdtemp(join(tmpdir(), "mcp-unset-"));
+    const out = join(dir, "env");
+    const lines: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = [];
+    const logger = {
+      child: () => logger,
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (msg: string, fields?: Record<string, unknown>) => void lines.push({ level: "warn", msg, fields }),
+      error: (msg: string, fields?: Record<string, unknown>) => void lines.push({ level: "error", msg, fields }),
+    };
+    process.env.O3_SET = "set-value";
+    delete process.env.O3_UNSET_A;
+    delete process.env.O3_UNSET_B;
+    const mcp = new McpManager(logger as never);
+    mcp.connectTimeoutMs = 1500;
+    try {
+      const env = { A: "${O3_UNSET_A}", A2: "x-${O3_UNSET_A}-y", B: "${O3_UNSET_B}", C: "${O3_SET}", D: "${O3_UNSET_D:-dflt}" };
+      await mcp.connect("probe", { command: "/bin/sh", args: ["-c", 'env > "$0"; exec sleep 30', out], env }, new ToolRegistry());
+      const seen = new Map((await readFile(out, "utf8")).split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+      expect([seen.get("A"), seen.get("A2"), seen.get("B"), seen.get("C"), seen.get("D")]).toEqual(["", "x--y", "", "set-value", "dflt"]);
+      const unset = lines.filter((l) => l.msg === "mcp env: declared variable unset");
+      expect(unset.map((l) => [l.level, l.fields])).toEqual([
+        ["warn", { server: "probe", var: "O3_UNSET_A" }],
+        ["warn", { server: "probe", var: "O3_UNSET_B" }],
+      ]);
+      expect(JSON.stringify(lines)).not.toContain("set-value");
+    } finally {
+      await mcp.close();
+      delete process.env.O3_SET;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 10000);
+});

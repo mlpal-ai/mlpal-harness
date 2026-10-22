@@ -49,11 +49,12 @@ function isHttp(c: McpServerConfig): c is HttpServerConfig {
 
 /** Substitute ${VAR} / ${VAR:-default} in a string from the environment (the default form
  *  is what plugin-shipped MCP configs use, e.g. `${PERPLEXITY_TIMEOUT_MS:-600000}`). */
-export function expandEnv(value: string): string {
-  return value.replace(
-    /\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/gi,
-    (_m, name: string, fallback: string | undefined) => process.env[name] ?? fallback ?? "",
-  );
+export function expandEnv(value: string, onUnset?: (name: string) => void): string {
+  return value.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/gi, (_m, name: string, fallback: string | undefined) => {
+    const v = process.env[name];
+    if (v === undefined && fallback === undefined) onUnset?.(name);
+    return v ?? fallback ?? "";
+  });
 }
 
 interface RawMcpTool {
@@ -204,6 +205,16 @@ export class McpManager {
 
   /** Call one tool of a connected server directly (same wrapper as a registered tool: `_meta`,
    *  timeouts, dead-server errors). A server that is not connected is a tool error, not a throw. */
+  /** A stdio server's declared env, expanded. Declaring is the only way a value reaches the child,
+   *  so a `${VAR}` that is unset (and has no `:-default`) is said once per variable: it expands to
+   *  "" as before, but a server missing its key is then debuggable from the log. */
+  private declaredEnv(server: string, env: Record<string, string>): Record<string, string> {
+    const unset = new Set<string>();
+    const out = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, expandEnv(v, (n) => unset.add(n))]));
+    for (const v of unset) this.logger.warn("mcp env: declared variable unset", { server, var: v });
+    return out;
+  }
+
   async callTool(server: string, tool: string, input: unknown, ctx: ToolContext, opts: { timeoutMs?: number } = {}): Promise<ToolResult> {
     const t = this.toolsByServer.get(server)?.get(tool);
     if (!t) {
@@ -362,7 +373,7 @@ export class McpManager {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args ?? [],
-        env: config.env ? Object.fromEntries(Object.entries(config.env).map(([k, v]) => [k, expandEnv(v)])) : undefined,
+        env: config.env ? this.declaredEnv(name, config.env) : undefined,
       });
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });
