@@ -439,6 +439,19 @@ export type ServerMessage =
 
 export const PROTOCOL_VERSION = "yodex/2";
 
+/**
+ * 0.20.3: the close a serve sends on a WebSocket (`/ws`, and `terminal/ws` with the capability
+ * "terminal") whose upgrade carried a credential that is not this serve's token: the
+ * `yodex_token` cookie, `?token=` or a Bearer header, wrong or missing. A rebind mints a new
+ * token, so a page opened before it is refused this way. The same credential can never succeed:
+ * the client stops retrying and asks the person to reopen the workspace link. Every other close
+ * is the transport's (1006 a dropped connection, 1001 a serve going away) and may be retried;
+ * the terminal's own codes are 1000 / 4001 a shell that exited zero / non-zero, 4002 the
+ * terminal unavailable, 4003 too many terminals, 1009 an input frame over 64 KiB.
+ * A request from another origin is refused over HTTP before any socket exists.
+ */
+export const CLOSE_CREDENTIAL_REFUSED = { code: 4401, reason: "credential refused" } as const;
+
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.2";
+export const HARNESS_PROTOCOL_VERSION = "0.20.3";

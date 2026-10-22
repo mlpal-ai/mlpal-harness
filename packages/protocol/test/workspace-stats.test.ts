@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ClientMessage, HARNESS_PROTOCOL_VERSION, type ServerCapability, type ServerMessage, type WorkspaceStats } from "../src/index";
+import { CLOSE_CREDENTIAL_REFUSED, type ClientMessage, HARNESS_PROTOCOL_VERSION, type ServerCapability, type ServerMessage, type WorkspaceStats } from "../src/index";
 
 const zero = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
@@ -41,5 +41,12 @@ describe("protocol 0.20", () => {
     const sessions: ServerMessage = { type: "sessions", sessions: [{ sessionId: "s", agentId: "a", status: "idle", model: "m", updatedAt: "x", title: "t", createdAt: "w" }], hasMore: false };
     const usage: ServerMessage = { type: "session_usage", sessionId: "s", calls: 1, usage: zero, models: { m: { calls: 1, usage: zero, ms: 4, computeUnits: 0.1 } }, apiMs: 4, wallMs: 9, tools: { Bash: 1 }, code: { added: 1, removed: 0, edits: 1 }, cache: { hitRatio: 0.5 } };
     for (const m of [req, reply, ready, page, seek, sessions, usage]) expect(JSON.parse(JSON.stringify(m))).toEqual(m);
+  });
+});
+
+describe("protocol 0.20.3", () => {
+  test("a refused credential's close is 4401 `credential refused`, outside the codes the transport and the terminal use", () => {
+    expect(CLOSE_CREDENTIAL_REFUSED).toEqual({ code: 4401, reason: "credential refused" });
+    expect([1000, 1001, 1006, 1009, 4001, 4002, 4003]).not.toContain(CLOSE_CREDENTIAL_REFUSED.code);
   });
 });
