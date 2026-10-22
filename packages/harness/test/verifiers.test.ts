@@ -63,6 +63,20 @@ describe("agentVerifier (adversarial)", () => {
     expect(await garbage.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
   });
 
+  test("runVerifier is told whose finish it gates: the session and its run (E-W2 E6)", async () => {
+    const seen: unknown[] = [];
+    const h = agentVerifier({
+      store: new LocalStore(dir),
+      runVerifier: async (_prompt, caller) => {
+        seen.push(caller);
+        return "VERDICT: PASS";
+      },
+    });
+    await h.run({ event: "Stop", numTurns: 1 }, { ...ctx, runId: "run-7" });
+    await h.run({ event: "Stop", numTurns: 1 }, ctx);
+    expect(seen).toEqual([{ sessionId: ctx.sessionId, runId: "run-7" }, { sessionId: ctx.sessionId }]);
+  });
+
   test("recursion guard: inert while a verifier is already running", async () => {
     let spawned = 0;
     const h = agentVerifier({

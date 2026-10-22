@@ -22,8 +22,10 @@ export { CODING_VERIFIER_AGENT_PROMPT as VERIFICATION_AGENT_PROMPT } from "../pr
 import { codingVerifierTask } from "../profile/builtins/coding";
 
 export interface AgentVerifierOptions {
-  /** Spawns the independent verification sub-agent with the given prompt; returns its final text. */
-  runVerifier: (prompt: string) => Promise<string>;
+  /** Spawns the independent verification sub-agent with the given prompt; returns its final text.
+   *  `caller` is the session whose finish is being gated and its run, so the host can record the
+   *  verifier as that session's child (and give it no more autonomy than the caller has). */
+  runVerifier: (prompt: string, caller: { sessionId: string; runId?: string }) => Promise<string>;
   store: Store;
   /** Recursion guard: true while a verifier is already running (so its own Stop is inert). */
   isVerifying?: () => boolean;
@@ -83,7 +85,7 @@ export function agentVerifier(opts: AgentVerifierOptions): Hook {
     const prompt = (opts.taskFraming ?? codingVerifierTask)(task, deliverable);
     let out: string;
     try {
-      out = await opts.runVerifier(prompt);
+      out = await opts.runVerifier(prompt, { sessionId: ctx.sessionId, ...(ctx.runId ? { runId: ctx.runId } : {}) });
     } catch (e) {
       if (closed) {
         return {

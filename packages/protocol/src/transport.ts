@@ -40,7 +40,9 @@ export interface SessionSummary {
   /** yodex/2: a run is streaming on this session right now. */
   live?: boolean;
   /** yodex/2 (capability "subagents"): this session is a sub-agent spawned by `sessionId`'s
-   *  `Agent` call `toolUseId`. Listed only when `list_sessions.includeChildren` is set. */
+   *  `Agent` call `toolUseId`. Listed only when `list_sessions.includeChildren` is set.
+   *  0.20.3: a verifier session (the HOP's completion gate, not a tool call) names the session
+   *  it verified, with `toolUseId` `verifier:<runId>` (that session's run it gated). */
   parent?: { sessionId: string; toolUseId: string };
   /** 0.20.0: when the session was created (ISO 8601). */
   createdAt?: string;
@@ -186,7 +188,8 @@ export interface StatsTopSession {
   hop?: string;
   model: string;
   status: string;
-  /** Present on a sub-agent session. */
+  /** Present on a sub-agent session, as on SessionSummary.parent: an `Agent` child, or (0.20.3)
+   *  a verifier session with `toolUseId` `verifier:<runId>`. Roll a child up by `sessionId`. */
   parent?: { sessionId: string; toolUseId: string };
   computeUnits: number;
   /** Input (incl. cache) plus output tokens in the window. */
