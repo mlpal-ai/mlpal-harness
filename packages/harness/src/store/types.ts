@@ -26,6 +26,9 @@ export interface SessionRecord {
   name?: string;
   /** The HOP the session runs under (`name@version`), from the host's telemetry stamp. */
   hop?: string;
+  /** The permission mode of the session's last served run, so a run that resumes it (a parked
+   *  answer, an approval) keeps that mode, also after the host restarts. Absent before a run. */
+  mode?: string;
   /** How the session came to exist: absent = a human started it; "routine:<name>" = a
    *  scheduler firing. `yodex -c` prefers human sessions — routine-spawned ones must not
    *  hijack "continue my conversation". */
