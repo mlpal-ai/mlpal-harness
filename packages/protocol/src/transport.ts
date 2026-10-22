@@ -291,8 +291,10 @@ export type ClientMessage =
       mode?: string;
       /** yodex/2: attachments sent with the prompt (capability "attachments"). */
       blocks?: ContentBlock[];
-      /** yodex/2: the HOP for this run. Without "hop_per_run" it must be the server's own, or the
-       *  server answers with an error naming its HOP. */
+      /** yodex/2: the HOP for this run, bare (`coding`: the newest installed version) or as
+       *  `name@version` (`ready.hop`, `SessionSummary.hop`); both reach the same serve. Without
+       *  "hop_per_run" it must be the server's own, or the server answers with an error naming
+       *  its HOP. */
       hop?: string;
       /** yodex/2: working directory for this run, under the server's workspace root. */
       cwd?: string;
@@ -337,7 +339,8 @@ export type ClientMessage =
   /** yodex/2 (capability "effort"): defaults for later runs of the session; a field given as
    *  null clears it. Answered with session_defaults; a mode the HOP forbids is an error. */
   | { type: "set_session_defaults"; requestId?: string; sessionId: string; model?: string | null; effort?: EffortLevel | null; mode?: string | null }
-  /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed. */
+  /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed;
+   *  `hop` bare or as `name@version` (a version that is not installed is an error). */
   | { type: "describe_hop"; requestId?: string; hop?: string }
   /** 0.20.0 (capability "workspace_stats"): the aggregate over the server's workspace, days
    *  bucketed in `tz` (an IANA zone). `hop` (a name or `name@version`) or `project` narrows the
