@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
+import type { ModelRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -45,7 +45,7 @@ export interface ToolResult {
    *  (kept out of the tool_result blocks). `diff` is a unified patch for Write/Edit. `refused` marks
    *  a result the TOOL's own boundary produced (the permission cascade had allowed the call), so
    *  the attempt trace records the effective outcome as a denial, not an access. */
-  meta?: { diff?: string; refused?: "outside_roots" };
+  meta?: { diff?: string; refused?: "outside_roots"; /** the step named a model the HOP may not use */ refusal?: ModelRefusal };
 }
 
 export interface Tool<I = unknown> {

@@ -11,6 +11,7 @@ import type {
   TuningPolicy,
 } from "./types";
 import { PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
+import { pinsOutsidePolicy } from "./model-policy";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
 import { hostDir } from "../host";
@@ -344,6 +345,8 @@ export const profileYamlSchema = z
     requires: requiresSchema.optional(),
     safety: safetySchema.optional(),
     memory: memorySchema.default({ topics: [], reads: [], writes: [] }),
+    // HOP model policy: the gateway's allow/deny globs (one model, a list, `claude-*`, `*`).
+    model_policy: z.object({ allow: z.array(z.string().min(1)).optional(), deny: z.array(z.string().min(1)).optional() }).strict().optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -690,7 +693,7 @@ export function composeProfile(
     }
   }
 
-  return {
+  const composed: Profile = {
     spec: PROFILE_SPEC_ID,
     name: y.name,
     version: y.version,
@@ -779,8 +782,15 @@ export function composeProfile(
     ...(memory ? { memory } : {}),
     locked,
     tunable,
+    ...(y.model_policy ? { modelPolicy: { allow: y.model_policy.allow ?? [], deny: y.model_policy.deny ?? [] } } : {}),
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };
+  // Rule 6: a HOP's own pins must fit its own policy (the publisher refuses the same with a 422).
+  const outside = pinsOutsidePolicy(composed);
+  if (outside.length) {
+    throw new Error(`profile "${composed.name}" pins ${outside.join(", ")} but its model_policy denies ${outside.length === 1 ? "it" : "them"}`);
+  }
+  return composed;
 }
 
 function loadFromDir(dir: string, source: ProfileSource, opts: LoadProfileOptions, depth: number): Profile {

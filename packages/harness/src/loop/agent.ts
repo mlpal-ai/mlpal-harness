@@ -9,6 +9,8 @@ import {
   type EngineEvent,
   isPersisted,
   type Message,
+  type ResultEvent,
+  type ModelRefusal,
   type ToolResultBlock,
   type ToolResultBlocks,
   type ToolResultEvent,
@@ -24,6 +26,7 @@ import type { HookContext, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
+import { modelRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
@@ -715,6 +718,17 @@ export class AgentSession {
           log.warn("run cancelled mid-stream");
           outcome = "cancelled";
           parent = yield* this.finish("cancelled", turns, totalUsage, parent);
+          return;
+        }
+        // The gateway refused the model for this HOP (rule 4): the run ends as a typed error the
+        // frontend reads from fields, not a thrown exception it must parse.
+        if (e instanceof GatewayError && e.modelAccessDenied) {
+          const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
+          const refusal = modelRefusal(e.model ?? activeModel, hop, "gateway");
+          log.warn("model refused by the gateway", { model: refusal.model, hop });
+          metrics.increment("agent.model_access_denied", 1, { model: refusal.model });
+          outcome = "error";
+          parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;
         }
         log.error("model call failed", { error: String(e) });
@@ -1415,6 +1429,7 @@ export class AgentSession {
       blocks?: ToolResultBlocks,
       diff?: string,
       decided?: Decision,
+      refused?: ModelRefusal,
     ): ToolResultEvent => ({
       type: "tool_result",
       toolUseId: tu.id,
@@ -1422,6 +1437,7 @@ export class AgentSession {
       content,
       blocks,
       ...(diff ? { diff } : {}),
+      ...(refused ? { refusal: refused } : {}),
       ...(decided?.behavior !== "ask" && decided?.judge ? { judged: { verdict: decided.behavior, reason: decided.judge.reason } } : {}),
       isError,
       ts: now(),
@@ -1466,6 +1482,7 @@ export class AgentSession {
     let raw: string | ToolResultBlocks;
     let isError: boolean;
     let diff: string | undefined;
+    let refusal: ModelRefusal | undefined;
     if (decision.behavior === "deny") {
       raw = `Permission denied: ${decision.reason ?? "not allowed"}`;
       isError = true;
@@ -1489,6 +1506,7 @@ export class AgentSession {
       raw = res.content;
       isError = res.isError ?? false;
       diff = res.meta?.diff;
+      refusal = res.meta?.refusal;
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
       this.observed(
@@ -1524,7 +1542,7 @@ export class AgentSession {
       ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
-    return make(display, isError, blocks, diff, decision);
+    return make(display, isError, blocks, diff, decision, refusal);
   }
 
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
@@ -1574,14 +1592,16 @@ export class AgentSession {
   /** End the run: the result is persisted at the conversation head (a replay then carries run
    *  boundaries and usage), the session's head moves to it, and it is yielded with its uuid. */
   private async *finish(
-    subtype: "success" | "max_turns" | "cancelled" | "needs_approval",
+    subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval",
     numTurns: number,
     usage: Usage,
     parent: string | null,
     pendingApproval?: { command: string; reason: string },
+    refusal?: ModelRefusal,
   ): AsyncGenerator<EngineEvent, string | null, void> {
-    const ev = this.result(subtype, numTurns, usage, pendingApproval);
-    if (ev.type !== "result") return parent;
+    const base = this.result(subtype, numTurns, usage, pendingApproval);
+    if (base.type !== "result") return parent;
+    const ev: ResultEvent = refusal ? { ...base, reason: refusal.message, refusal } : base;
     const entry = await this.store.conversation.append(this.cfg.sessionId, ev, parent);
     await this.store.registry.patchSession(this.cfg.sessionId, { head: entry.uuid }).catch(() => undefined);
     yield { ...ev, uuid: entry.uuid };

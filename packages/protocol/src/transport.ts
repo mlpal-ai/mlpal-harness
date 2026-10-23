@@ -2,7 +2,7 @@ import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
-import type { EngineEvent, SDKMessage } from "./sdk.js";
+import type { EngineEvent, ModelRefusal, SDKMessage } from "./sdk.js";
 import type { Usage } from "./usage.js";
 
 /**
@@ -65,7 +65,8 @@ export type ServerCapability =
   | "describe_hop" // describe_hop → hop: the serialisable view of a HOP
   | "daemon" // the pod daemon's UI routes are reachable at `daemon/` beside the page, behind the same cookie
   | "terminal" // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
-  | "workspace_stats"; // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
+  | "workspace_stats" // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
+  | "model_policy"; // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
 
 /** The gateway's reasoning-effort ladder; a rung a model lacks is clamped and reported on the
  *  assistant event's `effort.applied`. */
@@ -106,6 +107,8 @@ export interface HopView {
   requires?: Record<string, unknown>;
   safety?: Record<string, unknown>;
   memory?: Record<string, unknown>;
+  /** 0.20.5: the HOP's model policy, the gateway's allow/deny globs; absent = all models. */
+  modelPolicy?: { allow: string[]; deny: string[] };
   /** Setting paths a user or the tuner may not touch. */
   locked: string[];
   /** The declared optimization surface. */
@@ -320,7 +323,8 @@ export type ClientMessage =
    *  row being updated in between; as a bare id it is looked up, so an updated row restarts the
    *  order (refetch from the top on a repeat). */
   | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number }
-  | { type: "list_models"; requestId?: string }
+  /** 0.20.5: under hop_per_run, `hop` lists the models that HOP's key may use. */
+  | { type: "list_models"; requestId?: string; hop?: string }
   | { type: "list_skills"; requestId?: string }
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
    *  given); `session_history.hasMore` says whether older entries exist. */
@@ -448,7 +452,8 @@ export type ServerMessage =
     }
   /** 0.20.0 (capability "workspace_stats"). */
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
-  | { type: "error"; message: string; requestId?: string };
+  /** 0.20.5: `refusal` when the message is a model refusal (typed; see ModelRefusal). */
+  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal };
 
 export const PROTOCOL_VERSION = "yodex/2";
 

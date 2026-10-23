@@ -296,6 +296,9 @@ export interface Profile {
     /** managed HOPs: the publication this HOP version is published as; consented feedback goes to its HOP store. */
     publication?: string };
 
+  /** HOP model policy (2026-10-23): the gateway's allow/deny globs the HOP declares; the key the
+   *  HOP runs on carries it and the gateway enforces it. Absent = all models. Not inherited. */
+  modelPolicy?: { allow: string[]; deny: string[] };
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */

@@ -1,6 +1,6 @@
 {
   "name": "@mlpal/harness-protocol",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "description": "Wire types for the MLPal harness: sessions, engine events, control messages and the yodex serve WebSocket protocol.",
   "license": "Apache-2.0",
   "repository": {

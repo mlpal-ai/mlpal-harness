@@ -152,9 +152,17 @@ export class GatewayError extends Error {
     readonly status: number,
     readonly kind: GatewayErrorType = "http",
     readonly errorType?: string,
+    /** The gateway's machine code and the model it refused (`model_access_denied`, 0.20.5). */
+    readonly code?: string,
+    readonly model?: string,
   ) {
     super(message);
     this.name = "GatewayError";
+  }
+
+  /** The HOP's model policy (or the key's) refused the model: never retried, reported typed. */
+  get modelAccessDenied(): boolean {
+    return this.code === "model_access_denied";
   }
 
   /** Transient failures worth retrying. Cancellation never is. */
@@ -563,14 +571,18 @@ export class GatewayClient implements ModelClient {
   private async toError(res: Response): Promise<GatewayError> {
     let detail = res.statusText;
     let type: string | undefined;
+    let code: string | undefined;
+    let model: string | undefined;
     try {
-      const j = (await res.json()) as { error?: { type?: string; message?: string } };
+      const j = (await res.json()) as { error?: { type?: string; message?: string; code?: string; model?: string } };
       if (j.error?.message) detail = j.error.message;
       type = j.error?.type;
+      if (typeof j.error?.code === "string") code = j.error.code;
+      if (typeof j.error?.model === "string") model = j.error.model;
     } catch {
       // non-JSON body
     }
-    return new GatewayError(`gateway ${res.status}: ${detail}`, res.status, "http", type);
+    return new GatewayError(`gateway ${res.status}: ${detail}`, res.status, "http", type, code, model);
   }
 
   private normalizeError(e: unknown, userSignal: AbortSignal | undefined): Error {

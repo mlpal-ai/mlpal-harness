@@ -38,6 +38,7 @@ export function describeProfile(p: Profile): HopView {
     ...(p.requires ? { requires: { ...p.requires } } : {}),
     ...(p.safety ? { safety: { ...p.safety } } : {}),
     ...(p.memory ? { memory: { ...p.memory } } : {}),
+    ...(p.modelPolicy ? { modelPolicy: { allow: [...p.modelPolicy.allow], deny: [...p.modelPolicy.deny] } } : {}),
     locked: p.locked,
     tunable: p.tunable,
     modules: p.modules,

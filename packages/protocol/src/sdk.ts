@@ -59,6 +59,8 @@ export interface ToolResultEvent {
   /** (0.20.4) The host's permission judge decided this call (cruise): its verdict and reason.
    *  Absent when a rule, the mode or a person decided. Render-only, like `diff`. */
   judged?: { verdict: "allow" | "deny"; reason: string };
+  /** 0.20.5: a step (a sub-agent, a consult) refused before its call because of the model it named. */
+  refusal?: ModelRefusal;
   isError: boolean;
   ts: string;
 }
@@ -72,6 +74,8 @@ export interface ResultEvent {
   subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
   /** On `error`: a human-readable cause when the loop knows one (a hook rejected the prompt). */
   reason?: string;
+  /** 0.20.5: on `error`, the typed refusal when the gateway or a chooser refused the model. */
+  refusal?: ModelRefusal;
   numTurns: number;
   usage: Usage;
   ts: string;
@@ -80,10 +84,28 @@ export interface ResultEvent {
   pendingApproval?: { command: string; reason: string };
 }
 
+/**
+ * A model the HOP may not use (protocol 0.20.5, spec HOP-MODEL-POLICY). One code for every
+ * chooser's refusal before a call and for the gateway's 403 mid-run, so a frontend names the
+ * model and the HOP from fields, never from prose. `reason`: `hop_policy` (the HOP's own
+ * model_policy), `key_policy` (the key's policy narrowed it), `not_served` (the gateway does not
+ * serve it), `gateway` (the gateway refused the call).
+ */
+export interface ModelRefusal {
+  code: "model_access_denied";
+  model: string;
+  /** The HOP's name. */
+  hop: string;
+  reason?: "hop_policy" | "key_policy" | "not_served" | "gateway";
+  /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". */
+  message: string;
+}
 export interface ErrorEvent {
   type: "error";
   uuid?: string;
   message: string;
+  /** 0.20.5: present when the error is a model refusal (a run that could not start). */
+  refusal?: ModelRefusal;
   ts: string;
 }
 /**
