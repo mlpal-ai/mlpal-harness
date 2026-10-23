@@ -171,8 +171,11 @@ export interface StatsHour extends Omit<StatsDay, "day"> {
 }
 
 export interface StatsRollup {
-  /** Sessions with any record in the window. */
+  /** Sessions with any record in the window, sub-agents included. */
   sessions: number;
+  /** (0.20.4) Of `sessions`, the sub-agents: an `Agent` child, a verifier pass. `sessions -
+   *  subagents` is the rollup's share of `totals.sessions`. Absent from an older serve. */
+  subagents?: number;
   /** Runs that started in the window. */
   runs: number;
   computeUnits: number;

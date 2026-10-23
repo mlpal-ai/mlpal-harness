@@ -26,7 +26,7 @@ describe("protocol 0.20", () => {
       history: [{ day: "2026-10-20", usage: zero, computeUnits: 0 }],
       perModel: { m: { calls: 3, usage: zero, computeUnits: 0, ms: 10, avgCallMs: 10 / 3, untimedCalls: 0, retriedCalls: 0, share: 1 }, n: { calls: 1, usage: zero, computeUnits: 0, ms: 0, untimedCalls: 1, retriedCalls: 0, share: 0 } },
       modelSlots: ["m"],
-      perHop: { "coding@1.0.0": { sessions: 2, runs: 2, computeUnits: 0, lastAt: null } },
+      perHop: { "coding@1.0.0": { sessions: 2, subagents: 1, runs: 2, computeUnits: 0, lastAt: null } },
       perProject: { work: { sessions: 2, runs: 2, computeUnits: 0, lastAt: null } },
       perTool: { Bash: { runs: 1, errors: 0, denied: 0, ms: 5 } },
       outcomes: { success: 2, error: 0, max_turns: 0, cancelled: 0, needs_approval: 0 },
