@@ -251,8 +251,12 @@ export interface WorkspaceStats {
    *    Calls without a recorded time add nothing. Never divide it by `calls`.
    *  - `avgCallMs` (0.20.2): the mean of those wall times when every call in the window was one
    *    request with a recorded time, i.e. the average latency. Absent otherwise: a call that
-   *    retried, failed over, or came from an engine that does not count requests. */
-  perModel: Record<string, { calls: number; usage: StatsUsage; computeUnits: number; ms: number; avgCallMs?: number; share: number }>;
+   *    retried, failed over, or came from an engine that does not count requests.
+   *  - `untimedCalls` and `retriedCalls` (0.20.4): the calls that keep `avgCallMs` away, by why.
+   *    `retriedCalls` took more than one gateway request (a retry or a failover); `untimedCalls`
+   *    have no usable time or no request count (written by an engine from before per-call
+   *    timing). `avgCallMs` is present exactly when both are 0. Absent from an older serve. */
+  perModel: Record<string, { calls: number; usage: StatsUsage; computeUnits: number; ms: number; avgCallMs?: number; untimedCalls?: number; retriedCalls?: number; share: number }>;
   /** The workspace's top three models by tokens, all time and unscoped: stable colour slots. */
   modelSlots: string[];
   /** By the run's HOP label (`name@version`; `(none)` when a run had none). */
@@ -460,4 +464,4 @@ export const CLOSE_CREDENTIAL_REFUSED = { code: 4401, reason: "credential refuse
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.3";
+export const HARNESS_PROTOCOL_VERSION = "0.20.4";
