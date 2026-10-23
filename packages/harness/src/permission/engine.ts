@@ -24,9 +24,15 @@ export type PermissionMode = "recon" | "manual" | "cruise" | "autopilot";
 /** Which layer of the cascade produced a deny — for the attempt trace, so a grader never parses text. */
 export type DenySource = "hard_deny" | "deny_rule" | "safety" | "mode" | "tool_boundary" | "answers_policy";
 
+/** A host's permission judge decided the ask (cruise), with its reason: carried onto the tool's
+ *  result as `judged`, so a client can show who approved or refused the call. */
+export interface JudgeNote {
+  reason: string;
+}
+
 export type Decision =
-  | { behavior: "allow" }
-  | { behavior: "deny"; reason: string; source?: DenySource; safetyReason?: SafetyReason }
+  | { behavior: "allow"; judge?: JudgeNote }
+  | { behavior: "deny"; reason: string; source?: DenySource; safetyReason?: SafetyReason; judge?: JudgeNote }
   // `safetyReason` marks an ask that came from the §10 envelope edge (vs an ordinary mode prompt),
   // so a headless run can turn it into a NEEDS_APPROVAL terminal instead of a plain denial.
   | { behavior: "ask"; reason?: string; safetyReason?: SafetyReason };

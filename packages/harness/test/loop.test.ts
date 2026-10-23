@@ -261,6 +261,35 @@ describe("agentic loop", () => {
     expect(seen).toEqual([{ command: "terraform destroy", safetyReason: "needs_approval", reason: "destructive action requires approval" }]);
   });
 
+  test("a judged decision is on the tool's result (E-W3): who decided and why, for the client; nothing else carries it", async () => {
+    const model = new ScriptedModel([
+      multiToolUse([
+        { name: "Bash", input: { command: "echo judged-allow" } },
+        { name: "Bash", input: { command: "echo judged-deny" } },
+        { name: "Bash", input: { command: "echo person-allow" } },
+      ]),
+      textDone("done"),
+    ]);
+    const sess = session(model, "cruise", {
+      canUseTool: () => ({ behavior: "ask" }),
+      onAsk: async (req) => {
+        const c = String(req.input.command);
+        if (c.includes("judged-allow")) return { behavior: "allow", judge: { reason: "in scope" } };
+        if (c.includes("judged-deny")) return { behavior: "deny", reason: "permission judge: risky", source: "deny_rule", judge: { reason: "risky" } };
+        return { behavior: "allow" };
+      },
+    });
+    const events = await collect(sess.run({ text: "go" }));
+    const results = events.filter((e) => e.type === "tool_result") as Array<{ content: string; judged?: unknown }>;
+    expect(results.map((r) => r.judged)).toEqual([{ verdict: "allow", reason: "in scope" }, { verdict: "deny", reason: "risky" }, undefined]);
+    expect(results[0]!.content).toContain("judged-allow");
+    expect(results[1]!.content).toContain("Permission denied: permission judge: risky");
+    // Persisted with the result (a replay shows it), never sent to the model.
+    const persisted = (await new LocalStore(root).conversation.read("s1")).map((e) => e.payload).filter((p) => p.type === "tool_result") as Array<{ judged?: unknown }>;
+    expect(persisted.map((p) => p.judged)).toEqual([{ verdict: "allow", reason: "in scope" }, { verdict: "deny", reason: "risky" }, undefined]);
+    expect(JSON.stringify(model.seen.at(-1)!.messages)).not.toContain("in scope");
+  });
+
   test("HOP telemetry: hitting max turns classes as step_budget_stall", async () => {
     const emitted: RunOutcomeEvent[] = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);

@@ -1414,6 +1414,7 @@ export class AgentSession {
       isError: boolean,
       blocks?: ToolResultBlocks,
       diff?: string,
+      decided?: Decision,
     ): ToolResultEvent => ({
       type: "tool_result",
       toolUseId: tu.id,
@@ -1421,6 +1422,7 @@ export class AgentSession {
       content,
       blocks,
       ...(diff ? { diff } : {}),
+      ...(decided?.behavior !== "ask" && decided?.judge ? { judged: { verdict: decided.behavior, reason: decided.judge.reason } } : {}),
       isError,
       ts: now(),
     });
@@ -1522,7 +1524,7 @@ export class AgentSession {
       ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
-    return make(display, isError, blocks, diff);
+    return make(display, isError, blocks, diff, decision);
   }
 
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by

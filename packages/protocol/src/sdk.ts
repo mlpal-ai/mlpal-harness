@@ -56,6 +56,9 @@ export interface ToolResultEvent {
   /** Unified-diff patch for edit tools (Write/Edit), for rich rendering in frontends.
    *  Render-only — never shipped into the model's context. */
   diff?: string;
+  /** (0.20.4) The host's permission judge decided this call (cruise): its verdict and reason.
+   *  Absent when a rule, the mode or a person decided. Render-only, like `diff`. */
+  judged?: { verdict: "allow" | "deny"; reason: string };
   isError: boolean;
   ts: string;
 }
