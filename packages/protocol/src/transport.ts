@@ -472,4 +472,4 @@ export const CLOSE_CREDENTIAL_REFUSED = { code: 4401, reason: "credential refuse
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.4";
+export const HARNESS_PROTOCOL_VERSION = "0.20.5";

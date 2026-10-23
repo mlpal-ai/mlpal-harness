@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { HookEngine } from "../hooks/engine";
 import type { EngineEvent, SubagentEvent } from "@mlpal/harness-protocol";
 import { frameSubagentResult } from "../input/sanitize";
+import { ModelAccessError } from "../profile/model-policy";
 import { defineTool, type Tool, type ToolContext } from "../tools/types";
 import type { AgentDef } from "./agents";
 import { type BackgroundAgents, backgroundAgents } from "./background";
@@ -246,6 +247,9 @@ export function createTaskTool(
           task.endedAt = Date.now();
         }
         lc.ended(task.status === "cancelled" ? "cancelled" : "error");
+        // The child named a model the HOP may not use: the step fails typed (ModelRefusal on its
+        // tool_result), and the parent model reads why and picks another.
+        if (e instanceof ModelAccessError) return { content: e.refusal.message, isError: true, meta: { refusal: e.refusal } };
         throw e;
       }
     },
