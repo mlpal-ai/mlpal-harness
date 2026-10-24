@@ -123,3 +123,39 @@ describe("the gateway's model_access_denied", () => {
     }
   });
 });
+
+describe("a foreground sub-agent refused for its model (R6)", () => {
+  test("the Agent tool answers with a typed tool_result and the parent's stream carries refusal on the tool_result event", async () => {
+    const { createTaskTool } = await import("../src/subagent/task");
+    const { BackgroundAgents } = await import("../src/subagent/background");
+    const refusal = modelRefusal("gpt-6-sol", "reviewer", "hop_policy");
+    const run = async () => {
+      throw new ModelAccessError(refusal);
+    };
+    const tool = createTaskTool(run, [], new BackgroundAgents(0));
+    const direct = await tool.call({ description: "study", prompt: "p", model: "gpt-6-sol" }, { cwd: "/tmp", sessionId: "parent" });
+    expect(direct.isError).toBe(true);
+    expect(direct.meta?.refusal).toEqual(refusal);
+    // Through the loop: the ToolResultEvent on the parent's stream carries the refusal (0.20.5).
+    const root = mkdtempSync(join(tmpdir(), "yx-fg-"));
+    try {
+      const store = new LocalStore(root);
+      const tools = new ToolRegistry();
+      tools.register(tool);
+      let i = 0;
+      const scripts = [
+        { model: "test", message: { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "tu_1", name: "Agent", input: { description: "study", prompt: "p", model: "gpt-6-sol" } }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" as const },
+        { model: "test", message: { role: "assistant" as const, content: [{ type: "text" as const, text: "ok, another model then" }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn" as const },
+      ];
+      const session = new AgentSession({ agentId: "a", sessionId: "p", workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools, store, model_client: { async *stream() { return scripts[i++]!; } }, canUseTool: createPolicy({ mode: "autopilot" }), stamp: { hop: "reviewer@1.0.0", origin: "test", workspace: "w" } });
+      const events = [];
+      for await (const e of session.run({ text: "go" })) events.push(e);
+      const tr = events.find((e) => e.type === "tool_result") as { refusal?: unknown; isError: boolean } | undefined;
+      expect(tr?.isError).toBe(true);
+      expect(tr?.refusal).toEqual(refusal);
+      expect((events.find((e) => e.type === "result") as { subtype: string }).subtype).toBe("success"); // the parent went on
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
