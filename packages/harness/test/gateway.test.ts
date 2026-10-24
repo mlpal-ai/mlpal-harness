@@ -612,6 +612,55 @@ describe("GatewayClient model failover", () => {
     expect(seen.filter((m) => m === "fallback").length).toBe(1);
   });
 
+  test("a failover rung the policy refuses is skipped, never reported as the run's refusal; the primary's error stands when no rung is left", async () => {
+    const denied = (model: string) => new Response(JSON.stringify({ error: { type: "forbidden", code: "model_access_denied", model, message: "not allowed" } }), { status: 403 });
+    // primary 5xx, first fallback refused, second fallback answers.
+    let seen: string[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model as string;
+      seen.push(model);
+      if (model === "primary") return new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 });
+      if (model === "refused") return denied(model);
+      return new Response(SSE, { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+    const { result } = await drain(client.stream({ model: "primary", fallbackModels: ["refused", "third"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(result.stopReason).toBe("tool_use");
+    expect(seen.at(-1)).toBe("third");
+    expect(seen.filter((m) => m === "refused").length).toBe(1);
+    // primary 5xx, the only fallback refused: the primary's error is what the run sees.
+    seen = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model as string;
+      seen.push(model);
+      return model === "primary" ? new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }) : denied(model);
+    }) as unknown as typeof fetch;
+    let caught: unknown;
+    try {
+      await drain(client.stream({ model: "primary", fallbackModels: ["refused"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(GatewayError);
+    expect((caught as GatewayError).status).toBe(500);
+    expect((caught as GatewayError).modelAccessDenied).toBe(false);
+    // The primary itself refused: that is the typed refusal, no failover.
+    seen = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model as string;
+      seen.push(model);
+      return denied(model);
+    }) as unknown as typeof fetch;
+    try {
+      await drain(client.stream({ model: "primary", fallbackModels: ["fallback"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as GatewayError).modelAccessDenied).toBe(true);
+    expect((caught as GatewayError).model).toBe("primary");
+    expect(seen).toEqual(["primary"]);
+  }, 15_000);
+
   test("does not fail over on a non-retryable error (e.g. 404)", async () => {
     const seen: string[] = [];
     globalThis.fetch = (async (_url: string, init: RequestInit) => {

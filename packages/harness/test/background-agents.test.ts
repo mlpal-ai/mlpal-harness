@@ -231,3 +231,27 @@ describe("parallel foreground fan-out (read_only)", () => {
     expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThan(60); // both started together
   });
 });
+
+describe("a background child refused for its model (O7)", () => {
+  test("the task record carries the typed refusal and AgentOutput returns it on meta", async () => {
+    const { BackgroundAgents: BA } = await import("../src/subagent/background");
+    const { ModelAccessError, modelRefusal } = await import("../src/profile/model-policy");
+    const bg = new BA(0);
+    const refusal = modelRefusal("gpt-6-sol", "reviewer", "hop_policy");
+    const task = bg.start("study", () => Promise.reject(new ModelAccessError(refusal)));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(bg.get(task.id)!.status).toBe("failed");
+    expect(bg.get(task.id)!.refusal).toEqual(refusal);
+    const { agentOutputTool } = await import("../src/subagent/task");
+    const { backgroundAgents } = await import("../src/subagent/background");
+    const t2 = backgroundAgents.start("study2", () => Promise.reject(new ModelAccessError(refusal)));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    const out = await agentOutputTool.call({ id: t2.id }, { cwd: "/tmp" });
+    expect(out.isError).toBe(true);
+    expect(out.meta?.refusal).toEqual(refusal);
+  });
+});

@@ -278,3 +278,23 @@ describe("AskModel threads", () => {
     expect((second.messages[0]!.content as ContentBlock[])[0]!.type).toBe("image"); // the image is still in the history
   });
 });
+
+describe("HOP model policy on consult (R2)", () => {
+  test("a model the listing hides because of a policy is a typed refusal on resolveModelRef and on AskModel's tool_result, not \"not served\"", async () => {
+    const refusal = { code: "model_access_denied" as const, model: "gpt-6-sol", hop: "reviewer", reason: "hop_policy" as const, message: "HOP reviewer does not allow gpt-6-sol here" };
+    const d = deps(new FakeClient(() => new Error("never called")), { policy: (m) => (m === "gpt-6-sol" ? refusal : null) });
+    const r = resolveModelRef(d, "gpt-6-sol");
+    expect(r).toEqual({ error: refusal.message, refusal });
+    const tool = createAskModelTool(d);
+    const out = await tool.call({ model: "gpt-6-sol", prompt: "hi" } as never, ctx);
+    expect(out.isError).toBe(true);
+    expect(String(out.content)).toContain("HOP reviewer does not allow gpt-6-sol here");
+    expect(out.meta?.refusal).toEqual(refusal);
+    // A plain-string policy (allowInvokeAny) stays untyped text; a truly unknown model stays "not served".
+    const d2 = deps(new FakeClient(() => new Error("never")), { policy: (m) => (m === "gpt-6-astra" ? "HOP x consults only its tiers" : null) });
+    const out2 = await tool.call.call(createAskModelTool(d2), { model: "gpt-6-astra", prompt: "hi" } as never, ctx);
+    expect(out2.isError).toBe(true);
+    expect(out2.meta?.refusal).toBeUndefined();
+    expect(String((resolveModelRef(d, "gpt-7") as { error: string }).error)).toContain("not served");
+  });
+});

@@ -80,14 +80,15 @@ export function pinsOutsidePolicy(profile: Pick<Profile, "model" | "verification
 
 /** The one refusal every chooser raises, worded for the person (rule 7). */
 export function modelRefusal(model: string, hop: string, reason: ModelRefusal["reason"]): ModelRefusal {
+  // Rule 7: every refusal names the model and the HOP; the parenthesis says what narrowed it.
   const message =
     reason === "hop_policy"
       ? `HOP ${hop} does not allow ${model} here`
       : reason === "key_policy"
-        ? `the key this HOP runs on does not allow ${model}`
+        ? `HOP ${hop} cannot use ${model} here (the key's own policy narrows it)`
         : reason === "gateway"
-          ? `the gateway refused ${model} for HOP ${hop}`
-          : `${model} is not served here for HOP ${hop}`;
+          ? `HOP ${hop} cannot use ${model} here (the gateway refused it)`
+          : `HOP ${hop} cannot use ${model} here (not served by this gateway)`;
   return { code: MODEL_ACCESS_DENIED, model, hop, reason, message };
 }
 

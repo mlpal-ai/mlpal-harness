@@ -46,9 +46,10 @@ describe("model policy globs (the gateway's semantics, locally)", () => {
   test("the refusal names the model and the HOP, with one code", () => {
     const r = modelRefusal("gpt-6-sol", "reviewer", "hop_policy");
     expect(r).toEqual({ code: "model_access_denied", model: "gpt-6-sol", hop: "reviewer", reason: "hop_policy", message: "HOP reviewer does not allow gpt-6-sol here" });
-    expect(modelRefusal("x", "h", "key_policy").message).toContain("key");
-    expect(modelRefusal("x", "h", "not_served").message).toContain("not served");
-    expect(new ModelAccessError(modelRefusal("x", "h", "gateway")).message).toBe("the gateway refused x for HOP h");
+    // Rule 7: every reason names the model and the HOP.
+    expect(modelRefusal("x", "h", "key_policy").message).toBe("HOP h cannot use x here (the key's own policy narrows it)");
+    expect(modelRefusal("x", "h", "not_served").message).toBe("HOP h cannot use x here (not served by this gateway)");
+    expect(new ModelAccessError(modelRefusal("x", "h", "gateway")).message).toBe("HOP h cannot use x here (the gateway refused it)");
   });
 });
 
@@ -113,7 +114,7 @@ describe("the gateway's model_access_denied", () => {
       for await (const e of session.run({ text: "go" })) events.push(e);
       const result = events.find((e) => e.type === "result");
       expect(result).toMatchObject({ type: "result", subtype: "error", refusal: { code: "model_access_denied", model: "gpt-6-sol", hop: "reviewer", reason: "gateway" } });
-      expect((result as { reason?: string }).reason).toBe("the gateway refused gpt-6-sol for HOP reviewer");
+      expect((result as { reason?: string }).reason).toBe("HOP reviewer cannot use gpt-6-sol here (the gateway refused it)");
       const persisted = (await store.conversation.read("s")).map((e) => e.payload).find((p) => p.type === "result");
       expect(persisted).toMatchObject({ refusal: { code: "model_access_denied" } });
     } finally {

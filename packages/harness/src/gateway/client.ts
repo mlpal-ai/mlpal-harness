@@ -296,6 +296,8 @@ export class GatewayClient implements ModelClient {
     // been yielded we must not retry (that would double the output) — the error is surfaced.
     // Bounded independently of connect's budget so worst-case attempts stay small.
     const maxStreamRetry = 2;
+    /** The primary's last error, surfaced when every failover rung is refused by policy. */
+    let primaryError: GatewayError | undefined;
     // Whole-turn resume budget for mid-stream connectivity drops (laptop sleep, WiFi loss). The
     // suspended process freezes on the socket read and only throws on wake, so this budget is about
     // riding out reconnection flakiness after resume, not waiting out the sleep itself.
@@ -332,14 +334,18 @@ export class GatewayClient implements ModelClient {
           const text = await res.text();
           let message = text.slice(0, 300);
           let etype: string | undefined;
+          let code: string | undefined;
+          let refusedModel: string | undefined;
           try {
-            const j = JSON.parse(text) as { error?: { message?: string; type?: string }; message?: string };
+            const j = JSON.parse(text) as { error?: { message?: string; type?: string; code?: string; model?: string }; message?: string };
             message = j.error?.message ?? j.message ?? message;
             etype = j.error?.type;
+            if (typeof j.error?.code === "string") code = j.error.code;
+            if (typeof j.error?.model === "string") refusedModel = j.error.model;
           } catch {
             // not JSON after all — keep the raw excerpt
           }
-          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", etype);
+          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", etype, code, refusedModel);
         }
         const computeUnits = parseComputeUnits(res.headers);
         const effortApplied = parseEffortHeader(res.headers);
@@ -404,6 +410,19 @@ export class GatewayClient implements ModelClient {
           await sleep(backoffMs(streamResume));
           continue;
         }
+        // A failover rung the HOP may not use (the key's policy narrowed between the listing and
+        // the call): skip it, never report it as the refusal that ended the run; the primary's own
+        // error stands when no rung is left. The primary refused is the typed refusal itself.
+        if (!emitted && err instanceof GatewayError && err.modelAccessDenied && modelIdx > 0) {
+          this.metrics.increment("gateway.failover_refused", 1, { model });
+          this.logger.warn("failover model refused by policy — skipped", { model });
+          if (modelIdx < models.length - 1) {
+            modelIdx++;
+            attempt = 0;
+            continue;
+          }
+          throw primaryError ?? err;
+        }
         if (!emitted && err instanceof GatewayError && err.retryable) {
           if (attempt < maxStreamRetry) {
             attempt++;
@@ -412,6 +431,7 @@ export class GatewayClient implements ModelClient {
             continue;
           }
           if (modelIdx < models.length - 1) {
+            if (modelIdx === 0) primaryError = err;
             modelIdx++;
             attempt = 0;
             this.metrics.increment("gateway.failover", 1, { from: model, to: models[modelIdx]! });

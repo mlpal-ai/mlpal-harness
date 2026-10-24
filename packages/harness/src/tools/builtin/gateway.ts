@@ -16,7 +16,7 @@
  * HOP's model policy (`allowInvokeAny: false`) can restrict which models may be consulted.
  */
 import { z } from "zod";
-import type { ContentBlock, Message } from "@mlpal/harness-protocol";
+import type { ContentBlock, Message, ModelRefusal } from "@mlpal/harness-protocol";
 import type { Catalog } from "../../catalog/catalog";
 import { isTier, TIERS, tierModelOrNearest } from "../../catalog/catalog";
 import type { Effort, ModelClient } from "../../gateway/client";
@@ -35,8 +35,10 @@ export interface GatewayToolDeps {
   catalog: () => Catalog | null;
   /** The main loop's model, so the listing can say "you are running on …". */
   mainModel: () => string;
-  /** HOP model policy: a refusal reason for a model the loop may not consult, or null. */
-  policy?: (model: string) => string | null;
+  /** A model the loop may not consult: a plain reason (the HOP's allowInvokeAny tiers) or the typed
+   *  ModelRefusal (the HOP's or the key's model policy), or null. Consulted for a listed model and,
+   *  first, for one the listing hides, so a policy-hidden model is a typed refusal, not "not served". */
+  policy?: (model: string) => string | ModelRefusal | null;
   /** The recent conversation of the calling session, rendered as text within `maxChars`. */
   transcript?: (sessionId: string, maxChars: number) => Promise<string>;
   /** Resolve workspace paths to image/document blocks (host owns the roots and size caps). */
@@ -60,7 +62,7 @@ function fmtK(n: number | null | undefined): string {
 }
 
 /** Resolve what the model asked for (tier alias, meta tag, or id) to a served model tag. */
-export function resolveModelRef(deps: GatewayToolDeps, ref: string): { model: string } | { error: string } {
+export function resolveModelRef(deps: GatewayToolDeps, ref: string): { model: string } | { error: string; refusal?: ModelRefusal } {
   const r = ref.trim();
   if (!r) return { error: "empty model reference" };
   if (isTier(r)) {
@@ -72,6 +74,8 @@ export function resolveModelRef(deps: GatewayToolDeps, ref: string): { model: st
   const resolved = deps.resolveAlias(r);
   const info = deps.getModel(resolved);
   if (!info) {
+    const refused = deps.policy?.(resolved);
+    if (refused && typeof refused !== "string") return { error: refused.message, refusal: refused };
     const names = deps.models().filter((m) => m.capabilities.operation === "chat").map((m) => m.tag);
     const near = names.filter((n) => n.includes(r.split(/[-@]/)[0] ?? r)).slice(0, 5);
     return { error: `model "${r}" is not served by this gateway${near.length ? ` — did you mean: ${near.join(", ")}?` : ""} (ListModels shows what is)` };
@@ -322,14 +326,17 @@ export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore =
         };
       }
 
-      const one = async (ref: string): Promise<{ text: string; ok: boolean; model?: string; reply?: Message }> => {
+      const one = async (ref: string): Promise<{ text: string; ok: boolean; model?: string; reply?: Message; refusal?: ModelRefusal }> => {
         const r = resolveModelRef(deps, ref);
-        if ("error" in r) return { text: `### ${ref}\n(error: ${r.error})`, ok: false };
+        if ("error" in r) return { text: `### ${ref}\n(error: ${r.error})`, ok: false, ...(r.refusal ? { refusal: r.refusal } : {}) };
         if (thread && r.model !== thread.model) {
           return { text: `### ${ref} → ${r.model}\n(error: thread "${threadName}" is pinned to ${thread.model}; omit \`model\` to continue it, or use a new thread name for ${r.model})`, ok: false };
         }
         const refusal = deps.policy?.(r.model);
-        if (refusal) return { text: `### ${ref} → ${r.model}\n(not allowed: ${refusal})`, ok: false };
+        if (refusal) {
+          const message = typeof refusal === "string" ? refusal : refusal.message;
+          return { text: `### ${ref} → ${r.model}\n(not allowed: ${message})`, ok: false, ...(typeof refusal === "string" ? {} : { refusal }) };
+        }
         const info = deps.getModel(r.model);
         const needsVision = attachmentBlocks.some((a) => a.kind === "image");
         const needsPdf = attachmentBlocks.some((a) => a.kind === "pdf");
@@ -400,7 +407,9 @@ export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore =
         threads.set(sessionId, threadName, next);
       }
       const anyOk = answers.some((a) => a.ok);
-      return { content: answers.map((a) => a.text).join("\n\n"), isError: !anyOk };
+      // A consult refused for its model carries the typed refusal, like the Agent tool's step.
+      const refusal = anyOk ? undefined : answers.find((a) => a.refusal)?.refusal;
+      return { content: answers.map((a) => a.text).join("\n\n"), isError: !anyOk, ...(refusal ? { meta: { refusal } } : {}) };
     },
   });
 }

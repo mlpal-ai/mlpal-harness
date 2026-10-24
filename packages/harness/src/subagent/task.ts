@@ -273,6 +273,6 @@ export const agentOutputTool = defineTool({
       return { content: `[${t.id} finished]\n${frameSubagentResult(t.description, t.result ?? "")}` };
     }
     if (t.status === "cancelled") return { content: `[${t.id} cancelled] ${t.description}` };
-    return { content: `[${t.id} failed] ${t.description}: ${t.error ?? "unknown error"}`, isError: true };
+    return { content: `[${t.id} failed] ${t.description}: ${t.error ?? "unknown error"}`, isError: true, ...(t.refusal ? { meta: { refusal: t.refusal } } : {}) };
   },
 });

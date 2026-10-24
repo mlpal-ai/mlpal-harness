@@ -12,7 +12,9 @@
  * a task researching or verifying in parallel can never race the main agent's edits. Mutation stays
  * on the blocking Task path, where ordering is guaranteed.
  */
+import type { ModelRefusal } from "@mlpal/harness-protocol";
 import type { EventInbox } from "../events/inbox";
+import { ModelAccessError } from "../profile/model-policy";
 import { frameSubagentResult } from "../input/sanitize";
 
 export type TaskStatus = "running" | "done" | "failed" | "cancelled";
@@ -49,6 +51,8 @@ export interface BgAgentTask {
   /** The session whose Agent call started this child: its completion goes to that session's
    *  inbox, and only that session's notifications list it. */
   ownerSessionId?: string;
+  /** The child named a model the HOP may not use: the typed refusal AgentOutput returns. */
+  refusal?: ModelRefusal;
 }
 
 export class BackgroundAgents {
@@ -127,6 +131,7 @@ export class BackgroundAgents {
           if (task.status !== "running") return;
           task.status = "failed";
           task.error = e instanceof Error ? e.message : String(e);
+          if (e instanceof ModelAccessError) task.refusal = e.refusal;
           task.endedAt = Date.now();
           this.push(task);
         },
