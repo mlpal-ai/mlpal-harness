@@ -71,7 +71,50 @@ export type ServerCapability =
   | "terminal" // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
   | "workspace_stats" // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
   | "model_policy" // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
-  | "principal"; // 0.21.0: the signed X-Harness-Principal is verified on /ws; sessions carry `owner`; listings and session-addressed messages are filtered by it
+  | "principal" // 0.21.0: the signed X-Harness-Principal is verified on /ws; sessions carry `owner`; listings and session-addressed messages are filtered by it
+  | "schedules"; // 0.22.0: list/add/update/remove/run_schedule_now/schedule_runs and the schedule_fired side frame (SCHEDULES-WIRE.md)
+
+/** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
+ *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
+ *  firing, or continue one (hosted: the control plane's conversation id; desktop: the engine session id). */
+export interface ScheduleSpec {
+  name: string;
+  cadence: string;
+  timezone: string;
+  prompt: string;
+  /** Default: the revision's model (hosted) or the HOP's (desktop); must pass the HOP's model_policy. */
+  model?: string;
+  /** Desktop only: hosted, the publication pins the HOP (422 hop_not_settable). */
+  hop?: string;
+  delivery?: { mail?: string; webhook?: string };
+  mode?: "new" | `continue:${string}`;
+  enabled?: boolean;
+}
+
+/** 0.22.0: a schedule as the service holds it. `owner` is the publication's owner subject; `publication` its slug. */
+export type ScheduleView = ScheduleSpec & {
+  id: string;
+  owner?: string;
+  publication?: string;
+  enabled: boolean;
+  nextFireAt?: string;
+  lastConversationId?: string;
+  consecutiveFailures: number;
+  pausedReason?: string;
+  createdAt: string;
+};
+
+/** 0.22.0: one firing of a schedule. `slot` is the scheduled fire time, UTC ISO 8601 to the second; `skipped`
+ *  (grant_missing, cap_exhausted) does not count toward auto-pause, `failed` does. */
+export interface FiringView {
+  scheduleId: string;
+  slot: string;
+  conversationId?: string;
+  sessionId?: string;
+  status: "fired" | "skipped" | "failed";
+  reason?: string;
+  at: string;
+}
 
 /** 0.21.0: how a session came to exist under a hosted serve: the UI, an API call, or a schedule firing. */
 export type SessionOrigin = "ui" | "api" | `schedule:${string}`;
@@ -368,6 +411,14 @@ export type ClientMessage =
   /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed;
    *  `hop` bare or as `name@version` (a version that is not installed is an error). */
   | { type: "describe_hop"; requestId?: string; hop?: string }
+  /** 0.22.0 (capability "schedules"): the schedules this principal may see; replies `schedules`. */
+  | { type: "list_schedules"; requestId: string }
+  | { type: "add_schedule"; requestId: string; schedule: ScheduleSpec }
+  | { type: "update_schedule"; requestId: string; id: string; patch: Partial<ScheduleSpec> }
+  | { type: "remove_schedule"; requestId: string; id: string }
+  | { type: "run_schedule_now"; requestId: string; id: string }
+  /** `before` is a slot; newest first. */
+  | { type: "schedule_runs"; requestId: string; id: string; before?: string; limit?: number }
   /** 0.20.0 (capability "workspace_stats"): the aggregate over the server's workspace, days
    *  bucketed in `tz` (an IANA zone). `hop` (a name or `name@version`) or `project` narrows the
    *  scope; `sessions` pages `topSessions` (offset ≥ 0, limit 1–50, default 0/20). */
@@ -430,6 +481,15 @@ export type ServerMessage =
   | { type: "session_defaults"; requestId?: string; sessionId: string; defaults: SessionDefaults }
   /** yodex/2 (capability "describe_hop"). */
   | { type: "hop"; requestId?: string; hop: HopView }
+  /** 0.22.0 (capability "schedules"). */
+  | { type: "schedules"; requestId: string; schedules: ScheduleView[] }
+  | { type: "schedule"; requestId: string; schedule: ScheduleView }
+  | { type: "schedule_removed"; requestId: string; id: string }
+  | { type: "schedule_firing"; requestId: string; firing: FiringView }
+  | { type: "schedule_runs"; requestId: string; id: string; firings: FiringView[]; hasMore?: true }
+  /** 0.22.0: a schedule's run started on this serve (hosted: the relay's run with `origin: schedule:<id>`; desktop:
+   *  run_schedule_now); sent to the owner's open connections. No slot: `schedule_runs` has it. */
+  | { type: "schedule_fired"; scheduleId: string; sessionId?: string; conversationId?: string; status: FiringView["status"]; reason?: string }
   /** yodex/2 (capability "usage"): totals over every model call of the session. `usd` is
    *  `compute_units * USD_PER_CU`, present when the gateway metered any call. */
   | {
@@ -493,4 +553,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.21.0";
+export const HARNESS_PROTOCOL_VERSION = "0.22.0";
