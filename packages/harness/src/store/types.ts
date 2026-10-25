@@ -33,6 +33,9 @@ export interface SessionRecord {
    *  scheduler firing. `yodex -c` prefers human sessions — routine-spawned ones must not
    *  hijack "continue my conversation". */
   origin?: string;
+  /** The principal that opened the session under a hosted serve (protocol 0.21 `owner`); absent =
+   *  a local person's session. Written once, at creation. */
+  owner?: string;
   /** OS pid of the process that owns this session, when it is a live local presence.
    *  Lets peers distinguish a genuinely live session from the ghost record a killed
    *  process leaves behind (freshness alone has a 120s blind spot). */

@@ -71,8 +71,9 @@ export interface ResultEvent {
   uuid?: string;
   /** `needs_approval` (HOP §10): the run parked at the safety approval edge and stopped, waiting
    *  for a human — distinct from a user-initiated `cancelled`. */
-  subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval";
-  /** On `error`: a human-readable cause when the loop knows one (a hook rejected the prompt). */
+  subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval" | "interrupted";
+  /** On `error`: a human-readable cause when the loop knows one (a hook rejected the prompt).
+   *  On `interrupted` (0.21.0, written by the host at startup for a run a restart killed): why. */
   reason?: string;
   /** 0.20.5: on `error`, the typed refusal when the gateway or a chooser refused the model. */
   refusal?: ModelRefusal;

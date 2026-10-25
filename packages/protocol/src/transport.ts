@@ -46,6 +46,10 @@ export interface SessionSummary {
   parent?: { sessionId: string; toolUseId: string };
   /** 0.20.0: when the session was created (ISO 8601). */
   createdAt?: string;
+  /** 0.21.0 (capability "principal"): the principal that opened the session; absent on a local person's session. */
+  owner?: string;
+  /** 0.21.0: present when a hosted serve started the session (`run.origin`, default "ui"). */
+  origin?: SessionOrigin;
 }
 
 /** What a server can do beyond yodex/1. Absent from `ready` on a yodex/1 server. */
@@ -66,7 +70,11 @@ export type ServerCapability =
   | "daemon" // the pod daemon's UI routes are reachable at `daemon/` beside the page, behind the same cookie
   | "terminal" // a shell is reachable as a WebSocket at `terminal/ws` beside the page (ttyd's protocol, subprotocol `tty`)
   | "workspace_stats" // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
-  | "model_policy"; // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
+  | "model_policy" // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
+  | "principal"; // 0.21.0: the signed X-Harness-Principal is verified on /ws; sessions carry `owner`; listings and session-addressed messages are filtered by it
+
+/** 0.21.0: how a session came to exist under a hosted serve: the UI, an API call, or a schedule firing. */
+export type SessionOrigin = "ui" | "api" | `schedule:${string}`;
 
 /** The gateway's reasoning-effort ladder; a rung a model lacks is clamped and reported on the
  *  assistant event's `effort.applied`. */
@@ -311,6 +319,13 @@ export type ClientMessage =
       /** yodex/2 (capability "effort"): reasoning effort for this run; else the session's
        *  default, else the server's. */
       effort?: EffortLevel;
+      /** 0.21.0: run headless. No ask reaches this connection: a permission ask takes the person's
+       *  parked decision, then the cruise judge, else is denied with a fixed reason and recorded on
+       *  `done.denied`; a §10 safety-edge ask ends the run `needs_approval`; a question parks at once.
+       *  The run continues when the connection closes. */
+      detach?: boolean;
+      /** 0.21.0: stamped as the new session's origin; default "ui". */
+      origin?: SessionOrigin;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -449,6 +464,10 @@ export type ServerMessage =
       /** yodex/2: the run's usage, and the parked action when subtype is needs_approval. */
       usage?: Usage;
       pendingApproval?: PendingApproval;
+      /** 0.21.0: the asks a detached run denied because no one could answer them. */
+      denied?: Array<{ toolName: string; command: string; reason: string }>;
+      /** 0.21.0: a question parked during this run (`load_session` carries it). */
+      pendingQuestion?: true;
     }
   /** 0.20.0 (capability "workspace_stats"). */
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
@@ -469,7 +488,9 @@ export const PROTOCOL_VERSION = "yodex/2";
  * A request from another origin is refused over HTTP before any socket exists.
  */
 export const CLOSE_CREDENTIAL_REFUSED = { code: 4401, reason: "credential refused" } as const;
+/** 0.21.0: the upgrade carried no principal headers, or a signature the secret does not verify. */
+export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused" } as const;
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.20.5";
+export const HARNESS_PROTOCOL_VERSION = "0.21.0";

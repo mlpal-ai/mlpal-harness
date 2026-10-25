@@ -71,6 +71,10 @@ export interface AgentConfig {
   /** A sub-agent: the session and the `Agent` tool_use that spawned it; written to the session
    *  record so listings can hide or nest it. */
   parent?: { sessionId: string; toolUseId: string };
+  /** 0.21: written to the session record at creation (never changed on a resume): the principal
+   *  that opened it and how it came to exist (`ui` | `api` | `schedule:<id>`). */
+  owner?: string;
+  origin?: string;
   /** Routes side events (a sub-agent's lifecycle, a child's forwarded events) to this session
    *  whether or not its loop is running. Without it, side events raised while a tool runs still
    *  reach the stream; those raised after the run (a background child's end) are dropped. */
@@ -386,6 +390,8 @@ export class AgentSession {
         model: cfg.model,
         ...(cfg.stamp?.hop ? { hop: cfg.stamp.hop } : {}),
         ...(cfg.parent ? { parent: cfg.parent } : {}),
+        ...(cfg.owner ? { owner: cfg.owner } : {}),
+        ...(cfg.origin ? { origin: cfg.origin } : {}),
         createdAt: ts,
         updatedAt: ts,
       });

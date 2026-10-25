@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
+  CLOSE_PRINCIPAL_REFUSED,
+  HARNESS_PROTOCOL_VERSION,
+  type ClientMessage,
+  type ResultEvent,
+  type SessionSummary,
   addUsage,
   agentAuthor,
   contentBlockSchema,
@@ -98,5 +104,21 @@ describe("author", () => {
       id: "a1",
       displayName: "a1",
     });
+  });
+});
+
+describe("0.21", () => {
+  test("version and close code", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.21.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.21.0");
+    expect(CLOSE_PRINCIPAL_REFUSED).toEqual({ code: 4403, reason: "principal refused" });
+  });
+
+  test("0.20.5 frames are 0.21 frames; the new fields are optional", () => {
+    const legacy = { type: "run", requestId: "r", prompt: "hi" } satisfies ClientMessage;
+    const detached = { type: "run", requestId: "r", prompt: "hi", detach: true, origin: "schedule:01J" } satisfies ClientMessage;
+    const summary = { sessionId: "s", agentId: "a", status: "idle", model: "m", updatedAt: "t", title: "", owner: "org:acme", origin: "api" } satisfies SessionSummary;
+    const result: ResultEvent = { type: "result", subtype: "interrupted", reason: "the engine restarted while this run was in flight", numTurns: 0, usage: emptyUsage(), ts: "t" };
+    expect([legacy.type, detached.detach, summary.owner, result.subtype]).toEqual(["run", true, "org:acme", "interrupted"]);
   });
 });
