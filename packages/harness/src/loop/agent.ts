@@ -380,6 +380,11 @@ export class AgentSession {
     });
     const existing = await store.registry.getSession(cfg.sessionId);
     if (!existing) {
+      // 0.21: a sub-agent belongs to whoever owns its parent (and came to exist the same way), so a
+      // principal's listing and guard cover its children; an explicit owner on the child wins.
+      const inherited = cfg.parent && (!cfg.owner || !cfg.origin) ? await store.registry.getSession(cfg.parent.sessionId).catch(() => null) : null;
+      const owner = cfg.owner ?? inherited?.owner;
+      const origin = cfg.origin ?? inherited?.origin;
       await store.registry.putSession({
         sessionId: cfg.sessionId,
         agentId: cfg.agentId,
@@ -390,8 +395,8 @@ export class AgentSession {
         model: cfg.model,
         ...(cfg.stamp?.hop ? { hop: cfg.stamp.hop } : {}),
         ...(cfg.parent ? { parent: cfg.parent } : {}),
-        ...(cfg.owner ? { owner: cfg.owner } : {}),
-        ...(cfg.origin ? { origin: cfg.origin } : {}),
+        ...(owner ? { owner } : {}),
+        ...(origin ? { origin } : {}),
         createdAt: ts,
         updatedAt: ts,
       });

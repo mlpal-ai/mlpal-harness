@@ -27,4 +27,23 @@ describe("owner and origin on the session record (0.21)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("a sub-agent's session inherits owner and origin from its parent's record", async () => {
+    const root = mkdtempSync(join(tmpdir(), "yx-owner-child-"));
+    try {
+      const store = new LocalStore(root);
+      const base = { agentId: "a", workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools: new ToolRegistry(), store, model_client: { async *stream() { return reply("ok"); } }, canUseTool: createPolicy({ mode: "autopilot" }) };
+      for await (const _ of new AgentSession({ ...base, sessionId: "parent-1", owner: "org:acme", origin: "schedule:01J" }).run({ text: "go" })) {
+      }
+      for await (const _ of new AgentSession({ ...base, sessionId: "child-1", parent: { sessionId: "parent-1", toolUseId: "tu_1" } }).run({ text: "study" })) {
+      }
+      expect(await store.registry.getSession("child-1")).toMatchObject({ owner: "org:acme", origin: "schedule:01J", parent: { sessionId: "parent-1", toolUseId: "tu_1" } });
+      // An explicit owner on the child wins over the parent's.
+      for await (const _ of new AgentSession({ ...base, sessionId: "child-2", owner: "org:other", parent: { sessionId: "parent-1", toolUseId: "tu_2" } }).run({ text: "study" })) {
+      }
+      expect((await store.registry.getSession("child-2"))?.owner).toBe("org:other");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
