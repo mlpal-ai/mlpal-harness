@@ -132,7 +132,7 @@ describe("0.22 (the schedules capability)", () => {
     const runs = { type: "schedule_runs", requestId: "q", id: "01J", before: "2026-10-25T08:00:00Z", limit: 20 } satisfies ClientMessage;
     const view: ScheduleView = { id: "01J", name: "news", cadence: "daily@08:00", timezone: "America/Los_Angeles", prompt: "fetch the news", enabled: true, consecutiveFailures: 0, createdAt: "2026-10-24T00:00:00Z", owner: "org:acme", publication: "infra" };
     const fired = { type: "schedule_fired", scheduleId: "01J", sessionId: "s", conversationId: "conv_01J", status: "fired" } satisfies ServerMessage;
-    const reply = { type: "schedule_runs", requestId: "q", id: "01J", firings: [{ scheduleId: "01J", slot: "2026-10-25T08:00:00Z", status: "skipped", reason: "cap_exhausted", at: "2026-10-25T08:00:01Z" }], hasMore: true } satisfies ServerMessage;
+    const reply = { type: "schedule_runs", requestId: "q", id: "01J", firings: [{ scheduleId: "01J", slot: "2026-10-25T08:00:00Z", status: "skipped", reason: "cap_exhausted", at: "2026-10-25T08:00:01Z" }, { scheduleId: "01J", slot: "2026-10-26T08:00:00Z", status: "firing", at: "2026-10-26T08:00:00Z" }], hasMore: true } satisfies ServerMessage;
     expect([legacy.origin, add.schedule.name, runs.limit, view.consecutiveFailures, fired.status, reply.firings[0]?.reason]).toEqual(["schedule:01J", "news", 20, 0, "fired", "cap_exhausted"]);
   });
 });

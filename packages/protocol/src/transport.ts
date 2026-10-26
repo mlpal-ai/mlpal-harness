@@ -104,14 +104,16 @@ export type ScheduleView = ScheduleSpec & {
   createdAt: string;
 };
 
-/** 0.22.0: one firing of a schedule. `slot` is the scheduled fire time, UTC ISO 8601 to the second; `skipped`
- *  (grant_missing, cap_exhausted) does not count toward auto-pause, `failed` does. */
+/** 0.22.0: one firing of a schedule. `slot` is the scheduled fire time, UTC ISO 8601 to the second. `firing` is
+ *  transient: the row and the advanced next_fire_at commit before the run starts and it stays `firing` until the
+ *  outcome is known (older than 15 min → `failed`, reason `interrupted`); `skipped` (grant_missing, cap_exhausted)
+ *  does not count toward auto-pause, `failed` does. */
 export interface FiringView {
   scheduleId: string;
   slot: string;
   conversationId?: string;
   sessionId?: string;
-  status: "fired" | "skipped" | "failed";
+  status: "firing" | "fired" | "skipped" | "failed";
   reason?: string;
   at: string;
 }
