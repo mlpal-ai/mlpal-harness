@@ -120,6 +120,9 @@ export interface Store {
   readonly registry: Registry;
   readonly mailbox: Mailbox;
   artifactPath(sessionId: string, name: string): string;
+  /** Write every buffered line to disk, so another process reading the files sees them. A server
+   *  calls it before telling a client a turn is over. Optional: a synchronous backend has nothing to flush. */
+  flush?(): Promise<void>;
   /** Flush any buffered writes; the host calls it on exit. Optional: a synchronous backend has nothing to flush. */
   close?(): Promise<void>;
 }

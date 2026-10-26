@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -14,6 +14,18 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+describe("withMemory", () => {
+  test("keeps the base store's flush and close, so a server's flush is not a silent no-op under a memory mirror", async () => {
+    const queued = new LocalStore(root, { flushMs: 5000 });
+    const composed = withMemory(queued, queued.memory);
+    const e = await composed.conversation.append("s1", { type: "assistant", message: { role: "assistant", content: "x" }, ts: "t" } as never, null);
+    expect(composed.flush).toBeFunction();
+    await composed.flush!();
+    expect(await readFile(join(root, "conversation", "s1.jsonl"), "utf8")).toContain(e.uuid);
+    expect(composed.close).toBeFunction();
+  });
 });
 
 describe("SyncingMemory", () => {

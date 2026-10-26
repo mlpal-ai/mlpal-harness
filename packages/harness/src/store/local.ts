@@ -434,9 +434,14 @@ export class LocalStore implements Store {
     return join(this.root, "artifacts", sessionId, name);
   }
 
-  /** Write everything pending. The host calls this on every exit path; a reader of the store's own
-   *  files (read, head) flushes for itself. */
-  async close(): Promise<void> {
+  /** Write everything pending to disk. A reader of the store's own files (read, head) flushes for
+   *  itself; a reader in another process cannot, so the writer flushes before it says "done". */
+  async flush(): Promise<void> {
     await this.queue.flush();
+  }
+
+  /** The host calls this on every exit path. */
+  async close(): Promise<void> {
+    await this.flush();
   }
 }

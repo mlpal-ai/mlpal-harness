@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppendQueue } from "../src/store/append-queue";
@@ -62,6 +62,24 @@ describe("LocalStore reads after queued writes", () => {
       expect(await lastLine(join(root, "conversation", "none.jsonl"))).toBeNull();
       await store.logs.write("s1", "events", { kind: "k" });
       expect(await store.logs.read("s1", "events")).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("flush() puts every queued line on disk without a read (a separate process can see it at once)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "yodex-flush-"));
+    try {
+      const store = new LocalStore(root, { flushMs: 5000 });
+      const e = await store.conversation.append("s1", { type: "assistant", message: { role: "assistant", content: "parked" }, ts: "t" } as never, null);
+      await store.logs.write("s1", "events", { kind: "k" });
+      const file = join(root, "conversation", "s1.jsonl");
+      expect(existsSync(file)).toBe(false); // still queued: the flush interval has not passed
+      await store.flush();
+      // Straight from the disk: the store's own read path would flush as a side effect.
+      expect(readFileSync(file, "utf8")).toContain(e.uuid);
+      expect(readFileSync(join(root, "logs", "s1.events.jsonl"), "utf8")).toContain('"kind":"k"');
+      expect(store.queue.size()).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
