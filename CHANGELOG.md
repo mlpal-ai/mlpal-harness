@@ -11,8 +11,8 @@
 - `GatewayError.window` / `.resetAt` read `error.window` / `error.reset_at` of a non-2xx body when they are
   strings (any other type, or `reset_at: null`, is absent); nothing is parsed from the message prose.
   `budgetRefusal(model, hop, {window, resetsAt})` carries them onto the refusal and the loop passes them through
-  to the run's `result` (persisted). Today's gateway (assistants-service 8f1311c) does not put them in the body
-  yet, so its refusals carry neither until it does.
+  to the run's `result` (persisted). The gateway puts them in the body since assistants-service `feat/hop-customer-keys`
+  d2e0489 (`reset_at` null for a budget that never resets); an older gateway's refusals carry neither.
 
 ### The gateway's typed 403 `budget_exceeded` ends a run as a typed refusal (2026-10-26)
 

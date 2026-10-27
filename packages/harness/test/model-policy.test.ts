@@ -240,7 +240,7 @@ describe("the budget refusal's window and resetsAt (protocol 0.22.2)", () => {
     expect(persisted).toMatchObject({ code: "budget_exceeded", window: "daily", resetsAt: "2026-10-27T00:00:00Z" });
   });
 
-  test("a 403 body without them (today's gateway): both absent, nothing read from the prose", async () => {
+  test("a 403 body without them (a gateway before d2e0489): both absent, nothing read from the prose", async () => {
     const { raised, refusal, persisted } = await runAgainst(BUDGET_403);
     expect(raised?.budgetExceeded).toBe(true);
     expect([raised?.window, raised?.resetAt]).toEqual([undefined, undefined]);
