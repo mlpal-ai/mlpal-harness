@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@mlpal/harness-protocol";
+import { JsonLogger } from "../src/obs/logger";
 import { BLOB_THRESHOLD } from "../src/store/blobs";
 import { LocalStore } from "../src/store/local";
 import { EventTooLargeError } from "../src/store/remote/batcher";
@@ -236,7 +237,8 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await fake.stop();
     fake = startFakeSessionStore({ maxEventBytes: 1536 * 1024 });
     fake.createSession("s1");
-    const { store } = await openRemote();
+    const logs: Record<string, unknown>[] = [];
+    const { store } = await openRemote({ logger: new JsonLogger({ level: "debug", sink: (line) => void logs.push(JSON.parse(line)) }) });
     const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
     const huge = await store.conversation.append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(2 * 1024 * 1024), isError: false, ts: "t" } as SDKMessage, a.uuid);
     expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid, huge.uuid]); // not known to be too large yet
@@ -246,6 +248,9 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await store.appendEvent("tool_started", { toolUseId: "tu2" });
     await store.close();
     expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "tool_started"]);
+    const dropped = logs.filter((l) => l.msg === "store.event_dropped");
+    expect(dropped).toEqual([expect.objectContaining({ level: "error", sid: "s1", uuid: huge.uuid, kind: "tool_result", limit: 1536 * 1024 })]);
+    expect(dropped[0]!.bytes).toBeGreaterThan(2 * 1024 * 1024);
   });
 
   test("mailbox: post is refused with a clear error; peek and drain are empty", async () => {

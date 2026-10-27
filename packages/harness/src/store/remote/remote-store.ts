@@ -265,7 +265,10 @@ export class RemoteStore implements Store {
     const snapshot = JSON.parse(event.json) as T;
     seq.catch((err) => {
       if (!(err instanceof EventTooLargeError)) return;
-      this.log.warn("session store refused an event as too large; it is left out", { sid: this.sid, kind, bytes: err.bytes, limit: err.limit });
+      // Queued and then refused: later entries may already name it as their parent, so the hole is
+      // logged where a replay can tell it from an interruption.
+      const uuid = (snapshot as { uuid?: unknown } | null)?.uuid;
+      this.log.error("store.event_dropped", { sid: this.sid, ...(typeof uuid === "string" ? { uuid } : {}), kind, bytes: err.bytes, limit: err.limit });
       drop?.(snapshot);
     });
     return snapshot;
