@@ -248,6 +248,33 @@ describe("SessionStoreClient over P1", () => {
     expect(calls).toBe(1);
   });
 
+  test("the attempt in flight is abandoned when the caller's signal aborts, and fails with the caller's reason", async () => {
+    const ctl = new AbortController();
+    const reason = new Error("lease lost");
+    let calls = 0;
+    const hang = (_u: string, init: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        calls++;
+        init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    const pending = client({ fetch: hang }).c.renew("s1", "l", 30, { signal: ctl.signal });
+    await new Promise((r) => setTimeout(r, 5));
+    ctl.abort(reason);
+    expect(await caught(pending)).toBe(reason);
+    expect(calls).toBe(1);
+  });
+
+  test("an abort during a Retry-After sleep ends the call at once", async () => {
+    const ctl = new AbortController();
+    const busy = async () => Response.json({ code: "store_busy" }, { status: 503, headers: { "retry-after": "10" } });
+    const c = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => "t", fetch: busy });
+    const t0 = performance.now();
+    const pending = c.renew("s1", "l", 30, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(new Error("stop")), 20);
+    expect((await caught(pending)).message).toBe("stop");
+    expect(performance.now() - t0).toBeLessThan(1_000);
+  });
+
   test("413 event_too_large is a BatchTooLargeError carrying the store's max_event_bytes", async () => {
     const tooLarge = async () => Response.json({ code: "event_too_large", max_event_bytes: 2048 }, { status: 413 });
     const e = await caught(client({ fetch: tooLarge }).c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] }));

@@ -229,7 +229,13 @@ export class SessionStoreClient {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.tokenProvider = opts.tokenProvider;
     this.fetchImpl = opts.fetch ?? ((url, init) => fetch(url, init));
-    this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.sleep =
+      opts.sleep ??
+      ((ms) =>
+        new Promise((resolve) => {
+          // A retry's wait must not keep a finished process alive.
+          setTimeout(resolve, ms).unref?.();
+        }));
     this.now = opts.now ?? Date.now;
     this.timeoutMs = opts.timeoutMs ?? 20_000;
     this.log = opts.logger ?? silentLogger;
@@ -392,7 +398,7 @@ export class SessionStoreClient {
         const wait = Math.max(RETRY_BASE_MS * 2 ** (attempt - 2), waitMs);
         if (this.now() + wait >= budgetEnd) break;
         this.log.warn("session store call failed; retrying", { op, sid, attempt, error: failure!.message });
-        await this.sleep(wait);
+        await untilAborted(this.sleep(wait), signal);
       }
       if (signal?.aborted) throw signal.reason;
       const token = this.tokenProvider();
@@ -429,6 +435,17 @@ export class SessionStoreClient {
     }
     throw failure!;
   }
+}
+
+/** `p`, or the signal's reason as soon as it aborts. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 /** Never lets the bearer reach a message; an empty token has nothing to hide. */

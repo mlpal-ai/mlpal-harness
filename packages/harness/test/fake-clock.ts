@@ -33,6 +33,12 @@ export class FakeClock implements Timers {
     this.t = end;
   }
 
+  /** Steps wall time back, as an NTP correction would; pending timers keep their remaining delay. */
+  stepBack(ms: number): void {
+    this.t -= ms;
+    for (const timer of this.queue) timer.at -= ms;
+  }
+
   pending(): number {
     return this.queue.length;
   }

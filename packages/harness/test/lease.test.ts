@@ -296,6 +296,66 @@ describe("LeaseKeeper", () => {
     await k.release();
   });
 
+  test("a wall-clock step back never loses a healthy lease", async () => {
+    const stub = stubClient(ok);
+    const { k, lost, watch } = keeper(stub.client, 60);
+    watch();
+    k.adopt({ leaseId: "L" });
+    await run(30_000);
+    clock.stepBack(45_000);
+    await run(180_000);
+    expect(lost).toEqual([]);
+    await k.release();
+  });
+
+  test("the skew is logged once per adopt", async () => {
+    const stub = stubClient(async (c) => ({ expiresAt: c.at + 20_000 }));
+    const { k, logs } = keeper(stub.client);
+    k.adopt({ leaseId: "L1" });
+    await run(20_000);
+    k.adopt({ leaseId: "L2" });
+    await run(20_000);
+    expect(logs.filter((l) => l.msg === "store.lease_clock_skew")).toHaveLength(2);
+    await k.release();
+  });
+
+  /** A real client whose renews the store keeps answering busy; `sent` records each renew attempt. */
+  function busyStore() {
+    const sent: { at: number; leaseId: string }[] = [];
+    const t0 = clock.now();
+    const fetch = async (url: string) => {
+      const m = /\/lease\/([^/]+)\/renew$/.exec(new URL(url).pathname);
+      if (!m) return new Response(null, { status: 204 });
+      sent.push({ at: clock.now() - t0, leaseId: m[1]! });
+      return Response.json({ code: "session_busy" }, { status: 503, headers: { "retry-after": "4" } });
+    };
+    const client = new SessionStoreClient({ baseUrl: "http://store/v1", tokenProvider: () => "t", fetch, now: clock.now, sleep: clock.sleep });
+    return { sent, client };
+  }
+
+  test("no renew attempt goes out after release(), even one a busy store was making the client retry", async () => {
+    const { sent, client } = busyStore();
+    const k = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
+    k.adopt({ leaseId: "L" });
+    await run(2_000); // the first renew is in its Retry-After sleep
+    const before = sent.length;
+    await k.release();
+    await run(60_000);
+    expect(sent).toHaveLength(before);
+  });
+
+  test("a second adopt stops the first lease's renew still retrying", async () => {
+    const { sent, client } = busyStore();
+    const k = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
+    k.adopt({ leaseId: "L1" });
+    await run(2_000);
+    k.adopt({ leaseId: "L2" });
+    const at = sent.length;
+    await run(20_000);
+    expect(sent.slice(at).map((s) => s.leaseId).filter((id) => id === "L1")).toEqual([]);
+    await k.release();
+  });
+
   test("release gives the lease back and stops every timer", async () => {
     const stub = stubClient(ok);
     const { k } = keeper(stub.client);

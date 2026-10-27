@@ -6,9 +6,9 @@
  * own cadence, so one renew that never answers does not hold back the next; each asks for `ttl_s`
  * explicitly and gives up after ttl/3 or at the deadline, whichever is sooner. The store's
  * `expires_at` can only bring the deadline forward (the store's clock is not ours; the skew is logged).
- * A renew answered `lease_lost`, or the deadline, loses the lease: `onLost` fires, `signal` aborts
- * (which also abandons any renew still in flight, so none lands after the loss) and `leaseId` throws
- * the LeaseLostError, so the host stops the run before another engine's writes could interleave.
+ * A renew answered `lease_lost`, or the deadline, loses the lease: `onLost` fires, `signal` aborts and
+ * `leaseId` throws the LeaseLostError, so the host stops the run before another engine's writes could
+ * interleave. A loss, a release or a new adopt abandons every renew still in flight, so none lands after.
  */
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
@@ -34,14 +34,19 @@ export class LeaseKeeper {
   private readonly timers: Timers;
   private readonly log: Logger;
   private controller = new AbortController();
+  /** Ends every renew of the current holding (in flight or in a retry's wait): aborted on adopt,
+   *  release and loss. Separate from `signal`, which only a loss aborts. */
+  private renews = new AbortController();
   private readonly lostCallbacks: ((err: LeaseLostError) => void)[] = [];
   private cancelRenew: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
   private deadline = 0;
   /** The store's `expires_at` minus ours, when it brought the current deadline forward. */
   private deadlineSkewMs: number | null = null;
-  /** Send time of the newest renew that succeeded: an older one answering late never moves the deadline. */
-  private lastGoodSent = Number.NEGATIVE_INFINITY;
+  /** Renews are numbered as sent; only an answer newer than the last good one moves the deadline (a
+   *  count, not a send time, so a wall-clock step back cannot make a fresh renew look old). */
+  private renewsSent = 0;
+  private lastGoodRenew = 0;
   private skewLogged = false;
   /** Bumped by every adopt, loss and release, so an answer for an earlier holding is ignored. */
   private generation = 0;
@@ -70,11 +75,10 @@ export class LeaseKeeper {
    *  before is dropped from this keeper (its renews stop; it is not released). A phase-1 grant
    *  carries no expiry, so the deadline starts now and the first renew goes out at once. */
   adopt(grant: { leaseId: string }): void {
-    this.stopTimers();
-    this.generation++;
+    this.endHolding();
     this.controller = new AbortController();
     this.state = { kind: "held", leaseId: grant.leaseId };
-    this.lastGoodSent = Number.NEGATIVE_INFINITY;
+    this.lastGoodRenew = this.renewsSent;
     this.skewLogged = false;
     this.armDeadline(this.timers.now() + this.ttlMs - this.marginMs, null);
     this.renew(this.generation);
@@ -88,8 +92,7 @@ export class LeaseKeeper {
 
   /** Stops renewing and gives the lease back, when one is still held. */
   async release(): Promise<void> {
-    this.stopTimers();
-    this.generation++;
+    this.endHolding();
     const s = this.state;
     if (s.kind === "lost") return;
     this.state = { kind: "released" };
@@ -100,15 +103,15 @@ export class LeaseKeeper {
   private renew(generation: number): void {
     if (generation !== this.generation || this.state.kind !== "held") return;
     this.cancelRenew = this.timers.setTimeout(() => this.renew(generation), this.ttlMs / 3);
-    void this.renewOnce(generation, this.state.leaseId, this.timers.now());
+    void this.renewOnce(generation, this.state.leaseId, this.timers.now(), ++this.renewsSent);
   }
 
-  private async renewOnce(generation: number, leaseId: string, sent: number): Promise<void> {
+  private async renewOnce(generation: number, leaseId: string, sent: number, n: number): Promise<void> {
     try {
       const timeoutMs = Math.max(1, Math.min(this.deadline - sent, this.ttlMs / 3));
-      const answer = await this.opts.client.renew(this.opts.sid, leaseId, this.ttlS, { timeoutMs, signal: this.controller.signal });
-      if (generation !== this.generation || sent <= this.lastGoodSent) return;
-      this.lastGoodSent = sent;
+      const answer = await this.opts.client.renew(this.opts.sid, leaseId, this.ttlS, { timeoutMs, signal: this.renews.signal });
+      if (generation !== this.generation || n <= this.lastGoodRenew) return;
+      this.lastGoodRenew = n;
       const ours = sent + this.ttlMs;
       if (answer.expiresAt >= ours) return this.armDeadline(ours - this.marginMs, null);
       const skewMs = answer.expiresAt - ours;
@@ -138,17 +141,20 @@ export class LeaseKeeper {
     }, Math.max(0, at - this.timers.now()));
   }
 
-  private stopTimers(): void {
+  /** Ends the current holding's renew chain: its timers, every renew in flight, and late answers. */
+  private endHolding(): void {
     this.cancelRenew?.();
     this.cancelDeadline?.();
     this.cancelRenew = null;
     this.cancelDeadline = null;
+    this.generation++;
+    this.renews.abort(new Error("the lease holding ended"));
+    this.renews = new AbortController();
   }
 
   private lose(err: LeaseLostError): void {
     if (this.state.kind !== "held") return;
-    this.stopTimers();
-    this.generation++;
+    this.endHolding();
     this.state = { kind: "lost", err };
     this.log.error("session store lease lost", { sid: this.opts.sid, error: err.message });
     this.controller.abort(err);
