@@ -324,7 +324,8 @@ export const profileYamlSchema = z
      *  (`modules.<name>.enabled`, range ["on","off"]) so the tune loop can propose switching an
      *  unused provider off from the capability-mix facts, and the owner approves. Prompt text of
      *  enabled modules is appended to the system prompt in declaration order; a module's tools join
-     *  `tools.include` when enabled. `off` keeps the module in the artifact for a later `on`. */
+     *  `tools.include` when enabled (nothing to join when it is absent: that is every tool).
+     *  `off` keeps the module in the artifact for a later `on`. */
     modules: z
       .record(
         z
@@ -592,6 +593,14 @@ function composeSafety(
 }
 
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
+/** `include` absent = every registered tool, which already has every module's tools; `[]` = none,
+ *  and an enabled module's tools join it as they join a list. */
+function composeTools(include: string[] | undefined, modules: Profile["modules"]): Profile["tools"] {
+  if (include === undefined) return {};
+  const extra = Object.values(modules).filter((m) => m.enabled).flatMap((m) => m.tools ?? []);
+  return { include: extra.length ? [...new Set([...include, ...extra])] : include };
+}
+
 export function composeProfile(
   parent: Profile,
   y: ProfileYaml,
@@ -765,13 +774,7 @@ export function composeProfile(
       allow: [...parent.permissions.allow, ...(y.permissions.allow ?? [])],
       deny: [...parent.permissions.deny, ...(y.permissions.deny ?? [])],
     },
-    tools: {
-      include: (() => {
-        const base = y.tools.include ?? parent.tools.include;
-        const extra = Object.values(modules).filter((m) => m.enabled).flatMap((m) => m.tools ?? []);
-        return extra.length ? [...new Set([...base, ...extra])] : base;
-      })(),
-    },
+    tools: composeTools(y.tools.include ?? parent.tools.include, modules),
     budgets: { maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns },
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
     evals,

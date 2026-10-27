@@ -121,7 +121,7 @@ describe("golden: coding profile reproduces 0.8.0 strings", () => {
     expect(CODING_PROFILE.verification.agent.riskGateMinChangedLines).toBe(6);
     expect(CODING_PROFILE.verification.agent.failMode).toBe("open");
     expect(CODING_PROFILE.budgets.maxTurns).toBe(200);
-    expect(CODING_PROFILE.tools.include).toEqual([]); // empty = all tools, pre-split behavior
+    expect(CODING_PROFILE.tools.include).toBeUndefined(); // absent = all tools, pre-split behavior
     expect(CODING_PROFILE.permissions.defaultMode).toBe("autopilot");
   });
 });
@@ -903,6 +903,64 @@ tunable:
     expect(off.prompts.system).not.toContain("GCP section");
     expect(off.modules.gcloud!.enabled).toBe(false);
     expect(Object.keys(off.modules)).toEqual(["aws", "gcloud"]);
+  });
+});
+
+describe("tools.include: absent = all registered, [] = none (2026-10-26)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "hop-tools-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const head = (name: string, ext: string) => `spec: mlpal/hop-v1\nname: ${name}\nversion: 0.0.1\ndescription: t\nextends: ${ext}\n`;
+  function write(name: string, yaml: string): string {
+    const pdir = join(dir, name);
+    mkdirSync(join(pdir, "prompts"), { recursive: true });
+    writeFileSync(join(pdir, "hop.yaml"), yaml);
+    writeFileSync(join(pdir, "prompts", "m.md"), "module section");
+    return pdir;
+  }
+  const load = (pdir: string) => loadProfile(pdir, { cwd: dir, home: join(dir, "home") });
+  const listParent = () => write("listed", head("listed", "coding") + "tools:\n  include: [Read, Grep]\n");
+
+  test("the coding builtin resolves with include absent (= every registered tool)", () => {
+    expect(CODING_PROFILE.tools.include).toBeUndefined();
+    expect(loadProfile("coding", { cwd: dir, home: join(dir, "home") }).tools.include).toBeUndefined();
+    expect("include" in describeProfile(CODING_PROFILE).tools).toBe(false);
+  });
+
+  test("a HOP that omits tools resolves with include absent", () => {
+    expect(load(write("plain", head("plain", "coding"))).tools.include).toBeUndefined();
+  });
+
+  test("a HOP that writes include: [] resolves to [] (no tools)", () => {
+    expect(load(write("bare", head("bare", "coding") + "tools:\n  include: []\n")).tools.include).toEqual([]);
+  });
+
+  test("a child that omits tools.include inherits its parent's list", () => {
+    const parent = listParent();
+    expect(load(write("kid", head("kid", parent))).tools.include).toEqual(["Read", "Grep"]);
+  });
+
+  test("a child that writes [] overrides its parent's list with none", () => {
+    const parent = listParent();
+    expect(load(write("kid", head("kid", parent) + "tools:\n  include: []\n")).tools.include).toEqual([]);
+  });
+
+  const withModule = (include: string | null) =>
+    head("mod", "coding") +
+    (include === null ? "" : `tools:\n  include: ${include}\n`) +
+    "modules:\n  aws:\n    prompt: file:prompts/m.md\n    tools: [Bash]\n  off:\n    prompt: file:prompts/m.md\n    tools: [Write]\n    enabled: off\n";
+
+  test("an enabled module's tools merge into [] and into a list; a disabled module's do not", () => {
+    expect(load(write("m1", withModule("[]"))).tools.include).toEqual(["Bash"]);
+    expect(load(write("m2", withModule("[Read]"))).tools.include).toEqual(["Read", "Bash"]);
+  });
+
+  test("an enabled module leaves an absent include absent (all tools already include it)", () => {
+    expect(load(write("m3", withModule(null))).tools.include).toBeUndefined();
   });
 });
 

@@ -269,8 +269,9 @@ export interface Profile {
     deny: string[];
   };
   tools: {
-    /** Allowlist over builtin + host registries. Empty = all registered tools. */
-    include: string[];
+    /** Allowlist over builtin + host registries. Absent = every registered tool; `[]` = no
+     *  tools. The host filters at use time, since only it knows what is registered. */
+    include?: string[];
   };
   budgets: {
     maxTurns: number;

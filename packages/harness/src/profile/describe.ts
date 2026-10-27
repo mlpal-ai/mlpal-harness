@@ -29,7 +29,10 @@ export function describeProfile(p: Profile): HopView {
     catalog: p.catalog,
     routing: { ...p.routing },
     permissions: p.permissions,
-    tools: p.tools,
+    // Absent include (= every registered tool) stays absent on the wire: HopView defers to the
+    // Profile's shapes, but protocol 0.22 still types `include` as required (it predates
+    // absent = all, [] = none). Widen it to `include?` at the next protocol bump.
+    tools: p.tools as HopView["tools"],
     budgets: p.budgets,
     telemetry: p.telemetry,
     evals: p.evals.map((e) => ({ ...e })),

@@ -269,7 +269,7 @@ export const CODING_PROFILE: Profile = {
     escalation: { ladder: "off", patience: 2 },
   },
   permissions: { defaultMode: "autopilot", allow: [], deny: [] },
-  tools: { include: [] }, // empty = every registered tool, today's behavior
+  tools: {}, // include absent = every registered tool
   budgets: { maxTurns: 200 },
   telemetry: { taskType: "coding" },
   // The keyring a coding HOP key grants by default (founder direction 2026-09-22): every model
