@@ -4,10 +4,14 @@ import {
   CLOSE_PRINCIPAL_REFUSED,
   HARNESS_PROTOCOL_VERSION,
   type ClientMessage,
+  type ErrorEvent,
+  type HopView,
+  type ModelRefusal,
   type ResultEvent,
   type ScheduleView,
   type ServerMessage,
   type SessionSummary,
+  type ToolResultEvent,
   addUsage,
   agentAuthor,
   contentBlockSchema,
@@ -124,9 +128,7 @@ describe("0.21", () => {
 });
 
 describe("0.22 (the schedules capability)", () => {
-  test("version; 0.21 frames stay valid; the new frames type", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.0");
+  test("0.21 frames stay valid; the new frames type (the version is pinned by the newest describe)", () => {
     const legacy = { type: "run", requestId: "r", prompt: "hi", detach: true, origin: "schedule:01J" } satisfies ClientMessage;
     const add = { type: "add_schedule", requestId: "a", schedule: { name: "news", cadence: "daily@08:00", timezone: "America/Los_Angeles", prompt: "fetch the news", delivery: { mail: "me@example.com" }, mode: "new" } } satisfies ClientMessage;
     const runs = { type: "schedule_runs", requestId: "q", id: "01J", before: "2026-10-25T08:00:00Z", limit: 20 } satisfies ClientMessage;
@@ -134,5 +136,27 @@ describe("0.22 (the schedules capability)", () => {
     const fired = { type: "schedule_fired", scheduleId: "01J", sessionId: "s", conversationId: "conv_01J", status: "fired" } satisfies ServerMessage;
     const reply = { type: "schedule_runs", requestId: "q", id: "01J", firings: [{ scheduleId: "01J", slot: "2026-10-25T08:00:00Z", status: "skipped", reason: "cap_exhausted", at: "2026-10-25T08:00:01Z" }, { scheduleId: "01J", slot: "2026-10-26T08:00:00Z", status: "firing", at: "2026-10-26T08:00:00Z" }], hasMore: true } satisfies ServerMessage;
     expect([legacy.origin, add.schedule.name, runs.limit, view.consecutiveFailures, fired.status, reply.firings[0]?.reason]).toEqual(["schedule:01J", "news", 20, 0, "fired", "cap_exhausted"]);
+  });
+});
+
+describe("0.22.1 (budget_exceeded refusal; HopView.tools.include optional)", () => {
+  test("version", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.1");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.1");
+  });
+
+  test("a budget_exceeded refusal rides error, result and tool_result; model_access_denied still does", () => {
+    const spent: ModelRefusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "HOP infra cannot call claude-opus-5-5: the key's spend budget is exhausted" };
+    const denied: ModelRefusal = { code: "model_access_denied", model: "gpt-6-sol", hop: "reviewer", reason: "hop_policy", message: "HOP reviewer does not allow gpt-6-sol here" };
+    const error: ErrorEvent = { type: "error", message: spent.message, refusal: spent, ts: "t" };
+    const result: ResultEvent = { type: "result", subtype: "error", reason: spent.message, refusal: spent, numTurns: 1, usage: emptyUsage(), ts: "t" };
+    const toolResult: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Agent", content: spent.message, refusal: spent, isError: true, ts: "t" };
+    const frame = { type: "error", requestId: "r", message: spent.message, refusal: spent } satisfies ServerMessage;
+    expect([error.refusal?.code, result.refusal?.code, toolResult.refusal?.code, frame.refusal.code, denied.code]).toEqual(["budget_exceeded", "budget_exceeded", "budget_exceeded", "budget_exceeded", "model_access_denied"]);
+  });
+
+  test("HopView.tools.include is optional: absent = every registered tool, [] = none", () => {
+    const view = (tools: HopView["tools"]): HopView => ({ name: "coding", version: "1.0.0", description: "", source: "builtin", dir: null, extendsChain: [], prompts: { system: "", verifierAgent: "" }, loop: { taskType: "coding", verifyCommand: null, envBroken: null, churnThreshold: 3, summarizerSystem: "", condenserSystem: "", checkpointNudge: false }, verification: {}, catalog: { profile: "" }, routing: {}, permissions: { defaultMode: "manual", allow: [], deny: [] }, tools, budgets: { maxTurns: 50 }, telemetry: { taskType: "coding" }, evals: [], locked: [], tunable: [], modules: {} });
+    expect([view({}).tools.include, view({ include: [] }).tools.include, view({ include: ["Bash"] }).tools.include]).toEqual([undefined, [], ["Bash"]]);
   });
 });

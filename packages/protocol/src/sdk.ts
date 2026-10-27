@@ -86,14 +86,17 @@ export interface ResultEvent {
 }
 
 /**
- * A model the HOP may not use (protocol 0.20.5, spec HOP-MODEL-POLICY). One code for every
- * chooser's refusal before a call and for the gateway's 403 mid-run, so a frontend names the
- * model and the HOP from fields, never from prose. `reason`: `hop_policy` (the HOP's own
+ * A model call refused (protocol 0.20.5, spec HOP-MODEL-POLICY): one code for every chooser's
+ * refusal before a call and for the gateway's policy 403 mid-run, another for the gateway's
+ * budget 403 (0.22.1), so a frontend names the model and the HOP from fields, never from prose. `reason`: `hop_policy` (the HOP's own
  * model_policy), `key_policy` (the key's policy narrowed it), `not_served` (the gateway does not
  * serve it), `gateway` (the gateway refused the call).
  */
 export interface ModelRefusal {
-  code: "model_access_denied";
+  /** `model_access_denied`: the HOP's, the key's or the gateway's policy refused the model.
+   *  `budget_exceeded` (0.22.1): the gateway refused the call for a spent budget cap; mid-run
+   *  (reason `gateway`). */
+  code: "model_access_denied" | "budget_exceeded";
   model: string;
   /** The HOP's name. */
   hop: string;
