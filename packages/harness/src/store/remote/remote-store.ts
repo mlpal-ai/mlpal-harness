@@ -2,8 +2,10 @@
  * The `remote` backend of the engine's Store (seam P2): one session, one lease, one writer.
  * The session's P1 log is read once at open; after that every view answers from memory, which
  * holds exactly what was read plus what this engine queued (single writer: what is queued is what
- * the store will hold). Writes go through one AppendBatcher; a fatal append ends the session for
- * this engine, and every later write throws it.
+ * the store will hold), as snapshots taken when queued; reads hand out copies, as LocalStore's do.
+ * Writes go through one AppendBatcher; a fatal append ends the session for this engine, and every
+ * later write throws it. An event too large for the store is refused alone (EventTooLargeError) and
+ * kept out of memory, or taken out again when the store's 413 teaches the limit.
  *
  * On the wire: a conversation entry is kind = `payload.type`, data = the entry; a log record is
  * kind `log`, data `{channel, record}`; a registry write is kind `record`, data = the record or
@@ -14,8 +16,8 @@ import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
 import type { AgentRecord, ConversationStore, LogChannel, LogStore, Mailbox, MemoryStore, Registry, SessionRecord, Store } from "../types";
-import { AppendBatcher } from "./batcher";
-import type { SessionStoreClient, StoredEvent } from "./client";
+import { AppendBatcher, EventTooLargeError } from "./batcher";
+import { encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
 import type { LeaseKeeper } from "./lease";
 
 /** The kinds that are conversation entries when their data has a `uuid`. */
@@ -39,7 +41,7 @@ export class MailboxUnavailableError extends Error {
 }
 
 export interface RemoteStoreOptions {
-  client: Pick<SessionStoreClient, "readAll" | "append">;
+  client: Pick<SessionStoreClient, "readAll" | "appendEncoded">;
   sid: string;
   /** Held (acquired or adopted) by the host before the first write; released by close(). */
   lease: LeaseKeeper;
@@ -47,6 +49,8 @@ export interface RemoteStoreOptions {
   artifactsDir: string;
   batchMaxEvents?: number;
   batchMaxBytes?: number;
+  /** The store's `max_event_bytes` from the host's settings; learned from the store when absent. */
+  maxEventBytes?: number;
   now?: () => number;
   logger?: Logger;
   /** Called once when the writer stops; the host ends the session for this engine (exit 76). */
@@ -85,13 +89,12 @@ export class RemoteStore implements Store {
         self.check(sessionId);
         self.writable();
         const entry: ConversationEntry = { uuid: crypto.randomUUID(), parentUuid, ts: self.iso(), payload };
-        self.entries.push(entry);
-        self.write(payload.type, entry);
+        self.entries.push(self.write(payload.type, entry, (snap) => remove(self.entries, snap)));
         return entry;
       },
       async read(sessionId: string) {
         self.check(sessionId);
-        return [...self.entries];
+        return structuredClone(self.entries);
       },
       async head(sessionId: string) {
         self.check(sessionId);
@@ -99,25 +102,25 @@ export class RemoteStore implements Store {
       },
       async tail(sessionId: string, cursor: number) {
         self.check(sessionId);
-        return { entries: self.entries.slice(cursor), cursor: self.entries.length };
+        return { entries: structuredClone(self.entries.slice(cursor)), cursor: self.entries.length };
       },
     };
     this.logs = {
       async write(sessionId: string, channel: LogChannel, record: Record<string, unknown>) {
         self.check(sessionId);
         self.writable();
-        const stamped = { ts: self.iso(), ...record };
-        self.channel(channel).push(stamped);
-        self.write("log", { channel, record: stamped });
+        const records = self.channel(channel);
+        const snap = self.write("log", { channel, record: { ts: self.iso(), ...record } }, (s) => remove(records, s.record));
+        records.push(snap.record);
       },
       async read(sessionId: string, channel: LogChannel) {
         self.check(sessionId);
-        return [...self.channel(channel)];
+        return structuredClone(self.channel(channel));
       },
       async tail(sessionId: string, channel: LogChannel, cursor: number) {
         self.check(sessionId);
         const all = self.channel(channel);
-        return { records: all.slice(cursor), cursor: all.length };
+        return { records: structuredClone(all.slice(cursor)), cursor: all.length };
       },
     };
     this.registry = {
@@ -127,26 +130,24 @@ export class RemoteStore implements Store {
       async listAgents() {
         return [...self.agents.values()];
       },
+      /** Folded as a merge, as the store folds `record` events (see Registry.putSession). */
       async putSession(s: SessionRecord) {
         self.check(s.sessionId);
         self.writable();
-        self.foldRecord(s);
-        self.write("record", s);
+        self.foldRecord(self.write("record", s));
       },
       async patchSession(sessionId: string, patch: Partial<SessionRecord>) {
         self.check(sessionId);
         self.writable();
         if (!self.record) return;
-        const data = { ...patch, updatedAt: self.iso() };
-        self.foldRecord(data);
-        self.write("record", data);
+        self.foldRecord(self.write("record", { ...patch, updatedAt: self.iso() }));
       },
       async getSession(sessionId: string) {
         self.check(sessionId);
-        return self.record ? { ...self.record } : null;
+        return self.record ? structuredClone(self.record) : null;
       },
       async listSessions() {
-        return self.record ? [{ ...self.record }] : [];
+        return self.record ? [structuredClone(self.record)] : [];
       },
     };
     this.mailbox = {
@@ -177,6 +178,7 @@ export class RemoteStore implements Store {
       afterSeq: lastSeq,
       batchMaxEvents: this.opts.batchMaxEvents,
       batchMaxBytes: this.opts.batchMaxBytes,
+      maxEventBytes: this.opts.maxEventBytes,
       now: this.now,
       onAck: (acked) => this.stored.push(...acked),
       onFatal: (err) => {
@@ -197,7 +199,7 @@ export class RemoteStore implements Store {
   }
 
   /** Appends one host event (`tool_started`, `question_parked`, …); resolves to its seq once stored. */
-  appendEvent(kind: string, data: unknown): Promise<number> {
+  async appendEvent(kind: string, data: unknown): Promise<number> {
     return this.writer().append(kind, data);
   }
 
@@ -253,14 +255,28 @@ export class RemoteStore implements Store {
     if (fatal) throw fatal;
   }
 
-  /** Queues without waiting: a failure stops the writer and reaches the host through onFatal. */
-  private write(kind: string, data: unknown): void {
-    this.writer()
-      .append(kind, data)
-      .catch(() => {});
+  /** Serializes and queues without waiting for the store, and returns the snapshot the memory views
+   *  keep. Throws, queuing nothing, when `data` cannot be serialized or is over the known per-event
+   *  limit. A later refusal of this one event as too large calls `drop` with the snapshot; any other
+   *  failure stops the writer and reaches the host through onFatal. */
+  private write<T>(kind: string, data: T, drop?: (snapshot: T) => void): T {
+    const event = encodeEvent(kind, data, this.now());
+    const seq = this.writer().push(event);
+    const snapshot = JSON.parse(event.json) as T;
+    seq.catch((err) => {
+      if (!(err instanceof EventTooLargeError)) return;
+      this.log.warn("session store refused an event as too large; it is left out", { sid: this.sid, kind, bytes: err.bytes, limit: err.limit });
+      drop?.(snapshot);
+    });
+    return snapshot;
   }
 
   private iso(): string {
     return new Date(this.now()).toISOString();
   }
+}
+
+function remove<T>(list: T[], item: T): void {
+  const i = list.indexOf(item);
+  if (i >= 0) list.splice(i, 1);
 }

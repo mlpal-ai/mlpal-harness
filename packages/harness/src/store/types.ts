@@ -93,6 +93,8 @@ export interface MemoryStore {
 
 export interface Registry {
   putAgent(a: AgentRecord): Promise<void>;
+  /** Writes the record. The remote backend folds it as a merge onto the record it holds, as the
+   *  session store folds `record` events; it is only ever called before a session has a record. */
   putSession(s: SessionRecord): Promise<void>;
   patchSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;

@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@mlpal/harness-protocol";
+import { BLOB_THRESHOLD } from "../src/store/blobs";
 import { LocalStore } from "../src/store/local";
+import { EventTooLargeError } from "../src/store/remote/batcher";
 import { SeqConflictError, SessionStoreClient } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
 import { MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "../src/store/remote/remote-store";
@@ -69,6 +71,21 @@ async function script(store: Store): Promise<void> {
   await store.registry.patchSession("s1", { status: "idle", head: res.uuid, name: "named" });
   await store.registry.patchSession("s1", { mode: "plan" });
   await store.logs.write("s1", "events", { kind: "run.end", run: "r1" });
+  const rewind = await store.conversation.append("s1", { type: "rewind", toUuid: user.uuid, turn: 1, ts: "t5" }, res.uuid);
+  const compact = await store.conversation.append("s1", { type: "compact", summary: "we listed the files", trigger: "manual", replacedMessages: 4, ts: "t6" }, rewind.uuid);
+  const sub = await store.conversation.append(
+    "s1",
+    { type: "subagent", kind: "start", toolUseId: "tu2", childSessionId: "child-1", description: "list the files", background: false, ts: "t7" },
+    compact.uuid,
+  );
+  // Over the blob threshold: LocalStore keeps it beside the file and rebuilds it on read; the store holds it inline.
+  const image = Buffer.alloc(BLOB_THRESHOLD * 2, 7).toString("base64");
+  const withImage = await store.conversation.append(
+    "s1",
+    { type: "user", message: { role: "user", content: [{ type: "text", text: "and this" }, { type: "image", source: { type: "base64", media_type: "image/png", data: image } }] }, author: { type: "human" }, ts: "t8" } as SDKMessage,
+    sub.uuid,
+  );
+  await store.registry.patchSession("s1", { head: withImage.uuid });
 }
 
 /** The backend-neutral view: entry ids become positions, wall-clock stamps are dropped. */
@@ -81,7 +98,10 @@ async function views(store: Store) {
   const { updatedAt, ...rest } = session!;
   const sessionView = { ...rest, head: rest.head === null ? null : at.get(rest.head) };
   return {
-    conversation: entries.map((e) => ({ parent: e.parentUuid === null ? null : at.get(e.parentUuid), payload: e.payload })),
+    conversation: entries.map((e) => ({
+      parent: e.parentUuid === null ? null : at.get(e.parentUuid),
+      payload: e.payload.type === "rewind" ? { ...e.payload, toUuid: e.payload.toUuid === null ? null : at.get(e.payload.toUuid) } : e.payload,
+    })),
     head: at.get((await store.conversation.head("s1"))!),
     logs,
     session: sessionView,
@@ -90,16 +110,19 @@ async function views(store: Store) {
 }
 
 describe("RemoteStore: the contract with LocalStore", () => {
-  test("the same appends, log writes and registry patches read back the same from both backends", async () => {
+  test("the same appends, log writes and registry patches read back the same from both backends, also after a fresh open()", async () => {
     const local = new LocalStore(join(root, "local"));
     await script(local);
+    await local.close();
     const { store: remote } = await openRemote();
     await script(remote);
-    const want = await views(local);
-    expect(want.conversation).toHaveLength(5);
+    const want = await views(new LocalStore(join(root, "local")));
+    expect(want.conversation.map((e) => (e.payload as { type: string }).type)).toEqual(["system", "user", "assistant", "tool_result", "result", "rewind", "compact", "subagent", "user"]);
     expect(await views(remote)).toEqual(want);
-    await remote.flush();
     await remote.close();
+    const { store: reopened } = await openRemote();
+    expect(await views(reopened)).toEqual(want);
+    await reopened.close();
   });
 
   test("open() on a pre-filled store restores the same views, uuids and stamps included", async () => {
@@ -127,7 +150,7 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await script(store);
     await store.flush();
     const kinds = fake.events("s1").map((e) => e.kind);
-    expect(kinds).toEqual(["record", "log", "system", "user", "log", "assistant", "log", "tool_result", "result", "record", "record", "log"]);
+    expect(kinds).toEqual(["record", "log", "system", "user", "log", "assistant", "log", "tool_result", "result", "record", "record", "log", "rewind", "compact", "subagent", "user", "record"]);
     const user = fake.events("s1")[3]!.data as { uuid: string; parentUuid: string; payload: { type: string } };
     expect(user.payload.type).toBe("user");
     expect(user.parentUuid).toBe((fake.events("s1")[2]!.data as { uuid: string }).uuid);
@@ -171,6 +194,57 @@ describe("RemoteStore: the contract with LocalStore", () => {
     expect(again.events().find((e) => e.kind === "tool_started")?.data).toEqual({ toolUseId: "tu1", name: "Bash" });
     expect(await again.logs.read("s1", "events")).toEqual([]);
     await again.close();
+  });
+
+  test("reads hand out copies: changing what read returned, or the payload after append, changes nothing stored", async () => {
+    const { store } = await openRemote();
+    const payload = { type: "user", message: { role: "user", content: "x" }, author: { type: "human" }, ts: "t" } as SDKMessage & { ts: string };
+    await store.conversation.append("s1", payload, null);
+    payload.ts = "changed";
+    const first = await store.conversation.read("s1");
+    (first[0]!.payload as { ts: string }).ts = "changed too";
+    expect(((await store.conversation.read("s1"))[0]!.payload as { ts: string }).ts).toBe("t");
+    await store.logs.write("s1", "events", { kind: "k" });
+    (await store.logs.read("s1", "events"))[0]!.kind = "changed";
+    expect((await store.logs.read("s1", "events"))[0]!.kind).toBe("k");
+    await store.registry.putSession(record);
+    (await store.registry.getSession("s1"))!.status = "error";
+    expect((await store.registry.getSession("s1"))!.status).toBe("active");
+    await store.close();
+  });
+
+  test("an event over maxEventBytes is refused before it is queued: EventTooLargeError, no memory entry, the session goes on", async () => {
+    const fatals: Error[] = [];
+    const { store } = await openRemote({ maxEventBytes: 64 * 1024, onFatal: (e) => fatals.push(e) });
+    const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
+    const big = { type: "tool_result", toolUseId: "tu1", content: "x".repeat(100 * 1024), isError: false, ts: "t" } as SDKMessage;
+    const err = await store.conversation.append("s1", big, a.uuid).catch((e) => e);
+    expect(err).toBeInstanceOf(EventTooLargeError);
+    expect(err).toMatchObject({ limit: 64 * 1024 });
+    expect(await store.logs.write("s1", "events", { blob: "y".repeat(100 * 1024) }).catch((e) => e)).toBeInstanceOf(EventTooLargeError);
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
+    expect(await store.conversation.head("s1")).toBe(a.uuid);
+    expect(await store.logs.read("s1", "events")).toEqual([]);
+    await store.conversation.append("s1", { type: "assistant", message: { role: "assistant", content: "ok" }, ts: "t" } as SDKMessage, a.uuid);
+    await store.close();
+    expect(fatals).toEqual([]);
+    expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "assistant"]);
+  });
+
+  test("an event the store refuses as event_too_large leaves memory too, the limit is learned, and the writer goes on", async () => {
+    await fake.stop();
+    fake = startFakeSessionStore({ maxEventBytes: 1536 * 1024 });
+    fake.createSession("s1");
+    const { store } = await openRemote();
+    const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
+    const huge = await store.conversation.append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(2 * 1024 * 1024), isError: false, ts: "t" } as SDKMessage, a.uuid);
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid, huge.uuid]); // not known to be too large yet
+    await store.flush();
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
+    expect(await store.appendEvent("tool_result", "x".repeat(2 * 1024 * 1024)).catch((e) => e)).toBeInstanceOf(EventTooLargeError); // learned
+    await store.appendEvent("tool_started", { toolUseId: "tu2" });
+    await store.close();
+    expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "tool_started"]);
   });
 
   test("mailbox: post is refused with a clear error; peek and drain are empty", async () => {

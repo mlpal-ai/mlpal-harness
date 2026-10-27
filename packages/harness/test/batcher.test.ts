@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { AppendBatcher, type AppendBatcherOptions } from "../src/store/remote/batcher";
-import { LeaseLostError, SeqConflictError, SessionStoreClient, type StoreEvent, type StoredEvent } from "../src/store/remote/client";
+import { AppendBatcher, type AppendBatcherOptions, EventTooLargeError } from "../src/store/remote/batcher";
+import { BatchTooLargeError, type EncodedEvent, LeaseLostError, SeqConflictError, SessionStoreClient, type StoreEvent, type StoredEvent } from "../src/store/remote/client";
 import { startFakeSessionStore } from "./fake-session-store";
 
 interface Sent {
@@ -14,10 +14,10 @@ function stubClient(auto = true) {
   const sent: Sent[] = [];
   const waiting: { resolve: (v: { firstSeq: number; lastSeq: number }) => void; reject: (e: Error) => void; sent: Sent }[] = [];
   const client = {
-    append: (_sid: string, opts: Sent) => {
-      sent.push(opts);
+    appendEncoded: (_sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[] }) => {
+      sent.push({ ...opts, events: opts.events.map((e) => ({ kind: e.kind, data: JSON.parse(e.json), ts_ms: e.ts_ms })) });
       return new Promise<{ firstSeq: number; lastSeq: number }>((resolve, reject) => {
-        const w = { resolve, reject, sent: opts };
+        const w = { resolve, reject, sent: sent.at(-1)! };
         if (auto) ack(w);
         else waiting.push(w);
       });
@@ -180,6 +180,80 @@ describe("AppendBatcher", () => {
       expect(fatals).toHaveLength(1);
     });
   }
+
+  test("append serializes at once: a failure throws synchronously and queues nothing; later changes to the caller's object do not reach the store", async () => {
+    const stub = stubClient();
+    const { b } = batcher(stub);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => b.append("log", cyclic)).toThrow(TypeError);
+    const data = { n: 1 };
+    const p = b.append("log", data);
+    data.n = 2;
+    await p;
+    expect(stub.sent.flatMap((s) => s.events.map((e) => e.data))).toEqual([{ n: 1 }]);
+  });
+
+  test("an event over maxEventBytes is refused at once with EventTooLargeError; the writer carries on", async () => {
+    const stub = stubClient();
+    const { b, fatals } = batcher(stub, { maxEventBytes: 100 });
+    const big = "x".repeat(200);
+    let err: unknown;
+    try {
+      b.append("tool_result", big);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(EventTooLargeError);
+    expect(err).toMatchObject({ bytes: 202, limit: 100 });
+    expect(await b.append("log", "ok")).toBe(1);
+    expect(fatals).toEqual([]);
+    expect(stub.sent.flatMap((s) => s.events.map((e) => e.data))).toEqual(["ok"]);
+  });
+
+  test("413 batch_too_large on a shared batch is fatal (a batcher bug), as is event_too_large on more than one event", async () => {
+    for (const code of ["batch_too_large", "event_too_large"]) {
+      const stub = stubClient(false);
+      const { b, fatals } = batcher(stub);
+      const settled = Promise.allSettled([b.append("a", 1), b.append("b", 2)]);
+      await tick();
+      const err = new BatchTooLargeError("too large", 413, code, 256, 1024 * 1024, 10);
+      stub.refuse(err);
+      expect((await settled).map((r) => r.status)).toEqual(["rejected", "rejected"]);
+      expect(fatals).toEqual([err]);
+    }
+  });
+
+  test("against the fake store: under 1 MiB shares a batch, over 1 MiB goes alone and is taken; over the store's limit is refused, learned, and the writer carries on", async () => {
+    const store = startFakeSessionStore({ maxEventBytes: 2 * 1024 * 1024 });
+    try {
+      store.createSession("s1");
+      const { leaseId, token } = store.grant("s1");
+      const sizes: number[] = [];
+      const client = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => token });
+      const counting = { appendEncoded: (sid: string, o: Parameters<SessionStoreClient["appendEncoded"]>[1]) => (sizes.push(o.events.length), client.appendEncoded(sid, o)) };
+      const fatals: Error[] = [];
+      const b = new AppendBatcher({ client: counting, sid: "s1", leaseId: () => leaseId, afterSeq: 0, onFatal: (e) => fatals.push(e) });
+      const small = "s".repeat(300 * 1024);
+      const big = "b".repeat(1500 * 1024);
+      const huge = "h".repeat(3 * 1024 * 1024);
+      const seqs = [b.append("log", small), b.append("log", small), b.append("tool_result", big), b.append("log", small)];
+      const refused = b.append("tool_result", huge);
+      const after = b.append("log", "after");
+      expect(await Promise.all(seqs)).toEqual([1, 2, 3, 4]);
+      const err = await refused.catch((e) => e);
+      expect(err).toBeInstanceOf(EventTooLargeError);
+      expect(err).toMatchObject({ bytes: huge.length + 2, limit: 2 * 1024 * 1024 });
+      expect(await after).toBe(5);
+      expect(sizes).toEqual([2, 1, 1, 1, 1]);
+      expect(fatals).toEqual([]);
+      expect(b.maxEventBytes).toBe(2 * 1024 * 1024);
+      expect(() => b.append("tool_result", huge)).toThrow(EventTooLargeError); // learned: refused locally now
+      expect(store.events("s1").map((e) => e.kind)).toEqual(["log", "log", "tool_result", "log", "log"]);
+    } finally {
+      await store.stop();
+    }
+  });
 
   test("against the fake store: 300 events land contiguous under the lease", async () => {
     const store = startFakeSessionStore();
