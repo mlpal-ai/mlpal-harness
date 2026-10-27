@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createSandboxHands, guestPath, type HandsClient, type HandsExecResult, SANDBOX_HANDS_NAMES } from "../src/tools/remote/sandbox-hands";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentSession } from "../src/loop/agent";
+import { createPolicy } from "../src/permission/engine";
+import { LocalStore } from "../src/store/local";
+import { ToolRegistry } from "../src/tools/registry";
+import { CAPACITY_REASONS, createSandboxHands, guestPath, HandsCapacityError, type HandsClient, type HandsExecResult, SANDBOX_HANDS_NAMES } from "../src/tools/remote/sandbox-hands";
 
 /** An in-memory guest: a file map and a tiny shell that knows the commands the tools issue. */
 class FakeGuest implements HandsClient {
@@ -176,5 +183,69 @@ describe("sandbox hands: the same nine tools, over a session", () => {
     expect((await t.List!.call({}, ctx)).content).toBe("README.md\nsrc/");
     expect((await t.List!.call({ path: "src" }, ctx)).content).toBe("a.ts\nb.ts");
     expect((await t.List!.call({ path: "empty" }, ctx)).content).toBe("(empty)");
+  });
+});
+
+describe("sandbox hands at capacity (0.22.4)", () => {
+  test("the capacity reasons are the router's four; rate_limited is not one", () => {
+    expect([...CAPACITY_REASONS].sort()).toEqual(["host_full", "no_hosts", "quota_global", "quota_tenant"]);
+    expect(CAPACITY_REASONS.has("rate_limited")).toBe(false);
+  });
+
+  test("a HandsCapacityError is an isError result whose meta carries the typed sandboxRefusal; any other error is unchanged", async () => {
+    const g = guest();
+    g.exec = async () => {
+      throw new HandsCapacityError("quota_global", 5, "sbx_1");
+    };
+    const t = tools(g);
+    const message = "remote sandbox at capacity (quota_global): retry after 5 s";
+    expect(await t.Bash!.call({ command: "echo hi" }, ctx)).toEqual({
+      content: message,
+      isError: true,
+      meta: { sandboxRefusal: { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message } },
+    });
+    g.readFile = async () => {
+      throw new Error("boom");
+    };
+    expect(await t.Read!.call({ path: "src/a.ts" }, ctx)).toEqual({ content: "cannot read src/a.ts: boom", isError: true });
+  });
+
+  test("no Retry-After: the message says no retry hint and the refusal has no retryAfterS", async () => {
+    const e = new HandsCapacityError("host_full", null);
+    expect(e.message).toBe("remote sandbox at capacity (host_full): no retry hint");
+    expect(e.refusal()).toEqual({ code: "sandbox_capacity", reason: "host_full", message: "remote sandbox at capacity (host_full): no retry hint" });
+    const g = guest();
+    g.listDir = async () => {
+      throw e;
+    };
+    expect((await tools(g).List!.call({}, ctx)).meta?.sandboxRefusal).toEqual(e.refusal());
+  });
+
+  test("through the loop: the tool_result event carries sandboxRefusal and the run goes on", async () => {
+    const g = guest();
+    const capacity = new HandsCapacityError("quota_tenant", 3, "sbx_9");
+    g.exec = async () => {
+      throw capacity;
+    };
+    const root = mkdtempSync(join(tmpdir(), "yx-hands-cap-"));
+    try {
+      const registry = new ToolRegistry();
+      for (const tool of createSandboxHands({ client: g })) registry.register(tool);
+      let i = 0;
+      const scripts = [
+        { model: "test", message: { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "tu_1", name: "Bash", input: { command: "make" } }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" as const },
+        { model: "test", message: { role: "assistant" as const, content: [{ type: "text" as const, text: "the sandbox is full" }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn" as const },
+      ];
+      const session = new AgentSession({ agentId: "a", sessionId: "s", workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools: registry, store: new LocalStore(root), model_client: { async *stream() { return scripts[i++]!; } }, canUseTool: createPolicy({ mode: "autopilot" }), stamp: { hop: "coding@1.0.0", origin: "test", workspace: "w" } });
+      const events = [];
+      for await (const e of session.run({ text: "go" })) events.push(e);
+      const tr = events.find((e) => e.type === "tool_result") as { sandboxRefusal?: unknown; isError: boolean; content: string } | undefined;
+      expect(tr?.isError).toBe(true);
+      expect(tr?.content).toBe(capacity.message);
+      expect(tr?.sandboxRefusal).toEqual(capacity.refusal());
+      expect((events.find((e) => e.type === "result") as { subtype: string }).subtype).toBe("success");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

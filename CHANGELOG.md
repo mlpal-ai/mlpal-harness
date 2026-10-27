@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Protocol 0.22.4: `SandboxRefusal`, the remote sandbox at capacity (2026-10-27)
+
+- Additive over 0.22.3; every 0.22.3 frame remains valid.
+- `SandboxRefusal {code: "sandbox_capacity", reason, retryAfterS?, sandboxId?, message}`: the remote sandbox
+  refused for lack of capacity, a transient "not now", never a lost session. `reason` is one of the router's
+  capacity reasons `quota_global`, `quota_tenant`, `host_full`, `no_hosts`; `rate_limited` is not capacity.
+  `retryAfterS` is the router's `Retry-After`, present only when it gave one.
+- `sandboxRefusal?: SandboxRefusal` on `ToolResultEvent`, `ResultEvent` and `ErrorEvent`, beside `refusal`.
+- Harness: `HandsCapacityError(reason, retryAfterS | null, sandboxId?)` and `CAPACITY_REASONS`, exported. A host's
+  `HandsClient` throws it in place of its SDK's capacity error; the remote-hands tools then answer `isError` with its
+  message (`remote sandbox at capacity (quota_global): retry after 5 s`, or `…: no retry hint`) and
+  `meta.sandboxRefusal`, which the loop carries onto the `tool_result` event. Every other error reads as before.
+  `err()` takes an optional `meta`, like `ok()`.
+- The run-level seam is typed only: the loop's `finish` puts a `sandboxRefusal` on the `result` (with
+  `reason = message`) as it does `refusal`, but nothing produces one yet (there is no mid-run auto-resume).
+
 ### Protocol 0.22.3: `ScheduleSpec.delivery.webhookSecret`, write-only (2026-10-26)
 
 - Additive over 0.22.2; every 0.22.2 frame remains valid.

@@ -11,6 +11,7 @@ import {
   type Message,
   type ResultEvent,
   type ModelRefusal,
+  type SandboxRefusal,
   type ToolResultBlock,
   type ToolResultBlocks,
   type ToolResultEvent,
@@ -1443,6 +1444,7 @@ export class AgentSession {
       diff?: string,
       decided?: Decision,
       refused?: ModelRefusal,
+      sandboxRefused?: SandboxRefusal,
     ): ToolResultEvent => ({
       type: "tool_result",
       toolUseId: tu.id,
@@ -1451,6 +1453,7 @@ export class AgentSession {
       blocks,
       ...(diff ? { diff } : {}),
       ...(refused ? { refusal: refused } : {}),
+      ...(sandboxRefused ? { sandboxRefusal: sandboxRefused } : {}),
       ...(decided?.behavior !== "ask" && decided?.judge ? { judged: { verdict: decided.behavior, reason: decided.judge.reason } } : {}),
       isError,
       ts: now(),
@@ -1496,6 +1499,7 @@ export class AgentSession {
     let isError: boolean;
     let diff: string | undefined;
     let refusal: ModelRefusal | undefined;
+    let sandboxRefusal: SandboxRefusal | undefined;
     if (decision.behavior === "deny") {
       raw = `Permission denied: ${decision.reason ?? "not allowed"}`;
       isError = true;
@@ -1520,6 +1524,7 @@ export class AgentSession {
       isError = res.isError ?? false;
       diff = res.meta?.diff;
       refusal = res.meta?.refusal;
+      sandboxRefusal = res.meta?.sandboxRefusal;
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
       this.observed(
@@ -1555,7 +1560,7 @@ export class AgentSession {
       ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
-    return make(display, isError, blocks, diff, decision, refusal);
+    return make(display, isError, blocks, diff, decision, refusal, sandboxRefusal);
   }
 
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
@@ -1611,10 +1616,15 @@ export class AgentSession {
     parent: string | null,
     pendingApproval?: { command: string; reason: string },
     refusal?: ModelRefusal,
+    sandboxRefusal?: SandboxRefusal,
   ): AsyncGenerator<EngineEvent, string | null, void> {
     const base = this.result(subtype, numTurns, usage, pendingApproval);
     if (base.type !== "result") return parent;
-    const ev: ResultEvent = refusal ? { ...base, reason: refusal.message, refusal } : base;
+    const ev: ResultEvent = refusal
+      ? { ...base, reason: refusal.message, refusal }
+      : sandboxRefusal
+        ? { ...base, reason: sandboxRefusal.message, sandboxRefusal }
+        : base;
     const entry = await this.store.conversation.append(this.cfg.sessionId, ev, parent);
     await this.store.registry.patchSession(this.cfg.sessionId, { head: entry.uuid }).catch(() => undefined);
     yield { ...ev, uuid: entry.uuid };

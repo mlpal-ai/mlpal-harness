@@ -9,6 +9,7 @@
  * relative to the guest working directory (`/workspace` by default); the guest enforces its own
  * roots, and its refusals come back as the tool's error text.
  */
+import type { SandboxRefusal } from "@mlpal/harness-protocol";
 import { z } from "zod";
 import { unifiedDiff } from "../builtin/diff";
 import { defineTool, err, ok, type Tool, type ToolResult } from "../types";
@@ -84,7 +85,35 @@ function renderExec(r: HandsExecResult, max: number): ToolResult {
   return { content: `[exit ${r.exitCode}]\n${body}`, isError: false };
 }
 
-const failed = (what: string, e: unknown): ToolResult => err(`${what}: ${String((e as Error)?.message ?? e)}`);
+/** The router's capacity reasons (all 429/503 with Retry-After); `rate_limited` is not one. */
+export const CAPACITY_REASONS: ReadonlySet<string> = new Set(["quota_global", "quota_tenant", "host_full", "no_hosts"]);
+
+/** The remote sandbox refused for lack of capacity. The host adapter throws it in place of its
+ *  SDK's error, so the tools and the host speak one SDK-agnostic type. */
+export class HandsCapacityError extends Error {
+  constructor(
+    readonly reason: SandboxRefusal["reason"],
+    readonly retryAfterS: number | null,
+    readonly sandboxId?: string,
+  ) {
+    super(`remote sandbox at capacity (${reason}): ${retryAfterS === null ? "no retry hint" : `retry after ${retryAfterS} s`}`);
+    this.name = "HandsCapacityError";
+  }
+
+  /** The SandboxRefusal for a tool result or a run result. */
+  refusal(): SandboxRefusal {
+    return {
+      code: "sandbox_capacity",
+      reason: this.reason,
+      ...(this.retryAfterS === null ? {} : { retryAfterS: this.retryAfterS }),
+      ...(this.sandboxId ? { sandboxId: this.sandboxId } : {}),
+      message: this.message,
+    };
+  }
+}
+
+const failed = (what: string, e: unknown): ToolResult =>
+  e instanceof HandsCapacityError ? err(e.message, { sandboxRefusal: e.refusal() }) : err(`${what}: ${String((e as Error)?.message ?? e)}`);
 
 const decode = (b: Uint8Array): string => new TextDecoder().decode(b);
 

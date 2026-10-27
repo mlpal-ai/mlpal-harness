@@ -8,6 +8,7 @@ import {
   type HopView,
   type ModelRefusal,
   type ResultEvent,
+  type SandboxRefusal,
   type ScheduleView,
   type ServerMessage,
   type SessionSummary,
@@ -168,11 +169,6 @@ describe("0.22.2 (the budget refusal's window and resetsAt)", () => {
 });
 
 describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
-  test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.3");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.3");
-  });
-
   test("add_schedule and update_schedule take delivery.webhookSecret; a ScheduleView never carries it", () => {
     const add = { type: "add_schedule", requestId: "a", schedule: { name: "hook", cadence: "every 1h", timezone: "UTC", prompt: "p", delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret" } } } satisfies ClientMessage;
     // A delivery patch is the whole delivery (hop-service replaces it), so a rotation re-sends the webhook.
@@ -186,5 +182,23 @@ describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
   test("update_schedule clears the secret with webhookSecret: null", () => {
     const clear = { type: "update_schedule", requestId: "c", id: "01J", patch: { delivery: { webhook: "https://h.example/in", webhookSecret: null } } } satisfies ClientMessage;
     expect(JSON.parse(JSON.stringify(clear)).patch.delivery).toEqual({ webhook: "https://h.example/in", webhookSecret: null });
+  });
+});
+
+describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
+  test("version", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.4");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.4");
+  });
+
+  test("a sandbox_capacity refusal rides the tool_result, the result and the error event, beside refusal", () => {
+    const capacity: SandboxRefusal = { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message: "remote sandbox at capacity (quota_global): retry after 5 s" };
+    const bare: SandboxRefusal = { code: "sandbox_capacity", reason: "no_hosts", message: "remote sandbox at capacity (no_hosts): no retry hint" };
+    const toolResult: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Bash", content: capacity.message, sandboxRefusal: capacity, isError: true, ts: "t" };
+    const result: ResultEvent = { type: "result", subtype: "error", reason: capacity.message, sandboxRefusal: capacity, numTurns: 1, usage: emptyUsage(), ts: "t" };
+    const error: ErrorEvent = { type: "error", message: bare.message, sandboxRefusal: bare, ts: "t" };
+    // @ts-expect-error rate_limited is not a capacity reason
+    const limited: SandboxRefusal = { code: "sandbox_capacity", reason: "rate_limited", message: "m" };
+    expect([toolResult.sandboxRefusal?.retryAfterS, result.sandboxRefusal?.sandboxId, error.sandboxRefusal?.retryAfterS, limited.code]).toEqual([5, "sbx_1", undefined, "sandbox_capacity"]);
   });
 });

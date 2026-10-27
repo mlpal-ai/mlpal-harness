@@ -61,6 +61,8 @@ export interface ToolResultEvent {
   judged?: { verdict: "allow" | "deny"; reason: string };
   /** 0.20.5: a step (a sub-agent, a consult) refused before its call because of the model it named. */
   refusal?: ModelRefusal;
+  /** 0.22.4: the step's remote sandbox refused for lack of capacity. */
+  sandboxRefusal?: SandboxRefusal;
   isError: boolean;
   ts: string;
 }
@@ -77,6 +79,8 @@ export interface ResultEvent {
   reason?: string;
   /** 0.20.5: on `error`, the typed refusal when the gateway or a chooser refused the model. */
   refusal?: ModelRefusal;
+  /** 0.22.4: on `error`, the typed refusal when the remote sandbox had no capacity for the run. */
+  sandboxRefusal?: SandboxRefusal;
   numTurns: number;
   usage: Usage;
   ts: string;
@@ -110,12 +114,26 @@ export interface ModelRefusal {
    *  gateway names it. */
   resetsAt?: string;
 }
+
+/** 0.22.4: the remote sandbox refused for lack of capacity — a transient "not now", never a lost session. */
+export interface SandboxRefusal {
+  code: "sandbox_capacity";
+  reason: "quota_global" | "quota_tenant" | "host_full" | "no_hosts";
+  /** The router's Retry-After in seconds, when it gave one. */
+  retryAfterS?: number;
+  /** The sandbox session the refusal concerns, when known. */
+  sandboxId?: string;
+  /** "remote sandbox at capacity (quota_global): retry after 5 s" */
+  message: string;
+}
 export interface ErrorEvent {
   type: "error";
   uuid?: string;
   message: string;
   /** 0.20.5: present when the error is a model refusal (a run that could not start). */
   refusal?: ModelRefusal;
+  /** 0.22.4: present when the remote sandbox had no capacity (a run that could not start). */
+  sandboxRefusal?: SandboxRefusal;
   ts: string;
 }
 /**
