@@ -23,6 +23,7 @@
       }
     ],
     "publication": "infra-ro",
+    "refusal": null,
     "sid": "sess-contract-1",
     "status": "requires_action",
     "unit": "unit_platform",

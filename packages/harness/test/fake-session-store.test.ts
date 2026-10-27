@@ -116,6 +116,7 @@ describe("fake P1 session store", () => {
     expect((await call("GET", "/sessions/s1")).body!.lease).toEqual({ holder: "engine:test:1", expires_at: clock.now() + 30_000 });
     expect((await call("GET", "/sessions/s1", undefined, store.readerToken("s1", "cust_9"))).body).toEqual({ code: "unknown_session" });
     expect((await call("POST", "/sessions/s1/events", { lease_id: g.leaseId, after_seq: 0, events: [ev(1)] }, reader)).status).toBe(403);
+    expect((await call("GET", "/sessions/s1", undefined, store.readerToken("s1", null))).body).toEqual({ code: "unauthorized" }); // a {sid} reader needs a principal
   });
 
   test("the projection lists every open park; a persisted park is idle, a live ask requires action; a new turn clears an approval park", async () => {
@@ -155,6 +156,42 @@ describe("fake P1 session store", () => {
     expect((await call("GET", "/sessions/s1/events", undefined, g.token)).body).toEqual({ code: "session_deleted", deleted_at: clock.now() });
     expect((await call("GET", "/sessions?owner=cust_7")).body).toEqual({ sessions: [], next_after_id: null });
     expect(store.events("s1")).toEqual([]);
+    for (const [method, path] of [["GET", "/sessions/s1"], ["POST", "/sessions/s1/lease"], ["GET", "/sessions/s1/stream"], ["POST", `/sessions/s1/lease/${g.leaseId}/renew`]]) {
+      expect((await call(method!, path!, method === "POST" ? { holder: "h", ttl_s: 30 } : undefined)).status).toBe(410);
+    }
+  });
+
+  test("the projection carries a typed refusal: it is also the stop_reason, and the next turn clears it", async () => {
+    const g = leased();
+    const entry = (payload: Record<string, unknown>) => ({ kind: payload.type as string, data: { uuid: crypto.randomUUID(), parentUuid: null, ts: "t", payload }, ts_ms: 1 });
+    expect((await call("GET", "/sessions/s1")).body).toMatchObject({ refusal: null });
+    await append("s1", g, 0, [entry({ type: "user" }), entry({ type: "error", message: "no", refusal: { code: "model_access_denied" } })]);
+    expect((await call("GET", "/sessions/s1")).body).toMatchObject({ status: "ended", stop_reason: "model_access_denied", refusal: { code: "model_access_denied" } });
+    await append("s1", g, 2, [entry({ type: "user" })]);
+    const next = (await call("GET", "/sessions/s1")).body!;
+    expect(next).toMatchObject({ status: "running", refusal: null });
+    expect(next.stop_reason).toBeUndefined();
+  });
+
+  test("a stream ends when its session is erased", async () => {
+    const g = leased();
+    await append("s1", g, 0, [ev(1)]);
+    const res = await fetch(`${store.url}/sessions/s1/stream`, { headers: { authorization: `Bearer ${store.controlToken}` } });
+    const reader = res.body!.getReader();
+    await reader.read();
+    await call("DELETE", "/sessions/s1");
+    for (;;) if ((await reader.read()).done) break;
+  });
+
+  test("the list's leased filter keeps the sessions whose lease is live now; anything but true or false is invalid_leased", async () => {
+    leased("a");
+    store.createSession("b");
+    const names = async (q: string) => (await call("GET", `/sessions?owner=cust_7&${q}`)).body!.sessions.map((s: { sid: string }) => s.sid);
+    expect(await names("leased=true")).toEqual(["a"]);
+    expect(await names("leased=false")).toEqual(["b"]);
+    clock.advance(31_000);
+    expect(await names("leased=true")).toEqual([]);
+    expect((await call("GET", "/sessions?owner=cust_7&leased=yes")).body).toMatchObject({ code: "invalid_leased" });
   });
 
   test("failNext answers one request with the given status and code; dropNext commits and never answers", async () => {

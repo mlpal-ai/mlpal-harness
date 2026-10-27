@@ -170,8 +170,26 @@ const scenarios: Record<string, Scenario> = {
   "projection-200-approval": projectionAfter([user(), result("needs_approval")]),
   "projection-200-parked-question": projectionAfter([user(), ev("question_parked", { type: "question_parked", id: "q-7", questions: [] }, T0 + 500)]),
   "projection-200-ended": projectionAfter([user(), ev("error", { uuid: "e1", payload: { type: "error", message: "model refused", ts: "t" } }, T0 + 200)]),
+  "projection-200-refusal": projectionAfter([
+    user(),
+    ev(
+      "result",
+      {
+        uuid: "r1",
+        payload: {
+          type: "result",
+          subtype: "error",
+          numTurns: 1,
+          usage: { input_tokens: 12, output_tokens: 0 },
+          refusal: { code: "budget_exceeded", model: "gpt-6-sol", hop: "infra-ro", reason: "gateway", message: "the daily budget is spent", window: "daily" },
+        },
+      },
+      T0 + 1_000,
+    ),
+  ]),
   "projection-410-session-deleted": async (c) => (c.fake.createSession(SID), await c.erase(), c.send("GET", `/sessions/${SID}`)),
   "list-200": async (c) => (await listSetup(c), c.send("GET", "/sessions?publication=infra-ro&status=running")),
+  "list-200-leased": async (c) => (await listSetup(c), c.fake.grant("sess-c", { ttlS: 30 }), c.send("GET", "/sessions?publication=infra-ro&leased=true")),
   "list-200-page": async (c) => (await listSetup(c), c.send("GET", "/sessions?owner=cust_7&limit=2")),
   "list-400-filter-required": async (c) => (await listSetup(c), c.send("GET", "/sessions?status=running")),
   "list-400-invalid-status": async (c) => (await listSetup(c), c.send("GET", "/sessions?owner=cust_7&status=busy")),
@@ -255,6 +273,11 @@ const clientCalls: Record<string, ClientCall> = {
   append: (c) => c.append(SID, { leaseId: "L", afterSeq: 0, events: [ev("text_delta", {}, T0)] }),
   read: (c) => c.read(SID, { after: 1, limit: 2 }),
   projection: (c) => c.projection(SID),
+  stream: async (c) => {
+    const events: unknown[] = [];
+    for await (const e of c.stream(SID, { after: 0 })) events.push(e);
+    return events;
+  },
 };
 
 const noClientRoute: Record<string, string> = {
@@ -262,7 +285,6 @@ const noClientRoute: Record<string, string> = {
   create: "control-only",
   list: "control-only",
   delete: "control-only",
-  stream: "the engine never reads the stream",
 };
 
 function errorClass(f: Fixture): typeof StoreHttpError {
@@ -295,6 +317,16 @@ function successShape(op: string, v: unknown): void {
       for (const e of r.events) expect(e).toEqual({ seq: n, kind: expect.any(String), data: expect.anything(), ts_ms: n });
       return;
     }
+    case "stream": {
+      const events = v as { seq: number; kind: string; data: unknown }[];
+      expect(events.map((e) => [e.seq, e.kind])).toEqual([
+        [1, "user"],
+        [2, "permission_request"],
+        [3, "result"],
+      ]);
+      expect(events[2]!.data).toMatchObject({ uuid: "r1", payload: { type: "result" } });
+      return;
+    }
     case "projection": {
       const p = v as Record<string, any>;
       // A clone: Bun's toMatchObject writes its asymmetric matchers into the object it is given.
@@ -302,6 +334,8 @@ function successShape(op: string, v: unknown): void {
       for (const park of [...p.parks, ...(p.park ? [p.park] : [])]) expect(park).toEqual({ kind: expect.any(String), id: expect.any(String), at: n });
       expect(p.park).toEqual(p.parks.at(-1));
       if (p.lease) expect(p.lease.expiresAt).toEqual(n);
+      expect(p.refusal === null || typeof p.refusal.code === "string").toBe(true);
+      if (p.refusal) expect(p.stopReason).toBe(p.refusal.code);
       return;
     }
   }
@@ -317,7 +351,7 @@ describe("SessionStoreClient reads every fixture body of its routes", () => {
     }
     test(`${f.name}: ${f.status === 200 || f.status === 204 ? "parses" : "maps to its error class"}`, async () => {
       const respond = () =>
-        new Response(f.body === null ? null : JSON.stringify(f.body), { status: f.status, headers: f.content_type ? { "content-type": f.content_type } : {} });
+        new Response(f.body === null ? null : typeof f.body === "string" ? f.body : JSON.stringify(f.body), { status: f.status, headers: f.content_type ? { "content-type": f.content_type } : {} });
       const client = new SessionStoreClient({ baseUrl: "http://store/v1", tokenProvider: () => "test-token", fetch: async () => respond(), sleep: async () => {} });
       const out = await call(client).then(
         (v) => ({ ok: true as const, v }),

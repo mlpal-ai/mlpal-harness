@@ -14,6 +14,7 @@ export {
   SessionStoreClient,
   StoreHttpError,
   StoreUnreachableError,
+  StreamBusyError,
   type LeaseGrant,
   type SessionPark,
   type SessionProjection,
@@ -21,6 +22,7 @@ export {
   type StoreEvent,
   type StoredEvent,
   type StoreFetch,
+  type StreamedEvent,
 } from "./store/remote/client";
 export { AppendBatcher, type AppendBatcherOptions } from "./store/remote/batcher";
 export { LeaseKeeper, type LeaseKeeperOptions } from "./store/remote/lease";

@@ -1,0 +1,33 @@
+{
+  "body": {
+    "hop": {
+      "digest": "sha256:9f2c",
+      "name": "infra-ro",
+      "version": "0.9.2"
+    },
+    "last_seq": 2,
+    "lease": {
+      "expires_at": 1760000060000
+    },
+    "owner": "cust_7",
+    "parks": [],
+    "publication": "infra-ro",
+    "refusal": {
+      "code": "budget_exceeded"
+    },
+    "sid": "sess-contract-1",
+    "status": "idle",
+    "stop_reason": "budget_exceeded",
+    "unit": "unit_platform",
+    "updated_at": 1760000000000,
+    "usage": {
+      "cost_cu": 0.0,
+      "input_tokens": 12,
+      "output_tokens": 0
+    }
+  },
+  "case": "a result carrying a typed refusal: stop_reason and refusal are its code",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}",
+  "status": 200
+}

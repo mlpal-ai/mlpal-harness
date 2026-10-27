@@ -16,6 +16,7 @@
         "owner": "cust_7",
         "parks": [],
         "publication": "infra-ro",
+        "refusal": null,
         "sid": "sess-b",
         "status": "running",
         "unit": "unit_platform",

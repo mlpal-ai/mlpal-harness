@@ -10,6 +10,8 @@ import {
   type SessionStoreClientOptions,
   StoreHttpError,
   StoreUnreachableError,
+  StreamBusyError,
+  type StoredEvent,
 } from "../src/store/remote/client";
 import { FakeClock } from "./fake-clock";
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
@@ -83,6 +85,7 @@ describe("SessionStoreClient over P1", () => {
       hop: { name: "infra-ro", version: "0.9.2", digest: "sha256:9f2c" },
       status: "idle",
       parks: [],
+      refusal: null,
       usage: { inputTokens: 0, outputTokens: 0, costCu: 0 },
       lease: { holder: "engine:test:1", expiresAt: clock.now() + 30_000 },
       lastSeq: 600,
@@ -149,11 +152,11 @@ describe("SessionStoreClient over P1", () => {
     expect(sleeps).toHaveLength(1);
   });
 
-  test("a 5xx on append is retried with the same after_seq, honouring Retry-After; elsewhere it is thrown at once", async () => {
+  test("a 5xx on append is retried with the same after_seq, honouring Retry-After; a read throws it at once", async () => {
     const { lease: l, c, sleeps } = await engine();
     store.failNext("append", 503, "session_busy");
     expect(await c.append("s1", { leaseId: l.leaseId, afterSeq: 0, events: [ev(1)] })).toEqual({ firstSeq: 1, lastSeq: 1 });
-    expect(sleeps).toEqual([200]);
+    expect(sleeps).toEqual([1000]); // the store's Retry-After for session_busy
     let calls = 0;
     const busy = async () => (calls++, Response.json({ code: "session_busy" }, { status: 503, headers: { "retry-after": "1" } }));
     const flaky = client({ fetch: busy });
@@ -162,8 +165,80 @@ describe("SessionStoreClient over P1", () => {
     expect(calls).toBe(4);
     expect(flaky.sleeps).toEqual([1000, 1000, 1000]);
     calls = 0;
-    expect(await caught(flaky.c.renew("s1", "l"))).toMatchObject({ status: 503 });
+    expect(await caught(flaky.c.projection("s1"))).toMatchObject({ status: 503 });
     expect(calls).toBe(1);
+  });
+
+  test("503 session_busy (the row lock timed out) is retried on renew and release too, after its Retry-After, at most 3 times", async () => {
+    const { lease: l, c, sleeps } = await engine();
+    store.failNext("renew", 503, "session_busy");
+    expect((await c.renew("s1", l.leaseId)).leaseId).toBe(l.leaseId);
+    store.failNext("release", 503, "session_busy");
+    await c.release("s1", l.leaseId);
+    expect(store.lease("s1")).toBeNull();
+    expect(sleeps).toEqual([1000, 1000]);
+    let calls = 0;
+    const answer = (code: string, status = 503) => async () => (calls++, Response.json({ code }, { status, headers: { "retry-after": "1" } }));
+    expect(await caught(client({ fetch: answer("session_busy") }).c.release("s1", "l"))).toMatchObject({ status: 503, code: "session_busy" });
+    expect(calls).toBe(4);
+    calls = 0;
+    expect(await caught(client({ fetch: answer("store_unavailable", 500) }).c.renew("s1", "l"))).toMatchObject({ status: 500 });
+    expect(calls).toBe(1); // only session_busy is retried off the append path
+  });
+
+  test("readAll keeps paging past a short page until the last event's seq is the head", async () => {
+    const page = (seqs: number[], last: number) => Response.json({ events: seqs.map((seq) => ({ seq, kind: "log", data: {}, ts_ms: 1 })), last_seq: last });
+    const pages = [page([1, 2], 5), page([3], 5), page([4, 5], 5)];
+    const afters: string[] = [];
+    const { c } = client({ fetch: async (u) => (afters.push(new URL(u).searchParams.get("after")!), pages.shift()!) });
+    expect((await c.readAll("s1")).events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(afters).toEqual(["0", "2", "3"]);
+    const short = client({ fetch: async () => page([], 5) }).c;
+    expect((await caught(short.readAll("s1"))).message).toContain("an empty page after 0, before last_seq 5"); // never taken for the end
+  });
+
+  test("stream: events as they land; an erased session ends it as a normal close, and a reconnect after the last seq resumes", async () => {
+    const { lease: l, c } = await engine();
+    await c.append("s1", { leaseId: l.leaseId, afterSeq: 0, events: [ev(1), ev(2)] });
+    const seen: { seq: number; kind: string; data: unknown }[] = [];
+    const reading = (async () => {
+      for await (const e of c.stream("s1", { after: 1 })) {
+        seen.push(e);
+        if (e.seq === 3) await fetch(`${store.url}/sessions/s1`, { method: "DELETE", headers: { authorization: `Bearer ${store.controlToken}` } });
+      }
+    })();
+    while (seen.length < 1) await new Promise((r) => setTimeout(r, 1));
+    await c.append("s1", { leaseId: l.leaseId, afterSeq: 2, events: [ev(3)] });
+    await reading; // the erasure closed the stream: no throw
+    expect(seen).toEqual([
+      { seq: 2, kind: "log", data: ev(2).data },
+      { seq: 3, kind: "log", data: ev(3).data },
+    ]);
+    expect(await caught((async () => { for await (const _ of c.stream("s1", { after: 3 })) void _; })())).toBeInstanceOf(SessionDeletedError);
+  });
+
+  test("stream: a full replica or a principal's cap is a StreamBusyError with its Retry-After", async () => {
+    const { c } = client();
+    for (const [status, code] of [[503, "stream_capacity"], [429, "too_many_streams"]] as const) {
+      store.failNext("stream", status, code);
+      const e = await caught((async () => { for await (const _ of c.stream("s1", {})) void _; })());
+      expect(e).toBeInstanceOf(StreamBusyError);
+      expect(e).toMatchObject({ status, code, retryAfterS: 5 });
+    }
+  });
+
+  test("stream: data spanning several data: lines is joined; comments are skipped; the caller's abort ends it quietly", async () => {
+    const body = `: keep-alive\n\nid: 7\nevent: user\ndata: {"a":\ndata: 1}\n\n`;
+    const { c } = client({ fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }) });
+    const got: StoredEvent[] = [];
+    for await (const e of c.stream("s1", { after: 6 })) got.push(e as StoredEvent);
+    expect(got).toEqual([{ seq: 7, kind: "user", data: { a: 1 } }] as never);
+    const ctl = new AbortController();
+    const live = client();
+    const it = live.c.stream("s1", { after: 0, signal: ctl.signal });
+    const next = it.next();
+    ctl.abort();
+    expect(await next).toEqual({ done: true, value: undefined });
   });
 
   test("append gives up after 3 retries; every other call is tried once", async () => {

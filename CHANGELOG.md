@@ -13,8 +13,14 @@
 - `SessionStoreClient`: P1 over an injected `fetch`, with the bearer from a `tokenProvider` read per request.
   `lease` (control), `renew` (optional `ttlS`; a lapsed lease is never revived), `release`, `append` (a network
   failure or a 5xx is retried up to 3 times with the same `after_seq`, honouring `Retry-After`; the store answers
-  a replay with the original seqs), `read` (`limit` ≤ 500), `readAll` (never asks past the head), `projection`
-  (`parks`, `park`, `lease`). Timestamps are unix milliseconds. Errors carry `status` and the body's `code`:
+  a replay with the original seqs; `renew` and `release` retry `503 session_busy` the same way), `read`
+  (`limit` ≤ 500), `readAll` (pages until a page ends at `last_seq`: a page is cut at 500 events or 4 MiB, so a
+  short page is not the end; never asks past the head), `projection` (`parks`, `park`, `lease`, and `refusal`,
+  the typed refusal the last turn ended on, which is then also `stopReason`), `stream` (an async iterator of
+  `{seq, kind, data}`; the store's end of a stream at token expiry, shutdown or erasure, and the caller's abort,
+  finish it normally so the caller reconnects after its last seq; `503 stream_capacity` and `429
+  too_many_streams` throw `StreamBusyError` with `retryAfterS`). Timestamps are unix milliseconds. Errors carry
+  `status` and the body's `code`:
   `LeaseHeldError` (409 `session_leased`, `expiresAt`), `LeaseLostError` (409 `lease_lost`), `SeqConflictError`
   (409 `seq_conflict`, `lastSeq`), `SessionNotFoundError` (404 `unknown_session`), `SessionDeletedError` (410,
   `deletedAt`), `BatchTooLargeError` (413, `maxEvents`, `maxBytes`), `StoreHttpError` (any other status; the base

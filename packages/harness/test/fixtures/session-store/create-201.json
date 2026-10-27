@@ -10,6 +10,7 @@
     "owner": "cust_7",
     "parks": [],
     "publication": "infra-ro",
+    "refusal": null,
     "sid": "sess-contract-1",
     "status": "idle",
     "unit": "unit_platform",

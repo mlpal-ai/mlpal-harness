@@ -36,7 +36,7 @@ export interface FakeIdentity {
 type Claims =
   | { role: "control" }
   | { role: "engine"; sid: string; leaseId: string }
-  | { role: "reader"; sid: string; principal: string }
+  | { role: "reader"; sid: string; principal?: string }
   | { role: "reader"; owner: string; publication: string };
 
 interface AppendRecord {
@@ -54,7 +54,7 @@ interface Session {
   lastSeq: number;
   lease: FakeLease | null;
   appends: AppendRecord[];
-  subscribers: Set<(e: FakeEvent) => void>;
+  streams: Set<{ push: (e: FakeEvent) => void; end: () => void }>;
   updatedAt: number;
   deleted?: { deletedAt: number; contentSha256: string };
 }
@@ -64,7 +64,8 @@ export interface FakeSessionStore {
   readonly url: string;
   readonly controlToken: string;
   engineToken(sid: string, leaseId: string): string;
-  readerToken(sid: string, principal?: string): string;
+  /** A `{sid}` reader; `principal` defaults to the session's owner, and `null` mints one without (refused 401). */
+  readerToken(sid: string, principal?: string | null): string;
   scopeReaderToken(owner: string, publication: string): string;
   /** Creates a session as control would (the identity defaults to the store's contract fixtures'). */
   createSession(sid: string, identity?: Partial<FakeIdentity>): void;
@@ -73,7 +74,8 @@ export interface FakeSessionStore {
   events(sid: string): FakeEvent[];
   /** The live lease, if any. */
   lease(sid: string): FakeLease | null;
-  /** The next request on `route` is answered `status` with `{code, message}`, untouched otherwise. */
+  /** The next request on `route` is answered `status` with `{code}` (and the store's Retry-After for the
+   *  codes that carry one), untouched otherwise. */
   failNext(route: FakeRoute, status: number, code: string): void;
   /** The next request on `route` takes effect, and its response is never sent (the client must time out). */
   dropNext(route: FakeRoute): void;
@@ -98,6 +100,8 @@ const KIND = /^[A-Za-z0-9_.:-]{1,64}$/;
 const SID = /^[A-Za-z0-9_-]{1,128}$/;
 const RUNNING_KINDS = new Set(["user", "system", "assistant", "tool_started", "tool_result", "tool_use_start", "text_delta", "thinking_delta"]);
 const STATUSES = new Set(["idle", "running", "requires_action", "ended"]);
+/** The store's Retry-After for the refusals that carry one. */
+const RETRY_AFTER_S: Record<string, number> = { session_busy: 1, stream_capacity: 5, too_many_streams: 5 };
 
 function fail(status: number, code: string, extra: Record<string, unknown> = {}): Response {
   return Response.json({ code, ...extra }, { status });
@@ -112,6 +116,7 @@ function fold(events: FakeEvent[]) {
   let running = false;
   let ended = false;
   let stopReason: string | undefined;
+  let refusal: { code: string } | null = null;
   let parks: Park[] = [];
   let turn = { usage: false, stop: false, approval: false };
   const usage = { input_tokens: 0, output_tokens: 0, cost_cu: 0 };
@@ -128,8 +133,15 @@ function fold(events: FakeEvent[]) {
     running = true;
     ended = false;
     stopReason = undefined;
+    refusal = null;
     parks = parks.filter((p) => p.kind !== "approval");
     turn = { usage: false, stop: false, approval: false };
+  };
+  /** A terminal result or error that carries a typed refusal stops for it. */
+  const stopFor = (p: Record<string, any>, otherwise: string) => {
+    const code = p.refusal?.code;
+    refusal = typeof code === "string" ? { code } : null;
+    stopReason = refusal?.code ?? otherwise;
   };
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, any>;
@@ -152,7 +164,7 @@ function fold(events: FakeEvent[]) {
         parks = parks.filter((k) => !(k.kind === "parked_question" && k.id === p.id));
         break;
       case "result":
-        stopReason = p.subtype;
+        stopFor(p, p.subtype);
         parks = parks.filter((k) => !isLive(k));
         running = false;
         turn.stop = true;
@@ -171,13 +183,13 @@ function fold(events: FakeEvent[]) {
       case "error":
         ended = true;
         running = false;
-        stopReason = "error";
+        stopFor(p, "error");
         parks = parks.filter((k) => !isLive(k));
         break;
     }
   }
   const status = parks.some(isLive) ? "requires_action" : running ? "running" : ended ? "ended" : "idle";
-  return { status, parks, stopReason, usage };
+  return { status, parks, stopReason, refusal, usage };
 }
 
 export function startFakeSessionStore(opts: { clock?: () => number } = {}): FakeSessionStore {
@@ -197,7 +209,7 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
   const liveLease = (s: Session) => (s.lease && s.lease.expiresAt > clock() ? s.lease : null);
 
   function create(sid: string, identity: FakeIdentity): Session {
-    const s: Session = { sid, identity, events: [], lastSeq: 0, lease: null, appends: [], subscribers: new Set(), updatedAt: clock() };
+    const s: Session = { sid, identity, events: [], lastSeq: 0, lease: null, appends: [], streams: new Set(), updatedAt: clock() };
     sessions.set(sid, s);
     return s;
   }
@@ -215,6 +227,7 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
       parks: f.parks,
       ...(f.parks.length ? { park: f.parks.at(-1) } : {}),
       ...(f.stopReason !== undefined ? { stop_reason: f.stopReason } : {}),
+      refusal: f.refusal,
       usage: f.usage,
       lease: l ? (claims.role === "reader" ? { expires_at: l.expiresAt } : { holder: l.holder, expires_at: l.expiresAt }) : null,
       last_seq: s.lastSeq,
@@ -299,12 +312,15 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
     if (!filter.publication && !filter.owner && !filter.unit) return fail(400, "filter_required", { message: "name at least one of publication, owner, unit" });
     const status = q.get("status");
     if (status !== null && !STATUSES.has(status)) return fail(400, "invalid_status", { message: "status must be idle, running, requires_action or ended" });
+    const leased = q.get("leased");
+    if (leased !== null && leased !== "true" && leased !== "false") return fail(400, "invalid_leased", { message: "leased must be true or false" });
     const limit = Number(q.get("limit") ?? MAX_LIMIT);
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) return fail(400, "invalid_limit", { message: "limit must be 1 to 500" });
     const afterId = q.get("after_id");
     const matching = [...sessions.values()]
       .filter((s) => !s.deleted)
       .filter((s) => (!filter.publication || s.identity.publication === filter.publication) && (!filter.owner || s.identity.owner === filter.owner) && (!filter.unit || s.identity.unit === filter.unit))
+      .filter((s) => leased === null || (liveLease(s) !== null) === (leased === "true"))
       .filter((s) => afterId === null || s.sid > afterId)
       .sort((a, b) => (a.sid < b.sid ? -1 : 1))
       .map((s) => projection(s, claims))
@@ -411,7 +427,7 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
     for (const e of events) {
       const stored: FakeEvent = { seq: ++s.lastSeq, kind: e.kind as string, data: e.data, ts_ms: e.ts_ms as number, receivedAt: at };
       s.events.push(stored);
-      for (const sub of s.subscribers) sub(stored);
+      for (const st of s.streams) st.push(stored);
     }
     s.updatedAt = at;
     s.appends.push({ leaseId: b.lease_id, afterSeq: b.after_seq, hash, firstSeq: first, lastSeq: s.lastSeq });
@@ -429,19 +445,26 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
         .join("\n");
       return enc.encode(`id: ${e.seq}\nevent: ${e.kind}\n${data}\n\n`);
     };
-    let sub: ((e: FakeEvent) => void) | undefined;
+    let entry: { push: (e: FakeEvent) => void; end: () => void } | undefined;
     let keepAlive: ReturnType<typeof setInterval> | undefined;
+    const stop = () => {
+      if (entry) s.streams.delete(entry);
+      clearInterval(keepAlive);
+    };
     const stream = new ReadableStream<Uint8Array>({
       start(ctl) {
         for (const e of s.events) if (e.seq > after) ctl.enqueue(frame(e));
-        sub = (e) => ctl.enqueue(frame(e));
-        s.subscribers.add(sub);
+        entry = {
+          push: (e) => ctl.enqueue(frame(e)),
+          end: () => {
+            stop();
+            ctl.close();
+          },
+        };
+        s.streams.add(entry);
         keepAlive = setInterval(() => ctl.enqueue(enc.encode(": keep-alive\n\n")), 15_000);
       },
-      cancel() {
-        if (sub) s.subscribers.delete(sub);
-        clearInterval(keepAlive);
-      },
+      cancel: stop,
     });
     return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
   }
@@ -454,7 +477,7 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
       s.events = [];
       s.appends = [];
       s.lease = null;
-      for (const sub of s.subscribers) s.subscribers.delete(sub);
+      for (const st of [...s.streams]) st.end();
     }
     return Response.json({ sid: s.sid, deleted_at: s.deleted.deletedAt, last_seq: s.lastSeq, content_sha256: s.deleted.contentSha256 });
   }
@@ -469,7 +492,12 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
       if (!r) return fail(404, "not_found");
       const fault = faults.get(r);
       if (fault) faults.delete(r);
-      if (fault && fault !== "drop") return fail(fault.status, fault.code);
+      if (fault && fault !== "drop") {
+        const res = fail(fault.status, fault.code);
+        const retryAfter = RETRY_AFTER_S[fault.code];
+        if (retryAfter !== undefined) res.headers.set("retry-after", String(retryAfter));
+        return res;
+      }
       const res = await dispatch(r, req, url, parts);
       if (fault === "drop") await new Promise<void>((resolve) => req.signal.addEventListener("abort", () => resolve(), { once: true }));
       return res;
@@ -480,7 +508,7 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
     if (r === "health") return Response.json({ ok: true });
     const auth = req.headers.get("authorization");
     const claims = auth?.startsWith("Bearer ") ? tokens.get(auth.slice(7)) : undefined;
-    if (!claims) return fail(401, "unauthorized");
+    if (!claims || (claims.role === "reader" && "sid" in claims && !claims.principal)) return fail(401, "unauthorized");
     if (r === "create") return claims.role === "control" ? handleCreate(req) : fail(403, "forbidden");
     if (r === "list") return handleList(url, claims);
     const sid = parts[1]!;
@@ -496,7 +524,8 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
     url: `http://127.0.0.1:${server.port}/v1`,
     controlToken,
     engineToken: (sid, leaseId) => mint({ role: "engine", sid, leaseId }),
-    readerToken: (sid, principal) => mint({ role: "reader", sid, principal: principal ?? sessions.get(sid)?.identity.owner ?? DEFAULT_IDENTITY.owner }),
+    readerToken: (sid, principal) =>
+      mint(principal === null ? { role: "reader", sid } : { role: "reader", sid, principal: principal ?? sessions.get(sid)?.identity.owner ?? DEFAULT_IDENTITY.owner }),
     scopeReaderToken: (owner, publication) => mint({ role: "reader", owner, publication }),
     createSession(sid, identity = {}) {
       create(sid, { ...DEFAULT_IDENTITY, ...identity });
