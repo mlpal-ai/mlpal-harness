@@ -157,11 +157,6 @@ describe("0.22.1 (budget_exceeded refusal; HopView.tools.include optional)", () 
 });
 
 describe("0.22.2 (the budget refusal's window and resetsAt)", () => {
-  test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.2");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.2");
-  });
-
   test("a budget_exceeded refusal with and without window/resetsAt rides the result event and the error frame", () => {
     const bare: ModelRefusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "HOP infra cannot call claude-opus-5-5 now" };
     const timed: ModelRefusal = { ...bare, window: "daily", resetsAt: "2026-10-27T00:00:00Z" };
@@ -169,5 +164,21 @@ describe("0.22.2 (the budget refusal's window and resetsAt)", () => {
     const event = { type: "event", sessionId: "s", event: result } satisfies ServerMessage;
     const frame = { type: "error", requestId: "r", message: bare.message, refusal: bare } satisfies ServerMessage;
     expect([event.event.refusal?.window, event.event.refusal?.resetsAt, frame.refusal.window, frame.refusal.resetsAt]).toEqual(["daily", "2026-10-27T00:00:00Z", undefined, undefined]);
+  });
+});
+
+describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
+  test("version", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.3");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.3");
+  });
+
+  test("add_schedule and update_schedule take delivery.webhookSecret; a ScheduleView never carries it", () => {
+    const add = { type: "add_schedule", requestId: "a", schedule: { name: "hook", cadence: "every 1h", timezone: "UTC", prompt: "p", delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret" } } } satisfies ClientMessage;
+    const update = { type: "update_schedule", requestId: "u", id: "01J", patch: { delivery: { webhookSecret: "test-only-secret-2" } } } satisfies ClientMessage;
+    const view: ScheduleView = { id: "01J", name: "hook", cadence: "every 1h", timezone: "UTC", prompt: "p", delivery: { webhook: "https://h.example/in" }, enabled: true, consecutiveFailures: 0, createdAt: "2026-10-26T00:00:00Z" };
+    // @ts-expect-error the secret is write-only: the view's delivery has no webhookSecret
+    const leaked: ScheduleView = { ...view, delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret" } };
+    expect([add.schedule.delivery.webhookSecret, update.patch.delivery.webhookSecret, view.delivery?.webhook, leaked.id]).toEqual(["test-only-secret", "test-only-secret-2", "https://h.example/in", "01J"]);
   });
 });

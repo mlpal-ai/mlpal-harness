@@ -86,13 +86,22 @@ export interface ScheduleSpec {
   model?: string;
   /** Desktop only: hosted, the publication pins the HOP (422 hop_not_settable). */
   hop?: string;
-  delivery?: { mail?: string; webhook?: string };
+  delivery?: {
+    mail?: string;
+    webhook?: string;
+    /** 0.22.3, WRITE-ONLY: the secret the control plane HMAC-signs each webhook delivery with (the S8 shape:
+     *  `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule` and `update_schedule`
+     *  (absent on an update leaves it as it is; clearing it is not defined on this wire yet); never on a ScheduleView. */
+    webhookSecret?: string;
+  };
   mode?: "new" | `continue:${string}`;
   enabled?: boolean;
 }
 
-/** 0.22.0: a schedule as the service holds it. `owner` is the publication's owner subject; `publication` its slug. */
-export type ScheduleView = ScheduleSpec & {
+/** 0.22.0: a schedule as the service holds it. `owner` is the publication's owner subject; `publication` its slug.
+ *  Its delivery never carries the write-only `webhookSecret` (0.22.3). */
+export type ScheduleView = Omit<ScheduleSpec, "delivery"> & {
+  delivery?: Omit<NonNullable<ScheduleSpec["delivery"]>, "webhookSecret">;
   id: string;
   owner?: string;
   publication?: string;
@@ -557,4 +566,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.22.2";
+export const HARNESS_PROTOCOL_VERSION = "0.22.3";

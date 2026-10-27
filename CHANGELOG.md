@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Protocol 0.22.3: `ScheduleSpec.delivery.webhookSecret`, write-only (2026-10-26)
+
+- Additive over 0.22.2; every 0.22.2 frame remains valid.
+- `ScheduleSpec.delivery.webhookSecret?: string`: the secret the control plane HMAC-signs each webhook delivery
+  with (the S8 shape: `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule` and `update_schedule`; on an update, absent leaves the
+  stored secret as it is, and clearing it is not defined on this wire until hop-service defines it. Hosted, it goes
+  to hop-service as `delivery.webhook_secret` (SCHEDULES-WIRE §5).
+- Write-only: `ScheduleView`'s `delivery` is now typed without it (`Omit<…, "webhookSecret">`), so no view, listing
+  or `schedule` reply carries it; a client that reads `view.delivery.webhookSecret` no longer typechecks.
+
 ### Protocol 0.22.2: the budget refusal's `window` and `resetsAt` (2026-10-26)
 
 - Additive over 0.22.1; every 0.22.1 frame remains valid.
