@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Engine store, slice 1: `RemoteStore` added; no behaviour change for file mode (2026-10-27)
+
+- No protocol change. `LocalStore` (the `file` backend) is untouched; nothing constructs the new backend yet
+  (the loop's flush points are slice 2, yodex's `--session-store remote` is slice 3).
+- `SessionStoreClient`: the P1 session-store client over an injected `fetch`, with the bearer from a
+  `tokenProvider` read per request. `lease`, `renew`, `release`, `append` (a network failure is retried up to 3
+  times with the same `after_seq`, which P1 answers with the original seqs), `read` (`limit` ≤ 500), `readAll`,
+  `projection`. Refusals are typed: `LeaseHeldError` (409 `session_leased`), `LeaseLostError` (409 `lease_lost`),
+  `SeqConflictError` (409 `seq_conflict`, with the store's `lastSeq`), `SessionNotFoundError` (404),
+  `StoreHttpError` (any other status; the base of the four), `StoreUnreachableError` (no answer). The reason is
+  the body's `code`. No error carries the token.
+- `AppendBatcher`: the single in-order writer, one batch in flight, cut at 256 events or 1 MiB of JSON;
+  `flush()` resolves once everything queued is acknowledged. Any failed append is fatal: queued appends reject,
+  `onFatal` fires once, nothing is sent after.
+- `LeaseKeeper`: `acquire` (waits up to the TTL for a held lease to lapse) or `adopt`, renews every TTL/3, and
+  on `lease_lost` (or no good renew for a whole TTL) fires `onLost` once and aborts its `signal`.
+- `DeltaCoalescer`: merges consecutive text or thinking deltas into one event per 250 ms; other frames pass
+  through in order.
+- `RemoteStore implements Store`: one session under one lease. `open()` reads the log once; reads answer from
+  memory including what is queued. Entries go out as kind = `payload.type` (`ENTRY_KINDS`), logs as `log`
+  `{channel, record}`, registry writes as `record` (the record or the patch, folded as merges); `appendEvent`
+  for host kinds, `events()` and `lastSeq` for the host. The mailbox refuses `post` (`MailboxUnavailableError`);
+  another session id is a `SessionMismatchError`; `close()` flushes and releases the lease.
+
 ### Protocol 0.22.4: `SandboxRefusal`, the remote sandbox at capacity (2026-10-27)
 
 - Additive over 0.22.3; every 0.22.3 frame remains valid.

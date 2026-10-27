@@ -17,7 +17,7 @@ export interface StoredEvent extends StoreEvent {
   seq: number;
 }
 
-export interface Projection {
+export interface SessionProjection {
   sid: string;
   owner: string | null;
   unit: string | null;
@@ -31,14 +31,14 @@ export interface Projection {
   updatedAt: string;
 }
 
-export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+export type StoreFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface SessionStoreClientOptions {
   /** The store's base url, `…/v1`. */
   baseUrl: string;
   /** The bearer for each request, read per request so a rotated grant or token file takes effect. */
   tokenProvider: () => string;
-  fetch?: Fetch;
+  fetch?: StoreFetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   /** Per-request timeout (default 5000 ms); a timed-out append counts as a network failure. */
@@ -118,7 +118,7 @@ function httpError(op: Op, sid: string, status: number, body: Record<string, unk
 export class SessionStoreClient {
   private readonly baseUrl: string;
   private readonly tokenProvider: () => string;
-  private readonly fetchImpl: Fetch;
+  private readonly fetchImpl: StoreFetch;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly timeoutMs: number;
@@ -177,15 +177,15 @@ export class SessionStoreClient {
     }
   }
 
-  async projection(sid: string): Promise<Projection> {
+  async projection(sid: string): Promise<SessionProjection> {
     const b = await this.call<{
       sid: string;
       owner: string | null;
       unit: string | null;
       publication: string | null;
-      hop: Projection["hop"];
-      status: Projection["status"];
-      park?: Projection["park"];
+      hop: SessionProjection["hop"];
+      status: SessionProjection["status"];
+      park?: SessionProjection["park"];
       stop_reason?: string;
       usage: { input_tokens: number; output_tokens: number; cost_cu: number };
       last_seq: number;

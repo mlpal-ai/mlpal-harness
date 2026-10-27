@@ -4,6 +4,25 @@ export * from "./store/types";
 export { LocalStore } from "./store/local";
 export { SyncingMemory, withMemory } from "./store/graph-memory";
 export * from "./store/sessions";
+export {
+  LeaseHeldError,
+  LeaseLostError,
+  SeqConflictError,
+  SessionNotFoundError,
+  SessionStoreClient,
+  StoreHttpError,
+  StoreUnreachableError,
+  type SessionProjection,
+  type SessionStoreClientOptions,
+  type StoreEvent,
+  type StoredEvent,
+  type StoreFetch,
+} from "./store/remote/client";
+export { AppendBatcher, type AppendBatcherOptions } from "./store/remote/batcher";
+export { LeaseKeeper, type LeaseKeeperOptions } from "./store/remote/lease";
+export { DeltaCoalescer, type DeltaCoalescerOptions } from "./store/remote/coalescer";
+export { ENTRY_KINDS, MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "./store/remote/remote-store";
+export { systemTimers, type Timers } from "./store/remote/timers";
 export * from "./memory/memory";
 export * from "./memory/derived";
 export * from "./memory/projection";
