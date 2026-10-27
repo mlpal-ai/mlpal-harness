@@ -5,12 +5,19 @@
 ### Protocol 0.22.3: `ScheduleSpec.delivery.webhookSecret`, write-only (2026-10-26)
 
 - Additive over 0.22.2; every 0.22.2 frame remains valid.
-- `ScheduleSpec.delivery.webhookSecret?: string`: the secret the control plane HMAC-signs each webhook delivery
-  with (the S8 shape: `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule` and `update_schedule`; on an update, absent leaves the
-  stored secret as it is, and clearing it is not defined on this wire until hop-service defines it. Hosted, it goes
-  to hop-service as `delivery.webhook_secret` (SCHEDULES-WIRE §5).
+- `ScheduleSpec.delivery.webhookSecret?: string | null`: the secret the control plane HMAC-signs each webhook
+  delivery with (the S8 shape: `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule`
+  and `update_schedule`. Hosted, it goes to hop-service as `delivery.webhook_secret` (SCHEDULES-WIRE §5).
+- On `update_schedule`, a `delivery` is the whole delivery: hop-service replaces it, so a key left out removes that
+  sink, and dropping `webhook` drops its stored secret too. To rotate a secret, send `webhook` (and `mail`) with it;
+  `{delivery: {webhookSecret}}` alone would remove both sinks. The one exception is `webhookSecret`: absent keeps the
+  stored secret, `null` clears it (the webhook then goes unsigned and is not sent, status `no_secret`). The control
+  plane, not the engine, validates its length.
 - Write-only: `ScheduleView`'s `delivery` is now typed without it (`Omit<…, "webhookSecret">`), so no view, listing
   or `schedule` reply carries it; a client that reads `view.delivery.webhookSecret` no longer typechecks.
+- Harness: a tool call that fails schema validation still echoes the input it received (truncated), but the values
+  of keys matching `secret|token|password|api[_-]?key`, at any depth, now read `"[redacted]"` (numbers and booleans
+  stay), so a secret sent alongside another schema error is not repeated.
 
 ### Protocol 0.22.2: the budget refusal's `window` and `resetsAt` (2026-10-26)
 

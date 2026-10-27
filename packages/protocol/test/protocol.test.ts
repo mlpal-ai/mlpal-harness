@@ -175,10 +175,16 @@ describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
 
   test("add_schedule and update_schedule take delivery.webhookSecret; a ScheduleView never carries it", () => {
     const add = { type: "add_schedule", requestId: "a", schedule: { name: "hook", cadence: "every 1h", timezone: "UTC", prompt: "p", delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret" } } } satisfies ClientMessage;
-    const update = { type: "update_schedule", requestId: "u", id: "01J", patch: { delivery: { webhookSecret: "test-only-secret-2" } } } satisfies ClientMessage;
+    // A delivery patch is the whole delivery (hop-service replaces it), so a rotation re-sends the webhook.
+    const update = { type: "update_schedule", requestId: "u", id: "01J", patch: { delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret-2" } } } satisfies ClientMessage;
     const view: ScheduleView = { id: "01J", name: "hook", cadence: "every 1h", timezone: "UTC", prompt: "p", delivery: { webhook: "https://h.example/in" }, enabled: true, consecutiveFailures: 0, createdAt: "2026-10-26T00:00:00Z" };
     // @ts-expect-error the secret is write-only: the view's delivery has no webhookSecret
     const leaked: ScheduleView = { ...view, delivery: { webhook: "https://h.example/in", webhookSecret: "test-only-secret" } };
     expect([add.schedule.delivery.webhookSecret, update.patch.delivery.webhookSecret, view.delivery?.webhook, leaked.id]).toEqual(["test-only-secret", "test-only-secret-2", "https://h.example/in", "01J"]);
+  });
+
+  test("update_schedule clears the secret with webhookSecret: null", () => {
+    const clear = { type: "update_schedule", requestId: "c", id: "01J", patch: { delivery: { webhook: "https://h.example/in", webhookSecret: null } } } satisfies ClientMessage;
+    expect(JSON.parse(JSON.stringify(clear)).patch.delivery).toEqual({ webhook: "https://h.example/in", webhookSecret: null });
   });
 });

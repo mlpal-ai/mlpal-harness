@@ -86,13 +86,17 @@ export interface ScheduleSpec {
   model?: string;
   /** Desktop only: hosted, the publication pins the HOP (422 hop_not_settable). */
   hop?: string;
+  /** On `update_schedule`, a `delivery` is the WHOLE delivery: the control plane replaces it, so a key left out
+   *  removes that sink (dropping `webhook` drops its stored secret too). To rotate a secret, send `webhook` (and
+   *  `mail`) with it. Only `webhookSecret` is the exception: absent keeps the stored one. */
   delivery?: {
     mail?: string;
     webhook?: string;
     /** 0.22.3, WRITE-ONLY: the secret the control plane HMAC-signs each webhook delivery with (the S8 shape:
-     *  `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule` and `update_schedule`
-     *  (absent on an update leaves it as it is; clearing it is not defined on this wire yet); never on a ScheduleView. */
-    webhookSecret?: string;
+     *  `X-Harness-Signature: sha256=<hmac hex over the raw body>`). Taken on `add_schedule` and `update_schedule`;
+     *  never on a ScheduleView. On an update, absent keeps the stored secret and `null` clears it (the webhook then
+     *  goes unsigned and is not sent: delivery status `no_secret`). The control plane validates the length. */
+    webhookSecret?: string | null;
   };
   mode?: "new" | `continue:${string}`;
   enabled?: boolean;

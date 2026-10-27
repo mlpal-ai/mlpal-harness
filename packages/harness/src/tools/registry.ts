@@ -85,6 +85,9 @@ export class ToolRegistry {
   }
 }
 
+/** Keys whose values a validation error's echo of the input never repeats. */
+const SECRET_LIKE_KEY = /secret|token|password|api[_-]?key/i;
+
 /** Validate raw model-supplied input against the tool schema, then execute. */
 export async function runTool(
   registry: ToolRegistry,
@@ -112,9 +115,11 @@ export async function runTool(
   if (!parsed.success) {
     // Echo what was received: without it, neither the model nor a bug report can tell WHICH
     // character broke — the error was undebuggable from a screenshot.
+    // A secret sent alongside another schema error would otherwise be repeated verbatim; a number or boolean under
+    // such a key (`max_tokens`) is no secret and stays readable.
     let received: string;
     try {
-      received = JSON.stringify(rawInput) ?? String(rawInput);
+      received = JSON.stringify(rawInput, (k, v) => (k !== "" && SECRET_LIKE_KEY.test(k) && (typeof v === "string" || (typeof v === "object" && v !== null)) ? "[redacted]" : v)) ?? String(rawInput);
     } catch {
       received = String(rawInput);
     }
