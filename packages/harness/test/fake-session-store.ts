@@ -488,6 +488,8 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
   }
 
   const server = Bun.serve({
+    // Bound where the tests dial: port 0 on every interface can be a port another process holds on 127.0.0.1.
+    hostname: "127.0.0.1",
     port: 0,
     idleTimeout: 0,
     async fetch(req) {
