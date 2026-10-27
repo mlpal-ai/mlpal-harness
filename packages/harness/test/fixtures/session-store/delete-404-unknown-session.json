@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "unknown_session"
+  },
+  "case": "no such session",
+  "content_type": "application/json",
+  "route": "DELETE /v1/sessions/{sid}",
+  "status": 404
+}

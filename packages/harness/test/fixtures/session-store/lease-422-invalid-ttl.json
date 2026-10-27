@@ -1,0 +1,15 @@
+{
+  "body": {
+    "code": "invalid_ttl",
+    "max_ttl_s": 60,
+    "message": "ttl_s must be 1 to 60"
+  },
+  "case": "ttl_s over 60",
+  "content_type": "application/json",
+  "request": {
+    "holder": "engine:node-a:4242",
+    "ttl_s": 120
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 422
+}

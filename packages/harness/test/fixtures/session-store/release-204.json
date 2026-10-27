@@ -1,0 +1,7 @@
+{
+  "body": null,
+  "case": "the holder releases its lease (the turn ended or parked)",
+  "content_type": null,
+  "route": "DELETE /v1/sessions/{sid}/lease/{lease_id}",
+  "status": 204
+}

@@ -1,0 +1,10 @@
+{
+  "body": {
+    "code": "filter_required",
+    "message": "name at least one of publication, owner, unit"
+  },
+  "case": "none of publication, owner, unit",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions?status=running",
+  "status": 400
+}

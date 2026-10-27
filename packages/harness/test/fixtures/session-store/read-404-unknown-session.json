@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "unknown_session"
+  },
+  "case": "no such session",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}/events",
+  "status": 404
+}

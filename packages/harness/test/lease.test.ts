@@ -1,18 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { LeaseHeldError, LeaseLostError, SessionStoreClient, StoreUnreachableError } from "../src/store/remote/client";
+import { LeaseLostError, SessionStoreClient, StoreUnreachableError } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
 import { FakeClock } from "./fake-clock";
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
 
 let clock: FakeClock;
 let store: FakeSessionStore;
-let client: SessionStoreClient;
 
 beforeEach(() => {
   clock = new FakeClock();
   store = startFakeSessionStore({ clock: clock.now });
   store.createSession("s1");
-  client = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => store.token });
 });
 afterEach(async () => {
   await store.stop();
@@ -20,78 +18,53 @@ afterEach(async () => {
 
 const tick = () => new Promise((r) => setTimeout(r, 1));
 
-/** Runs the manual clock forward one pending timer at a time until `p` settles. */
-async function drive<T>(p: Promise<T>, step: number, between?: () => Promise<unknown>): Promise<T> {
-  let settled = false;
-  const done = p.finally(() => (settled = true));
-  done.catch(() => {});
-  while (!settled) {
-    if (clock.pending() > 0) {
-      clock.advance(step);
-      await between?.();
-    }
-    await tick();
-  }
-  return done;
+/** Control leases (an engine token cannot); the keeper adopts the lease with its engine token. */
+function handed(ttlS = 30): { keeper: LeaseKeeper; leaseId: string } {
+  const g = store.grant("s1", { ttlS });
+  const client = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => g.token });
+  const keeper = new LeaseKeeper({ client, sid: "s1", ttlS, timers: clock });
+  keeper.adopt({ leaseId: g.leaseId });
+  return { keeper, leaseId: g.leaseId };
 }
 
 /** A client whose renew answers come from the test. */
-function stubClient(renew: () => Promise<{ expiresAt: string }>) {
+function stubClient(renew: () => Promise<unknown>) {
   const calls = { renew: 0, release: 0 };
   return {
     calls,
     client: {
-      lease: async () => ({ leaseId: "L", expiresAt: "", lastSeq: 0 }),
-      renew: async () => (calls.renew++, renew()),
+      renew: async () => (calls.renew++, renew().then(() => ({ leaseId: "L", expiresAt: 0, lastSeq: 0 }))),
       release: async () => void calls.release++,
     },
   };
 }
 
 describe("LeaseKeeper", () => {
-  test("acquire takes the lease; the signal is live", async () => {
-    const keeper = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
-    const got = await keeper.acquire("engine:test:1");
-    expect(got).toEqual({ leaseId: store.lease("s1")!.id, lastSeq: 0 });
-    expect(keeper.leaseId).toBe(got.leaseId);
-    expect(store.lease("s1")!.holder).toBe("engine:test:1");
+  test("adopt holds the handed lease and renews it every ttl/3 with the engine token", async () => {
+    const { keeper, leaseId } = handed(30);
+    expect(keeper.leaseId).toBe(leaseId);
     expect(keeper.signal.aborted).toBe(false);
-    await keeper.release();
-  });
-
-  test("a held lease is waited out, polling every ttl/6, and taken once the holder lapses", async () => {
-    await client.lease("s1", { holder: "dead-engine", ttlS: 30 });
-    const t0 = clock.now();
-    const keeper = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
-    const got = await drive(keeper.acquire("engine:b:2"), 5_000);
-    expect(clock.now() - t0).toBe(30_000);
-    expect(store.lease("s1")).toMatchObject({ id: got.leaseId, holder: "engine:b:2" });
-    await keeper.release();
-  });
-
-  test("a holder that keeps renewing outlasts the wait: acquire throws LeaseHeldError after ttl", async () => {
-    const other = await client.lease("s1", { holder: "live-engine", ttlS: 30 });
-    const t0 = clock.now();
-    const keeper = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
-    const err = await drive(keeper.acquire("engine:b:2"), 5_000, () => client.renew("s1", other.leaseId)).catch((e) => e);
-    expect(err).toBeInstanceOf(LeaseHeldError);
-    expect(clock.now() - t0).toBe(30_000);
-    expect(store.lease("s1")!.holder).toBe("live-engine");
-  });
-
-  test("renews every ttl/3 on the timer, against the real lease", async () => {
-    const keeper = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
-    await keeper.acquire("engine:test:1");
     for (let i = 0; i < 6; i++) {
       clock.advance(10_000);
-      while (store.lease("s1")?.expiresAt !== clock.now() + 30_000) await tick();
+      // Renewed in the store, and the keeper has scheduled the next renew.
+      while (store.lease("s1")?.expiresAt !== clock.now() + 30_000 || clock.pending() === 0) await tick();
     }
-    expect(store.lease("s1")!.id).toBe(keeper.leaseId);
+    expect(store.lease("s1")!.id).toBe(leaseId);
     await keeper.release();
+  });
+
+  test("a lease that lapsed before the first renew is lost: the store never revives it", async () => {
+    const { keeper } = handed(30);
+    const seen: Error[] = [];
+    keeper.onLost((e) => seen.push(e));
+    clock.advance(31_000); // the renew at 10 s fires late, as after a stall
+    while (seen.length === 0) await tick();
+    expect(seen[0]).toBeInstanceOf(LeaseLostError);
+    expect(keeper.signal.aborted).toBe(true);
   });
 
   test("renew cadence: nothing before ttl/3, then one renew per ttl/3", async () => {
-    const stub = stubClient(async () => ({ expiresAt: "" }));
+    const stub = stubClient(async () => {});
     const keeper = new LeaseKeeper({ client: stub.client, sid: "s1", ttlS: 30, timers: clock });
     keeper.adopt({ leaseId: "L" });
     expect(keeper.leaseId).toBe("L");
@@ -134,8 +107,7 @@ describe("LeaseKeeper", () => {
   test("an unreachable store is tolerated until ttl since the last good renew, then the lease is lost", async () => {
     let up = true;
     const stub = stubClient(async () => {
-      if (up) return { expiresAt: "" };
-      throw new StoreUnreachableError("down", 1);
+      if (!up) throw new StoreUnreachableError("down", 1);
     });
     const keeper = new LeaseKeeper({ client: stub.client, sid: "s1", ttlS: 30, timers: clock });
     const seen: Error[] = [];
@@ -157,8 +129,7 @@ describe("LeaseKeeper", () => {
   });
 
   test("release gives the lease back and stops renewing", async () => {
-    const keeper = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
-    await keeper.acquire("engine:test:1");
+    const { keeper } = handed(30);
     await keeper.release();
     expect(store.lease("s1")).toBeNull();
     expect(clock.pending()).toBe(0);

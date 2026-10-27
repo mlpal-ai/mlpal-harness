@@ -5,13 +5,17 @@ export { LocalStore } from "./store/local";
 export { SyncingMemory, withMemory } from "./store/graph-memory";
 export * from "./store/sessions";
 export {
+  BatchTooLargeError,
   LeaseHeldError,
   LeaseLostError,
   SeqConflictError,
+  SessionDeletedError,
   SessionNotFoundError,
   SessionStoreClient,
   StoreHttpError,
   StoreUnreachableError,
+  type LeaseGrant,
+  type SessionPark,
   type SessionProjection,
   type SessionStoreClientOptions,
   type StoreEvent,

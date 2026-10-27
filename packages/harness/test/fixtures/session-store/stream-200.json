@@ -1,0 +1,7 @@
+{
+  "body": "id: 1\nevent: user\ndata: {\"parentUuid\":null,\"payload\":{\"message\":{\"content\":\"Reply pong\",\"role\":\"user\"},\"type\":\"user\"},\"ts\":\"2025-10-09T08:53:20.000Z\",\"uuid\":\"u1\"}\n\nid: 2\nevent: permission_request\ndata: {\"id\":\"perm-1\",\"input\":{\"command\":\"ls\"},\"sessionId\":\"sess-contract-1\",\"toolName\":\"Bash\",\"type\":\"permission_request\"}\n\nid: 3\nevent: result\ndata: {\"parentUuid\":\"u1\",\"payload\":{\"numTurns\":1,\"subtype\":\"success\",\"type\":\"result\",\"usage\":{\"compute_units\":0.0004,\"input_tokens\":12,\"output_tokens\":3}},\"ts\":\"2025-10-09T08:53:21.000Z\",\"uuid\":\"r1\"}\n\n",
+  "case": "from the start (Last-Event-ID: 0): id is the seq, event the kind, data the frame",
+  "content_type": "text/event-stream",
+  "route": "GET /v1/sessions/{sid}/stream?after={seq}",
+  "status": 200
+}

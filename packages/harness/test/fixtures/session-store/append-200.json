@@ -1,0 +1,40 @@
+{
+  "body": {
+    "first_seq": 1,
+    "last_seq": 2
+  },
+  "case": "a batch at the head: its seqs",
+  "content_type": "application/json",
+  "request": {
+    "after_seq": 0,
+    "events": [
+      {
+        "data": {
+          "parentUuid": null,
+          "payload": {
+            "message": {
+              "content": "Reply pong",
+              "role": "user"
+            },
+            "type": "user"
+          },
+          "ts": "2025-10-09T08:53:20.000Z",
+          "uuid": "u1"
+        },
+        "kind": "user",
+        "ts_ms": 1760000000000
+      },
+      {
+        "data": {
+          "text": "po",
+          "type": "text_delta"
+        },
+        "kind": "text_delta",
+        "ts_ms": 1760000000250
+      }
+    ],
+    "lease_id": "<lease_id>"
+  },
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 200
+}

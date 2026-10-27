@@ -1,0 +1,27 @@
+{
+  "body": {
+    "code": "invalid_event",
+    "index": 1,
+    "message": "kind must be [A-Za-z0-9_.:-]{1,64}"
+  },
+  "case": "a kind outside [A-Za-z0-9_.:-]{1,64}; index names the event",
+  "content_type": "application/json",
+  "request": {
+    "after_seq": 2,
+    "events": [
+      {
+        "data": {},
+        "kind": "text_delta",
+        "ts_ms": 1760000000000
+      },
+      {
+        "data": {},
+        "kind": "bad kind",
+        "ts_ms": 1760000000000
+      }
+    ],
+    "lease_id": "<lease_id>"
+  },
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 422
+}

@@ -11,13 +11,11 @@ import type { LogChannel, MemoryStore, SessionRecord, Store } from "../src/store
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
 
 let fake: FakeSessionStore;
-let client: SessionStoreClient;
 let root: string;
 
 beforeEach(() => {
   fake = startFakeSessionStore();
   fake.createSession("s1");
-  client = new SessionStoreClient({ baseUrl: fake.url, tokenProvider: () => fake.token });
   root = mkdtempSync(join(tmpdir(), "yodex-remote-store-"));
 });
 afterEach(async () => {
@@ -33,8 +31,11 @@ const memory: MemoryStore = {
 };
 
 async function openRemote(over: Partial<RemoteStoreOptions> = {}): Promise<{ store: RemoteStore; lease: LeaseKeeper }> {
+  // Control leases; the engine is handed the lease and a token scoped to it.
+  const g = fake.grant("s1", { ttlS: 30 });
+  const client = new SessionStoreClient({ baseUrl: fake.url, tokenProvider: () => g.token });
   const lease = new LeaseKeeper({ client, sid: "s1", ttlS: 30 });
-  await lease.acquire("engine:test:1");
+  lease.adopt({ leaseId: g.leaseId });
   const store = new RemoteStore({ client, sid: "s1", lease, memory, artifactsDir: join(root, "artifacts"), ...over });
   await store.open();
   return { store, lease };

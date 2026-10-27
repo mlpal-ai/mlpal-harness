@@ -1,0 +1,10 @@
+{
+  "body": {
+    "code": "session_deleted",
+    "deleted_at": 1760000000000
+  },
+  "case": "erased: 410 to whoever may read it (control, its engine, its readers); 404 unknown_session to anyone else",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}",
+  "status": 410
+}

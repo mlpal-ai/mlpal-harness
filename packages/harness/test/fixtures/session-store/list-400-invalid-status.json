@@ -1,0 +1,10 @@
+{
+  "body": {
+    "code": "invalid_status",
+    "message": "status must be idle, running, requires_action or ended"
+  },
+  "case": "a status that is not a P1 status",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions?owner={o}&status=busy",
+  "status": 400
+}

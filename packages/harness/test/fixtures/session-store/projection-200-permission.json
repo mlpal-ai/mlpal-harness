@@ -1,0 +1,40 @@
+{
+  "body": {
+    "hop": {
+      "digest": "sha256:9f2c",
+      "name": "infra-ro",
+      "version": "0.9.2"
+    },
+    "last_seq": 2,
+    "lease": {
+      "expires_at": 1760000060000
+    },
+    "owner": "cust_7",
+    "park": {
+      "at": 1760000000300,
+      "id": "perm-1",
+      "kind": "permission"
+    },
+    "parks": [
+      {
+        "at": 1760000000300,
+        "id": "perm-1",
+        "kind": "permission"
+      }
+    ],
+    "publication": "infra-ro",
+    "sid": "sess-contract-1",
+    "status": "requires_action",
+    "unit": "unit_platform",
+    "updated_at": 1760000000000,
+    "usage": {
+      "cost_cu": 0.0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  "case": "a live permission ask (busy): requires_action",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}",
+  "status": 200
+}

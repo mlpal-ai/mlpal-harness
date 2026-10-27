@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "blobs_unavailable"
+  },
+  "case": "a payload over 64 KiB with object storage down; request omitted",
+  "content_type": "application/json",
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 503
+}

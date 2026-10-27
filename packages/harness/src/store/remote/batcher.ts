@@ -1,7 +1,8 @@
 /**
  * The engine's single writer to the session store: one in-order queue, at most one batch in
  * flight. Whatever is queued when the store is free goes out as the next batch, cut at the event
- * and byte limits, so appends group under load and go out at once when idle. Every batch carries
+ * limit and at the store's byte limit (summed over the events' `data` as sent), so appends group
+ * under load and go out at once when idle. Every batch carries
  * `after_seq` = the last seq the store acknowledged; the client's retry of a batch is therefore
  * idempotent, and anything else that fails an append ends this writer (fail closed): a hole in
  * the durable log would contradict what the engine already holds in memory.
@@ -16,6 +17,7 @@ export interface AppendBatcherOptions {
   /** The store's last seq when the batcher starts. */
   afterSeq: number;
   batchMaxEvents?: number;
+  /** Over the events' `data` bytes, as the store counts them. */
   batchMaxBytes?: number;
   /** `ts_ms` for an event appended without one. */
   now?: () => number;
@@ -61,9 +63,9 @@ export class AppendBatcher {
   /** Queue one event; resolves to its seq once the store acknowledges its batch. */
   append(kind: string, data: unknown, tsMs = this.now()): Promise<number> {
     if (this.fatalError) return Promise.reject(this.fatalError);
-    const event: StoreEvent = { kind, data, ts_ms: tsMs };
+    const event: StoreEvent = { kind, data: data ?? null, ts_ms: tsMs };
     return new Promise<number>((resolve, reject) => {
-      this.queue.push({ event, bytes: Buffer.byteLength(JSON.stringify(event)) + 1, resolve, reject });
+      this.queue.push({ event, bytes: Buffer.byteLength(JSON.stringify(event.data)), resolve, reject });
       // A microtask, so the appends of one synchronous burst share a batch.
       queueMicrotask(() => this.kick());
     });
@@ -87,8 +89,7 @@ export class AppendBatcher {
 
   private async drain(): Promise<void> {
     while (this.queue.length > 0 && !this.fatalError) {
-      // `[` + `]` and one comma per event but the last: 1 + Σ(bytes + 1) is the array's JSON size.
-      let bytes = 1;
+      let bytes = 0;
       let n = 0;
       while (n < this.queue.length && n < this.maxEvents && (n === 0 || bytes + this.queue[n]!.bytes <= this.maxBytes)) {
         bytes += this.queue[n]!.bytes;

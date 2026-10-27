@@ -1,0 +1,45 @@
+{
+  "body": {
+    "events": [
+      {
+        "data": {
+          "id": "perm-1",
+          "input": {
+            "command": "ls"
+          },
+          "sessionId": "sess-contract-1",
+          "toolName": "Bash",
+          "type": "permission_request"
+        },
+        "kind": "permission_request",
+        "seq": 2,
+        "ts_ms": 1760000000300
+      },
+      {
+        "data": {
+          "parentUuid": "u1",
+          "payload": {
+            "numTurns": 1,
+            "subtype": "success",
+            "type": "result",
+            "usage": {
+              "compute_units": 0.0004,
+              "input_tokens": 12,
+              "output_tokens": 3
+            }
+          },
+          "ts": "2025-10-09T08:53:21.000Z",
+          "uuid": "r1"
+        },
+        "kind": "result",
+        "seq": 3,
+        "ts_ms": 1760000001000
+      }
+    ],
+    "last_seq": 3
+  },
+  "case": "a page after a cursor: frames unchanged",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}/events?after=1&limit=2",
+  "status": 200
+}

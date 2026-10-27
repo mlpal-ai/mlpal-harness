@@ -1,0 +1,9 @@
+{
+  "body": {
+    "ok": true
+  },
+  "case": "open, no token",
+  "content_type": "application/json",
+  "route": "GET /v1/health",
+  "status": 200
+}

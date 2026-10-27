@@ -1,0 +1,56 @@
+{
+  "body": {
+    "next_after_id": "sess-b",
+    "sessions": [
+      {
+        "hop": {
+          "digest": "sha256:9f2c",
+          "name": "infra-ro",
+          "version": "0.9.2"
+        },
+        "last_seq": 0,
+        "lease": null,
+        "owner": "cust_7",
+        "parks": [],
+        "publication": "infra-ro",
+        "sid": "sess-a",
+        "status": "idle",
+        "unit": "unit_platform",
+        "updated_at": 1760000000000,
+        "usage": {
+          "cost_cu": 0.0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      {
+        "hop": {
+          "digest": "sha256:9f2c",
+          "name": "infra-ro",
+          "version": "0.9.2"
+        },
+        "last_seq": 1,
+        "lease": {
+          "expires_at": 1760000060000,
+          "holder": "engine:test:1"
+        },
+        "owner": "cust_7",
+        "parks": [],
+        "publication": "infra-ro",
+        "sid": "sess-b",
+        "status": "running",
+        "unit": "unit_platform",
+        "updated_at": 1760000000000,
+        "usage": {
+          "cost_cu": 0.0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ]
+  },
+  "case": "an owner's sessions, a page of 2: next_after_id continues it",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions?owner={o}&limit=2",
+  "status": 200
+}

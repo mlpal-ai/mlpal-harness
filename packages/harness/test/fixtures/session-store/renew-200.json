@@ -1,0 +1,14 @@
+{
+  "body": {
+    "expires_at": 1760000080000,
+    "last_seq": 0,
+    "lease_id": "6379bdfe-0920-45d9-9d5b-a39c6526a40c"
+  },
+  "case": "the engine renews its own live lease, 20 s in; no body keeps its ttl_s",
+  "content_type": "application/json",
+  "generated": [
+    "lease_id"
+  ],
+  "route": "POST /v1/sessions/{sid}/lease/{lease_id}/renew",
+  "status": 200
+}

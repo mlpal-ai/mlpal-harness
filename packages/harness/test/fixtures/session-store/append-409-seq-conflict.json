@@ -1,0 +1,24 @@
+{
+  "body": {
+    "code": "seq_conflict",
+    "last_seq": 2
+  },
+  "case": "after_seq is not the head (another write landed)",
+  "content_type": "application/json",
+  "request": {
+    "after_seq": 1,
+    "events": [
+      {
+        "data": {
+          "text": "ng",
+          "type": "text_delta"
+        },
+        "kind": "text_delta",
+        "ts_ms": 1760000000500
+      }
+    ],
+    "lease_id": "<lease_id>"
+  },
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 409
+}

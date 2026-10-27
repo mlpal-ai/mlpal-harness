@@ -1,0 +1,10 @@
+{
+  "body": {
+    "code": "invalid_limit",
+    "message": "limit must be 1 to 500"
+  },
+  "case": "limit over 500",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}/events?limit=501",
+  "status": 400
+}

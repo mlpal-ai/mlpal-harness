@@ -1,18 +1,19 @@
 /**
- * Holds the engine's P1 lease: takes it (waiting out a dead holder) or adopts one a host was
- * granted, renews it every ttl/3, and fails closed. A renew answered `lease_lost`, or no good
- * renew for a whole ttl, is the loss of the session: `onLost` fires once and `signal` aborts,
- * so the host stops the run before another engine's writes could interleave with this one's.
+ * Keeps the P1 lease an engine was handed (an engine token can renew, release and append under its
+ * lease, never take one: leasing is control's). Renews every ttl/3 and fails closed: a renew
+ * answered `lease_lost`, or no good renew for a whole ttl, is the loss of the session: `onLost` fires
+ * once and `signal` aborts, so the host stops the run before another engine's writes could
+ * interleave with this one's.
  */
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
-import { LeaseHeldError, LeaseLostError, type SessionStoreClient } from "./client";
+import { LeaseLostError, type SessionStoreClient } from "./client";
 import { systemTimers, type Timers } from "./timers";
 
 export interface LeaseKeeperOptions {
-  client: Pick<SessionStoreClient, "lease" | "renew" | "release">;
+  client: Pick<SessionStoreClient, "renew" | "release">;
   sid: string;
-  /** P1 caps it at 60. */
+  /** The lease's ttl, which sets the renew cadence; P1 caps it at 60. */
   ttlS?: number;
   timers?: Timers;
   logger?: Logger;
@@ -46,22 +47,7 @@ export class LeaseKeeper {
     return this.state.leaseId;
   }
 
-  /** Takes the lease, waiting up to ttl (polling every ttl/6) for another holder's to lapse. */
-  async acquire(holder: string): Promise<{ leaseId: string; lastSeq: number }> {
-    const started = this.timers.now();
-    for (;;) {
-      try {
-        const got = await this.opts.client.lease(this.opts.sid, { holder, ttlS: this.ttlMs / 1000 });
-        this.hold(got.leaseId);
-        return { leaseId: got.leaseId, lastSeq: got.lastSeq };
-      } catch (e) {
-        if (!(e instanceof LeaseHeldError) || this.timers.now() - started >= this.ttlMs) throw e;
-        await this.timers.sleep(this.ttlMs / 6);
-      }
-    }
-  }
-
-  /** Keeps a lease someone else took (the phase 1 per-turn grant). */
+  /** Keeps the lease the engine was handed: per turn in phase 1, at start in phase 2. */
   adopt(grant: { leaseId: string }): void {
     this.hold(grant.leaseId);
   }

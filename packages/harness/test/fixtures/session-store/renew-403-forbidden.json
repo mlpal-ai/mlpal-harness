@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "forbidden"
+  },
+  "case": "an engine token for another lease",
+  "content_type": "application/json",
+  "route": "POST /v1/sessions/{sid}/lease/{lease_id}/renew",
+  "status": 403
+}

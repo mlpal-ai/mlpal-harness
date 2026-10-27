@@ -1,0 +1,22 @@
+{
+  "body": {
+    "code": "invalid_sid",
+    "message": "sid must be [A-Za-z0-9_-]{1,128}"
+  },
+  "case": "a sid outside [A-Za-z0-9_-]{1,128}",
+  "content_type": "application/json",
+  "request": {
+    "hop": {
+      "digest": "sha256:9f2c",
+      "name": "infra-ro",
+      "version": "0.9.2"
+    },
+    "origin": "api",
+    "owner": "cust_7",
+    "publication": "infra-ro",
+    "sid": "bad sid",
+    "unit": "unit_platform"
+  },
+  "route": "POST /v1/sessions",
+  "status": 422
+}

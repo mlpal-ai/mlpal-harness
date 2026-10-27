@@ -1,0 +1,18 @@
+{
+  "body": {
+    "expires_at": 1760000060000,
+    "last_seq": 0,
+    "lease_id": "6379bdfe-0920-45d9-9d5b-a39c6526a40c"
+  },
+  "case": "no live lease: granted for ttl_s from now",
+  "content_type": "application/json",
+  "generated": [
+    "lease_id"
+  ],
+  "request": {
+    "holder": "engine:node-a:4242",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 200
+}

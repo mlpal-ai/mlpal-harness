@@ -58,18 +58,18 @@ describe("AppendBatcher", () => {
     expect(b.lastSeq).toBe(600);
   });
 
-  test("a batch is cut before its JSON passes the byte budget (1 MiB by default)", async () => {
+  test("a batch is cut before its events' data passes the byte budget (1 MiB by default, as the store sums it)", async () => {
     const stub = stubClient();
     const { b } = batcher(stub);
     const big = "x".repeat(400_000);
     for (let i = 0; i < 5; i++) void b.append("log", big, 1);
     await b.flush();
     expect(stub.sent.map((s) => s.events.length)).toEqual([2, 2, 1]);
-    for (const s of stub.sent) expect(Buffer.byteLength(JSON.stringify(s.events))).toBeLessThanOrEqual(1024 * 1024);
+    for (const s of stub.sent) expect(s.events.reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e.data)), 0)).toBeLessThanOrEqual(1024 * 1024);
 
     const exact = stubClient();
-    const one = Buffer.byteLength(JSON.stringify({ kind: "k", data: "abc", ts_ms: 1 }));
-    const tight = batcher(exact, { batchMaxBytes: 2 + 2 * one + 1 }).b; // `[a,b]` fits; a third does not
+    const one = Buffer.byteLength(JSON.stringify("abc"));
+    const tight = batcher(exact, { batchMaxBytes: 2 * one }).b; // two fit exactly; a third does not
     for (let i = 0; i < 3; i++) void tight.append("k", "abc", 1);
     await tight.flush();
     expect(exact.sent.map((s) => s.events.length)).toEqual([2, 1]);
@@ -185,9 +185,9 @@ describe("AppendBatcher", () => {
     const store = startFakeSessionStore();
     try {
       store.createSession("s1");
-      const client = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => store.token });
-      const { leaseId, lastSeq } = await client.lease("s1", { holder: "t", ttlS: 30 });
-      const b = new AppendBatcher({ client, sid: "s1", leaseId: () => leaseId, afterSeq: lastSeq });
+      const { leaseId, token } = store.grant("s1");
+      const client = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => token });
+      const b = new AppendBatcher({ client, sid: "s1", leaseId: () => leaseId, afterSeq: 0 });
       for (let i = 0; i < 300; i++) void b.append("log", { i });
       await b.flush();
       expect(store.events("s1").map((e) => e.seq)).toEqual(Array.from({ length: 300 }, (_, i) => i + 1));

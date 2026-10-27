@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "forbidden"
+  },
+  "case": "a scoped reader naming another owner",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions?owner={o}",
+  "status": 403
+}

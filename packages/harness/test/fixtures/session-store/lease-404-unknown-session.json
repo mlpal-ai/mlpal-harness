@@ -1,0 +1,13 @@
+{
+  "body": {
+    "code": "unknown_session"
+  },
+  "case": "no such session",
+  "content_type": "application/json",
+  "request": {
+    "holder": "engine:node-a:4242",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 404
+}

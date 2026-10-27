@@ -6,18 +6,24 @@
 
 - No protocol change. `LocalStore` (the `file` backend) is untouched; nothing constructs the new backend yet
   (the loop's flush points are slice 2, yodex's `--session-store remote` is slice 3).
-- `SessionStoreClient`: the P1 session-store client over an injected `fetch`, with the bearer from a
-  `tokenProvider` read per request. `lease`, `renew`, `release`, `append` (a network failure is retried up to 3
-  times with the same `after_seq`, which P1 answers with the original seqs), `read` (`limit` ≤ 500), `readAll`,
-  `projection`. Refusals are typed: `LeaseHeldError` (409 `session_leased`), `LeaseLostError` (409 `lease_lost`),
-  `SeqConflictError` (409 `seq_conflict`, with the store's `lastSeq`), `SessionNotFoundError` (404),
-  `StoreHttpError` (any other status; the base of the four), `StoreUnreachableError` (no answer). The reason is
-  the body's `code`. No error carries the token.
-- `AppendBatcher`: the single in-order writer, one batch in flight, cut at 256 events or 1 MiB of JSON;
-  `flush()` resolves once everything queued is acknowledged. Any failed append is fatal: queued appends reject,
-  `onFatal` fires once, nothing is sent after.
-- `LeaseKeeper`: `acquire` (waits up to the TTL for a held lease to lapse) or `adopt`, renews every TTL/3, and
-  on `lease_lost` (or no good renew for a whole TTL) fires `onLost` once and aborts its `signal`.
+- Built to the real session store's contract (mlpal-harness-stack `docs/API.md`, "session-store"; its contract
+  fixtures are vendored in `test/fixtures/session-store`). **An engine cannot take its own lease**: leasing is
+  control-role only, and an engine token (`sid`, `lease_id`) may renew, release, append and read under the
+  lease it was handed (per turn in phase 1; at start in phase 2).
+- `SessionStoreClient`: P1 over an injected `fetch`, with the bearer from a `tokenProvider` read per request.
+  `lease` (control), `renew` (optional `ttlS`; a lapsed lease is never revived), `release`, `append` (a network
+  failure or a 5xx is retried up to 3 times with the same `after_seq`, honouring `Retry-After`; the store answers
+  a replay with the original seqs), `read` (`limit` ≤ 500), `readAll` (never asks past the head), `projection`
+  (`parks`, `park`, `lease`). Timestamps are unix milliseconds. Errors carry `status` and the body's `code`:
+  `LeaseHeldError` (409 `session_leased`, `expiresAt`), `LeaseLostError` (409 `lease_lost`), `SeqConflictError`
+  (409 `seq_conflict`, `lastSeq`), `SessionNotFoundError` (404 `unknown_session`), `SessionDeletedError` (410,
+  `deletedAt`), `BatchTooLargeError` (413, `maxEvents`, `maxBytes`), `StoreHttpError` (any other status; the base
+  of these), `StoreUnreachableError` (no answer). No error carries the token.
+- `AppendBatcher`: the single in-order writer, one batch in flight, cut at 256 events or 1 MiB summed over the
+  events' `data`; `flush()` resolves once everything queued is acknowledged. Any failed append is fatal: queued
+  appends reject, `onFatal` fires once, nothing is sent after.
+- `LeaseKeeper`: `adopt`s the handed lease, renews every TTL/3, and on `lease_lost` (or no good renew for a whole
+  TTL) fires `onLost` once and aborts its `signal`.
 - `DeltaCoalescer`: merges consecutive text or thinking deltas into one event per 250 ms; other frames pass
   through in order.
 - `RemoteStore implements Store`: one session under one lease. `open()` reads the log once; reads answer from

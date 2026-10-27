@@ -1,0 +1,11 @@
+{
+  "body": {
+    "code": "batch_too_large",
+    "max_bytes": 1048576,
+    "max_events": 256
+  },
+  "case": "257 events (the limits: 256 events, 1 MiB of data); request omitted",
+  "content_type": "application/json",
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 413
+}

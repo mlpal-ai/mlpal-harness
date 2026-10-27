@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "lease_lost"
+  },
+  "case": "the lease lapsed before the renewal",
+  "content_type": "application/json",
+  "route": "POST /v1/sessions/{sid}/lease/{lease_id}/renew",
+  "status": 409
+}

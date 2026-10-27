@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "lease_lost"
+  },
+  "case": "not the session's current lease",
+  "content_type": "application/json",
+  "route": "DELETE /v1/sessions/{sid}/lease/{lease_id}",
+  "status": 409
+}

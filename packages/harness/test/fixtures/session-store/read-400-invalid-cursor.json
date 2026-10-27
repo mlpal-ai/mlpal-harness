@@ -1,0 +1,11 @@
+{
+  "body": {
+    "code": "invalid_cursor",
+    "last_seq": 3,
+    "message": "the cursor is past the session's last_seq"
+  },
+  "case": "a cursor past last_seq",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions/{sid}/events?after=9",
+  "status": 400
+}

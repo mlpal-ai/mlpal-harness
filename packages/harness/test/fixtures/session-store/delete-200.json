@@ -1,0 +1,12 @@
+{
+  "body": {
+    "content_sha256": "d3944add33b9cea0ed10d815e0291cfecd890fd19c6503010c2f97541665723e",
+    "deleted_at": 1760000005000,
+    "last_seq": 2,
+    "sid": "sess-contract-1"
+  },
+  "case": "content erased, the audit stub answered",
+  "content_type": "application/json",
+  "route": "DELETE /v1/sessions/{sid}",
+  "status": 200
+}
