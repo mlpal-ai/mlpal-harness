@@ -11,32 +11,42 @@
   control-role only, and an engine token (`sid`, `lease_id`) may renew, release, append and read under the
   lease it was handed (per turn in phase 1; at start in phase 2).
 - `SessionStoreClient`: P1 over an injected `fetch`, with the bearer from a `tokenProvider` read per request.
-  `lease` (control), `renew` (optional `ttlS`; a lapsed lease is never revived), `release`, `append` (a network
-  failure or a 5xx is retried up to 3 times with the same `after_seq`, honouring `Retry-After`; the store answers
-  a replay with the original seqs; `renew` and `release` retry `503 session_busy` the same way), `read`
-  (`limit` ≤ 500), `readAll` (pages until a page ends at `last_seq`: a page is cut at 500 events or 4 MiB, so a
-  short page is not the end; never asks past the head), `projection` (`parks`, `park`, `lease`, and `refusal`,
-  the typed refusal the last turn ended on, which is then also `stopReason`), `stream` (an async iterator of
-  `{seq, kind, data}`; the store's end of a stream at token expiry, shutdown or erasure, and the caller's abort,
-  finish it normally so the caller reconnects after its last seq; `503 stream_capacity` and `429
-  too_many_streams` throw `StreamBusyError` with `retryAfterS`). Timestamps are unix milliseconds. Errors carry
-  `status` and the body's `code`:
-  `LeaseHeldError` (409 `session_leased`, `expiresAt`), `LeaseLostError` (409 `lease_lost`), `SeqConflictError`
-  (409 `seq_conflict`, `lastSeq`), `SessionNotFoundError` (404 `unknown_session`), `SessionDeletedError` (410,
-  `deletedAt`), `BatchTooLargeError` (413, `maxEvents`, `maxBytes`), `StoreHttpError` (any other status; the base
-  of these), `StoreUnreachableError` (no answer). No error carries the token.
+  `lease` (control), `renew` (sends `ttl_s`; a lapsed lease is never revived), `release`, `append` /
+  `appendEncoded` (data serialized once, the body assembled once before any attempt), `read` (`limit` ≤ 500),
+  `readAll` (pages until a page ends at `last_seq`: a page is cut at 500 events or 4 MiB, so a short page is not
+  the end; never asks past the head), `projection` (`parks`, `park`, `lease`, and `refusal`, the typed refusal
+  the last turn ended on, which is then also `stopReason`), `stream` (an async iterator of `{seq, kind, data}`;
+  the store's end of a stream at token expiry, shutdown or erasure, and the caller's abort, finish it normally so
+  the caller reconnects after its last seq; `503 stream_capacity` and `429 too_many_streams` throw
+  `StreamBusyError` with `retryAfterS`). Retries: every route retries `503 store_busy` and `503 session_busy`
+  after `Retry-After`; `append` also retries a network failure or any 5xx with the same `after_seq` (the store
+  answers a replay with the original seqs); one budget per call, 3 attempts or 30 s, whichever ends first. Each
+  attempt times out after 20 s by default (`timeoutMs`). Timestamps are unix milliseconds. Errors carry `status`
+  and the body's `code`: `LeaseHeldError` (409 `session_leased`, `expiresAt`), `LeaseLostError` (409
+  `lease_lost`, or a lease the keeper lost to its deadline), `SeqConflictError` (409 `seq_conflict`, `lastSeq`),
+  `SessionNotFoundError` (404 `unknown_session`), `SessionDeletedError` (410, `deletedAt`), `BatchTooLargeError`
+  (413 `batch_too_large` / `event_too_large`, with `maxEvents`, `maxBytes`, `maxEventBytes`), `StoreHttpError`
+  (any other status; the base of these), `StoreUnreachableError` (no answer). No error carries the token.
 - `AppendBatcher`: the single in-order writer, one batch in flight, cut at 256 events or 1 MiB summed over the
-  events' `data`; `flush()` resolves once everything queued is acknowledged. Any failed append is fatal: queued
-  appends reject, `onFatal` fires once, nothing is sent after.
-- `LeaseKeeper`: `adopt`s the handed lease, renews every TTL/3, and on `lease_lost` (or no good renew for a whole
-  TTL) fires `onLost` once and aborts its `signal`.
+  events' `data`; an event over 1 MiB goes alone. `flush()` resolves once everything queued is acknowledged.
+  `append` serializes at once and throws on data it cannot serialize. One event over the store's
+  `max_event_bytes` (the `maxEventBytes` option, from the host's `sessionStore.maxEventBytes`, or learned from the
+  store's `413 event_too_large`) is refused alone with `EventTooLargeError {bytes, limit}` and the writer goes on.
+  Any other failed append is fatal: queued appends reject, `onFatal` fires once, nothing is sent after.
+- `LeaseKeeper`: `adopt`s the handed lease and renews at once, then every TTL/3, each renew sending `ttl_s`. The
+  lease is held until TTL − max(1 s, TTL/6) after the last successful renew was sent; a deadline timer loses it
+  whatever is in flight, each renew's timeout ends at the deadline, and the store's `expires_at` can only bring
+  the deadline forward. A loss (`lease_lost` or the deadline) fires `onLost`, aborts the `signal` and makes
+  `leaseId` throw the `LeaseLostError`. A second `adopt` stops the old renews and makes a fresh `signal`.
 - `DeltaCoalescer`: merges consecutive text or thinking deltas into one event per 250 ms; other frames pass
   through in order.
 - `RemoteStore implements Store`: one session under one lease. `open()` reads the log once; reads answer from
-  memory including what is queued. Entries go out as kind = `payload.type` (`ENTRY_KINDS`), logs as `log`
-  `{channel, record}`, registry writes as `record` (the record or the patch, folded as merges); `appendEvent`
-  for host kinds, `events()` and `lastSeq` for the host. The mailbox refuses `post` (`MailboxUnavailableError`);
-  another session id is a `SessionMismatchError`; `close()` flushes and releases the lease.
+  memory, including what is queued, as copies. Entries go out as kind = `payload.type` (`ENTRY_KINDS`), logs as
+  `log` `{channel, record}`, registry writes as `record` (the record or the patch, folded as merges); `appendEvent`
+  for host kinds, `events()` and `lastSeq` for the host. An event too large for the store never stays in memory:
+  `conversation.append` and `logs.write` reject with `EventTooLargeError`, or the entry is taken out when the
+  store refuses it. The mailbox refuses `post` (`MailboxUnavailableError`); another session id is a
+  `SessionMismatchError`; `close()` flushes and releases the lease.
 
 ### Protocol 0.22.4: `SandboxRefusal`, the remote sandbox at capacity (2026-10-27)
 

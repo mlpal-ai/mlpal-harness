@@ -15,6 +15,8 @@ export {
   StoreHttpError,
   StoreUnreachableError,
   StreamBusyError,
+  encodeEvent,
+  type EncodedEvent,
   type LeaseGrant,
   type SessionPark,
   type SessionProjection,
@@ -24,7 +26,7 @@ export {
   type StoreFetch,
   type StreamedEvent,
 } from "./store/remote/client";
-export { AppendBatcher, type AppendBatcherOptions } from "./store/remote/batcher";
+export { AppendBatcher, type AppendBatcherOptions, EventTooLargeError } from "./store/remote/batcher";
 export { LeaseKeeper, type LeaseKeeperOptions } from "./store/remote/lease";
 export { DeltaCoalescer, type DeltaCoalescerOptions } from "./store/remote/coalescer";
 export { ENTRY_KINDS, MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "./store/remote/remote-store";
