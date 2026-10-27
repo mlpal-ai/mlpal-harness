@@ -444,4 +444,14 @@ export class LocalStore implements Store {
   async close(): Promise<void> {
     await this.flush();
   }
+
+  /** In the `events` log channel as `{kind, ...data}`, the shape the host's own events have there. */
+  async appendEvent(sessionId: string, kind: string, data: Record<string, unknown>): Promise<void> {
+    await this.logs.write(sessionId, "events", { kind, ...data });
+  }
+
+  async readEvents(sessionId: string, kind: string): Promise<Record<string, unknown>[]> {
+    const records = await this.logs.read(sessionId, "events");
+    return records.filter((r) => r.kind === kind).map(({ kind: _, ...data }) => data);
+  }
 }

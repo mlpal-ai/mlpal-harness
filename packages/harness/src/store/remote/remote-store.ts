@@ -198,9 +198,17 @@ export class RemoteStore implements Store {
     return this.batcher?.lastSeq ?? this.openedAtSeq;
   }
 
-  /** Appends one host event (`tool_started`, `question_parked`, …); resolves to its seq once stored. */
-  async appendEvent(kind: string, data: unknown): Promise<number> {
+  /** Appends one host event (`tool_started`, `question_parked`, …) as a top-level event of that kind;
+   *  resolves to its seq once stored. */
+  async appendEvent(sessionId: string, kind: string, data: unknown): Promise<number> {
+    this.check(sessionId);
     return this.writer().append(kind, data);
+  }
+
+  /** The data of the events of `kind` the store holds for this session (read at open or acknowledged since). */
+  async readEvents(sessionId: string, kind: string): Promise<Record<string, unknown>[]> {
+    this.check(sessionId);
+    return this.stored.filter((e) => e.kind === kind).map((e) => structuredClone(e.data) as Record<string, unknown>);
   }
 
   artifactPath(sessionId: string, name: string): string {

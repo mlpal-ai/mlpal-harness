@@ -184,9 +184,9 @@ describe("RemoteStore: the contract with LocalStore", () => {
   test("host kinds: appendEvent resolves to the seq; events() and lastSeq carry them; conversation and logs skip them", async () => {
     const { store } = await openRemote();
     await store.conversation.append("s1", { type: "user", message: { role: "user", content: "x" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
-    const seq = await store.appendEvent("tool_started", { toolUseId: "tu1", name: "Bash" });
+    const seq = await store.appendEvent("s1", "tool_started", { toolUseId: "tu1", name: "Bash" });
     expect(seq).toBe(2);
-    void store.appendEvent("text_delta", { type: "text_delta", text: "partial" });
+    void store.appendEvent("s1", "text_delta", { type: "text_delta", text: "partial" });
     await store.flush();
     expect(store.lastSeq).toBe(3);
     expect(store.events().map((e) => [e.seq, e.kind])).toEqual([[1, "user"], [2, "tool_started"], [3, "text_delta"]]);
@@ -244,8 +244,8 @@ describe("RemoteStore: the contract with LocalStore", () => {
     expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid, huge.uuid]); // not known to be too large yet
     await store.flush();
     expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
-    expect(await store.appendEvent("tool_result", "x".repeat(2 * 1024 * 1024)).catch((e) => e)).toBeInstanceOf(EventTooLargeError); // learned
-    await store.appendEvent("tool_started", { toolUseId: "tu2" });
+    expect(await store.appendEvent("s1", "tool_result", "x".repeat(2 * 1024 * 1024)).catch((e) => e)).toBeInstanceOf(EventTooLargeError); // learned
+    await store.appendEvent("s1", "tool_started", { toolUseId: "tu2" });
     await store.close();
     expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "tool_started"]);
     const dropped = logs.filter((l) => l.msg === "store.event_dropped");
@@ -350,7 +350,7 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await expect(store.conversation.append("s1", { type: "user" } as SDKMessage, null)).rejects.toBeInstanceOf(SeqConflictError);
     await expect(store.logs.write("s1", "events", {})).rejects.toBeInstanceOf(SeqConflictError);
     await expect(store.registry.patchSession("s1", {})).rejects.toBeInstanceOf(SeqConflictError);
-    await expect(store.appendEvent("x", {})).rejects.toBeInstanceOf(SeqConflictError);
+    await expect(store.appendEvent("s1", "x", {})).rejects.toBeInstanceOf(SeqConflictError);
     await expect(store.close()).rejects.toBeInstanceOf(SeqConflictError);
     expect(fake.lease("s1")).toBeNull(); // released all the same
     expect(fake.events("s1")).toEqual([]);
