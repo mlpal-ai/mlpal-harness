@@ -1,12 +1,14 @@
 /**
  * Keeps the P1 lease an engine was handed (an engine token can renew, release and append under its
  * lease, never take one: leasing is control's), and fails closed on its own clock. The lease is held
- * until a deadline, ttl − margin after the send time of the last renew that succeeded; a deadline
- * timer fires the loss whatever is in flight, and each renew's timeout ends at the deadline. Renews go
- * out at adopt and every ttl/3 after, each asking for `ttl_s` explicitly. The store's `expires_at` can
- * only bring the deadline forward (the store's clock is not ours). A renew answered `lease_lost`, or
- * the deadline, loses the lease: `onLost` fires once, `signal` aborts and `leaseId` throws the
- * LeaseLostError, so the host stops the run before another engine's writes could interleave.
+ * until a deadline, ttl − margin after the send time of the newest renew that succeeded; a deadline
+ * timer fires the loss whatever is in flight. Renews go out at adopt and every ttl/3 after on their
+ * own cadence, so one renew that never answers does not hold back the next; each asks for `ttl_s`
+ * explicitly and gives up after ttl/3 or at the deadline, whichever is sooner. The store's
+ * `expires_at` can only bring the deadline forward (the store's clock is not ours; the skew is logged).
+ * A renew answered `lease_lost`, or the deadline, loses the lease: `onLost` fires, `signal` aborts
+ * (which also abandons any renew still in flight, so none lands after the loss) and `leaseId` throws
+ * the LeaseLostError, so the host stops the run before another engine's writes could interleave.
  */
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
@@ -36,6 +38,11 @@ export class LeaseKeeper {
   private cancelRenew: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
   private deadline = 0;
+  /** The store's `expires_at` minus ours, when it brought the current deadline forward. */
+  private deadlineSkewMs: number | null = null;
+  /** Send time of the newest renew that succeeded: an older one answering late never moves the deadline. */
+  private lastGoodSent = Number.NEGATIVE_INFINITY;
+  private skewLogged = false;
   /** Bumped by every adopt, loss and release, so an answer for an earlier holding is ignored. */
   private generation = 0;
 
@@ -67,8 +74,10 @@ export class LeaseKeeper {
     this.generation++;
     this.controller = new AbortController();
     this.state = { kind: "held", leaseId: grant.leaseId };
-    this.armDeadline(this.timers.now() + this.ttlMs - this.marginMs);
-    void this.renew(this.generation);
+    this.lastGoodSent = Number.NEGATIVE_INFINITY;
+    this.skewLogged = false;
+    this.armDeadline(this.timers.now() + this.ttlMs - this.marginMs, null);
+    this.renew(this.generation);
   }
 
   /** `cb` runs whenever a held lease is lost (once per adopt), and at once if the current one already was. */
@@ -87,33 +96,46 @@ export class LeaseKeeper {
     if (s.kind === "held") await this.opts.client.release(this.opts.sid, s.leaseId);
   }
 
-  private async renew(generation: number): Promise<void> {
+  /** Sends one renew and schedules the next on the cadence, whether or not this one answers. */
+  private renew(generation: number): void {
     if (generation !== this.generation || this.state.kind !== "held") return;
-    const { leaseId } = this.state;
-    const sent = this.timers.now();
+    this.cancelRenew = this.timers.setTimeout(() => this.renew(generation), this.ttlMs / 3);
+    void this.renewOnce(generation, this.state.leaseId, this.timers.now());
+  }
+
+  private async renewOnce(generation: number, leaseId: string, sent: number): Promise<void> {
     try {
-      const answer = await this.opts.client.renew(this.opts.sid, leaseId, this.ttlS, { timeoutMs: Math.max(1, this.deadline - sent) });
-      if (generation !== this.generation) return;
-      this.armDeadline(Math.min(sent + this.ttlMs - this.marginMs, answer.expiresAt - this.marginMs));
+      const timeoutMs = Math.max(1, Math.min(this.deadline - sent, this.ttlMs / 3));
+      const answer = await this.opts.client.renew(this.opts.sid, leaseId, this.ttlS, { timeoutMs, signal: this.controller.signal });
+      if (generation !== this.generation || sent <= this.lastGoodSent) return;
+      this.lastGoodSent = sent;
+      const ours = sent + this.ttlMs;
+      if (answer.expiresAt >= ours) return this.armDeadline(ours - this.marginMs, null);
+      const skewMs = answer.expiresAt - ours;
+      if (!this.skewLogged) {
+        this.skewLogged = true;
+        this.log.warn("store.lease_clock_skew", { sid: this.opts.sid, skewMs, note: "the store's expires_at is earlier than ours; the lease deadline follows it" });
+      }
+      this.armDeadline(answer.expiresAt - this.marginMs, skewMs);
     } catch (e) {
       if (generation !== this.generation) return;
       if (e instanceof LeaseLostError) return this.lose(e);
-      this.log.warn("session store lease renew failed; retrying before the deadline", {
+      this.log.warn("session store lease renew failed; the next one goes out on cadence", {
         sid: this.opts.sid,
         error: e instanceof Error ? e.message : String(e),
         msToDeadline: this.deadline - this.timers.now(),
       });
     }
-    this.cancelRenew = this.timers.setTimeout(() => void this.renew(generation), Math.max(0, sent + this.ttlMs / 3 - this.timers.now()));
   }
 
-  private armDeadline(at: number): void {
+  private armDeadline(at: number, skewMs: number | null): void {
     this.cancelDeadline?.();
     this.deadline = at;
-    this.cancelDeadline = this.timers.setTimeout(
-      () => this.lose(new LeaseLostError(`session store lease on ${this.opts.sid} not renewed within ${this.ttlS} s`, 0, "lease_lost")),
-      Math.max(0, at - this.timers.now()),
-    );
+    this.deadlineSkewMs = skewMs;
+    this.cancelDeadline = this.timers.setTimeout(() => {
+      const skew = this.deadlineSkewMs === null ? "" : `; the deadline was brought forward by the store's expires_at, ${this.deadlineSkewMs} ms from ours (clock skew?)`;
+      this.lose(new LeaseLostError(`session store lease on ${this.opts.sid} not renewed within ${this.ttlS} s${skew}`, 0, "lease_lost"));
+    }, Math.max(0, at - this.timers.now()));
   }
 
   private stopTimers(): void {

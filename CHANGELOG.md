@@ -21,7 +21,8 @@
   `StreamBusyError` with `retryAfterS`). Retries: every route retries `503 store_busy` and `503 session_busy`
   after `Retry-After`; `append` also retries a network failure or any 5xx with the same `after_seq` (the store
   answers a replay with the original seqs); one budget per call, 3 attempts or 30 s, whichever ends first. Each
-  attempt times out after 20 s by default (`timeoutMs`). Timestamps are unix milliseconds. Errors carry `status`
+  attempt times out after 20 s by default (`timeoutMs`); a caller's `timeoutMs` can only shorten it, and its
+  `signal` stops the call. Timestamps are unix milliseconds. Errors carry `status`
   and the body's `code`: `LeaseHeldError` (409 `session_leased`, `expiresAt`), `LeaseLostError` (409
   `lease_lost`, or a lease the keeper lost to its deadline), `SeqConflictError` (409 `seq_conflict`, `lastSeq`),
   `SessionNotFoundError` (404 `unknown_session`), `SessionDeletedError` (410, `deletedAt`), `BatchTooLargeError`
@@ -33,11 +34,14 @@
   `max_event_bytes` (the `maxEventBytes` option, from the host's `sessionStore.maxEventBytes`, or learned from the
   store's `413 event_too_large`) is refused alone with `EventTooLargeError {bytes, limit}` and the writer goes on.
   Any other failed append is fatal: queued appends reject, `onFatal` fires once, nothing is sent after.
-- `LeaseKeeper`: `adopt`s the handed lease and renews at once, then every TTL/3, each renew sending `ttl_s`. The
-  lease is held until TTL − max(1 s, TTL/6) after the last successful renew was sent; a deadline timer loses it
-  whatever is in flight, each renew's timeout ends at the deadline, and the store's `expires_at` can only bring
-  the deadline forward. A loss (`lease_lost` or the deadline) fires `onLost`, aborts the `signal` and makes
-  `leaseId` throw the `LeaseLostError`. A second `adopt` stops the old renews and makes a fresh `signal`.
+- `LeaseKeeper`: `adopt`s the handed lease and renews at once, then every TTL/3 on its own cadence (a renew that
+  never answers does not hold back the next), each renew sending `ttl_s` and giving up after TTL/3 or at the
+  deadline, whichever is sooner. The lease is held until TTL − max(1 s, TTL/6) after the newest successful renew
+  was sent; a deadline timer loses it whatever is in flight, and the store's `expires_at` can only bring the
+  deadline forward (the skew is logged once per lease as `store.lease_clock_skew`, and named in a loss it
+  caused). A loss (`lease_lost` or the deadline) fires `onLost`, aborts the `signal` (abandoning any renew in
+  flight, so none lands after it) and makes `leaseId` throw the `LeaseLostError`. A second `adopt` stops the old
+  renews and makes a fresh `signal`.
 - `DeltaCoalescer`: merges consecutive text or thinking deltas into one event per 250 ms; other frames pass
   through in order.
 - `RemoteStore implements Store`: one session under one lease. `open()` reads the log once; reads answer from
@@ -45,7 +49,7 @@
   `log` `{channel, record}`, registry writes as `record` (the record or the patch, folded as merges); `appendEvent`
   for host kinds, `events()` and `lastSeq` for the host. An event too large for the store never stays in memory:
   `conversation.append` and `logs.write` reject with `EventTooLargeError`, or the entry is taken out when the
-  store refuses it. The mailbox refuses `post` (`MailboxUnavailableError`); another session id is a
+  store refuses it (logged at error level as `store.event_dropped` with its uuid, kind, bytes and the limit). The mailbox refuses `post` (`MailboxUnavailableError`); another session id is a
   `SessionMismatchError`; `close()` flushes and releases the lease.
 
 ### Protocol 0.22.4: `SandboxRefusal`, the remote sandbox at capacity (2026-10-27)

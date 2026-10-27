@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type LeaseGrant, LeaseLostError, SessionStoreClient, StoreUnreachableError } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
+import { JsonLogger } from "../src/obs/logger";
 import { FakeClock } from "./fake-clock";
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
 
@@ -58,9 +59,11 @@ const failAfter = (ms: number) => (c: RenewCall) =>
 const never = () => new Promise<never>(() => {});
 
 function keeper(client: ReturnType<typeof stubClient>["client"], ttlS = 30) {
-  const k = new LeaseKeeper({ client, sid: "s1", ttlS, timers: clock });
+  const logs: { level: string; msg: string; [k: string]: unknown }[] = [];
+  const logger = new JsonLogger({ level: "debug", sink: (line) => void logs.push(JSON.parse(line)) });
+  const k = new LeaseKeeper({ client, sid: "s1", ttlS, timers: clock, logger });
   const lost: Error[] = [];
-  return { k, lost, watch: () => k.onLost((e) => lost.push(e)) };
+  return { k, lost, logs, watch: () => k.onLost((e) => lost.push(e)) };
 }
 
 describe("LeaseKeeper", () => {
@@ -120,9 +123,80 @@ describe("LeaseKeeper", () => {
     watch();
     k.adopt({ leaseId: "L" });
     await tick();
-    expect(stub.renews[0]!.timeoutMs).toBe(25_000);
+    expect(stub.renews[0]!.timeoutMs).toBe(10_000); // ttl/3: sooner than the 25 s to the deadline
     await run(25_000);
     expect(lost).toHaveLength(1);
+  });
+
+  test("one renew that answers only at its own timeout costs nothing: renews keep their cadence and the lease holds", async () => {
+    let n = 0;
+    const stub = stubClient((c) => (n++ === 1 ? failAfter(Number.MAX_SAFE_INTEGER)(c) : ok()));
+    const { k, lost, watch } = keeper(stub.client);
+    const t0 = clock.now();
+    watch();
+    k.adopt({ leaseId: "L" });
+    await run(40_000);
+    expect(lost).toEqual([]);
+    expect(stub.renews.map((r) => r.at - t0)).toEqual([0, 10_000, 20_000, 30_000, 40_000]);
+    expect(stub.renews[1]!.timeoutMs).toBe(10_000); // ttl/3, not the 15 s left to the deadline
+    await k.release();
+  });
+
+  test("a renew that never answers at all does not hold back the next one", async () => {
+    let n = 0;
+    const stub = stubClient(() => (n++ === 1 ? never() : ok()));
+    const { k, lost, watch } = keeper(stub.client);
+    watch();
+    k.adopt({ leaseId: "L" });
+    await run(60_000);
+    expect(lost).toEqual([]);
+    expect(stub.renews).toHaveLength(7);
+    await k.release();
+  });
+
+  test("a late success from an older renew never pulls back the deadline a newer one set", async () => {
+    let n = 0;
+    const stub = stubClient(() => (n++ === 1 ? after(15_000, () => ({})) : n <= 3 ? ok() : never()));
+    const { k, lost, watch } = keeper(stub.client);
+    const t0 = clock.now();
+    watch();
+    k.adopt({ leaseId: "L" }); // renews: 0 ok, 10 answers at 25, 20 ok; later ones hang
+    await run(44_000);
+    expect(lost).toEqual([]); // the renew sent at 20 holds the lease to 45
+    await run(1_000);
+    expect(lost).toHaveLength(1);
+    expect(clock.now() - t0).toBe(45_000);
+  });
+
+  test("no renew attempt goes out after the loss, even one a busy store was making the client retry", async () => {
+    const sent: number[] = [];
+    const t0 = clock.now();
+    const busy = async () => (sent.push(clock.now() - t0), Response.json({ code: "session_busy" }, { status: 503, headers: { "retry-after": "4" } }));
+    const client = new SessionStoreClient({ baseUrl: "http://store/v1", tokenProvider: () => "t", fetch: busy, now: clock.now, sleep: clock.sleep });
+    const k = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
+    const lost: Error[] = [];
+    k.onLost((e) => lost.push(e));
+    k.adopt({ leaseId: "L" });
+    await run(60_000);
+    expect(lost).toHaveLength(1);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.filter((t) => t >= 25_000)).toEqual([]);
+  });
+
+  test("a store clock behind ours is logged once, and a loss on the deadline it brought forward names the skew", async () => {
+    let n = 0;
+    const stub = stubClient(async (c) => (n++ < 2 ? { expiresAt: c.at + 20_000 } : never()));
+    const { k, lost, logs, watch } = keeper(stub.client);
+    watch();
+    k.adopt({ leaseId: "L" });
+    await run(24_000);
+    expect(lost).toEqual([]);
+    await run(1_000); // 10 s + (20 s − the 5 s margin)
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.message).toContain("-10000 ms");
+    const skew = logs.filter((l) => l.msg === "store.lease_clock_skew");
+    expect(skew).toHaveLength(1);
+    expect(skew[0]).toMatchObject({ level: "warn", skewMs: -10_000 });
   });
 
   test("the deadline counts from when a renew was sent, not when it was answered", async () => {

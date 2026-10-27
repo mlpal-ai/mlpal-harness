@@ -241,10 +241,11 @@ export class SessionStoreClient {
   }
 
   /** Extends the live lease by its ttl (or `ttlS`); a lapsed lease is never revived (`LeaseLostError`).
-   *  `timeoutMs` bounds each attempt below the client's default (the lease keeper's time to its deadline). */
-  async renew(sid: string, leaseId: string, ttlS?: number, opts: { timeoutMs?: number } = {}): Promise<LeaseGrant> {
+   *  `timeoutMs` can only shorten each attempt's timeout; `signal` stops the call (no attempt starts
+   *  after it aborts, and the one in flight is abandoned). */
+  async renew(sid: string, leaseId: string, ttlS?: number, opts: CallLimits = {}): Promise<LeaseGrant> {
     const body = ttlS === undefined ? undefined : JSON.stringify({ ttl_s: ttlS });
-    return grant(await this.call<WireLease>("renew", sid, "POST", `/lease/${encodeURIComponent(leaseId)}/renew`, body, "busy", opts.timeoutMs));
+    return grant(await this.call<WireLease>("renew", sid, "POST", `/lease/${encodeURIComponent(leaseId)}/renew`, body, "busy", opts));
   }
 
   async release(sid: string, leaseId: string): Promise<void> {
@@ -379,8 +380,10 @@ export class SessionStoreClient {
     };
   }
 
-  private async call<T>(op: Op, sid: string, method: string, path: string, body?: string, retry: Retry = "busy", timeoutMs = this.timeoutMs): Promise<T> {
+  private async call<T>(op: Op, sid: string, method: string, path: string, body?: string, retry: Retry = "busy", limits: CallLimits = {}): Promise<T> {
     const url = `${this.baseUrl}/sessions/${encodeURIComponent(sid)}${path}`;
+    const { signal } = limits;
+    const timeoutMs = Math.min(this.timeoutMs, limits.timeoutMs ?? Number.POSITIVE_INFINITY);
     const budgetEnd = this.now() + RETRY_BUDGET_MS;
     let failure: StoreHttpError | StoreUnreachableError | undefined;
     let waitMs = 0;
@@ -391,7 +394,9 @@ export class SessionStoreClient {
         this.log.warn("session store call failed; retrying", { op, sid, attempt, error: failure!.message });
         await this.sleep(wait);
       }
+      if (signal?.aborted) throw signal.reason;
       const token = this.tokenProvider();
+      const timeout = AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, budgetEnd - this.now())));
       let res: Response;
       let text: string;
       try {
@@ -399,10 +404,11 @@ export class SessionStoreClient {
           method,
           headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
           ...(body === undefined ? {} : { body }),
-          signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, budgetEnd - this.now()))),
+          signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
         });
         text = await res.text();
       } catch (e) {
+        if (signal?.aborted) throw signal.reason;
         failure = new StoreUnreachableError(`session store ${op} (${sid}): unreachable: ${redact(String((e as Error)?.message ?? e), token)}`, attempt);
         if (retry !== "append") break;
         waitMs = 0;
@@ -428,6 +434,14 @@ export class SessionStoreClient {
 /** Never lets the bearer reach a message; an empty token has nothing to hide. */
 function redact(s: string, token: string): string {
   return token ? s.split(token).join("[redacted]") : s;
+}
+
+/** What a caller may impose on one call. */
+export interface CallLimits {
+  /** Shortens each attempt's timeout below the client's own; never lengthens it. */
+  timeoutMs?: number;
+  /** Stops the call: no attempt starts after it aborts, and the one in flight is abandoned. */
+  signal?: AbortSignal;
 }
 
 interface WireLease {

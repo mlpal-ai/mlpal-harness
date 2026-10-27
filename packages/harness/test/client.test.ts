@@ -224,6 +224,30 @@ describe("SessionStoreClient over P1", () => {
     }
   });
 
+  test("a caller's timeout can only shorten the client's own per attempt, never lengthen it", async () => {
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => (timeouts.push(ms), real(ms)));
+    try {
+      const { lease: l } = await engine();
+      const c = client({ timeoutMs: 5_000, tokenProvider: () => store.engineToken("s1", l.leaseId) }).c;
+      await c.renew("s1", l.leaseId, 30, { timeoutMs: 8_000 });
+      await c.renew("s1", l.leaseId, 30, { timeoutMs: 3_000 });
+      expect(timeouts.slice(-2)).toEqual([5_000, 3_000]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a caller's signal stops a call: an aborted attempt is not retried and no attempt starts after the abort", async () => {
+    const ctl = new AbortController();
+    let calls = 0;
+    const busy = async () => (calls++, ctl.abort(new Error("lease lost")), Response.json({ code: "session_busy" }, { status: 503 }));
+    const e = await caught(client({ fetch: busy }).c.renew("s1", "l", 30, { signal: ctl.signal }));
+    expect(e.message).toBe("lease lost");
+    expect(calls).toBe(1);
+  });
+
   test("413 event_too_large is a BatchTooLargeError carrying the store's max_event_bytes", async () => {
     const tooLarge = async () => Response.json({ code: "event_too_large", max_event_bytes: 2048 }, { status: 413 });
     const e = await caught(client({ fetch: tooLarge }).c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] }));
