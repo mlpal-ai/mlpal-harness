@@ -6,10 +6,11 @@ import type { SDKMessage } from "@mlpal/harness-protocol";
 import { BLOB_THRESHOLD } from "../src/store/blobs";
 import { LocalStore } from "../src/store/local";
 import { EventTooLargeError } from "../src/store/remote/batcher";
-import { SeqConflictError, SessionStoreClient } from "../src/store/remote/client";
+import { LeaseLostError, SeqConflictError, SessionStoreClient } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
 import { MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "../src/store/remote/remote-store";
 import type { LogChannel, MemoryStore, SessionRecord, Store } from "../src/store/types";
+import { FakeClock } from "./fake-clock";
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
 
 let fake: FakeSessionStore;
@@ -308,6 +309,29 @@ describe("RemoteStore: the contract with LocalStore", () => {
     fake.failNext("release", 503, "store_unavailable");
     await again.close();
     expect(warnings.join("\n")).toContain("release");
+  });
+
+  test("a lost lease surfaces to every later write as the LeaseLostError, for the host's exit 76", async () => {
+    await fake.stop();
+    const clock = new FakeClock();
+    fake = startFakeSessionStore({ clock: clock.now });
+    fake.createSession("s1");
+    const g = fake.grant("s1", { ttlS: 30 });
+    const client = new SessionStoreClient({ baseUrl: fake.url, tokenProvider: () => g.token });
+    const lease = new LeaseKeeper({ client, sid: "s1", ttlS: 30, timers: clock });
+    const fatals: Error[] = [];
+    const store = new RemoteStore({ client, sid: "s1", lease, memory, artifactsDir: join(root, "artifacts"), onFatal: (e) => fatals.push(e) });
+    await store.open();
+    lease.adopt({ leaseId: g.leaseId });
+    while (clock.pending() < 2) await new Promise((r) => setTimeout(r, 1)); // the first renew landed
+    fake.failNext("renew", 409, "lease_lost");
+    clock.advance(10_000);
+    while (!lease.signal.aborted) await new Promise((r) => setTimeout(r, 1));
+    await store.logs.write("s1", "events", { kind: "after the loss" });
+    await expect(store.flush()).rejects.toBeInstanceOf(LeaseLostError);
+    expect(fatals[0]).toBeInstanceOf(LeaseLostError);
+    await expect(store.conversation.append("s1", { type: "user" } as SDKMessage, null)).rejects.toBeInstanceOf(LeaseLostError);
+    expect(fake.events("s1")).toEqual([]);
   });
 
   test("a fatal append ends the session for this engine: onFatal once, and every later write throws", async () => {
