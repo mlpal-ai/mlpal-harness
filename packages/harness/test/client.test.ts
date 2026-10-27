@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   BatchTooLargeError,
   LeaseHeldError,
@@ -152,38 +152,83 @@ describe("SessionStoreClient over P1", () => {
     expect(sleeps).toHaveLength(1);
   });
 
-  test("a 5xx on append is retried with the same after_seq, honouring Retry-After; a read throws it at once", async () => {
+  test("append retries a 5xx with the same after_seq and body, honouring Retry-After, at most 3 attempts", async () => {
     const { lease: l, c, sleeps } = await engine();
     store.failNext("append", 503, "session_busy");
     expect(await c.append("s1", { leaseId: l.leaseId, afterSeq: 0, events: [ev(1)] })).toEqual({ firstSeq: 1, lastSeq: 1 });
     expect(sleeps).toEqual([1000]); // the store's Retry-After for session_busy
+    const bodies: string[] = [];
+    const busy = async (_u: string, init: RequestInit) => (bodies.push(init.body as string), Response.json({ code: "store_unavailable" }, { status: 500 }));
+    const e = await caught(client({ fetch: busy }).c.append("s1", { leaseId: "l", afterSeq: 7, events: [ev(1)] }));
+    expect(e).toMatchObject({ status: 500, code: "store_unavailable" });
+    expect(bodies).toHaveLength(3);
+    expect(new Set(bodies).size).toBe(1);
+    expect(JSON.parse(bodies[0]!).after_seq).toBe(7);
+  });
+
+  test("the body is serialized once per call, not per attempt", async () => {
+    let serialized = 0;
+    const data = { toJSON: () => (serialized++, { x: 1 }) };
     let calls = 0;
-    const busy = async () => (calls++, Response.json({ code: "session_busy" }, { status: 503, headers: { "retry-after": "1" } }));
-    const flaky = client({ fetch: busy });
-    const e = await caught(flaky.c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] }));
-    expect(e).toMatchObject({ status: 503, code: "session_busy" });
-    expect(calls).toBe(4);
-    expect(flaky.sleeps).toEqual([1000, 1000, 1000]);
-    calls = 0;
-    expect(await caught(flaky.c.projection("s1"))).toMatchObject({ status: 503 });
+    const flaky = async () => (++calls < 3 ? Response.json({ code: "store_busy" }, { status: 503 }) : Response.json({ first_seq: 1, last_seq: 1 }));
+    await client({ fetch: flaky }).c.append("s1", { leaseId: "l", afterSeq: 0, events: [{ kind: "log", data, ts_ms: 1 }] });
+    expect(calls).toBe(3);
+    expect(serialized).toBe(1);
+  });
+
+  for (const [route, call] of [
+    ["append", (c: SessionStoreClient) => c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] })],
+    ["renew", (c: SessionStoreClient) => c.renew("s1", "l", 30)],
+    ["release", (c: SessionStoreClient) => c.release("s1", "l")],
+    ["read", (c: SessionStoreClient) => c.read("s1", { after: 0 })],
+    ["projection", (c: SessionStoreClient) => c.projection("s1")],
+  ] as const) {
+    test(`${route}: 503 store_busy and session_busy are retried after Retry-After, within 3 attempts; exhausted, the last code is thrown`, async () => {
+      let calls = 0;
+      const codes = ["store_busy", "session_busy", "store_busy"];
+      const busy = async () => Response.json({ code: codes[calls++] }, { status: 503, headers: { "retry-after": "2" } });
+      const { c, sleeps } = client({ fetch: busy });
+      const e = await caught(call(c));
+      expect(e).toBeInstanceOf(StoreHttpError);
+      expect(e).toMatchObject({ status: 503, code: "store_busy" });
+      expect(calls).toBe(3);
+      expect(sleeps).toEqual([2000, 2000]);
+    });
+  }
+
+  test("the retry budget is also 30 s per call: a long Retry-After ends it early", async () => {
+    let t = 0;
+    let calls = 0;
+    const busy = async () => (calls++, Response.json({ code: "store_busy" }, { status: 503, headers: { "retry-after": "20" } }));
+    const c = new SessionStoreClient({ baseUrl: store.url, tokenProvider: () => "t", fetch: busy, now: () => t, sleep: async (ms) => void (t += ms) });
+    expect(await caught(c.read("s1", { after: 0 }))).toMatchObject({ code: "store_busy" });
+    expect(calls).toBe(2); // 0 s, 20 s; a third at 40 s would pass the budget
+  });
+
+  test("only busy answers are retried off the append path; network failures there are tried once", async () => {
+    let calls = 0;
+    const down = (status: number, code: string) => async () => (calls++, Response.json({ code }, { status }));
+    expect(await caught(client({ fetch: down(500, "store_unavailable") }).c.renew("s1", "l", 30))).toMatchObject({ status: 500 });
     expect(calls).toBe(1);
   });
 
-  test("503 session_busy (the row lock timed out) is retried on renew and release too, after its Retry-After, at most 3 times", async () => {
-    const { lease: l, c, sleeps } = await engine();
-    store.failNext("renew", 503, "session_busy");
-    expect((await c.renew("s1", l.leaseId)).leaseId).toBe(l.leaseId);
-    store.failNext("release", 503, "session_busy");
-    await c.release("s1", l.leaseId);
-    expect(store.lease("s1")).toBeNull();
-    expect(sleeps).toEqual([1000, 1000]);
-    let calls = 0;
-    const answer = (code: string, status = 503) => async () => (calls++, Response.json({ code }, { status, headers: { "retry-after": "1" } }));
-    expect(await caught(client({ fetch: answer("session_busy") }).c.release("s1", "l"))).toMatchObject({ status: 503, code: "session_busy" });
-    expect(calls).toBe(4);
-    calls = 0;
-    expect(await caught(client({ fetch: answer("store_unavailable", 500) }).c.renew("s1", "l"))).toMatchObject({ status: 500 });
-    expect(calls).toBe(1); // only session_busy is retried off the append path
+  test("each attempt is bounded by a 20 s timeout by default", async () => {
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => (timeouts.push(ms), real(ms)));
+    try {
+      await client().c.projection("s1");
+      expect(timeouts).toEqual([20_000]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("413 event_too_large is a BatchTooLargeError carrying the store's max_event_bytes", async () => {
+    const tooLarge = async () => Response.json({ code: "event_too_large", max_event_bytes: 2048 }, { status: 413 });
+    const e = await caught(client({ fetch: tooLarge }).c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] }));
+    expect(e).toBeInstanceOf(BatchTooLargeError);
+    expect(e).toMatchObject({ code: "event_too_large", maxEventBytes: 2048 });
   });
 
   test("readAll keeps paging past a short page until the last event's seq is the head", async () => {
@@ -217,6 +262,27 @@ describe("SessionStoreClient over P1", () => {
     expect(await caught((async () => { for await (const _ of c.stream("s1", { after: 3 })) void _; })())).toBeInstanceOf(SessionDeletedError);
   });
 
+  test("stream: a CR ending one chunk and the LF starting the next are one line break", async () => {
+    const enc = new TextEncoder();
+    const chunks = ["id: 1\r", "\nevent: x\r\ndata: 1\r", "\n\r\n"];
+    const body = new ReadableStream<Uint8Array>({
+      start(ctl) {
+        for (const ch of chunks) ctl.enqueue(enc.encode(ch));
+        ctl.close();
+      },
+    });
+    const { c } = client({ fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }) });
+    const got: unknown[] = [];
+    for await (const e of c.stream("s1", {})) got.push(e);
+    expect(got).toEqual([{ seq: 1, kind: "x", data: 1 }]);
+  });
+
+  test("stream: an empty token does not garble a transport error", async () => {
+    const { c } = client({ tokenProvider: () => "", fetch: async () => { throw new TypeError("connect ECONNREFUSED"); } });
+    const e = await caught((async () => { for await (const _ of c.stream("s1", {})) void _; })());
+    expect(e.message).toContain("connect ECONNREFUSED");
+  });
+
   test("stream: a full replica or a principal's cap is a StreamBusyError with its Retry-After", async () => {
     const { c } = client();
     for (const [status, code] of [[503, "stream_capacity"], [429, "too_many_streams"]] as const) {
@@ -241,7 +307,7 @@ describe("SessionStoreClient over P1", () => {
     expect(await next).toEqual({ done: true, value: undefined });
   });
 
-  test("append gives up after 3 retries; every other call is tried once", async () => {
+  test("append gives up after 3 attempts on network failures; every other call is tried once", async () => {
     let calls = 0;
     const down = async () => {
       calls++;
@@ -250,8 +316,8 @@ describe("SessionStoreClient over P1", () => {
     const { c, sleeps } = client({ fetch: down });
     const e = await caught(c.append("s1", { leaseId: "l", afterSeq: 0, events: [ev(1)] }));
     expect(e).toBeInstanceOf(StoreUnreachableError);
-    expect(calls).toBe(4);
-    expect(sleeps).toEqual([200, 400, 800]);
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([200, 400]);
     for (const call of [() => c.read("s1", { after: 0 }), () => c.renew("s1", "l"), () => c.lease("s1", { holder: "a", ttlS: 30 }), () => c.release("s1", "l"), () => c.projection("s1")]) {
       calls = 0;
       expect(await caught(call())).toBeInstanceOf(StoreUnreachableError);

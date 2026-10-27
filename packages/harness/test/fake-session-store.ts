@@ -101,7 +101,7 @@ const SID = /^[A-Za-z0-9_-]{1,128}$/;
 const RUNNING_KINDS = new Set(["user", "system", "assistant", "tool_started", "tool_result", "tool_use_start", "text_delta", "thinking_delta"]);
 const STATUSES = new Set(["idle", "running", "requires_action", "ended"]);
 /** The store's Retry-After for the refusals that carry one. */
-const RETRY_AFTER_S: Record<string, number> = { session_busy: 1, stream_capacity: 5, too_many_streams: 5 };
+const RETRY_AFTER_S: Record<string, number> = { session_busy: 1, store_busy: 1, stream_capacity: 5, too_many_streams: 5 };
 
 function fail(status: number, code: string, extra: Record<string, unknown> = {}): Response {
   return Response.json({ code, ...extra }, { status });
@@ -192,8 +192,10 @@ function fold(events: FakeEvent[]) {
   return { status, parks, stopReason, refusal, usage };
 }
 
-export function startFakeSessionStore(opts: { clock?: () => number } = {}): FakeSessionStore {
+/** `maxEventBytes`: the store's `max_event_bytes`, the most one event alone may carry (16 MiB on box A). */
+export function startFakeSessionStore(opts: { clock?: () => number; maxEventBytes?: number } = {}): FakeSessionStore {
   const clock = opts.clock ?? Date.now;
+  const maxEventBytes = opts.maxEventBytes ?? 16 * 1024 * 1024;
   const sessions = new Map<string, Session>();
   const tokens = new Map<string, Claims>();
   const faults = new Map<FakeRoute, { status: number; code: string } | "drop">();
@@ -399,7 +401,6 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
 
   async function handleAppend(s: Session, req: Request, claims: Claims): Promise<Response> {
     const text = await req.text();
-    if (Buffer.byteLength(text) > MAX_BODY_BYTES) return fail(413, "batch_too_large", { max_events: MAX_EVENTS, max_bytes: MAX_DATA_BYTES });
     let b: Record<string, any>;
     try {
       b = JSON.parse(text);
@@ -409,8 +410,12 @@ export function startFakeSessionStore(opts: { clock?: () => number } = {}): Fake
     const events = b?.events as { kind: unknown; data: unknown; ts_ms: unknown }[];
     if (typeof b?.lease_id !== "string" || !Number.isInteger(b.after_seq) || b.after_seq < 0 || !Array.isArray(events) || events.length === 0) return invalidBody();
     if (claims.role === "engine" && claims.leaseId !== b.lease_id) return fail(403, "forbidden");
-    if (events.length > MAX_EVENTS || events.reduce((n, e) => n + bytes(e?.data ?? null), 0) > MAX_DATA_BYTES) {
-      return fail(413, "batch_too_large", { max_events: MAX_EVENTS, max_bytes: MAX_DATA_BYTES });
+    // One event alone may carry up to max_event_bytes (spilled to object storage); a shared batch, 1 MiB in all.
+    const tooLarge = () => fail(413, "batch_too_large", { max_events: MAX_EVENTS, max_bytes: MAX_DATA_BYTES });
+    if (events.length === 1) {
+      if (bytes(events[0]?.data ?? null) > maxEventBytes) return fail(413, "event_too_large", { max_event_bytes: maxEventBytes });
+    } else if (events.length > MAX_EVENTS || Buffer.byteLength(text) > MAX_BODY_BYTES || events.reduce((n, e) => n + bytes(e?.data ?? null), 0) > MAX_DATA_BYTES) {
+      return tooLarge();
     }
     const bad = events.findIndex((e) => typeof e?.kind !== "string" || !KIND.test(e.kind) || !Number.isInteger(e.ts_ms) || (e.ts_ms as number) < 0 || e.data === undefined);
     if (bad >= 0) return fail(422, "invalid_event", { index: bad, message: "kind must be [A-Za-z0-9_.:-]{1,64}" });

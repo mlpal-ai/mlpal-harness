@@ -103,6 +103,26 @@ describe("fake P1 session store", () => {
     expect(store.events("s1")).toHaveLength(2);
   });
 
+  test("one event over 1 MiB goes alone up to max_event_bytes; over it, 413 event_too_large; shared batches keep the 1 MiB sum", async () => {
+    await store.stop();
+    store = startFakeSessionStore({ clock: clock.now, maxEventBytes: 3 * 1024 * 1024 });
+    const g = leased();
+    const big = (n: number) => ({ kind: "tool_result", data: "x".repeat(n), ts_ms: 1 });
+    expect((await append("s1", g, 0, [big(2 * 1024 * 1024)])).body).toEqual({ first_seq: 1, last_seq: 1 });
+    expect((await append("s1", g, 1, [big(4 * 1024 * 1024)])).body).toEqual({ code: "event_too_large", max_event_bytes: 3 * 1024 * 1024 });
+    expect((await append("s1", g, 1, [big(600 * 1024), big(600 * 1024)])).body).toMatchObject({ code: "batch_too_large" });
+    expect(store.events("s1")).toHaveLength(1);
+  });
+
+  test("injected busy answers carry the store's Retry-After", async () => {
+    leased();
+    for (const [code, after] of [["store_busy", "1"], ["session_busy", "1"]] as const) {
+      store.failNext("read", 503, code);
+      const res = await fetch(`${store.url}/sessions/s1/events`, { headers: { authorization: `Bearer ${store.controlToken}` } });
+      expect([res.status, res.headers.get("retry-after")]).toEqual([503, after]);
+    }
+  });
+
   test("tokens: none or unknown is 401; an engine token is scoped to its session and lease; a reader reads only its own session", async () => {
     const g = leased("s1");
     store.createSession("s2", { owner: "cust_9" });

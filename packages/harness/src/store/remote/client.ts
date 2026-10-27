@@ -18,6 +18,23 @@ export interface StoredEvent extends StoreEvent {
   seq: number;
 }
 
+/** An event with its `data` already serialized: serialized once, at append time, so a retry resends the
+ *  same bytes and a later change to the caller's object cannot reach the store. */
+export interface EncodedEvent {
+  kind: string;
+  ts_ms: number;
+  /** `data` as JSON. */
+  json: string;
+  /** The UTF-8 size of `json`: what the store counts against its limits. */
+  bytes: number;
+}
+
+/** Serializes one event; throws when `data` cannot be serialized (a cycle, a BigInt). */
+export function encodeEvent(kind: string, data: unknown, tsMs: number): EncodedEvent {
+  const json = JSON.stringify(data ?? null);
+  return { kind, ts_ms: tsMs, json, bytes: Buffer.byteLength(json) };
+}
+
 /** An event off the SSE stream, which carries no `ts_ms`. */
 export interface StreamedEvent {
   seq: number;
@@ -62,7 +79,8 @@ export interface SessionStoreClientOptions {
   fetch?: StoreFetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
-  /** Per-request timeout (default 5000 ms); a timed-out append counts as a network failure. */
+  /** Per-attempt timeout (default 20 s: the store's 5 s row-lock wait plus its 10 s object-store bound,
+   *  with headroom); a timed-out append counts as a network failure. */
   timeoutMs?: number;
   logger?: Logger;
 }
@@ -128,7 +146,8 @@ export class SessionDeletedError extends StoreHttpError {
   }
 }
 
-/** 413 `batch_too_large`: over the store's per-batch limits. */
+/** 413: `batch_too_large` (over the per-batch limits) or `event_too_large` (one event over the
+ *  store's `max_event_bytes`). */
 export class BatchTooLargeError extends StoreHttpError {
   override name = "BatchTooLargeError";
   constructor(
@@ -137,6 +156,7 @@ export class BatchTooLargeError extends StoreHttpError {
     code: string,
     readonly maxEvents?: number,
     readonly maxBytes?: number,
+    readonly maxEventBytes?: number,
   ) {
     super(message, status, code);
   }
@@ -168,16 +188,18 @@ export class StoreUnreachableError extends Error {
 }
 
 const MAX_READ_LIMIT = 500;
-const APPEND_RETRIES = 3;
+const MAX_ATTEMPTS = 3;
+const RETRY_BUDGET_MS = 30_000;
 const RETRY_BASE_MS = 200;
 
 type Op = "lease" | "renew" | "release" | "append" | "read" | "projection" | "stream";
 
-/** What a call retries, at most APPEND_RETRIES times: an append retries any network failure or 5xx
- *  (the store makes a replay idempotent); renew and release only a row-lock timeout; the rest nothing. */
-type Retry = "append" | "busy" | "none";
+/** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
+ *  first): an append retries any network failure or 5xx (the store answers a replay with its original
+ *  seqs); every other call only a busy store (`store_busy`: the read pool; `session_busy`: the row lock). */
+type Retry = "append" | "busy";
 
-const isBusy = (status: number, code: string) => status === 503 && code === "session_busy";
+const isBusy = (status: number, code: string) => status === 503 && (code === "store_busy" || code === "session_busy");
 const retryAfterMs = (res: Response) => Number(res.headers.get("retry-after") ?? 0) * 1000 || 0;
 
 const num = (v: unknown) => (typeof v === "number" ? v : undefined);
@@ -187,7 +209,7 @@ function httpError(op: Op, sid: string, status: number, body: Record<string, unk
   const message = `session store ${op} (${sid}): ${status} ${code}`;
   if (status === 404) return new SessionNotFoundError(message, status, code);
   if (status === 410) return new SessionDeletedError(message, status, code, num(body.deleted_at));
-  if (status === 413) return new BatchTooLargeError(message, status, code, num(body.max_events), num(body.max_bytes));
+  if (status === 413) return new BatchTooLargeError(message, status, code, num(body.max_events), num(body.max_bytes), num(body.max_event_bytes));
   if (status === 409 && code === "session_leased") return new LeaseHeldError(message, status, code, num(body.expires_at));
   if (status === 409 && code === "lease_lost") return new LeaseLostError(message, status, code);
   if (status === 409 && code === "seq_conflict") return new SeqConflictError(message, status, code, num(body.last_seq));
@@ -209,29 +231,37 @@ export class SessionStoreClient {
     this.fetchImpl = opts.fetch ?? ((url, init) => fetch(url, init));
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = opts.now ?? Date.now;
-    this.timeoutMs = opts.timeoutMs ?? 5000;
+    this.timeoutMs = opts.timeoutMs ?? 20_000;
     this.log = opts.logger ?? silentLogger;
   }
 
   /** Control-role only: an engine never takes its own lease; it is handed one (`LeaseKeeper.adopt`). */
   async lease(sid: string, opts: { holder: string; ttlS: number }): Promise<LeaseGrant> {
-    return grant(await this.call<WireLease>("lease", sid, "POST", "/lease", { holder: opts.holder, ttl_s: opts.ttlS }));
+    return grant(await this.call<WireLease>("lease", sid, "POST", "/lease", JSON.stringify({ holder: opts.holder, ttl_s: opts.ttlS })));
   }
 
-  /** Extends the live lease by its ttl (or `ttlS`); a lapsed lease is never revived (`LeaseLostError`). */
-  async renew(sid: string, leaseId: string, ttlS?: number): Promise<LeaseGrant> {
-    return grant(await this.call<WireLease>("renew", sid, "POST", `/lease/${encodeURIComponent(leaseId)}/renew`, ttlS === undefined ? undefined : { ttl_s: ttlS }, "busy"));
+  /** Extends the live lease by its ttl (or `ttlS`); a lapsed lease is never revived (`LeaseLostError`).
+   *  `timeoutMs` bounds each attempt below the client's default (the lease keeper's time to its deadline). */
+  async renew(sid: string, leaseId: string, ttlS?: number, opts: { timeoutMs?: number } = {}): Promise<LeaseGrant> {
+    const body = ttlS === undefined ? undefined : JSON.stringify({ ttl_s: ttlS });
+    return grant(await this.call<WireLease>("renew", sid, "POST", `/lease/${encodeURIComponent(leaseId)}/renew`, body, "busy", opts.timeoutMs));
   }
 
   async release(sid: string, leaseId: string): Promise<void> {
-    await this.call("release", sid, "DELETE", `/lease/${encodeURIComponent(leaseId)}`, undefined, "busy");
+    await this.call("release", sid, "DELETE", `/lease/${encodeURIComponent(leaseId)}`);
   }
 
   /** Retried on a network failure or a 5xx with the same `after_seq`: the store answers a replay
    *  (same lease, same content) with the original seqs, even after the lease lapsed. */
   async append(sid: string, opts: { leaseId: string; afterSeq: number; events: StoreEvent[] }): Promise<{ firstSeq: number; lastSeq: number }> {
+    return this.appendEncoded(sid, { ...opts, events: opts.events.map((e) => encodeEvent(e.kind, e.data, e.ts_ms)) });
+  }
+
+  /** `append` for events serialized at append time: the body is assembled once, before any attempt. */
+  async appendEncoded(sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[] }): Promise<{ firstSeq: number; lastSeq: number }> {
     const t0 = this.now();
-    const body = { lease_id: opts.leaseId, after_seq: opts.afterSeq, events: opts.events };
+    const events = opts.events.map((e) => `{"kind":${JSON.stringify(e.kind)},"data":${e.json},"ts_ms":${e.ts_ms}}`);
+    const body = `{"lease_id":${JSON.stringify(opts.leaseId)},"after_seq":${opts.afterSeq},"events":[${events.join(",")}]}`;
     const b = await this.call<{ first_seq: number; last_seq: number }>("append", sid, "POST", "/events", body, "append");
     this.log.debug("store.append", { sid, events: opts.events.length, firstSeq: b.first_seq, lastSeq: b.last_seq, ms: this.now() - t0 });
     return { firstSeq: b.first_seq, lastSeq: b.last_seq };
@@ -267,8 +297,7 @@ export class SessionStoreClient {
   async *stream(sid: string, opts: { after?: number; signal?: AbortSignal } = {}): AsyncGenerator<StreamedEvent> {
     const url = `${this.baseUrl}/sessions/${encodeURIComponent(sid)}/stream?after=${opts.after ?? 0}`;
     const token = this.tokenProvider();
-    const unreachable = (e: unknown) =>
-      new StoreUnreachableError(`session store stream (${sid}): ${String((e as Error)?.message ?? e).split(token).join("[redacted]")}`, 1);
+    const unreachable = (e: unknown) => new StoreUnreachableError(`session store stream (${sid}): ${redact(String((e as Error)?.message ?? e), token)}`, 1);
     let res: Response;
     try {
       res = await this.fetchImpl(url, { method: "GET", headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" }, signal: opts.signal });
@@ -287,6 +316,8 @@ export class SessionStoreClient {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    // A CR that ends a chunk waits for the next one: CR LF across two chunks is one line break.
+    let pendingCr = false;
     try {
       for (;;) {
         let chunk: Awaited<ReturnType<typeof reader.read>>;
@@ -297,7 +328,10 @@ export class SessionStoreClient {
           throw unreachable(e);
         }
         if (chunk.done) return;
-        buf += decoder.decode(chunk.value, { stream: true }).replace(/\r\n?/g, "\n");
+        let text = decoder.decode(chunk.value, { stream: true });
+        if (pendingCr) text = `\r${text}`;
+        pendingCr = text.endsWith("\r");
+        buf += (pendingCr ? text.slice(0, -1) : text).replace(/\r\n?/g, "\n");
         let cut: number;
         while ((cut = buf.indexOf("\n\n")) >= 0) {
           const event = sseEvent(buf.slice(0, cut));
@@ -345,31 +379,33 @@ export class SessionStoreClient {
     };
   }
 
-  private async call<T>(op: Op, sid: string, method: string, path: string, body?: unknown, retry: Retry = "none"): Promise<T> {
+  private async call<T>(op: Op, sid: string, method: string, path: string, body?: string, retry: Retry = "busy", timeoutMs = this.timeoutMs): Promise<T> {
     const url = `${this.baseUrl}/sessions/${encodeURIComponent(sid)}${path}`;
-    const attempts = retry === "none" ? 1 : 1 + APPEND_RETRIES;
-    let lastFailure = "";
+    const budgetEnd = this.now() + RETRY_BUDGET_MS;
+    let failure: StoreHttpError | StoreUnreachableError | undefined;
     let waitMs = 0;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      if (attempt > 1) await this.sleep(Math.max(RETRY_BASE_MS * 2 ** (attempt - 2), waitMs));
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        const wait = Math.max(RETRY_BASE_MS * 2 ** (attempt - 2), waitMs);
+        if (this.now() + wait >= budgetEnd) break;
+        this.log.warn("session store call failed; retrying", { op, sid, attempt, error: failure!.message });
+        await this.sleep(wait);
+      }
       const token = this.tokenProvider();
-      // Built from parts we choose; anything foreign that reaches a message is scrubbed of the token.
-      const scrub = (s: string) => (token ? s.split(token).join("[redacted]") : s);
       let res: Response;
       let text: string;
       try {
         res = await this.fetchImpl(url, {
           method,
           headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(this.timeoutMs),
+          ...(body === undefined ? {} : { body }),
+          signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, budgetEnd - this.now()))),
         });
         text = await res.text();
       } catch (e) {
-        lastFailure = scrub(String((e as Error)?.message ?? e));
+        failure = new StoreUnreachableError(`session store ${op} (${sid}): unreachable: ${redact(String((e as Error)?.message ?? e), token)}`, attempt);
         if (retry !== "append") break;
         waitMs = 0;
-        if (attempt < attempts) this.log.warn("session store unreachable; retrying", { op, sid, attempt, error: lastFailure });
         continue;
       }
       let parsed: unknown = null;
@@ -380,13 +416,18 @@ export class SessionStoreClient {
       }
       if (res.ok) return parsed as T;
       const err = httpError(op, sid, res.status, (parsed ?? {}) as Record<string, unknown>);
-      const retryable = retry === "append" ? res.status >= 500 : retry === "busy" && isBusy(res.status, err.code);
-      if (!retryable || attempt === attempts) throw err;
+      const retryable = retry === "append" ? res.status >= 500 : isBusy(res.status, err.code);
+      if (!retryable) throw err;
+      failure = err;
       waitMs = retryAfterMs(res);
-      this.log.warn("session store answered 5xx; retrying", { op, sid, attempt, status: res.status, code: err.code });
     }
-    throw new StoreUnreachableError(`session store ${op} (${sid}): unreachable: ${lastFailure}`, retry === "append" ? attempts : 1);
+    throw failure!;
   }
+}
+
+/** Never lets the bearer reach a message; an empty token has nothing to hide. */
+function redact(s: string, token: string): string {
+  return token ? s.split(token).join("[redacted]") : s;
 }
 
 interface WireLease {
