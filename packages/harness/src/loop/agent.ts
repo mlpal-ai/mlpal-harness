@@ -3,6 +3,7 @@ import {
   type AssistantEvent,
   type Author,
   type ContentBlock,
+  type ConversationEntry,
   emptyUsage,
   HUMAN,
   SYSTEM,
@@ -38,7 +39,8 @@ import type { Effort } from "../gateway/client";
 import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ExecPolicy, ToolResult } from "../tools/types";
-import { loadMessages } from "./messages";
+import { effectiveEntries, loadMessages } from "./messages";
+import { EventTooLargeError } from "../store/remote/batcher";
 import { diffStat } from "../usage/stats";
 import { frameHandoff, postHandoffReply } from "./handoff";
 
@@ -297,6 +299,25 @@ function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** The result a resumed engine records for a tool the dead one had started: it is never run again. */
+export const INTERRUPTED_TOOL_RESULT =
+  "interrupted: the engine restarted while this tool ran; its effect may already have happened — check before repeating";
+
+/** The tool calls of the turn's last assistant entry that no later tool_result answers. */
+function unansweredToolUses(turn: ConversationEntry[]): ToolUseBlock[] {
+  let at = -1;
+  for (let i = turn.length - 1; i >= 0; i--) {
+    if (turn[i]!.payload.type === "assistant") {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return [];
+  const asst = turn[at]!.payload as AssistantEvent;
+  const answered = new Set(turn.slice(at + 1).flatMap((e) => (e.payload.type === "tool_result" ? [e.payload.toolUseId] : [])));
+  return (asst.message.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use" && !answered.has(b.id));
+}
+
 async function serial<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = [];
   for (const item of items) out.push(await fn(item));
@@ -525,11 +546,32 @@ export class AgentSession {
     parent = userUuid;
     yield { ...userEvt, uuid: parent };
 
+    yield* this.turn({ author, task: input.text ?? "", parent, runId, ref: userUuid, unsubscribe });
+  }
+
+  /** The turn after its user entry: the model-and-tools loop to the run's result. `run()` enters it
+   *  after appending the person's turn; `resume()` after recording what a dead engine left in flight
+   *  (`prelude`), without a new user entry. */
+  private async *turn(t: {
+    author: Author;
+    /** What the turn asks, for the start-rung classifier. */
+    task: string;
+    parent: string | null;
+    runId: string;
+    /** The entry the turn starts from, for the run.start record. */
+    ref: string | null;
+    unsubscribe?: () => void;
+    resumed?: boolean;
+    prelude?: (log: Logger, parent: string | null) => AsyncGenerator<EngineEvent, string | null, void>;
+  }): AsyncGenerator<EngineEvent, void, void> {
+    const { cfg } = this;
+    const { author, runId, unsubscribe } = t;
+    let parent = t.parent;
     // The person's prompt names the run; a steer or a peer message keeps the prompt of the turn
     // it lands in.
     this.seq = 0; // record order within the run; (run, seq) is unique across processes
     if (author.type === "human" || !this.currentPrompt) this.currentPrompt = runId;
-    await this.event("run.start", { author: author.type, ref: userUuid });
+    await this.event("run.start", { author: author.type, ref: t.ref, ...(t.resumed ? { resumed: true } : {}) });
     const log = (cfg.logger ?? silentLogger).child({
       runId,
       sessionId: cfg.sessionId,
@@ -540,6 +582,9 @@ export class AgentSession {
     // Mark the session actively-looping so peers (HandoffTask) can tell it's live and route
     // work to it instead of spawning a concurrent editor. Reset to "idle" at the finish.
     await this.store.registry.patchSession(cfg.sessionId, { status: "active" });
+
+    // A resumed turn first records what the dead engine left in flight (plan §5).
+    if (t.prelude) parent = yield* t.prelude(log, parent);
 
     let messages = await loadMessages(this.store, cfg.sessionId);
     let totalUsage: Usage = emptyUsage();
@@ -595,7 +640,7 @@ export class AgentSession {
       const rung = await classifyStartRung({
         model_client: cfg.model_client,
         model: classifyModel,
-        task: input.text ?? "",
+        task: t.task,
         rungs: ladder.length,
         system: loop.classifierSystem,
         signal: cfg.signal,
@@ -1070,8 +1115,10 @@ export class AgentSession {
       }
 
       const toolResults: ToolResultBlock[] = [];
-      for (const trEvt of trEvts) {
-        parent = (await this.store.conversation.append(cfg.sessionId, trEvt, parent)).uuid;
+      for (const raw of trEvts) {
+        const persisted = await this.appendToolResult(raw, parent);
+        const trEvt = persisted.event;
+        parent = persisted.uuid;
         yield { ...trEvt, uuid: parent };
         toolResults.push({
           type: "tool_result",
@@ -1431,6 +1478,107 @@ export class AgentSession {
     }
   }
 
+  /** The durable `tool_started` marker: appended, then flushed, before the tool's effect can happen. */
+  private async markStarted(tu: ToolUseBlock): Promise<void> {
+    if (!this.store.appendEvent) return;
+    // Stamped like every record of the run (the file backend keeps it in the events channel).
+    await this.store.appendEvent(this.cfg.sessionId, "tool_started", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, ts: now() });
+    await this.store.flush?.();
+  }
+
+  /** Persists a tool result. One too large for the session store becomes an error result the model
+   *  can act on, persisted in its place; any other failure propagates. */
+  private async appendToolResult(trEvt: ToolResultEvent, parent: string | null): Promise<{ event: ToolResultEvent; uuid: string }> {
+    try {
+      return { event: trEvt, uuid: (await this.store.conversation.append(this.cfg.sessionId, trEvt, parent)).uuid };
+    } catch (e) {
+      if (!(e instanceof EventTooLargeError)) throw e;
+      const mib = (bytes: number) => Number((bytes / 2 ** 20).toFixed(2));
+      const event: ToolResultEvent = {
+        type: "tool_result",
+        toolUseId: trEvt.toolUseId,
+        toolName: trEvt.toolName,
+        content: `the tool's result of ${mib(e.bytes)} MiB exceeds the session store's event limit of ${mib(e.limit)} MiB; read a smaller range or write it to a file`,
+        isError: true,
+        ts: now(),
+      };
+      return { event, uuid: (await this.store.conversation.append(this.cfg.sessionId, event, parent)).uuid };
+    }
+  }
+
+  /**
+   * Continue a turn a dead engine left in flight (plan §5). Nothing in flight (no turn since the last
+   * `result` or `error`): returns `{resumed: false}` without a write. Otherwise the head's tool calls
+   * without a result are settled first: one with a `tool_started` marker is never run again and gets
+   * an `INTERRUPTED_TOOL_RESULT` error result; one without runs now, through the normal path. Then the
+   * turn continues from the head (no new user entry) to its result, as `run()` does.
+   */
+  async *resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
+    const { cfg } = this;
+    const entries = effectiveEntries(await this.store.conversation.read(cfg.sessionId));
+    let turnStart = -1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const type = entries[i]!.payload.type;
+      if (type === "result" || type === "error") break;
+      if (type === "user") turnStart = i;
+    }
+    if (turnStart < 0) return { resumed: false };
+
+    await this.init();
+    const first = entries[turnStart]!.payload as UserEvent;
+    const author = first.author ?? HUMAN;
+    const content = first.message.content;
+    const task = typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("");
+    const unsubscribe = cfg.events?.subscribe(cfg.sessionId, (e) => this.side.push(e));
+    const parent = await this.store.conversation.head(cfg.sessionId);
+    const runId = crypto.randomUUID();
+    this.currentRun = runId;
+
+    // The model had answered without a tool call; only the run's end was lost.
+    const last = entries.at(-1)!.payload;
+    if (last.type === "assistant" && !(last.message.content as ContentBlock[]).some((b) => b.type === "tool_use")) {
+      this.seq = 0;
+      await this.event("run.start", { author: author.type, ref: parent, resumed: true });
+      const head = yield* this.finish("success", 0, emptyUsage(), parent);
+      await this.store.registry.patchSession(cfg.sessionId, { head, status: "idle" });
+      unsubscribe?.();
+      return { resumed: true };
+    }
+
+    const pending = unansweredToolUses(entries.slice(turnStart));
+    yield* this.turn({
+      author,
+      task,
+      parent,
+      runId,
+      ref: parent,
+      unsubscribe,
+      resumed: true,
+      ...(pending.length ? { prelude: (log: Logger, at: string | null) => this.settleInterrupted(pending, author, log, at) } : {}),
+    });
+    return { resumed: true };
+  }
+
+  /** The prelude of a resumed turn: a result for each tool call the dead engine left unanswered,
+   *  persisted in the call order (one user turn, as after a batch). */
+  private async *settleInterrupted(pending: ToolUseBlock[], author: Author, log: Logger, parent: string | null): AsyncGenerator<EngineEvent, string | null, void> {
+    const markers = (await this.store.readEvents?.(this.cfg.sessionId, "tool_started")) ?? [];
+    const started = new Set(markers.map((m) => m.toolUseId));
+    for (const tu of pending) {
+      let result: ToolResultEvent;
+      if (started.has(tu.id)) {
+        log.warn("resume: a started tool is not run again", { tool: tu.name, toolUseId: tu.id });
+        result = { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: INTERRUPTED_TOOL_RESULT, isError: true, ts: now() };
+      } else {
+        result = await this.executeTool(tu, author, log);
+      }
+      const persisted = await this.appendToolResult(result, parent);
+      parent = persisted.uuid;
+      yield { ...persisted.event, uuid: parent };
+    }
+    return parent;
+  }
+
   private async executeTool(
     tu: ToolUseBlock,
     principal: Author,
@@ -1504,6 +1652,9 @@ export class AgentSession {
       raw = `Permission denied: ${decision.reason ?? "not allowed"}`;
       isError = true;
     } else {
+      // The side-effect key (plan §5): a call that may change something is on record, durably,
+      // before it runs, so an engine resuming this session never runs it twice.
+      if (tool && !(tool.isCallReadOnly?.(input) ?? tool.readOnly)) await this.markStarted(tu);
       // Race the tool against the abort signal: a stuck tool (e.g. a filesystem scan
       // that ignores the signal) must never trap Ctrl-C — control returns immediately
       // and the orphaned promise is dropped.
