@@ -140,11 +140,6 @@ describe("0.22 (the schedules capability)", () => {
 });
 
 describe("0.22.1 (budget_exceeded refusal; HopView.tools.include optional)", () => {
-  test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.1");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.1");
-  });
-
   test("a budget_exceeded refusal rides error, result and tool_result; model_access_denied still does", () => {
     const spent: ModelRefusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "HOP infra cannot call claude-opus-5-5: the key's spend budget is exhausted" };
     const denied: ModelRefusal = { code: "model_access_denied", model: "gpt-6-sol", hop: "reviewer", reason: "hop_policy", message: "HOP reviewer does not allow gpt-6-sol here" };
@@ -158,5 +153,21 @@ describe("0.22.1 (budget_exceeded refusal; HopView.tools.include optional)", () 
   test("HopView.tools.include is optional: absent = every registered tool, [] = none", () => {
     const view = (tools: HopView["tools"]): HopView => ({ name: "coding", version: "1.0.0", description: "", source: "builtin", dir: null, extendsChain: [], prompts: { system: "", verifierAgent: "" }, loop: { taskType: "coding", verifyCommand: null, envBroken: null, churnThreshold: 3, summarizerSystem: "", condenserSystem: "", checkpointNudge: false }, verification: {}, catalog: { profile: "" }, routing: {}, permissions: { defaultMode: "manual", allow: [], deny: [] }, tools, budgets: { maxTurns: 50 }, telemetry: { taskType: "coding" }, evals: [], locked: [], tunable: [], modules: {} });
     expect([view({}).tools.include, view({ include: [] }).tools.include, view({ include: ["Bash"] }).tools.include]).toEqual([undefined, [], ["Bash"]]);
+  });
+});
+
+describe("0.22.2 (the budget refusal's window and resetsAt)", () => {
+  test("version", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.2");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.2");
+  });
+
+  test("a budget_exceeded refusal with and without window/resetsAt rides the result event and the error frame", () => {
+    const bare: ModelRefusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "HOP infra cannot call claude-opus-5-5 now" };
+    const timed: ModelRefusal = { ...bare, window: "daily", resetsAt: "2026-10-27T00:00:00Z" };
+    const result: ResultEvent = { type: "result", subtype: "error", reason: timed.message, refusal: timed, numTurns: 1, usage: emptyUsage(), ts: "t" };
+    const event = { type: "event", sessionId: "s", event: result } satisfies ServerMessage;
+    const frame = { type: "error", requestId: "r", message: bare.message, refusal: bare } satisfies ServerMessage;
+    expect([event.event.refusal?.window, event.event.refusal?.resetsAt, frame.refusal.window, frame.refusal.resetsAt]).toEqual(["daily", "2026-10-27T00:00:00Z", undefined, undefined]);
   });
 });

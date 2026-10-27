@@ -146,6 +146,17 @@ export function parseComputeUnits(headers: Headers): number | undefined {
 
 export type GatewayErrorType = "http" | "timeout" | "cancelled" | "stream" | "network";
 
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/** The `error` object of a non-2xx body (the Anthropic-wire envelope), string fields only: a
+ *  machine field of another type (or `reset_at: null`) is absent, never coerced or read from prose. */
+function errorFields(body: unknown): { message?: string; type?: string; code?: string; model?: string; window?: string; resetAt?: string } {
+  const e = (body as { error?: unknown } | null)?.error;
+  if (typeof e !== "object" || e === null) return {};
+  const f = e as Record<string, unknown>;
+  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at) };
+}
+
 export class GatewayError extends Error {
   constructor(
     message: string,
@@ -156,6 +167,10 @@ export class GatewayError extends Error {
      *  `budget_exceeded` 0.22.1) and the model it refused, when the body names one. */
     readonly code?: string,
     readonly model?: string,
+    /** `budget_exceeded` (0.22.2): the budget window the spent cap belongs to and the ISO-8601
+     *  instant it resets, when the body names them (`error.window`, `error.reset_at`). */
+    readonly window?: string,
+    readonly resetAt?: string,
   ) {
     super(message);
     this.name = "GatewayError";
@@ -339,19 +354,15 @@ export class GatewayClient implements ModelClient {
         if (ctype.includes("application/json")) {
           const text = await res.text();
           let message = text.slice(0, 300);
-          let etype: string | undefined;
-          let code: string | undefined;
-          let refusedModel: string | undefined;
+          let f: ReturnType<typeof errorFields> = {};
           try {
-            const j = JSON.parse(text) as { error?: { message?: string; type?: string; code?: string; model?: string }; message?: string };
-            message = j.error?.message ?? j.message ?? message;
-            etype = j.error?.type;
-            if (typeof j.error?.code === "string") code = j.error.code;
-            if (typeof j.error?.model === "string") refusedModel = j.error.model;
+            const j = JSON.parse(text) as { message?: unknown };
+            f = errorFields(j);
+            message = f.message ?? str(j?.message) ?? message;
           } catch {
             // not JSON after all — keep the raw excerpt
           }
-          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", etype, code, refusedModel);
+          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", f.type, f.code, f.model, f.window, f.resetAt);
         }
         const computeUnits = parseComputeUnits(res.headers);
         const effortApplied = parseEffortHeader(res.headers);
@@ -595,20 +606,13 @@ export class GatewayClient implements ModelClient {
   }
 
   private async toError(res: Response): Promise<GatewayError> {
-    let detail = res.statusText;
-    let type: string | undefined;
-    let code: string | undefined;
-    let model: string | undefined;
+    let f: ReturnType<typeof errorFields> = {};
     try {
-      const j = (await res.json()) as { error?: { type?: string; message?: string; code?: string; model?: string } };
-      if (j.error?.message) detail = j.error.message;
-      type = j.error?.type;
-      if (typeof j.error?.code === "string") code = j.error.code;
-      if (typeof j.error?.model === "string") model = j.error.model;
+      f = errorFields(await res.json());
     } catch {
       // non-JSON body
     }
-    return new GatewayError(`gateway ${res.status}: ${detail}`, res.status, "http", type, code, model);
+    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt);
   }
 
   private normalizeError(e: unknown, userSignal: AbortSignal | undefined): Error {

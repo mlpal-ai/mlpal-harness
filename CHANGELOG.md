@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Protocol 0.22.2: the budget refusal's `window` and `resetsAt` (2026-10-26)
+
+- Additive over 0.22.1; every 0.22.1 frame remains valid.
+- `ModelRefusal.window?: string` (the budget window the spent cap belongs to, e.g. `daily`, `monthly`) and
+  `ModelRefusal.resetsAt?: string` (ISO-8601 UTC instant the window resets); `budget_exceeded` only, present
+  only when the gateway names them.
+- `GatewayError.window` / `.resetAt` read `error.window` / `error.reset_at` of a non-2xx body when they are
+  strings (any other type, or `reset_at: null`, is absent); nothing is parsed from the message prose.
+  `budgetRefusal(model, hop, {window, resetsAt})` carries them onto the refusal and the loop passes them through
+  to the run's `result` (persisted). Today's gateway (assistants-service 8f1311c) does not put them in the body
+  yet, so its refusals carry neither until it does.
+
 ### The gateway's typed 403 `budget_exceeded` ends a run as a typed refusal (2026-10-26)
 
 - `GatewayError.budgetExceeded`: the gateway's 403 whose body carries `error.code: "budget_exceeded"` (the

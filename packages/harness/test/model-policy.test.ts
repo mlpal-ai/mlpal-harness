@@ -205,6 +205,68 @@ describe("the gateway's budget_exceeded (protocol 0.22.1)", () => {
   });
 });
 
+describe("the budget refusal's window and resetsAt (protocol 0.22.2)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  /** The gateway's budget 403 with `extra` beside `code` (its `error_body(status, message, **fields)`). */
+  const budget403 = (extra: Record<string, unknown>) => ({ type: "error", error: { ...BUDGET_403.error, ...extra } });
+
+  /** A run whose first model call meets the gateway answering `body` with a 403, through the real
+   *  client; the run's result event, the persisted one, and what the client raised. */
+  async function runAgainst(body: unknown) {
+    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status: 403, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const raised = await new GatewayClient({ baseUrl: "http://x", apiKey: "k" })
+      .stream({ model: "claude-opus-5-5", messages: [{ role: "user", content: "hi" }], maxTokens: 10 })
+      .next()
+      .then(() => undefined, (e: unknown) => e as GatewayError);
+    const root = mkdtempSync(join(tmpdir(), "yx-budget-window-"));
+    const store = new LocalStore(root);
+    const session = new AgentSession({ agentId: "a", sessionId: "s", workspace: "w", cwd: root, model: "claude-opus-5-5", systemPrompt: "t", tools: new ToolRegistry(), store, model_client: new GatewayClient({ baseUrl: "http://x", apiKey: "k" }), canUseTool: createPolicy({ mode: "autopilot" }), stamp: { hop: "infra@1.2.0", origin: "test", workspace: "w" } });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    for await (const e of session.run({ text: "go" })) events.push(e as unknown as { type: string } & Record<string, unknown>);
+    const persisted = (await store.conversation.read("s")).map((e) => e.payload as unknown as { type: string } & Record<string, unknown>);
+    rmSync(root, { recursive: true, force: true });
+    const refusalOf = (e: Record<string, unknown> | undefined) => e?.refusal as Record<string, unknown> | undefined;
+    return { raised, refusal: refusalOf(events.find((e) => e.type === "result")), persisted: refusalOf(persisted.find((p) => p.type === "result")) };
+  }
+
+  test("a 403 body naming window and reset_at: the client keeps them and result.refusal carries window and resetsAt, persisted", async () => {
+    const { raised, refusal, persisted } = await runAgainst(budget403({ window: "daily", reset_at: "2026-10-27T00:00:00Z" }));
+    expect([raised?.budgetExceeded, raised?.window, raised?.resetAt]).toEqual([true, "daily", "2026-10-27T00:00:00Z"]);
+    expect(refusal).toMatchObject({ code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", window: "daily", resetsAt: "2026-10-27T00:00:00Z" });
+    expect(persisted).toMatchObject({ code: "budget_exceeded", window: "daily", resetsAt: "2026-10-27T00:00:00Z" });
+  });
+
+  test("a 403 body without them (today's gateway): both absent, nothing read from the prose", async () => {
+    const { raised, refusal, persisted } = await runAgainst(BUDGET_403);
+    expect(raised?.budgetExceeded).toBe(true);
+    expect([raised?.window, raised?.resetAt]).toEqual([undefined, undefined]);
+    expect(refusal?.code).toBe("budget_exceeded");
+    expect(Object.keys(refusal ?? {})).not.toContain("window");
+    expect(Object.keys(refusal ?? {})).not.toContain("resetsAt");
+    expect(Object.keys(persisted ?? {}).filter((k) => k === "window" || k === "resetsAt")).toEqual([]);
+  });
+
+  test("reset_at null: resetsAt absent, a named window still carried", async () => {
+    const { raised, refusal } = await runAgainst(budget403({ window: "monthly", reset_at: null }));
+    expect([raised?.window, raised?.resetAt]).toEqual(["monthly", undefined]);
+    expect(refusal).toMatchObject({ code: "budget_exceeded", window: "monthly" });
+    expect(Object.keys(refusal ?? {})).not.toContain("resetsAt");
+  });
+
+  test("non-string junk in window or reset_at: both absent", async () => {
+    for (const junk of [{ window: 7, reset_at: 1793059200 }, { window: { name: "daily" }, reset_at: ["2026-10-27T00:00:00Z"] }, { window: true, reset_at: false }]) {
+      const { raised, refusal } = await runAgainst(budget403(junk));
+      expect([raised?.window, raised?.resetAt]).toEqual([undefined, undefined]);
+      expect(refusal?.code).toBe("budget_exceeded");
+      expect(Object.keys(refusal ?? {}).filter((k) => k === "window" || k === "resetsAt")).toEqual([]);
+    }
+  });
+});
+
 describe("a foreground sub-agent refused for its model (R6)", () => {
   test("the Agent tool answers with a typed tool_result and the parent's stream carries refusal on the tool_result event", async () => {
     const { createTaskTool } = await import("../src/subagent/task");

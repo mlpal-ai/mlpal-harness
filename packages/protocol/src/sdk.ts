@@ -103,6 +103,12 @@ export interface ModelRefusal {
   reason?: "hop_policy" | "key_policy" | "not_served" | "gateway";
   /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". */
   message: string;
+  /** The budget window the cap belongs to, e.g. `daily`, `monthly` — `budget_exceeded` only
+   *  (0.22.2), present when the gateway names it. */
+  window?: string;
+  /** ISO-8601 UTC instant the window resets — `budget_exceeded` only (0.22.2), present when the
+   *  gateway names it. */
+  resetsAt?: string;
 }
 export interface ErrorEvent {
   type: "error";

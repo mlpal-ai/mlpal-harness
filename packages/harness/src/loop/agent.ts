@@ -737,7 +737,7 @@ export class AgentSession {
         if (e instanceof GatewayError && (e.modelAccessDenied || e.budgetExceeded)) {
           const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
           const model = e.model ?? activeModel;
-          const refusal = e.budgetExceeded ? budgetRefusal(model, hop) : modelRefusal(model, hop, "gateway");
+          const refusal = e.budgetExceeded ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt }) : modelRefusal(model, hop, "gateway");
           log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : "model refused by the gateway", { model, hop, detail: e.message });
           metrics.increment(`agent.${refusal.code}`, 1, { model });
           outcome = "error";
