@@ -26,7 +26,7 @@ import type { HookContext, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
-import { modelRefusal } from "../profile/model-policy";
+import { budgetRefusal, modelRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
@@ -731,13 +731,15 @@ export class AgentSession {
           parent = yield* this.finish("cancelled", turns, totalUsage, parent);
           return;
         }
-        // The gateway refused the model for this HOP (rule 4): the run ends as a typed error the
-        // frontend reads from fields, not a thrown exception it must parse.
-        if (e instanceof GatewayError && e.modelAccessDenied) {
+        // The gateway refused the model for this HOP (rule 4), or the key's budget cap is spent
+        // (0.22.1): the run ends as a typed error the frontend reads from fields, not a thrown
+        // exception it must parse.
+        if (e instanceof GatewayError && (e.modelAccessDenied || e.budgetExceeded)) {
           const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
-          const refusal = modelRefusal(e.model ?? activeModel, hop, "gateway");
-          log.warn("model refused by the gateway", { model: refusal.model, hop });
-          metrics.increment("agent.model_access_denied", 1, { model: refusal.model });
+          const model = e.model ?? activeModel;
+          const refusal = e.budgetExceeded ? budgetRefusal(model, hop) : modelRefusal(model, hop, "gateway");
+          log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : "model refused by the gateway", { model, hop, detail: e.message });
+          metrics.increment(`agent.${refusal.code}`, 1, { model });
           outcome = "error";
           parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;

@@ -152,7 +152,8 @@ export class GatewayError extends Error {
     readonly status: number,
     readonly kind: GatewayErrorType = "http",
     readonly errorType?: string,
-    /** The gateway's machine code and the model it refused (`model_access_denied`, 0.20.5). */
+    /** The gateway's machine code (`error.code` of a non-2xx body: `model_access_denied` 0.20.5,
+     *  `budget_exceeded` 0.22.1) and the model it refused, when the body names one. */
     readonly code?: string,
     readonly model?: string,
   ) {
@@ -163,6 +164,11 @@ export class GatewayError extends Error {
   /** The HOP's model policy (or the key's) refused the model: never retried, reported typed. */
   get modelAccessDenied(): boolean {
     return this.code === "model_access_denied";
+  }
+
+  /** A budget cap of the key is spent (the gateway's typed 403): never retried, reported typed. */
+  get budgetExceeded(): boolean {
+    return this.code === "budget_exceeded";
   }
 
   /** Transient failures worth retrying. Cancellation never is. */

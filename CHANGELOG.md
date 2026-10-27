@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The gateway's typed 403 `budget_exceeded` ends a run as a typed refusal (2026-10-26)
+
+- `GatewayError.budgetExceeded`: the gateway's 403 whose body carries `error.code: "budget_exceeded"` (the
+  Anthropic-wire envelope `{"type":"error","error":{"type":"permission_error","message":…,"code":"budget_exceeded"}}`).
+  Not retried and not failed over (a 403 never is): the budget is the key's, every rung would meet it.
+- The loop maps it like the gateway's `model_access_denied`: the run ends with `result` subtype `error` carrying
+  `refusal: {code: "budget_exceeded", model, hop, reason: "gateway", message}` (persisted), via `budgetRefusal`.
+  Any other 403 code stays an untyped error. Metric `agent.budget_exceeded` beside `agent.model_access_denied`.
+- `describeProfile` drops its `HopView["tools"]` cast (protocol 0.22.1 types `include` as optional).
+
 ### Protocol 0.22.1: `budget_exceeded` refusal; `HopView.tools.include` optional (2026-10-26)
 
 - Additive over 0.22.0; every 0.22.0 frame remains valid.

@@ -14,7 +14,8 @@ export interface HopModelPolicy {
   deny: string[];
 }
 
-export const MODEL_ACCESS_DENIED: ModelRefusal["code"] = "model_access_denied";
+export const MODEL_ACCESS_DENIED = "model_access_denied" satisfies ModelRefusal["code"];
+export const BUDGET_EXCEEDED = "budget_exceeded" satisfies ModelRefusal["code"];
 
 /** fnmatch-style glob as the gateway matches model ids: `*` any run, `?` one char, `[abc]` a class. */
 export function globToRegExp(glob: string): RegExp {
@@ -90,6 +91,11 @@ export function modelRefusal(model: string, hop: string, reason: ModelRefusal["r
           ? `HOP ${hop} cannot use ${model} here (the gateway refused it)`
           : `HOP ${hop} cannot use ${model} here (not served by this gateway)`;
   return { code: MODEL_ACCESS_DENIED, model, hop, reason, message };
+}
+
+/** The gateway refused a call because a budget cap of the key is spent (protocol 0.22.1). */
+export function budgetRefusal(model: string, hop: string): ModelRefusal {
+  return { code: BUDGET_EXCEEDED, model, hop, reason: "gateway", message: `HOP ${hop} cannot call ${model} now (the gateway refused it: a budget cap is spent)` };
 }
 
 /** Raised by a chooser before a call; hosts turn it into the typed event the UI reads. */

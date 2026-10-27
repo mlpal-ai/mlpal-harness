@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { GatewayClient, GatewayError } from "../src/gateway/client";
 import { AgentSession } from "../src/loop/agent";
 import { createPolicy } from "../src/permission/engine";
@@ -10,6 +11,7 @@ import { loadProfile } from "../src/profile/load";
 import { globToRegExp, ModelAccessError, modelRefusal, pinnedModels, pinsOutsidePolicy, policyAllows, policyIsOpen } from "../src/profile/model-policy";
 import { LocalStore } from "../src/store/local";
 import { ToolRegistry } from "../src/tools/registry";
+import { defineTool } from "../src/tools/types";
 
 describe("model policy globs (the gateway's semantics, locally)", () => {
   test("globs: *, ?, classes, literal dots; deny wins; absent, [] and [*] are open", () => {
@@ -121,6 +123,85 @@ describe("the gateway's model_access_denied", () => {
       server.stop(true);
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/** The gateway's typed 403 for a spent budget on the Anthropic wire, as mlpal-assistants-service
+ *  `feat/hop-customer-keys` 8f1311c renders it (services/messages_v2/core.py:486-488, errors.py
+ *  `error_body`): no `model` field, the message is the gateway's sentence. */
+const BUDGET_403 = { type: "error", error: { type: "permission_error", message: "Spend budget exhausted: 10.0000/10.0000 cu for the daily window (resets 2026-10-27T00:00:00+00:00)", code: "budget_exceeded" } };
+
+describe("the gateway's budget_exceeded (protocol 0.22.1)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("the client keeps the typed code from the 403 body; it is neither retried nor failed over", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      seen.push(JSON.parse(init.body as string).model as string);
+      return new Response(JSON.stringify(BUDGET_403), { status: 403, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
+    let caught: unknown;
+    try {
+      const g = client.stream({ model: "claude-opus-5-5", fallbackModels: ["claude-haiku-fake"], messages: [{ role: "user", content: "hi" }], maxTokens: 10 });
+      let r = await g.next();
+      while (!r.done) r = await g.next();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(GatewayError);
+    const ge = caught as GatewayError;
+    expect([ge.status, ge.code, ge.errorType, ge.model]).toEqual([403, "budget_exceeded", "permission_error", undefined]);
+    expect(ge.budgetExceeded).toBe(true);
+    expect(ge.modelAccessDenied).toBe(false);
+    expect(seen).toEqual(["claude-opus-5-5"]);
+  });
+
+  /** A run whose first call asks for a tool and whose second call meets `thrown`. */
+  async function runInto(thrown: Error) {
+    const root = mkdtempSync(join(tmpdir(), "yx-budget-"));
+    const store = new LocalStore(root);
+    const tools = new ToolRegistry();
+    tools.register(defineTool({ name: "Ping", description: "ping", readOnly: true, schema: z.object({}), call: async () => ({ content: "pong" }) }));
+    let calls = 0;
+    const model_client = {
+      async *stream() {
+        calls++;
+        if (calls === 2) throw thrown;
+        return { model: "claude-opus-5-5", message: { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "tu_1", name: "Ping", input: {} }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" as const };
+      },
+    };
+    const session = new AgentSession({ agentId: "a", sessionId: "s", workspace: "w", cwd: root, model: "claude-opus-5-5", systemPrompt: "t", tools, store, model_client, canUseTool: createPolicy({ mode: "autopilot" }), stamp: { hop: "infra@1.2.0", origin: "test", workspace: "w" } });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    let error: unknown;
+    try {
+      for await (const e of session.run({ text: "go" })) events.push(e as unknown as { type: string } & Record<string, unknown>);
+    } catch (e) {
+      error = e;
+    }
+    const persisted = (await store.conversation.read("s")).map((e) => e.payload as unknown as { type: string } & Record<string, unknown>);
+    rmSync(root, { recursive: true, force: true });
+    return { events, persisted, error, calls };
+  }
+
+  test("a 403 budget_exceeded on the run's second model call ends the run with the typed refusal on its result, persisted", async () => {
+    const { events, persisted, error, calls } = await runInto(new GatewayError("gateway 403: Spend budget exhausted", 403, "http", "permission_error", "budget_exceeded"));
+    expect(error).toBeUndefined();
+    expect(calls).toBe(2);
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ toolName: "Ping", content: "pong", isError: false });
+    const refusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "HOP infra cannot call claude-opus-5-5 now (the gateway refused it: a budget cap is spent)" };
+    const result = events.find((e) => e.type === "result");
+    expect(result).toMatchObject({ type: "result", subtype: "error", reason: refusal.message, refusal });
+    expect(persisted.find((p) => p.type === "result")).toMatchObject({ subtype: "error", refusal });
+  });
+
+  test("any other 403 code stays an untyped error, as before", async () => {
+    const { events, error } = await runInto(new GatewayError("gateway 403: account suspended", 403, "http", "permission_error", "account_suspended"));
+    expect(error).toBeInstanceOf(GatewayError);
+    expect(events.some((e) => "refusal" in e)).toBe(false);
   });
 });
 
