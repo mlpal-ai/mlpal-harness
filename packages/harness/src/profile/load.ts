@@ -592,7 +592,6 @@ function composeSafety(
   return (child ?? parent) as SafetyPolicy | undefined;
 }
 
-/** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
 /** `include` absent = every registered tool, which already has every module's tools; `[]` = none,
  *  and an enabled module's tools join it as they join a list. */
 function composeTools(include: string[] | undefined, modules: Profile["modules"]): Profile["tools"] {
@@ -601,6 +600,7 @@ function composeTools(include: string[] | undefined, modules: Profile["modules"]
   return { include: extra.length ? [...new Set([...include, ...extra])] : include };
 }
 
+/** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
 export function composeProfile(
   parent: Profile,
   y: ProfileYaml,
