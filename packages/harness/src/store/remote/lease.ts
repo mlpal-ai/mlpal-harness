@@ -1,8 +1,8 @@
 /**
- * Keeps the P1 lease an engine was handed (an engine token can renew, release and append under its
- * lease, never take one: leasing is control's), and fails closed on its own clock. The lease is held
- * until a deadline, ttl − margin after the send time of the newest renew that succeeded; a deadline
- * timer fires the loss whatever is in flight. Renews go out at adopt and every ttl/3 after on their
+ * Keeps the P1 lease an engine was handed or took (a lease-scoped engine token can renew, release and append
+ * under its lease, never take one; control and the instance writer token take them), and fails closed on its own
+ * clock. The lease is held until a deadline, ttl − margin after the send time of the newest renew that
+ * succeeded; a deadline timer fires the loss whatever is in flight. Renews go out at adopt and every ttl/3 after on their
  * own cadence, so one renew that never answers does not hold back the next; each asks for `ttl_s`
  * explicitly and gives up after ttl/3 or at the deadline, whichever is sooner. The store's
  * `expires_at` can only bring the deadline forward (the store's clock is not ours; the skew is logged).
