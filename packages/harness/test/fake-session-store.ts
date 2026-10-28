@@ -37,7 +37,7 @@ export interface FakeIdentity {
 interface WriterScope {
   owner: string;
   publication: string;
-  unit?: string;
+  unit: string;
 }
 
 type Claims =
@@ -76,8 +76,8 @@ export interface FakeSessionStore {
   readerToken(sid: string, principal?: string | null): string;
   scopeReaderToken(owner: string, publication: string): string;
   /** The instance writer token: creates sessions of its `{owner, publication}` (its `unit` filling theirs), and
-   *  leases, writes and reads any session of that scope. */
-  writerToken(owner: string, publication: string, unit?: string): string;
+   *  leases, writes and reads any session of that scope; a write to a session outside it is 403. */
+  writerToken(owner: string, publication: string, unit: string): string;
   /** Creates a session as control would (the identity defaults to the store's contract fixtures'). */
   createSession(sid: string, identity?: Partial<FakeIdentity>): void;
   /** Takes a lease as control would, and mints the engine token for it. */
@@ -109,6 +109,8 @@ const MAX_TTL_S = 60;
 const MAX_LIMIT = 500;
 const KIND = /^[A-Za-z0-9_.:-]{1,64}$/;
 const SID = /^[A-Za-z0-9_-]{1,128}$/;
+/** The routes an instance writer writes through: outside its scope they are 403 (its reads there are 404). */
+const WRITES = new Set<FakeRoute>(["lease", "renew", "release", "append"]);
 const RUNNING_KINDS = new Set(["user", "system", "assistant", "tool_started", "tool_result", "tool_use_start", "text_delta", "thinking_delta"]);
 const STATUSES = new Set(["idle", "running", "requires_action", "ended"]);
 /** The store's Retry-After for the refusals that carry one. */
@@ -238,7 +240,7 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
       owner: s.identity.owner,
       unit: s.identity.unit,
       publication: s.identity.publication,
-      hop: s.identity.hop,
+      hop: { ...s.identity.hop, digest: s.identity.hop.digest ?? null },
       status: f.status,
       parks: f.parks,
       ...(f.parks.length ? { park: f.parks.at(-1) } : {}),
@@ -309,7 +311,9 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
     const unit = b?.unit ?? scope?.unit;
     const optional = (v: unknown) => v === undefined || okString(v);
     if (!b || ![b.sid, b.owner, unit, b.publication, b.origin, hop?.name, hop?.version].every(okString) || !optional(b.unit) || !optional(hop.digest)) return invalidBody();
-    if (scope && (b.owner !== scope.owner || b.publication !== scope.publication || (b.unit !== undefined && b.unit !== scope.unit))) return fail(403, "forbidden");
+    if (scope && (b.owner !== scope.owner || b.publication !== scope.publication || (b.unit !== undefined && b.unit !== scope.unit))) {
+      return fail(403, "forbidden", { message: "this writer creates its own owner's sessions on its publication" });
+    }
     if (!SID.test(b.sid)) return fail(422, "invalid_sid", { message: "sid must be [A-Za-z0-9_-]{1,128}" });
     if (!/^(ui|api|schedule:.+)$/.test(b.origin)) return fail(422, "invalid_origin", { message: "origin must be ui, api or schedule:<id>" });
     const identity: FakeIdentity = { owner: b.owner, unit, publication: b.publication, hop: { name: hop.name, version: hop.version, ...(hop.digest !== undefined ? { digest: hop.digest } : {}) }, origin: b.origin };
@@ -542,6 +546,9 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
     const leaseId = r === "renew" || r === "release" ? parts[3] : undefined;
     if (!permitted(r, claims, sid, leaseId)) return fail(403, "forbidden");
     const s = sessions.get(sid);
+    if (s && claims.role === "engine" && "scope" in claims && !inScope(claims, s) && WRITES.has(r)) {
+      return fail(403, "forbidden", { message: "the session is outside this writer's scope" });
+    }
     if (!s || !inScope(claims, s)) return fail(404, "unknown_session");
     if (s.deleted) return r === "delete" ? handleDelete(s) : fail(410, "session_deleted", { deleted_at: s.deleted.deletedAt });
     return handleSession(r, s, req, url, claims, leaseId);
@@ -554,7 +561,7 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
     readerToken: (sid, principal) =>
       mint(principal === null ? { role: "reader", sid } : { role: "reader", sid, principal: principal ?? sessions.get(sid)?.identity.owner ?? DEFAULT_IDENTITY.owner }),
     scopeReaderToken: (owner, publication) => mint({ role: "reader", owner, publication }),
-    writerToken: (owner, publication, unit) => mint({ role: "engine", scope: { owner, publication, ...(unit !== undefined ? { unit } : {}) } }),
+    writerToken: (owner, publication, unit) => mint({ role: "engine", scope: { owner, publication, unit } }),
     createSession(sid, identity = {}) {
       create(sid, { ...DEFAULT_IDENTITY, ...identity });
     },

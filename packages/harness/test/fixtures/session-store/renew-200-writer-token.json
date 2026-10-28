@@ -1,0 +1,14 @@
+{
+  "body": {
+    "expires_at": 1760000060000,
+    "last_seq": 1,
+    "lease_id": "354d9b08-784c-42ea-be27-241aa616298c"
+  },
+  "case": "the writer renews its lease during the turn",
+  "content_type": "application/json",
+  "generated": [
+    "lease_id"
+  ],
+  "route": "POST /v1/sessions/{sid}/lease/{lease_id}/renew",
+  "status": 200
+}

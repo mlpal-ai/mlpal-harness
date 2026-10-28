@@ -1,0 +1,7 @@
+{
+  "body": null,
+  "case": "the writer gives the lease back at the turn's end or a park",
+  "content_type": null,
+  "route": "DELETE /v1/sessions/{sid}/lease/{lease_id}",
+  "status": 204
+}

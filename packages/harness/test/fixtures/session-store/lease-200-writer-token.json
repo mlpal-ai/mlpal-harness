@@ -1,0 +1,18 @@
+{
+  "body": {
+    "expires_at": 1760000060000,
+    "last_seq": 0,
+    "lease_id": "354d9b08-784c-42ea-be27-241aa616298c"
+  },
+  "case": "the writer takes the lease for a turn that came without a grant",
+  "content_type": "application/json",
+  "generated": [
+    "lease_id"
+  ],
+  "request": {
+    "holder": "engine:box-a:7",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 200
+}

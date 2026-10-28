@@ -20,7 +20,7 @@ import {
   StoreHttpError,
 } from "../src/store/remote/client";
 import { FakeClock } from "./fake-clock";
-import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
+import { DEFAULT_IDENTITY, type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
 
 const DIR = join(import.meta.dir, "fixtures", "session-store");
 const T0 = 1_760_000_000_000;
@@ -92,6 +92,21 @@ class Ctx {
     expect(res.status).toBe(200);
   }
 
+  /** The instance writer token of the fixtures' owner, publication and unit (contract.rs `app.writer`). */
+  get writer(): string {
+    return (this.writerToken ??= this.fake.writerToken(DEFAULT_IDENTITY.owner, DEFAULT_IDENTITY.publication, DEFAULT_IDENTITY.unit));
+  }
+  private writerToken: string | undefined;
+
+  /** The writer takes the lease on a session control created, as a turn without a grant does. */
+  async writerLeased(sid = SID): Promise<void> {
+    this.fake.createSession(sid);
+    const res = await this.send("POST", `/sessions/${sid}/lease`, { token: this.writer, body: { holder: "engine:box-a:7", ttl_s: 60 } });
+    expect(res.status).toBe(200);
+    this.lease = ((await res.json()) as { lease_id: string }).lease_id;
+    this.engine = this.writer;
+  }
+
   async erase(sid = SID): Promise<void> {
     expect((await this.send("DELETE", `/sessions/${sid}`)).status).toBe(200);
   }
@@ -133,6 +148,9 @@ const scenarios: Record<string, Scenario> = {
   "create-422-invalid-origin": (c, f) => create(c, f),
   "create-401-unauthorized": (c, f) => create(c, f, null),
   "create-403-forbidden": (c, f) => create(c, f, c.fake.readerToken(SID)),
+  "create-201-writer-token": (c, f) => create(c, f, c.writer),
+  "create-201-writer-token-unit-omitted": (c, f) => create(c, f, c.writer),
+  "create-403-writer-token-cross-scope": (c, f) => create(c, f, c.writer),
   "create-410-session-deleted": async (c, f) => (c.fake.createSession(SID), await c.erase(), create(c, f)),
   "delete-200": async (c) => (c.leased(), await c.append(0, [user(), result("success")]), c.clock.advance(5_000), c.send("DELETE", `/sessions/${SID}`)),
   "delete-200-repeated": async (c) => (c.leased(), await c.append(0, [user(), result("success")]), c.clock.advance(5_000), await c.erase(), c.send("DELETE", `/sessions/${SID}`)),
@@ -140,11 +158,15 @@ const scenarios: Record<string, Scenario> = {
   "lease-200": (c, f) => (c.fake.createSession(SID), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
   "lease-409-session-leased": (c, f) => (c.leased(), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
   "lease-422-invalid-ttl": (c, f) => (c.fake.createSession(SID), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
+  "lease-200-writer-token": (c, f) => (c.fake.createSession(SID), c.send("POST", `/sessions/${SID}/lease`, { token: c.writer, body: f.request })),
+  "lease-409-writer-token-session-leased": async (c, f) => (await c.writerLeased(), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
   "lease-404-unknown-session": (c, f) => c.send("POST", "/sessions/sess-none/lease", { body: f.request }),
   "renew-200": (c) => (c.leased(), c.clock.advance(20_000), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.engine })),
   "renew-403-forbidden": (c) => (c.leased(), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.fake.engineToken(SID, "another-lease") })),
   "renew-409-lease-lost": (c) => (c.leased(), c.clock.advance(81_000), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.engine })),
   "release-204": (c) => (c.leased(SID, 30), c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine })),
+  "release-204-writer-token": async (c) => (await c.writerLeased(), c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.writer })),
+  "renew-200-writer-token": async (c) => (await c.writerLeased(), await c.append(0, [user()]), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.writer })),
   "release-409-lease-lost": async (c) => (c.leased(SID, 30), await c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine }), c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine })),
   "append-200": (c, f) => (c.leased(), appendReq(c, f)),
   "append-200-large-event": (c) => (c.leased(), c.send("POST", `/sessions/${SID}/events`, { token: c.engine, body: { lease_id: c.lease, after_seq: 0, events: [largeRead(10 * 1024 * 1024)] } })),
@@ -153,6 +175,12 @@ const scenarios: Record<string, Scenario> = {
     await c.append(0, [largeRead(10 * 1024 * 1024)]),
     c.send("POST", `/sessions/${SID}/events`, { token: c.engine, body: { lease_id: c.lease, after_seq: 1, events: [largeRead(17 * 1024 * 1024)] } })
   ),
+  "append-200-writer-token": async (c, f) => (await c.writerLeased(), appendReq(c, f, c.writer)),
+  "append-403-writer-token-cross-scope": async (c, f) => {
+    c.fake.createSession("sess-other-owner", { owner: "cust_8" });
+    c.lease = c.fake.grant("sess-other-owner").leaseId;
+    return c.send("POST", "/sessions/sess-other-owner/events", { token: c.writer, body: c.request(f) });
+  },
   "append-200-retried": async (c, f) => (c.leased(), await appendReq(c, f), appendReq(c, f)),
   "append-409-seq-conflict": async (c, f) => (await first(c), appendReq(c, f)),
   "append-422-invalid-event": async (c, f) => (await first(c), appendReq(c, f)),
@@ -340,7 +368,8 @@ function successShape(op: string, v: unknown): void {
     case "projection": {
       const p = v as Record<string, any>;
       // A clone: Bun's toMatchObject writes its asymmetric matchers into the object it is given.
-      expect(structuredClone(p)).toMatchObject({ sid: SID, status: expect.any(String), parks: expect.any(Array), usage: { inputTokens: n, outputTokens: n, costCu: n }, lastSeq: n, updatedAt: n });
+      expect(p.hop.digest === null || typeof p.hop.digest === "string").toBe(true);
+      expect(structuredClone(p)).toMatchObject({ sid: expect.any(String), status: expect.any(String), parks: expect.any(Array), usage: { inputTokens: n, outputTokens: n, costCu: n }, lastSeq: n, updatedAt: n });
       for (const park of [...p.parks, ...(p.park ? [p.park] : [])]) expect(park).toEqual({ kind: expect.any(String), id: expect.any(String), at: n });
       expect(p.park).toEqual(p.parks.at(-1));
       if (p.lease) expect(p.lease.expiresAt).toEqual(n);
@@ -359,7 +388,7 @@ describe("SessionStoreClient reads every fixture body of its routes", () => {
       test.skip(`${f.name}: the client has no ${op} route (${noClientRoute[op] ?? "unknown"})`, () => {});
       continue;
     }
-    test(`${f.name}: ${f.status === 200 || f.status === 204 ? "parses" : "maps to its error class"}`, async () => {
+    test(`${f.name}: ${f.status < 300 ? "parses" : "maps to its error class"}`, async () => {
       const respond = () =>
         new Response(f.body === null ? null : typeof f.body === "string" ? f.body : JSON.stringify(f.body), { status: f.status, headers: f.content_type ? { "content-type": f.content_type } : {} });
       const client = new SessionStoreClient({ baseUrl: "http://store/v1", tokenProvider: () => "test-token", fetch: async () => respond(), sleep: async () => {} });

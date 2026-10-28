@@ -53,8 +53,8 @@ export interface SessionProjection {
   owner: string;
   unit: string;
   publication: string;
-  /** `digest` is absent when the session was created without one (an engine that did not know its bundle's). */
-  hop: { name: string; version: string; digest?: string };
+  /** `digest` is null when the session was created without one (an engine that did not know its bundle's). */
+  hop: { name: string; version: string; digest: string | null };
   status: "idle" | "running" | "requires_action" | "ended";
   /** Every open park, oldest first: what a person owes. */
   parks: SessionPark[];

@@ -1,6 +1,6 @@
 # Session-store contract fixtures
 
-Copied unchanged from `mlpal-harness-stack` `session-store/tests/contract/*.json` at commit `c921134`
+Copied unchanged from `mlpal-harness-stack` `session-store/tests/contract/*.json` at commit `2b738e3`
 (origin/main, the approved store). The real store builds each file through its handlers
 (`session-store/tests/contract.rs`), so they are its response shapes.
 

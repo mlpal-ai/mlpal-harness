@@ -1,0 +1,32 @@
+{
+  "body": {
+    "code": "forbidden",
+    "message": "the session is outside this writer's scope"
+  },
+  "case": "a session of another owner: the writer may not lease, renew, release or append there",
+  "content_type": "application/json",
+  "request": {
+    "after_seq": 0,
+    "events": [
+      {
+        "data": {
+          "parentUuid": null,
+          "payload": {
+            "message": {
+              "content": "Reply pong",
+              "role": "user"
+            },
+            "type": "user"
+          },
+          "ts": "2025-10-09T08:53:20.000Z",
+          "uuid": "u1"
+        },
+        "kind": "user",
+        "ts_ms": 1760000000000
+      }
+    ],
+    "lease_id": "<lease_id>"
+  },
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 403
+}

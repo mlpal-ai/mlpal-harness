@@ -1,0 +1,14 @@
+{
+  "body": {
+    "code": "session_leased",
+    "expires_at": 1760000060000
+  },
+  "case": "the writer holds the lease: any other writer (here control) gets session_leased",
+  "content_type": "application/json",
+  "request": {
+    "holder": "hop-service",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 409
+}
