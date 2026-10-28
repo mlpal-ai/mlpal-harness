@@ -11,6 +11,7 @@ import {
   type SandboxRefusal,
   type ScheduleView,
   type ServerMessage,
+  type SessionStoreGrant,
   type SessionSummary,
   type ToolResultEvent,
   addUsage,
@@ -186,11 +187,6 @@ describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
 });
 
 describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
-  test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.4");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.4");
-  });
-
   test("a sandbox_capacity refusal rides the tool_result, the result and the error event, beside refusal", () => {
     const capacity: SandboxRefusal = { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message: "remote sandbox at capacity (quota_global): retry after 5 s" };
     const bare: SandboxRefusal = { code: "sandbox_capacity", reason: "no_hosts", message: "remote sandbox at capacity (no_hosts): no retry hint" };
@@ -200,5 +196,28 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
     // @ts-expect-error rate_limited is not a capacity reason
     const limited: SandboxRefusal = { code: "sandbox_capacity", reason: "rate_limited", message: "m" };
     expect([toolResult.sandboxRefusal?.retryAfterS, result.sandboxRefusal?.sandboxId, error.sandboxRefusal?.retryAfterS, limited.code]).toEqual([5, "sbx_1", undefined, "sandbox_capacity"]);
+  });
+});
+
+describe("0.22.5 (SessionStoreGrant: the session store credential on the messages that write)", () => {
+  test("version", () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.5");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.5");
+  });
+
+  test("a grant rides run, permission_response, question_response and approval_response", () => {
+    const store: SessionStoreGrant = { leaseId: "lease_1", token: "test-token", url: "http://store:7100/v1" };
+    const messages = [
+      { type: "run", requestId: "r", sessionId: "s", prompt: "p", store },
+      { type: "permission_response", id: "p1", decision: "allow", store },
+      { type: "question_response", id: "parked:s", outcome: { declined: false, answers: [] }, store },
+      { type: "approval_response", sessionId: "s", decision: "deny", store },
+    ] satisfies ClientMessage[];
+    expect(messages.map((m) => JSON.parse(JSON.stringify(m)).store)).toEqual([store, store, store, store]);
+    const readOnly: SessionStoreGrant = { token: "test-token" };
+    expect(readOnly.leaseId).toBeUndefined();
+    // @ts-expect-error a read carries no grant
+    const load: ClientMessage = { type: "load_session", sessionId: "s", store };
+    expect(load.type).toBe("load_session");
   });
 });

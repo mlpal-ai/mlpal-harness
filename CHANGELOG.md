@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Protocol 0.22.5: `SessionStoreGrant`, the session store credential on the messages that write (2026-10-27)
+
+- Additive over 0.22.4; every 0.22.4 frame remains valid.
+- `SessionStoreGrant {leaseId?, token, url?}`: the P1 lease a remote-store engine writes under, the engine-role
+  token for it, and the store's base url when the engine has none configured (phase 1 token delivery, seam P2).
+  Held in memory for the turn; never logged or persisted.
+- `store?: SessionStoreGrant` on `run`, `permission_response`, `question_response` and `approval_response`. A
+  `file`-mode engine ignores it; a multi-session remote-store engine refuses a writing message without it.
+
 ### Engine store, slice 2: the side-effect key and resume (2026-10-27)
 
 - No protocol change. `run()` is unchanged in what it persists to the conversation; its body after the user turn

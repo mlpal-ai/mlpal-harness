@@ -359,6 +359,17 @@ export interface PendingApproval {
   reason: string;
 }
 
+/** 0.22.5: the session store credential for this message's session (phase 1 token delivery, seam P2); never
+ *  logged or persisted. A file-mode engine ignores it. */
+export interface SessionStoreGrant {
+  /** The P1 lease the engine writes under. */
+  leaseId?: string;
+  /** The engine-role JWT (role engine, sid, lease_id); held in memory for the turn. */
+  token: string;
+  /** The store's base url when the engine has no `sessionStore.url`; otherwise ignored. */
+  url?: string;
+}
+
 export type ClientMessage =
   | {
       type: "run";
@@ -386,6 +397,8 @@ export type ClientMessage =
       detach?: boolean;
       /** 0.21.0: stamped as the new session's origin; default "ui". */
       origin?: SessionOrigin;
+      /** 0.22.5: the session store grant for this turn (a remote-store engine refuses a run without one). */
+      store?: SessionStoreGrant;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -404,11 +417,11 @@ export type ClientMessage =
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
    *  given); `session_history.hasMore` says whether older entries exist. */
   | { type: "load_session"; requestId?: string; sessionId: string; before?: string; limit?: number }
-  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string }
+  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant }
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
-  | { type: "question_response"; id: string; outcome: AskOutcome }
+  | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
-  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string }
+  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
   | { type: "stop_subagent"; childSessionId: string }
@@ -570,4 +583,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.22.4";
+export const HARNESS_PROTOCOL_VERSION = "0.22.5";
