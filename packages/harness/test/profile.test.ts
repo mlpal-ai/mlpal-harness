@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -10,7 +10,7 @@ import {
   CODING_ENV_BROKEN_RE,
   CODING_VERIFY_CMD_RE, CODING_MEMORY_CONTRACT } from "../src/profile/builtins/coding";
 import { REVIEWER_PROFILE } from "../src/profile/builtins/reviewer";
-import { assertSettingsRespectLocks, builtinProfiles, loadProfile } from "../src/profile/load";
+import { assertSettingsRespectLocks, builtinProfiles, HopPathError, loadProfile } from "../src/profile/load";
 import { describeProfile } from "../src/profile/describe";
 import { bashTool } from "../src/tools/builtin/bash";
 import { editTool, writeTool } from "../src/tools/builtin/files";
@@ -988,5 +988,70 @@ describe("describeProfile", () => {
       expect(JSON.stringify(round)).not.toContain("=>");
     }
     expect(describeProfile(loadProfile("reviewer", { cwd: "/x", home: "/y" })).permissions.defaultMode).toBe("recon");
+  });
+});
+
+describe("loadProfile confineTo: every path an assigned bundle's HOP reads stays inside it", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "hop-confine-"));
+    mkdirSync(join(root, "bundle", "prompts"), { recursive: true });
+    mkdirSync(join(root, "secrets"), { recursive: true });
+    writeFileSync(join(root, "secrets", "gateway.token"), "test-secret-token");
+    writeFileSync(join(root, "bundle", "prompts", "system.md"), "be careful\n");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  const hop = (body: string) => writeFileSync(join(root, "bundle", "hop.yaml"), `spec: mlpal/hop-v1\nname: confined\nversion: 1.0.0\n${body}`);
+  const load = () => loadProfile(join(root, "bundle"), { cwd: root, home: root, confineTo: join(root, "bundle") });
+  const refused = (field: string) => {
+    let e: unknown;
+    try {
+      load();
+    } catch (x) {
+      e = x;
+    }
+    expect(e).toBeInstanceOf(HopPathError);
+    expect((e as HopPathError).field).toBe(field);
+    return e as HopPathError;
+  };
+
+  test("a file: reference inside the bundle loads", () => {
+    hop("prompts: { system: 'file:prompts/system.md' }\n");
+    expect(load().prompts.system).toBe("be careful");
+  });
+  test("an absolute file: reference outside it is refused, naming the path; nothing is read", () => {
+    hop(`prompts: { system: 'file:${join(root, "secrets", "gateway.token")}' }\n`);
+    expect(refused("prompts.system").path).toBe(join(root, "secrets", "gateway.token"));
+  });
+  test("a ../ file: reference is refused", () => {
+    hop("prompts: { system: 'file:../secrets/gateway.token' }\n");
+    refused("prompts.system");
+  });
+  test("a file: reference through a symlink that leaves the bundle is refused (links resolved first)", () => {
+    symlinkSync(join(root, "secrets", "gateway.token"), join(root, "bundle", "prompts", "link.md"));
+    hop("prompts: { system: 'file:prompts/link.md' }\n");
+    refused("prompts.system");
+  });
+  test("a module prompt is confined too", () => {
+    hop("modules:\n  m:\n    prompt: file:../secrets/gateway.token\n");
+    refused("modules.m.prompt");
+  });
+  test("a path extends outside the bundle is refused; a builtin parent is fine", () => {
+    mkdirSync(join(root, "other"), { recursive: true });
+    writeFileSync(join(root, "other", "hop.yaml"), "spec: mlpal/hop-v1\nname: other\nversion: 1.0.0\n");
+    hop("extends: ../other\n");
+    refused("extends");
+    hop("extends: coding\n");
+    expect(load().name).toBe("confined");
+  });
+  test("a named (installed) parent is refused under confinement: the bundle must carry its chain", () => {
+    mkdirSync(join(root, "hops", "infra"), { recursive: true });
+    writeFileSync(join(root, "hops", "infra", "hop.yaml"), "spec: mlpal/hop-v1\nname: infra\nversion: 1.0.0\n");
+    hop("extends: infra\n");
+    refused("extends");
+  });
+  test("without confineTo the loader is unchanged", () => {
+    hop(`prompts: { system: 'file:${join(root, "secrets", "gateway.token")}' }\n`);
+    expect(loadProfile(join(root, "bundle"), { cwd: root, home: root }).prompts.system).toBe("test-secret-token");
   });
 });

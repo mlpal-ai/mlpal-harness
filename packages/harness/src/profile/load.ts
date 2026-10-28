@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type {
   EvalSuite,
@@ -372,13 +372,46 @@ export function builtinProfiles(): Record<string, Profile> {
 export interface LoadProfileOptions {
   cwd: string;
   home: string;
+  /** An untrusted HOP (an engine pod's assigned bundle): every path the loader reads for it, its `file:` references
+   *  and a path `extends`, must resolve inside this directory after links, and a named (installed) parent is refused;
+   *  else HopPathError. A builtin parent is code, not a file, and stays allowed. */
+  confineTo?: string;
+}
+
+/** A HOP path outside the directory its load is confined to (LoadProfileOptions.confineTo). */
+export class HopPathError extends Error {
+  override name = "HopPathError";
+  constructor(
+    readonly field: string,
+    readonly path: string,
+  ) {
+    super(`HOP ${field} references ${path}, outside the HOP's directory`);
+  }
+}
+
+/** `abs` itself when no confinement applies or it resolves (after links) inside `root`; else HopPathError. */
+function confined(abs: string, root: string | undefined, field: string): string {
+  if (root === undefined) return abs;
+  let real: string;
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+    real = realpathSync(abs);
+  } catch {
+    // A path that does not resolve is judged by its text: inside, the caller reports it missing; outside, refused.
+    realRoot = resolve(root);
+    real = resolve(abs);
+  }
+  const rel = relative(realRoot, real);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new HopPathError(field, abs);
+  return abs;
 }
 
 /** Resolve a `file:<relpath>` prompt reference against the profile dir; inline otherwise. */
-function resolvePromptText(value: string, dir: string, field: string): string {
+function resolvePromptText(value: string, dir: string, field: string, confineTo?: string): string {
   if (!value.startsWith("file:")) return value;
   const rel = value.slice("file:".length);
-  const abs = isAbsolute(rel) ? rel : join(dir, rel);
+  const abs = confined(isAbsolute(rel) ? rel : join(dir, rel), confineTo, field);
   if (!existsSync(abs)) {
     throw new Error(`profile ${field} references ${value} but ${abs} does not exist`);
   }
@@ -606,6 +639,8 @@ export function composeProfile(
   y: ProfileYaml,
   dir: string,
   source: ProfileSource,
+  /** LoadProfileOptions.confineTo: the root every `file:` reference must resolve inside. */
+  confineTo?: string,
 ): Profile {
   // A child may not override what an ancestor locked. `permissions.deny` is exempt: it
   // concatenates down the chain and can never remove a parent entry, so a child touching
@@ -636,7 +671,7 @@ export function composeProfile(
     Object.entries(y.modules).map(([n, m]) => [
       n,
       {
-        prompt: resolvePromptText(m.prompt, dir, `modules.${n}.prompt`),
+        prompt: resolvePromptText(m.prompt, dir, `modules.${n}.prompt`, confineTo),
         ...(m.tools ? { tools: m.tools } : {}),
         enabled: m.enabled === true || m.enabled === "on",
         ...(m.description ? { description: m.description } : {}),
@@ -713,11 +748,11 @@ export function composeProfile(
     modules,
     prompts: {
       system: [
-        y.prompts.system ? resolvePromptText(y.prompts.system, dir, "prompts.system") : parent.prompts.system,
+        y.prompts.system ? resolvePromptText(y.prompts.system, dir, "prompts.system", confineTo) : parent.prompts.system,
         ...Object.entries(modules).filter(([, m]) => m.enabled).map(([n, m]) => `\n\n<!-- module: ${n} -->\n${m.prompt}`),
       ].join(""),
       verifierAgent: y.prompts.verifierAgent
-        ? resolvePromptText(y.prompts.verifierAgent, dir, "prompts.verifierAgent")
+        ? resolvePromptText(y.prompts.verifierAgent, dir, "prompts.verifierAgent", confineTo)
         : parent.prompts.verifierAgent,
       verifierTask: y.verification.agent.task
         ? (task: string, deliverable?: string) =>
@@ -733,10 +768,10 @@ export function composeProfile(
       envBrokenRe: observed.envBroken,
       churnThreshold: y.verification.antiChurn.threshold ?? parent.loop.churnThreshold,
       summarizerSystem: y.prompts.summarizer
-        ? resolvePromptText(y.prompts.summarizer, dir, "prompts.summarizer")
+        ? resolvePromptText(y.prompts.summarizer, dir, "prompts.summarizer", confineTo)
         : parent.loop.summarizerSystem,
       condenserSystem: y.prompts.condenser
-        ? resolvePromptText(y.prompts.condenser, dir, "prompts.condenser")
+        ? resolvePromptText(y.prompts.condenser, dir, "prompts.condenser", confineTo)
         : parent.loop.condenserSystem,
     },
     verification: {
@@ -818,7 +853,7 @@ function loadFromDir(dir: string, source: ProfileSource, opts: LoadProfileOption
     throw new Error(`profile extends chain deeper than 4 at ${file} — flatten the hierarchy`);
   }
   const parent = resolveProfile(y.extends, opts, depth + 1, dir);
-  return composeProfile(parent, y, dir, source);
+  return composeProfile(parent, y, dir, source, opts.confineTo);
 }
 
 /** Split a named ref into name + optional `@version` pin. Paths and builtins never reach here. */
@@ -886,14 +921,17 @@ function resolveProfile(ref: string, opts: LoadProfileOptions, depth: number, fr
       return builtin;
     }
   }
+  // Under confinement (an assigned bundle) the bundle carries its whole chain: a parent is a builtin or a path inside.
+  const field = fromDir === undefined ? "hop" : "extends";
   // Explicit or extends-relative path (contains a separator, or is absolute).
   if (ref.includes("/") || isAbsolute(ref)) {
-    const base = isAbsolute(ref) ? ref : resolve(fromDir ?? opts.cwd, ref);
+    const base = confined(isAbsolute(ref) ? ref : resolve(fromDir ?? opts.cwd, ref), opts.confineTo, field);
     if (!existsSync(base)) {
       throw new Error(`profile path ${base} does not exist`);
     }
     return loadFromDir(base, "path", opts, depth);
   }
+  if (opts.confineTo !== undefined) throw new HopPathError(field, ref);
   // Named lookup: project then user; each honors flat + versioned layouts and `name@version` pins.
   const project = resolveNamedHopDir(opts.cwd, ref);
   if (project) return loadFromDir(project, "project", opts, depth);
