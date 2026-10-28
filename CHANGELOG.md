@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Engine store, D-2: the instance writer token (2026-10-28)
+
+- No protocol change.
+- `SessionStoreClient.create(sid, body)` (`POST /sessions`): control's, and the instance writer token's (role
+  `engine`, scope `{owner, publication}`, no `sid` or `lease_id`) for a session of its scope. 201 or 200 (the same
+  identity again) → the projection; 409 `session_exists` → `SessionExistsError`; a 403 or a 422 code → `StoreHttpError`
+  with its code. `CreateSessionBody` leaves `unit` out under the writer token (the store takes it from the token)
+  and `hop.digest` out when the engine does not know it; `SessionProjection.hop.digest` is optional accordingly.
+- `lease` is also the writer token's, on any session of its scope.
+- `sessionStore.writeTokenFile` (default `/run/instance/session_store_write_token`): the writer token's file, which
+  box A replaces in place; re-read by path on each use.
+- The fake session store: `writerToken(owner, publication, unit?)`. Such a token creates sessions of its scope (an
+  owner, publication or unit other than its own → 403; no body `unit` → the token's), and leases, renews, releases,
+  appends to and reads any session of its scope; another session answers 404 `unknown_session`; it lists nothing.
+
 ### Protocol 0.22.5: `SessionStoreGrant`, the session store credential on the messages that write (2026-10-27)
 
 - Additive over 0.22.4; every 0.22.4 frame remains valid.

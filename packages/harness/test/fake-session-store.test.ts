@@ -139,6 +139,38 @@ describe("fake P1 session store", () => {
     expect((await call("GET", "/sessions/s1", undefined, store.readerToken("s1", null))).body).toEqual({ code: "unauthorized" }); // a {sid} reader needs a principal
   });
 
+  test("the instance writer token {owner, publication}: creates sessions of its scope (unit from the token, digest optional), and leases, writes and reads any session of it", async () => {
+    const w = store.writerToken("cust_7", "infra-ro", "unit_platform");
+    const body = { sid: "s1", owner: "cust_7", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2" }, origin: "ui" };
+    const created = await call("POST", "/sessions", body, w);
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ sid: "s1", owner: "cust_7", unit: "unit_platform", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2" }, status: "idle", last_seq: 0 });
+    expect(created.body!.hop.digest).toBeUndefined();
+    expect((await call("POST", "/sessions", body, w)).status).toBe(200);
+    expect((await call("POST", "/sessions", { ...body, unit: "unit_platform" }, w)).status).toBe(200);
+    expect((await call("POST", "/sessions", { ...body, hop: { ...body.hop, digest: "sha256:1" } }, w)).body).toMatchObject({ code: "session_exists" });
+    for (const other of [{ owner: "cust_9" }, { publication: "other" }, { unit: "unit_other" }]) {
+      expect((await call("POST", "/sessions", { ...body, sid: "s9", ...other }, w)).body).toEqual({ code: "forbidden" });
+    }
+    const lease = await call("POST", "/sessions/s1/lease", { holder: "engine:inst-1:42", ttl_s: 60 }, w);
+    expect(lease.status).toBe(200);
+    expect(store.lease("s1")!.holder).toBe("engine:inst-1:42");
+    expect((await call("POST", "/sessions/s1/lease", { holder: "engine:inst-1:43", ttl_s: 60 }, w)).body).toMatchObject({ code: "session_leased" });
+    const g = { leaseId: lease.body!.lease_id as string, token: w };
+    expect((await append("s1", g, 0, [ev(1)])).body).toEqual({ first_seq: 1, last_seq: 1 });
+    expect((await call("GET", "/sessions/s1/events", undefined, w)).body!.events).toHaveLength(1);
+    expect((await call("POST", `/sessions/s1/lease/${g.leaseId}/renew`, {}, w)).status).toBe(200);
+    expect((await call("DELETE", `/sessions/s1/lease/${g.leaseId}`, undefined, w)).status).toBe(204);
+    expect((await append("s1", g, 1, [ev(2)])).body).toEqual({ code: "lease_lost" });
+    // Another owner's or publication's session is not in its scope: it learns nothing of it.
+    store.createSession("s2", { owner: "cust_9" });
+    expect((await call("POST", "/sessions/s2/lease", { holder: "engine:inst-1:42", ttl_s: 60 }, w)).body).toEqual({ code: "unknown_session" });
+    expect((await call("GET", "/sessions/s2", undefined, w)).body).toEqual({ code: "unknown_session" });
+    // A writer token lists nothing, and without a unit claim a create must name one.
+    expect((await call("GET", "/sessions?owner=cust_7", undefined, w)).status).toBe(403);
+    expect((await call("POST", "/sessions", { ...body, sid: "s3" }, store.writerToken("cust_7", "infra-ro"))).body).toMatchObject({ code: "invalid_body" });
+  });
+
   test("the projection lists every open park; a persisted park is idle, a live ask requires action; a new turn clears an approval park", async () => {
     const g = leased();
     let seq = 0;

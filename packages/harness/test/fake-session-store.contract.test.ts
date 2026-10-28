@@ -14,6 +14,7 @@ import {
   LeaseLostError,
   SeqConflictError,
   SessionDeletedError,
+  SessionExistsError,
   SessionNotFoundError,
   SessionStoreClient,
   StoreHttpError,
@@ -274,6 +275,7 @@ describe("the fake store answers every contract fixture as the real store does",
 type ClientCall = (c: SessionStoreClient) => Promise<unknown>;
 
 const clientCalls: Record<string, ClientCall> = {
+  create: (c) => c.create(SID, { owner: "cust_7", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2" }, origin: "api" }),
   lease: (c) => c.lease(SID, { holder: "engine:node-a:4242", ttlS: 60 }),
   renew: (c) => c.renew(SID, "L"),
   release: (c) => c.release(SID, "L"),
@@ -289,7 +291,6 @@ const clientCalls: Record<string, ClientCall> = {
 
 const noClientRoute: Record<string, string> = {
   health: "an open liveness route",
-  create: "control-only",
   list: "control-only",
   delete: "control-only",
 };
@@ -299,6 +300,7 @@ function errorClass(f: Fixture): typeof StoreHttpError {
   if (f.status === 404) return SessionNotFoundError;
   if (f.status === 410) return SessionDeletedError;
   if (f.status === 413) return BatchTooLargeError;
+  if (code === "session_exists") return SessionExistsError;
   if (code === "session_leased") return LeaseHeldError;
   if (code === "lease_lost") return LeaseLostError;
   if (code === "seq_conflict") return SeqConflictError;
@@ -334,6 +336,7 @@ function successShape(op: string, v: unknown): void {
       expect(events[2]!.data).toMatchObject({ uuid: "r1", payload: { type: "result" } });
       return;
     }
+    case "create":
     case "projection": {
       const p = v as Record<string, any>;
       // A clone: Bun's toMatchObject writes its asymmetric matchers into the object it is given.

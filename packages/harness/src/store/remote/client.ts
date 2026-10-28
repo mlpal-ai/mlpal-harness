@@ -53,7 +53,8 @@ export interface SessionProjection {
   owner: string;
   unit: string;
   publication: string;
-  hop: { name: string; version: string; digest: string };
+  /** `digest` is absent when the session was created without one (an engine that did not know its bundle's). */
+  hop: { name: string; version: string; digest?: string };
   status: "idle" | "running" | "requires_action" | "ended";
   /** Every open park, oldest first: what a person owes. */
   parks: SessionPark[];
@@ -128,6 +129,11 @@ export class SeqConflictError extends StoreHttpError {
   }
 }
 
+/** 409 `session_exists`: the sid belongs to a session with another identity. */
+export class SessionExistsError extends StoreHttpError {
+  override name = "SessionExistsError";
+}
+
 /** 404 `unknown_session`: no such session, or none this token may see (control creates sessions). */
 export class SessionNotFoundError extends StoreHttpError {
   override name = "SessionNotFoundError";
@@ -192,7 +198,18 @@ const MAX_ATTEMPTS = 3;
 const RETRY_BUDGET_MS = 30_000;
 const RETRY_BASE_MS = 200;
 
-type Op = "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream";
+/** A session's identity as `create` sends it. Under the instance writer token `owner` and `publication` must be the
+ *  token's scope and `unit` is left out (the store takes it from the token); control names every field. */
+export interface CreateSessionBody {
+  owner: string;
+  publication: string;
+  unit?: string;
+  hop: { name: string; version: string; digest?: string };
+  /** `ui` | `api` | `schedule:<id>`. */
+  origin: string;
+}
+
+type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream";
 
 /** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
  *  first): an append retries any network failure or 5xx (the store answers a replay with its original
@@ -210,6 +227,7 @@ function httpError(op: Op, sid: string | null, status: number, body: Record<stri
   if (status === 404) return new SessionNotFoundError(message, status, code);
   if (status === 410) return new SessionDeletedError(message, status, code, num(body.deleted_at));
   if (status === 413) return new BatchTooLargeError(message, status, code, num(body.max_events), num(body.max_bytes), num(body.max_event_bytes));
+  if (status === 409 && code === "session_exists") return new SessionExistsError(message, status, code);
   if (status === 409 && code === "session_leased") return new LeaseHeldError(message, status, code, num(body.expires_at));
   if (status === 409 && code === "lease_lost") return new LeaseLostError(message, status, code);
   if (status === 409 && code === "seq_conflict") return new SeqConflictError(message, status, code, num(body.last_seq));
@@ -241,7 +259,14 @@ export class SessionStoreClient {
     this.log = opts.logger ?? silentLogger;
   }
 
-  /** Control-role only: an engine never takes its own lease; it is handed one (`LeaseKeeper.adopt`). */
+  /** Creates the session, or answers its projection when it exists with this identity (control, or the instance
+   *  writer token within its scope). */
+  async create(sid: string, body: CreateSessionBody): Promise<SessionProjection> {
+    return projectionOf(await this.call<WireProjection>("create", null, "POST", "", JSON.stringify({ sid, ...body })));
+  }
+
+  /** Control, or the instance writer token on a session of its scope; a lease-scoped engine token is handed its
+   *  lease (`LeaseKeeper.adopt`). */
   async lease(sid: string, opts: { holder: string; ttlS: number }): Promise<LeaseGrant> {
     return grant(await this.call<WireLease>("lease", sid, "POST", "/lease", JSON.stringify({ holder: opts.holder, ttl_s: opts.ttlS })));
   }

@@ -128,6 +128,7 @@ describe("sessionStore (engine store, plan §2)", () => {
     expect(loadSettings({ home, cwd, env: {} }).sessionStore).toEqual({
       backend: "file",
       readTokenFile: "/run/instance/session_store_read_token",
+      writeTokenFile: "/run/instance/session_store_write_token",
       leaseTtlS: 60,
       deltaFlushMs: 250,
       batchMaxEvents: 256,

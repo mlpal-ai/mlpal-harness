@@ -99,7 +99,9 @@ export const settingsSchema = z.object({
    * store under ~/.yodex. `remote`: the P1 session store at `url`, one lease per session; nothing for the session
    * is written under ~/.yodex. Credentials are files read by path at each use, never values: `tokenFile` holds
    * the `{lease_id, token}` a scheduler took for a single-session engine (phase 2), `readTokenFile` the
-   * instance read token box A replaces in place. The limits are the store's, as box A runs it.
+   * instance read token box A replaces in place, `writeTokenFile` the instance writer token (an engine-role token
+   * scoped to the instance's owner and publication) a multi-session engine creates and leases a session under
+   * when a writing message carries no grant. The limits are the store's, as box A runs it.
    */
   sessionStore: z
     .object({
@@ -107,6 +109,7 @@ export const settingsSchema = z.object({
       url: z.string().url().optional(),
       tokenFile: z.string().optional(),
       readTokenFile: z.string().default("/run/instance/session_store_read_token"),
+      writeTokenFile: z.string().default("/run/instance/session_store_write_token"),
       leaseTtlS: z.number().int().min(1).max(60).default(60),
       deltaFlushMs: z.number().int().positive().default(250),
       batchMaxEvents: z.number().int().positive().default(256),

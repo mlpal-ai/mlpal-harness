@@ -5,6 +5,7 @@ import {
   LeaseLostError,
   SeqConflictError,
   SessionDeletedError,
+  SessionExistsError,
   SessionNotFoundError,
   SessionStoreClient,
   type SessionStoreClientOptions,
@@ -391,6 +392,29 @@ describe("SessionStoreClient over P1", () => {
     const engine = store.grant("s1");
     const { c: asEngine } = client({ tokenProvider: () => engine.token });
     expect(await asEngine.list().catch((e) => e)).toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  test("create under the instance writer token: 201 a new session's projection, 200 the same identity again", async () => {
+    const token = store.writerToken("cust_7", "infra-ro", "unit_platform");
+    const { c } = client({ tokenProvider: () => token });
+    const body = { owner: "cust_7", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2" }, origin: "ui" };
+    const p = await c.create("w1", body);
+    expect(p).toMatchObject({ sid: "w1", owner: "cust_7", unit: "unit_platform", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2" }, status: "idle", lastSeq: 0, lease: null });
+    expect(await c.create("w1", body)).toMatchObject({ sid: "w1", lastSeq: 0 });
+  });
+
+  test("create: another identity under the sid is a SessionExistsError; a scope mismatch is a 403 StoreHttpError; a bad origin keeps its 422 code", async () => {
+    const token = store.writerToken("cust_7", "infra-ro", "unit_platform");
+    const { c } = client({ tokenProvider: () => token });
+    const body = { owner: "cust_7", publication: "infra-ro", hop: { name: "infra-ro", version: "0.9.2", digest: "sha256:1" }, origin: "ui" };
+    await c.create("w1", body);
+    const exists = await caught(c.create("w1", { ...body, hop: { ...body.hop, version: "1.0.0" } }));
+    expect(exists).toBeInstanceOf(SessionExistsError);
+    expect(exists).toMatchObject({ status: 409, code: "session_exists" });
+    const forbidden = await caught(c.create("w2", { ...body, owner: "cust_9" }));
+    expect(forbidden).toBeInstanceOf(StoreHttpError);
+    expect(forbidden).toMatchObject({ status: 403, code: "forbidden" });
+    expect(await caught(c.create("w3", { ...body, origin: "cron" }))).toMatchObject({ status: 422, code: "invalid_origin" });
   });
 
   test("the bearer comes from the token provider on every request", async () => {
