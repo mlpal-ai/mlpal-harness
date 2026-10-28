@@ -372,8 +372,8 @@ export function builtinProfiles(): Record<string, Profile> {
 export interface LoadProfileOptions {
   cwd: string;
   home: string;
-  /** An untrusted HOP (an engine pod's assigned bundle): every path the loader reads for it, its `file:` references
-   *  and a path `extends`, must resolve inside this directory after links, and a named (installed) parent is refused;
+  /** An untrusted HOP (an engine pod's assigned bundle): every path the loader reads for it, `hop.yaml` itself, its
+   *  `file:` references and a path `extends`, must resolve inside this directory after links, and a named (installed) parent is refused;
    *  else HopPathError. A builtin parent is code, not a file, and stays allowed. */
   confineTo?: string;
 }
@@ -408,7 +408,7 @@ function confined(abs: string, root: string | undefined, field: string): string 
 }
 
 /** Resolve a `file:<relpath>` prompt reference against the profile dir; inline otherwise. */
-function resolvePromptText(value: string, dir: string, field: string, confineTo?: string): string {
+function resolvePromptText(value: string, dir: string, field: string, confineTo: string | undefined): string {
   if (!value.startsWith("file:")) return value;
   const rel = value.slice("file:".length);
   const abs = confined(isAbsolute(rel) ? rel : join(dir, rel), confineTo, field);
@@ -639,8 +639,9 @@ export function composeProfile(
   y: ProfileYaml,
   dir: string,
   source: ProfileSource,
-  /** LoadProfileOptions.confineTo: the root every `file:` reference must resolve inside. */
-  confineTo?: string,
+  /** LoadProfileOptions.confineTo: the root every `file:` reference must resolve inside (undefined: unconfined). Required,
+   *  so no caller can drop it by omission. */
+  confineTo: string | undefined,
 ): Profile {
   // A child may not override what an ancestor locked. `permissions.deny` is exempt: it
   // concatenates down the chain and can never remove a parent entry, so a child touching
@@ -832,7 +833,7 @@ export function composeProfile(
 }
 
 function loadFromDir(dir: string, source: ProfileSource, opts: LoadProfileOptions, depth: number): Profile {
-  const file = join(dir, "hop.yaml");
+  const file = confined(join(dir, "hop.yaml"), opts.confineTo, "hop.yaml");
   if (!existsSync(file)) {
     throw new Error(`HOP directory ${dir} has no hop.yaml`);
   }

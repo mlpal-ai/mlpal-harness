@@ -1032,6 +1032,18 @@ describe("loadProfile confineTo: every path an assigned bundle's HOP reads stays
     hop("prompts: { system: 'file:prompts/link.md' }\n");
     refused("prompts.system");
   });
+  // Review round 2, item 4: each prompt field a HOP path is loaded for is confined at its own call site.
+  for (const field of ["summarizer", "condenser", "verifierAgent"] as const) {
+    test(`prompts.${field} is confined too`, () => {
+      hop(`prompts: { ${field}: 'file:../secrets/gateway.token' }\n`);
+      refused(`prompts.${field}`);
+    });
+  }
+  test("a hop.yaml that is a symlink out of the bundle is refused before it is read (review round 2, item 3)", () => {
+    writeFileSync(join(root, "secrets", "hop.yaml"), "spec: mlpal/hop-v1\nname: outside\nversion: 1.0.0\n");
+    symlinkSync(join(root, "secrets", "hop.yaml"), join(root, "bundle", "hop.yaml"));
+    expect(refused("hop.yaml").path).toBe(join(root, "bundle", "hop.yaml"));
+  });
   test("a module prompt is confined too", () => {
     hop("modules:\n  m:\n    prompt: file:../secrets/gateway.token\n");
     refused("modules.m.prompt");
