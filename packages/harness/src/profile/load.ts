@@ -3,6 +3,11 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
   EvalSuite,
+  HopCredential,
+  HopMemoryLimits,
+  HopProcesses,
+  HopSandbox,
+  HopWorkspace,
   ModelPolicy,
   Profile,
   ProfileSource,
@@ -106,6 +111,12 @@ const memorySchema = z
     // managed HOPs: the publication this HOP version is published as (hop-service id); the
     // consent call names it and the HOP store is keyed by it.
     publication: z.string().min(1).optional(),
+    // P5: how a run's staged claims are promoted, and the limits the HOP asks for (validation only).
+    promotion: z.enum(["auto", "review"]).optional(),
+    limits: z
+      .object({ max_nodes: z.number().int().positive().optional(), max_bytes: z.number().int().positive().optional(), max_write_bytes: z.number().int().positive().optional() })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -245,6 +256,64 @@ const safetySchema = z
   })
   .strict();
 
+// P4 — the sandbox router's own grammar, checked here so a bad HOP fails at load, not at create.
+const EGRESS_ENTRY = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)(?::(\d{1,5}))?$/;
+const validEgressEntry = (e: string): boolean => {
+  const m = EGRESS_ENTRY.exec(e);
+  return Boolean(m) && (m![2] === undefined || (Number(m![2]) >= 1 && Number(m![2]) <= 65535));
+};
+const egressEntry = z.string().refine(validEgressEntry, (e) => ({ message: `not a host or host:port entry: ${JSON.stringify(e)} (no wildcard, no scheme)` }));
+const sandboxSchema = z
+  .object({
+    size_class: z.enum(["1c2g", "2c4g"]).optional(),
+    template: z
+      .string()
+      .regex(/^(hands|[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*)$/, "template must be hands or <name>@<version>")
+      .optional(),
+    egress: z.array(egressEntry).optional(),
+  })
+  .strict();
+const workspaceSchema = z.object({ policy: z.enum(["ephemeral", "session", "persistent"]).optional() }).strict();
+// P6: by reference only; a `value` is refused with its own message, any other unknown key as usual.
+const credentialSchema = z
+  .object({})
+  .passthrough()
+  .refine((c) => !("value" in c), "a credential is a reference (ref); a value never appears in a HOP")
+  .pipe(
+    z
+      .object({
+        ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/, "ref names a vault secret (an id or a name), never a value"),
+        tool: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "tool is the MCP server that uses it, or sandbox"),
+        host: z.string().refine((h) => validEgressEntry(h) && !h.includes(":"), "host is a bare host name"),
+        header: z.string().regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, "header is an HTTP field name"),
+      })
+      .strict(),
+  );
+const processesSchema = z
+  .object({
+    mcp_stdio: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "name must be [A-Za-z0-9_-]{1,64} (it names the server's tools)"),
+            argv: z.array(z.string().min(1)).min(1),
+            env_names: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "an environment variable name")).default([]),
+          })
+          .strict(),
+      )
+      .superRefine((servers, ctx) => {
+        const seen = new Set<string>();
+        for (const s of servers) {
+          if (seen.has(s.name)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [], message: `processes.mcp_stdio: duplicate name "${s.name}"` });
+          seen.add(s.name);
+        }
+      })
+      .optional(),
+    hooks: z.boolean().optional(),
+    lsp: z.boolean().optional(),
+  })
+  .strict();
+
 export const profileYamlSchema = z
   .object({
     spec: z.literal(PROFILE_SPEC_ID, {
@@ -348,6 +417,10 @@ export const profileYamlSchema = z
     memory: memorySchema.default({ topics: [], reads: [], writes: [] }),
     // HOP model policy: the gateway's allow/deny globs (one model, a list, `claude-*`, `*`).
     model_policy: z.object({ allow: z.array(z.string().min(1)).optional(), deny: z.array(z.string().min(1)).optional() }).strict().optional(),
+    sandbox: sandboxSchema.optional(),
+    workspace: workspaceSchema.optional(),
+    processes: processesSchema.optional(),
+    credentials: z.array(credentialSchema).optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -592,12 +665,28 @@ function composeSafety(
   return (child ?? parent) as SafetyPolicy | undefined;
 }
 
+/** P4 blocks: a child overrides its parent per field (a list, such as `mcp_stdio`, whole). */
+function composeBlock<T extends object>(parent: T | undefined, child: T | undefined): T | undefined {
+  if (!parent && !child) return undefined;
+  const merged: Record<string, unknown> = { ...(parent ?? {}) };
+  for (const [k, v] of Object.entries(child ?? {})) if (v !== undefined) merged[k] = v;
+  return merged as T;
+}
+
 /** `include` absent = every registered tool, which already has every module's tools; `[]` = none,
  *  and an enabled module's tools join it as they join a list. */
 function composeTools(include: string[] | undefined, modules: Profile["modules"]): Profile["tools"] {
   if (include === undefined) return {};
   const extra = Object.values(modules).filter((m) => m.enabled).flatMap((m) => m.tools ?? []);
   return { include: extra.length ? [...new Set([...include, ...extra])] : include };
+}
+
+function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes" | "credentials"> {
+  const sandbox = composeBlock<HopSandbox>(parent.sandbox, y.sandbox);
+  const workspace = composeBlock<HopWorkspace>(parent.workspace, y.workspace);
+  const processes = composeBlock<HopProcesses>(parent.processes, y.processes);
+  const credentials: HopCredential[] | undefined = y.credentials ?? parent.credentials;
+  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials ? { credentials } : {}) };
 }
 
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
@@ -665,10 +754,12 @@ export function composeProfile(
   const memoryOwner = y.memory.owner ?? parent.memory?.owner;
   const memoryMode = y.memory.mode ?? parent.memory?.mode;
   const memorySharing = y.memory.sharing ?? parent.memory?.sharing;
+  const memoryPromotion = y.memory.promotion ?? parent.memory?.promotion;
+  const memoryLimits = composeBlock<HopMemoryLimits>(parent.memory?.limits, y.memory.limits);
   // A publication is this HOP version's own (hop-service id); a child never inherits a parent's.
   const memoryPublication = y.memory.publication;
   const memory =
-    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length
+    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length || memoryPromotion || memoryLimits
       ? {
           ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}),
           ...(memoryTenant ? { tenant: memoryTenant } : {}),
@@ -681,6 +772,8 @@ export function composeProfile(
           ...(memoryMode ? { mode: memoryMode } : {}),
           ...(memorySharing ? { sharing: memorySharing } : {}),
           ...(memoryPublication ? { publication: memoryPublication } : {}),
+          ...(memoryPromotion ? { promotion: memoryPromotion } : {}),
+          ...(memoryLimits ? { limits: memoryLimits } : {}),
         }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
@@ -786,6 +879,7 @@ export function composeProfile(
     locked,
     tunable,
     ...(y.model_policy ? { modelPolicy: { allow: y.model_policy.allow ?? [], deny: y.model_policy.deny ?? [] } } : {}),
+    ...p4Blocks(parent, y),
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };
   // Rule 6: a HOP's own pins must fit its own policy (the publisher refuses the same with a 422).

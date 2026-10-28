@@ -12,6 +12,7 @@ import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
 import { StoredOAuthProvider } from "./oauth";
+import { type ProcessHost, ProcessHostTransport } from "./process-host";
 import { host } from "../host";
 
 /**
@@ -28,6 +29,8 @@ export interface StdioServerConfig {
   env?: Record<string, string>;
   /** Never defer this server's tools (they are always in the model's tool list). */
   alwaysLoad?: boolean;
+  /** Where the process runs (P4): absent = a local child; the sandbox host in hosted mode. */
+  host?: ProcessHost;
 }
 
 export interface HttpServerConfig {
@@ -386,11 +389,10 @@ export class McpManager {
       // The child gets the declared env only (values expanded from ours); the SDK adds its safe
       // set (HOME, LOGNAME, PATH, SHELL, TERM, USER). Never our own environment: it holds the
       // gateway key, serve's token and the other servers' credentials.
-      transport = new StdioClientTransport({
-        command: config.command,
-        args: config.args ?? [],
-        env: config.env ? this.declaredEnv(name, config.env) : undefined,
-      });
+      const env = config.env ? this.declaredEnv(name, config.env) : undefined;
+      transport = config.host
+        ? new ProcessHostTransport(config.host, { argv: [config.command, ...(config.args ?? [])], ...(env ? { env } : {}) })
+        : new StdioClientTransport({ command: config.command, args: config.args ?? [], env });
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });
     // Elicitation (gap refresh row 15): a server may ask the person for a value mid-call. The host
