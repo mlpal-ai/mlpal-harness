@@ -6,24 +6,36 @@
 
 - No protocol change. `run()` is unchanged in what it persists to the conversation; its body after the user turn
   is now one private generator `turn()` that `resume()` enters too.
-- `Store` gains two optional methods, implemented by both backends: `appendEvent(sessionId, kind, data)` (a
-  durable event that is not a conversation entry: `LocalStore` writes `{kind, ...data}` to the `events` log
-  channel, `RemoteStore` appends a top-level event of that kind and resolves to its seq) and
-  `readEvents(sessionId, kind)` (the data of those events, in order).
+- `Store` gains two optional methods, implemented by both backends: `appendEvent(sessionId, kind, data)` (an
+  event that is not a conversation entry, resolving once it is durable where the backend can resume:
+  `RemoteStore` appends a top-level event of that kind and resolves on the store's acknowledgement, to its seq;
+  `LocalStore` writes `{kind, ...data}` to the `events` log channel and resolves when it is queued, since file
+  mode never resumes, and `YODEX_LOG=off` turns its markers off) and `readEvents(sessionId, kind)` (the data of
+  those events, in order).
 - The side-effect key: before a tool that is not read-only for its input runs (after the PreToolUse hooks and
   the permission decision), the loop appends `tool_started {toolUseId, name, ts}` (stamped like the run's other
-  records) and flushes the store, so the marker is durable before the effect can happen. File mode therefore
-  writes one more `events` record per such tool, and flushes before it runs.
+  records) and awaits it, so on the remote store the marker is acknowledged before the effect can happen, and a
+  refused marker (a lost lease) stops the tool. A blocked or denied call leaves no marker. File mode writes one
+  more `events` record per such tool.
 - `AgentSession.resume()` continues a turn a dead engine left in flight. With no turn since the last `result` or
   `error` it returns `{resumed: false}` and writes nothing. Otherwise the head's tool calls without a result are
   settled: one with a `tool_started` marker is never run again and gets an error result
   `INTERRUPTED_TOOL_RESULT` (exported); one without runs now, through the normal path. The turn then continues
   from the head without a new user entry, to its result, and `{resumed: true}`. A head whose model call had
-  answered without a tool call ends the turn without calling the model again. `markInterrupted` (file mode) is
-  untouched, and `resume()` writes no `result {interrupted}`.
-- A tool result the session store refuses as too large (`EventTooLargeError`) is replaced by an error result for
-  the model: `the tool's result of <N> MiB exceeds the session store's event limit of <M> MiB; read a smaller
-  range or write it to a file`; the run goes on.
+  answered without a tool call is the first iteration's answer: the turn's end runs as in a live one (the
+  max_tokens continuation, the self-check, the background wait, Stop hooks, owed handoff replies) without
+  calling the model again. The head is the last user, assistant or tool_result entry (a trailing sub-agent entry
+  is not); the run's author is the turn's first user entry not seeded by the system; its result counts the
+  turn's model calls before the restart. `markInterrupted` (file mode) is untouched, and `resume()` writes no
+  `result {interrupted}`.
+- A tool result the session store refuses as too large (`EventTooLargeError`, now in `store/errors`) is replaced
+  by an error result for the model: `the tool's result of <N> MiB exceeds the session store's event limit of
+  <M> MiB; read a smaller range or write it to a file`; the run goes on. This holds with the store's limit not
+  configured: an event over the batch size goes out alone, and `RemoteStore` waits for the store's answer before
+  the append returns, so the store's `413 event_too_large` reaches the loop before the model or the stream sees
+  the result.
+- The session-store contract fixtures are those of mlpal-harness-stack `c921134`, with the one-large-event rule
+  (`append-200-large-event`, `append-413-event-too-large`).
 - The loop writes no `error` entry for anything a run survives (pinned by a test with a failing hook).
 - Slice 1 follow-ups: `LeaseKeeper` aborts every renew in flight (or waiting to retry) on adopt, release and
   loss, and orders renews by a count, not a send time, so a wall-clock step back cannot lose a healthy lease;

@@ -214,12 +214,16 @@ for (const [name, make] of backends) {
       });
       const store = b.store;
       const appendEvent = store.appendEvent!.bind(store);
-      const flush = store.flush!.bind(store);
-      store.appendEvent = async (sid, kind, data) => (order.push(`event:${kind}`), appendEvent(sid, kind, data));
-      store.flush = async () => (order.push("flush"), flush());
+      store.appendEvent = async (sid, kind, data) => {
+        order.push(`event:${kind}`);
+        const stored = await appendEvent(sid, kind, data);
+        order.push(`stored:${kind}`);
+        return stored;
+      };
       await drain(session(store, new ScriptedModel([toolUse("tu1", "Count"), textDone("done")]), registry(tool)).run({ text: "count" }));
-      expect(order.slice(0, order.indexOf("call") + 1).slice(-3)).toEqual(["event:tool_started", "flush", "call"]);
-      expect(durableAtCall).toBe(true);
+      expect(order).toEqual(["event:tool_started", "stored:tool_started", "call"]);
+      // Only a backend that can resume promises durability: the remote one resolves on the store's ack.
+      if (name === "RemoteStore") expect(durableAtCall).toBe(true);
       expect(await store.readEvents!("s1", "tool_started")).toEqual([expect.objectContaining({ toolUseId: "tu1", name: "Count" })]);
     });
 
@@ -285,20 +289,97 @@ for (const [name, make] of backends) {
       expect((sent.content as { tool_use_id: string }[]).map((b) => b.tool_use_id)).toEqual(["tu1", "tu2"]);
     });
 
-    test("resume, the model had answered and only the run's end was lost: the turn ends without another model call", async () => {
+    /** A turn whose model call answered without a tool call; only the run's end was lost. A trailing
+     *  sub-agent entry, when `subagent`, sits after the answer. */
+    async function deadAfterAnswer(store: Store, opts: { subagent?: boolean; seeded?: boolean } = {}): Promise<void> {
+      let at = (await store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null)).uuid;
+      if (opts.seeded) at = (await store.conversation.append("s1", { type: "user", message: { role: "user", content: "seeded context" }, author: { type: "system" }, ts: "t1" } as SDKMessage, at)).uuid;
+      const author = opts.seeded ? { type: "agent", id: "peer-1" } : HUMAN;
+      at = (await store.conversation.append("s1", { type: "user", message: { role: "user", content: "hi" }, author, ts: "t1" } as SDKMessage, at)).uuid;
+      at = (await store.conversation.append("s1", { type: "assistant", message: textDone("hello").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t2" } as SDKMessage, at)).uuid;
+      if (opts.subagent) {
+        await store.conversation.append("s1", { type: "subagent", kind: "end", toolUseId: "tu9", childSessionId: "c1", description: "child", background: true, outcome: "success", ts: "t3" } as SDKMessage, at);
+      }
+      await store.flush?.();
+    }
+
+    test("resume, the model had answered: the turn ends through the normal end-of-turn path, with no second model call", async () => {
       const b = await make();
-      const sys = await b.store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null);
-      const user = await b.store.conversation.append("s1", { type: "user", message: { role: "user", content: "hi" }, author: HUMAN, ts: "t1" } as SDKMessage, sys.uuid);
-      await b.store.conversation.append("s1", { type: "assistant", message: textDone("hello").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t2" } as SDKMessage, user.uuid);
-      await b.store.flush?.();
+      await deadAfterAnswer(b.store);
+      const { tool } = counting();
+      const hooks = new HookEngine();
+      const stops: number[] = [];
+      hooks.register(new FunctionHook("verifier", ["Stop"], (input) => (stops.push(input.event === "Stop" ? input.numTurns : -1), {})));
+      const store = await b.reopen();
+      const model = new ScriptedModel([]);
+      const { events, value } = await drain(session(store, model, registry(tool), { hooks }).resume());
+      expect(value).toEqual({ resumed: true });
+      expect(model.seen).toHaveLength(0);
+      expect(stops).toEqual([1]); // the Stop verifier ran, as at the end of a live turn
+      expect(events.map((e) => e.type)).toEqual(["result"]);
+      expect((await store.conversation.read("s1")).map((e) => e.payload.type)).toEqual(["system", "user", "assistant", "result"]);
+    });
+
+    test("resume, the model had answered and the Stop verifier fails it: the turn goes on as a live one would", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store);
+      const { tool } = counting();
+      const hooks = new HookEngine();
+      let calls = 0;
+      hooks.register(new FunctionHook("verifier", ["Stop"], () => (calls++ === 0 ? { block: true, reason: "the answer is incomplete" } : {})));
+      const store = await b.reopen();
+      const model = new ScriptedModel([textDone("hello, complete")]);
+      const { events } = await drain(session(store, model, registry(tool), { hooks }).resume());
+      expect(model.seen).toHaveLength(1); // the continuation the verifier asked for, not a redo of the answer
+      const sent = model.seen[0]!.messages;
+      expect(sent.at(-2)).toMatchObject({ role: "assistant" });
+      expect(JSON.stringify(sent.at(-1))).toContain("[Verification] the answer is incomplete");
+      expect(events.map((e) => e.type)).toEqual(["user", "assistant", "result"]);
+    });
+
+    test("resume looks past a trailing sub-agent entry to the head's answer", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store, { subagent: true });
       const { tool } = counting();
       const store = await b.reopen();
       const model = new ScriptedModel([]);
-      const { events, value } = await drain(session(store, model, registry(tool)).resume());
-      expect(value).toEqual({ resumed: true });
+      const { events } = await drain(session(store, model, registry(tool)).resume());
       expect(model.seen).toHaveLength(0);
       expect(events.map((e) => e.type)).toEqual(["result"]);
-      expect((await store.conversation.read("s1")).map((e) => e.payload.type)).toEqual(["system", "user", "assistant", "result"]);
+    });
+
+    test("the resumed run is its asker's: its author skips a system-seeded turn, and its records carry the prompt", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store, { seeded: true });
+      const { tool } = counting();
+      const outcomes: unknown[] = [];
+      const store = await b.reopen();
+      await drain(
+        session(store, new ScriptedModel([]), registry(tool), {
+          telemetry: { hop: { name: "h", version: "1" }, repo: "r", role: "main", emit: (e) => void outcomes.push(e) },
+        }).resume(),
+      );
+      await store.flush?.();
+      const records = await store.logs.read("s1", "events");
+      const start = records.find((r) => r.kind === "run.start")!;
+      const end = records.find((r) => r.kind === "run.end")!;
+      expect(start).toMatchObject({ author: "agent", resumed: true }); // the peer that asked, not the seed
+      expect(typeof start.prompt).toBe("string");
+      expect(end.prompt).toBe(start.prompt);
+      expect(outcomes).toHaveLength(1);
+    });
+
+    test("a hook-blocked or a denied call leaves no marker", async () => {
+      const b = await make();
+      const { tool, runs } = counting();
+      const hooks = new HookEngine();
+      hooks.register(new FunctionHook("block", ["PreToolUse"], () => ({ block: true, reason: "no" })));
+      await drain(session(b.store, new ScriptedModel([toolUse("tu1", "Count"), textDone("done")]), registry(tool), { hooks }).run({ text: "count" }));
+      await drain(
+        session(b.store, new ScriptedModel([toolUse("tu2", "Count"), textDone("done")]), registry(tool), { canUseTool: async () => ({ behavior: "deny", reason: "nope" }) }).run({ text: "again" }),
+      );
+      expect(await b.store.readEvents!("s1", "tool_started")).toEqual([]);
+      expect(runs).toEqual([]);
     });
 
     test("resume, nothing in flight: no events, no writes, no model call", async () => {
@@ -345,6 +426,19 @@ for (const [name, make] of backends) {
   });
 }
 
+describe("the side-effect key on the remote store", () => {
+  test("a marker the store refuses (lease lost) stops the tool: it never runs", async () => {
+    const b = await remote();
+    const { tool, runs } = counting();
+    const store = b.store;
+    const appendEvent = store.appendEvent!.bind(store);
+    store.appendEvent = async (sid, kind, data) => (fake!.failNext("append", 409, "lease_lost"), appendEvent(sid, kind, data));
+    const err = await drain(session(store, new ScriptedModel([toolUse("tu1", "Count"), textDone("done")]), registry(tool)).run({ text: "count" })).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(runs).toEqual([]);
+  });
+});
+
 describe("an oversize tool result", () => {
   const big = () => defineTool({ name: "Big", description: "big", readOnly: true, schema: z.object({}), call: async () => ({ content: "x".repeat(100 * 1024) }) });
 
@@ -359,6 +453,26 @@ describe("an oversize tool result", () => {
     expect(JSON.stringify(model.seen[1]!.messages)).toContain("exceeds the session store's event limit");
     const stored = (await b.store.conversation.read("s1")).find((e) => e.payload.type === "tool_result")!.payload as { content: string };
     expect(stored.content).toBe(tr.content);
+  });
+
+  test("with the store's limit not configured, the store's 413 still swaps the result before the model or the stream sees it", async () => {
+    const f = startFakeSessionStore({ maxEventBytes: 1536 * 1024 });
+    fake = f;
+    f.createSession("s1");
+    const store = await remoteOn(f);
+    const huge = defineTool({ name: "Big", description: "big", readOnly: true, schema: z.object({}), call: async () => ({ content: "x".repeat(2 * 1024 * 1024) }) });
+    const model = new ScriptedModel([toolUse("tu1", "Big"), textDone("smaller then")]);
+    const { events } = await drain(session(store, model, registry(huge)).run({ text: "read it" }));
+    const tr = events.find((e) => e.type === "tool_result") as { isError: boolean; content: string };
+    expect(tr.isError).toBe(true);
+    expect(tr.content).toBe("the tool's result of 2 MiB exceeds the session store's event limit of 1.5 MiB; read a smaller range or write it to a file");
+    expect(JSON.stringify(model.seen[1]!.messages).length).toBeLessThan(100_000);
+    expect(JSON.stringify(model.seen[1]!.messages)).toContain("exceeds the session store's event limit");
+    await store.flush();
+    const stored = f.events("s1").filter((e) => e.kind === "tool_result");
+    expect(stored).toHaveLength(1);
+    expect((stored[0]!.data as { payload: { content: string } }).payload.content).toBe(tr.content);
+    expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success" });
   });
 
   test("on LocalStore is stored whole", async () => {

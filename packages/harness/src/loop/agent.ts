@@ -40,7 +40,7 @@ import type { Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ExecPolicy, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
-import { EventTooLargeError } from "../store/remote/batcher";
+import { EventTooLargeError } from "../store/errors";
 import { diffStat } from "../usage/stats";
 import { frameHandoff, postHandoffReply } from "./handoff";
 
@@ -563,6 +563,10 @@ export class AgentSession {
     unsubscribe?: () => void;
     resumed?: boolean;
     prelude?: (log: Logger, parent: string | null) => AsyncGenerator<EngineEvent, string | null, void>;
+    /** A resumed turn whose model call had answered: its first iteration starts from that answer. */
+    answered?: ModelResult;
+    /** What the turn had already spent before a resume (its model calls so far). */
+    usage?: Usage;
   }): AsyncGenerator<EngineEvent, void, void> {
     const { cfg } = this;
     const { author, runId, unsubscribe } = t;
@@ -587,7 +591,8 @@ export class AgentSession {
     if (t.prelude) parent = yield* t.prelude(log, parent);
 
     let messages = await loadMessages(this.store, cfg.sessionId);
-    let totalUsage: Usage = emptyUsage();
+    let totalUsage: Usage = t.usage ?? emptyUsage();
+    let pendingAnswer = t.answered;
     const toolCalls: Record<string, number> = {}; // d11.7: per-tool call counts, names only
     const providerLabels: Record<string, number> = {}; // d11.8: provider CLI counts from Bash calls
     let turns = 0;
@@ -668,8 +673,12 @@ export class AgentSession {
         parent = yield* this.finish("max_turns", turns, totalUsage, parent);
         break;
       }
+      // A resumed turn's first iteration starts from the answer the dead engine already persisted:
+      // no model call, nothing compacted or nudged before it.
+      const answered = pendingAnswer;
+      pendingAnswer = undefined;
       // Auto-compaction: summarize older turns before they overflow the window.
-      if (cfg.contextWindow && cfg.compaction?.enabled !== false) {
+      if (!answered && cfg.contextWindow && cfg.compaction?.enabled !== false) {
         const preCompactCount = messages.length;
         const c = await maybeCompact(messages, cfg.systemPrompt, {
           contextWindow: cfg.contextWindow,
@@ -742,7 +751,7 @@ export class AgentSession {
       turns++;
       metrics.increment("agent.turns", 1, { model: cfg.model });
       // memory v13 (F5): the periodic checkpoint is a host trigger, not a habit the model keeps.
-      if (cfg.memoryCheckpoint && cfg.memoryCheckpoint.everyTurns > 0 && turns % cfg.memoryCheckpoint.everyTurns === 0 && (cfg.memoryCheckpoint.enabled?.() ?? true)) {
+      if (!answered && cfg.memoryCheckpoint && cfg.memoryCheckpoint.everyTurns > 0 && turns % cfg.memoryCheckpoint.everyTurns === 0 && (cfg.memoryCheckpoint.enabled?.() ?? true)) {
         const note = cfg.memoryCheckpoint.nudge(turns);
         const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
         parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
@@ -759,7 +768,7 @@ export class AgentSession {
       // record what the model saw, not what the registry holds afterwards.
       const toolSchemas = cfg.tools.schemas();
       try {
-        result = yield* cfg.model_client.stream({
+        result = answered ?? (yield* cfg.model_client.stream({
           model: activeModel,
           system: cfg.systemPrompt,
           messages: [...messages], // snapshot — the model client never sees our mutable array
@@ -769,7 +778,7 @@ export class AgentSession {
           trace: { stamp: this.stamp(), callId },
           ...(activeModel === cfg.model && cfg.modelFallbacks ? { fallbackModels: cfg.modelFallbacks } : {}),
           ...(cfg.effort ? { effort: cfg.effort } : {}),
-        });
+        }));
       } catch (e) {
         if (e instanceof GatewayError && e.kind === "cancelled") {
           log.warn("run cancelled mid-stream");
@@ -797,48 +806,51 @@ export class AgentSession {
         throw e;
       }
 
-      // The gateway's charge rides with the token counts (protocol 0.17.0): per call on the
-      // assistant event, summed on the run's result.
-      const callUsage: Usage = { ...result.usage, ...(result.computeUnits !== undefined ? { compute_units: result.computeUnits } : {}) };
-      totalUsage = addUsage(totalUsage, callUsage);
-      // Real occupancy of the request just sent (input + cache), the floor for the NEXT
-      // turn's compaction check. Cache-read counts against the window too.
-      lastInputTokens =
-        (result.usage.input_tokens ?? 0) +
-        (result.usage.cache_read_input_tokens ?? 0) +
-        (result.usage.cache_creation_input_tokens ?? 0);
-      const asstEvt: AssistantEvent = {
-        type: "assistant",
-        message: result.message,
-        usage: callUsage,
-        stopReason: result.stopReason,
-        model: result.model,
-        ...(result.effort ? { effort: result.effort } : {}),
-        ts: now(),
-      };
-      parent = (await this.store.conversation.append(cfg.sessionId, asstEvt, parent)).uuid;
-      // The per-call ledger /usage reads: duration and the gateway's own compute units ride
-      // with the token counts, so session cost is the meter's figure, not an estimate.
-      // `ms` is the wall-clock time the run waited for this call, from issuing it to its result:
-      // every gateway attempt, backoff and failover, and any host suspension, included. It is one
-      // request's latency only when `attempts` is 1 (absent: the client does not count them).
-      await this.store.logs.write(cfg.sessionId, "model", {
-        ...this.stampFields(),
-        callId,
-        ref: parent,
-        model: result.model,
-        stopReason: result.stopReason,
-        usage: result.usage,
-        ms: Date.now() - callStartMs,
-        tools: toolSchemas.length, // a changed tool set is a prompt-prefix change (cache miss cause)
-        ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
-        ...(result.servingBackend ? { servingBackend: result.servingBackend } : {}),
-        ...(result.traceId ? { traceId: result.traceId } : {}),
-        ...(result.effort ? { effort: result.effort } : {}),
-        ...(result.attempts === undefined ? {} : { attempts: result.attempts }),
-      });
-      yield { ...asstEvt, uuid: parent };
-      messages.push(result.message);
+      // A model call is recorded once: a resumed answer was, by the engine that made it.
+      if (!answered) {
+        // The gateway's charge rides with the token counts (protocol 0.17.0): per call on the
+        // assistant event, summed on the run's result.
+        const callUsage: Usage = { ...result.usage, ...(result.computeUnits !== undefined ? { compute_units: result.computeUnits } : {}) };
+        totalUsage = addUsage(totalUsage, callUsage);
+        // Real occupancy of the request just sent (input + cache), the floor for the NEXT
+        // turn's compaction check. Cache-read counts against the window too.
+        lastInputTokens =
+          (result.usage.input_tokens ?? 0) +
+          (result.usage.cache_read_input_tokens ?? 0) +
+          (result.usage.cache_creation_input_tokens ?? 0);
+        const asstEvt: AssistantEvent = {
+          type: "assistant",
+          message: result.message,
+          usage: callUsage,
+          stopReason: result.stopReason,
+          model: result.model,
+          ...(result.effort ? { effort: result.effort } : {}),
+          ts: now(),
+        };
+        parent = (await this.store.conversation.append(cfg.sessionId, asstEvt, parent)).uuid;
+        // The per-call ledger /usage reads: duration and the gateway's own compute units ride
+        // with the token counts, so session cost is the meter's figure, not an estimate.
+        // `ms` is the wall-clock time the run waited for this call, from issuing it to its result:
+        // every gateway attempt, backoff and failover, and any host suspension, included. It is one
+        // request's latency only when `attempts` is 1 (absent: the client does not count them).
+        await this.store.logs.write(cfg.sessionId, "model", {
+          ...this.stampFields(),
+          callId,
+          ref: parent,
+          model: result.model,
+          stopReason: result.stopReason,
+          usage: result.usage,
+          ms: Date.now() - callStartMs,
+          tools: toolSchemas.length, // a changed tool set is a prompt-prefix change (cache miss cause)
+          ...(result.computeUnits === undefined ? {} : { computeUnits: result.computeUnits }),
+          ...(result.servingBackend ? { servingBackend: result.servingBackend } : {}),
+          ...(result.traceId ? { traceId: result.traceId } : {}),
+          ...(result.effort ? { effort: result.effort } : {}),
+          ...(result.attempts === undefined ? {} : { attempts: result.attempts }),
+        });
+        yield { ...asstEvt, uuid: parent };
+        messages.push(result.message);
+      }
 
       const toolUses = (result.message.content as ContentBlock[]).filter(
         (b): b is ToolUseBlock => b.type === "tool_use",
@@ -1478,12 +1490,13 @@ export class AgentSession {
     }
   }
 
-  /** The durable `tool_started` marker: appended, then flushed, before the tool's effect can happen. */
+  /** The `tool_started` marker, before the tool's effect can happen. `appendEvent` resolves once it is
+   *  durable where the backend can resume (the remote store: on its acknowledgement), and a refusal
+   *  (a lost lease) throws here, so the tool does not run. */
   private async markStarted(tu: ToolUseBlock): Promise<void> {
     if (!this.store.appendEvent) return;
     // Stamped like every record of the run (the file backend keeps it in the events channel).
     await this.store.appendEvent(this.cfg.sessionId, "tool_started", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, ts: now() });
-    await this.store.flush?.();
   }
 
   /** Persists a tool result. One too large for the session store becomes an error result the model
@@ -1525,27 +1538,25 @@ export class AgentSession {
     if (turnStart < 0) return { resumed: false };
 
     await this.init();
-    const first = entries[turnStart]!.payload as UserEvent;
-    const author = first.author ?? HUMAN;
-    const content = first.message.content;
+    const turnEntries = entries.slice(turnStart);
+    // The person's turn, not a system-seeded one ahead of it, names the run's author and its task.
+    const asked = (turnEntries.find((e) => e.payload.type === "user" && e.payload.author?.type !== "system") ?? turnEntries[0]!).payload as UserEvent;
+    const author = asked.author?.type === "system" ? HUMAN : (asked.author ?? HUMAN);
+    const content = asked.message.content;
     const task = typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("");
+    // The head is the last entry that moves the turn on; a sub-agent's lifecycle entry after it does not.
+    const head = [...turnEntries].reverse().find((e) => e.payload.type === "user" || e.payload.type === "assistant" || e.payload.type === "tool_result")!.payload;
+    const answered =
+      head.type === "assistant" && !(head.message.content as ContentBlock[]).some((b) => b.type === "tool_use")
+        ? { model: head.model, message: head.message, usage: head.usage, stopReason: head.stopReason }
+        : undefined;
+    // The turn's model calls so far, so the resumed run's result counts the whole turn.
+    const usage = turnEntries.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage());
     const unsubscribe = cfg.events?.subscribe(cfg.sessionId, (e) => this.side.push(e));
     const parent = await this.store.conversation.head(cfg.sessionId);
     const runId = crypto.randomUUID();
     this.currentRun = runId;
-
-    // The model had answered without a tool call; only the run's end was lost.
-    const last = entries.at(-1)!.payload;
-    if (last.type === "assistant" && !(last.message.content as ContentBlock[]).some((b) => b.type === "tool_use")) {
-      this.seq = 0;
-      await this.event("run.start", { author: author.type, ref: parent, resumed: true });
-      const head = yield* this.finish("success", 0, emptyUsage(), parent);
-      await this.store.registry.patchSession(cfg.sessionId, { head, status: "idle" });
-      unsubscribe?.();
-      return { resumed: true };
-    }
-
-    const pending = unansweredToolUses(entries.slice(turnStart));
+    const pending = unansweredToolUses(turnEntries);
     yield* this.turn({
       author,
       task,
@@ -1554,6 +1565,8 @@ export class AgentSession {
       ref: parent,
       unsubscribe,
       resumed: true,
+      usage,
+      ...(answered ? { answered } : {}),
       ...(pending.length ? { prelude: (log: Logger, at: string | null) => this.settleInterrupted(pending, author, log, at) } : {}),
     });
     return { resumed: true };
