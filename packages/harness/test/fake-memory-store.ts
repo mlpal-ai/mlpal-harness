@@ -1,13 +1,15 @@
 /**
- * An in-memory P5 memory store on Bun.serve for the engine's memory rung, kept to contracts/P5-memory-store.md 1.3
- * and pinned on W5's fixture (test/fixtures/memory-store, memory-graph e9b18ab) by memory-store.contract.test.ts:
+ * An in-memory P5 memory store on Bun.serve for the engine's memory rung, kept to contracts/P5-memory-store.md 1.5
+ * and pinned on W5's fixture (test/fixtures/memory-store, memory-graph 99ea163) by memory-store.contract.test.ts:
  * the engine routes under `/api/v1` (checkpoint, search, projection, promote), FastAPI's `{"detail": {"code",
  * "message", …}}` envelope, engine tokens scoped to one `{sid, run_id, store, shared, promotion, limits}`, staging
  * per run (`<publication>/<customer>/run/<run_id>` under scope `hop`) overlaid on the promoted store for that run's
  * reads, `expected_version` on keyed kinds only and against the promoted store, versions counting distinct values,
  * note sections refused, promotion `auto` (one store version, conflicts left staged and reported) or `review` (a
- * proposal), idempotent per run_id, `max_write_bytes` / `max_nodes` / `max_bytes`, store ids in the promote path with
- * their slash or percent-encoded, and fault injection. §f (rollback, redact, export, delete) is the control token's
+ * proposal), idempotent per run_id, a run's staging sealed once it promoted or proposed (409 `sealed`), an engine
+ * token refused outside the engine's routes (403 `scope_forbidden`), `max_write_bytes` / `max_nodes` / `max_bytes`,
+ * store ids in the promote path with their slash or percent-encoded, tokens shaped as W5's (`kid: memory`, `aud`,
+ * `iss`, `iat`, a 3600 s engine lifetime), and fault injection. §f (rollback, redact, export, delete) is the control token's
  * and not here.
  */
 import { CryptoHasher } from "bun";
@@ -180,11 +182,12 @@ export function startFakeMemoryStore(): FakeMemoryStore {
     const promoteMatch = path.match(/^\/memory\/stores\/(.+)\/runs\/([^/]+)\/promote$/);
     const route: FakeMemoryRoute | null =
       req.method === "POST" && path === "/memory/checkpoint" ? "checkpoint" : req.method === "GET" && path === "/memory/search" ? "search" : req.method === "GET" && path === "/memory/projection" ? "projection" : req.method === "POST" && promoteMatch ? "promote" : null;
-    if (!route) return refuse(404, "not_found", "no such route");
 
     const auth = req.headers.get("authorization");
     const claims = auth?.startsWith("Bearer ") ? tokens.get(auth.slice(7)) : undefined;
     if (!claims) return refuse(401, "unauthenticated", "the memory token is missing, bad or expired");
+    // 1.5: an engine token reaches the P5 engine routes only; anything else is refused before routing.
+    if (!route) return refuse(403, "scope_forbidden", `a engine token does not reach ${req.method} ${url.pathname}`);
     const fault = faults.get(route)?.shift();
     if (fault) return refuse(fault.status, fault.code, "injected");
 
@@ -225,6 +228,7 @@ export function startFakeMemoryStore(): FakeMemoryStore {
     if (size > limits.max_write_bytes) return refuse(413, "write_too_large", `${size} bytes over the grant's ${limits.max_write_bytes}`, { size, limit: limits.max_write_bytes });
     if (!b?.event_id) return Response.json({ detail: [{ loc: ["body", "event_id"], msg: "Field required", type: "missing" }] }, { status: 422 });
     if (b.note && Object.keys(b.note).length > 0) return refuse(422, "note_not_staged", "a run's checkpoint stages claims and the window; note sections are not staged in this cut");
+    if (promoteAnswers.has(`${claims.store}\0${claims.runId}`)) return refuse(409, "sealed", `run ${claims.runId} has already promoted or proposed; a new run is a new staging area`);
     const items = (b.claims ?? []).map((c) => ({ kind: String(c.kind), topic: String(c.topic), key: String(c.key), value: String(c.value), expected_version: c.expected_version }));
     const done = checkpoints.get(`${claims.runId}\0${b.event_id}`);
     if (done) return Response.json(checkpointAnswer(b.event_id, 0, done.accepted, done.window));
@@ -299,8 +303,9 @@ export function startFakeMemoryStore(): FakeMemoryStore {
     requests,
     mintEngine(claims) {
       const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
-      const payload = { role: "engine", sid: claims.sid, run_id: claims.runId, store: claims.store, shared: claims.shared ?? [], promotion: claims.promotion, limits: limitsOf(claims), customer: claims.customer ?? "customer", hop: { version: claims.hopVersion ?? "0.0.0" }, exp: 4102444800 };
-      const token = `${b64({ alg: "HS256", typ: "JWT" })}.${b64(payload)}.${Buffer.from(crypto.randomUUID()).toString("base64url")}`;
+      const iat = Math.floor(Date.now() / 1000);
+      const payload = { role: "engine", aud: "memory", iss: "scheduler", iat, exp: iat + 3600, sid: claims.sid, run_id: claims.runId, store: claims.store, shared: claims.shared ?? [], promotion: claims.promotion, limits: limitsOf(claims), customer: claims.customer ?? "customer", hop: { version: claims.hopVersion ?? "0.0.0" } };
+      const token = `${b64({ alg: "HS256", kid: "memory" })}.${b64(payload)}.${Buffer.from(crypto.randomUUID()).toString("base64url")}`;
       tokens.set(token, claims);
       storeOf(claims.store);
       return token;

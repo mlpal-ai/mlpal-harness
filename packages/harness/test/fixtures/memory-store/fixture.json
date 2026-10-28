@@ -73,7 +73,7 @@
    {
     "detail": {
      "code": "unauthenticated",
-     "message": "Invalid header string: Unterminated string starting at: line 1 column 2 (char 1)"
+     "message": "Signature verification failed"
     }
    }
   ],
@@ -82,7 +82,43 @@
    {
     "detail": {
      "code": "scope_forbidden",
-     "message": "this token writes only hop:5/acme/run/run-1"
+     "message": "a engine token does not reach POST /api/v1/episodes"
+    }
+   }
+  ],
+  "403 scope_forbidden (another publication's store)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "this token is scoped to publication 7"
+    }
+   }
+  ],
+  "403 scope_forbidden (control on a read route)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "a control token does not reach GET /api/v1/memory/memories"
+    }
+   }
+  ],
+  "403 scope_forbidden (engine on a control route)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "a engine token does not reach GET /api/v1/memory/stores/hop:5/acme/export"
+    }
+   }
+  ],
+  "404 unknown_proposal": [
+   404,
+   {
+    "detail": {
+     "code": "unknown_proposal",
+     "message": "no proposal proposal:0000"
     }
    }
   ],
@@ -95,12 +131,30 @@
     }
    }
   ],
+  "404 unknown_store": [
+   404,
+   {
+    "detail": {
+     "code": "unknown_store",
+     "message": "this run's store is hop:5/acme"
+    }
+   }
+  ],
   "409 already_decided": [
    409,
    {
     "detail": {
      "code": "already_decided",
      "message": "proposal:6c7f973cd9d1129bb268eeabe0b1ba14ea6437be was already decided"
+    }
+   }
+  ],
+  "409 sealed": [
+   409,
+   {
+    "detail": {
+     "code": "sealed",
+     "message": "run run-1 has already promoted or proposed; a new run is a new staging area"
     }
    }
   ],
@@ -112,6 +166,17 @@
      "current_version": 1,
      "key": "queue-owner",
      "message": "queue-owner is at version 1, not 0"
+    }
+   }
+  ],
+  "413 store_full": [
+   413,
+   {
+    "detail": {
+     "code": "store_full",
+     "limit": 1,
+     "message": "9 nodes would pass the grant's 1",
+     "nodes": 9
     }
    }
   ],
@@ -133,6 +198,15 @@
      "code": "invalid_precondition",
      "key": "k",
      "message": "expected_version applies to keyed claims, not a learning"
+    }
+   }
+  ],
+  "422 invalid_request": [
+   422,
+   {
+    "detail": {
+     "code": "invalid_request",
+     "message": "name node_ids, episode_ids or document_ids"
     }
    }
   ],
@@ -173,7 +247,7 @@
   ],
   "node_example": {
    "derived_from": [
-    "ck:sess-1:run-1:1:claim:0"
+    "promoted:e7cda942ddcc528a1603b62033937a844743faca"
    ],
    "id": "<uuid>",
    "key": "state:support/triage/state:queue-owner=Priya owns the queue",
@@ -189,6 +263,7 @@
     "hop_version": "1.4.0",
     "kind": "state",
     "principal": "acme",
+    "promotion": "promote:e396f71d5e110ac598169efb8322ba0bd6b88b6f",
     "run_id": "run-1",
     "sid": "sess-1",
     "topic": "support/triage/state",
@@ -196,7 +271,7 @@
     "value": "Priya owns the queue"
    },
    "scope": "hop",
-   "scope_id": "5/acme/run/run-1",
+   "scope_id": "5/acme",
    "status": "committed",
    "summary": null,
    "type": "MetricValue",
@@ -251,6 +326,15 @@
   "response": {
    "items": [
     {
+     "claims": [
+      {
+       "event_id": "ck:sess-1:run-3:1:claim:0",
+       "key": "sla",
+       "kind": "state",
+       "topic": "support/triage/state",
+       "value": "4h first response"
+      }
+     ],
      "hop_version": "1.4.0",
      "n_nodes": 1,
      "nodes": [
@@ -360,7 +444,7 @@
    "reason": "fixture"
   },
   "response": {
-   "redacted": 1
+   "redacted": 4
   }
  },
  "rollback": {
@@ -387,18 +471,35 @@
  },
  "tokens": {
   "control": {
-   "exp": 4102444800,
+   "_header": {
+    "alg": "HS256",
+    "kid": "memory"
+   },
+   "aud": "memory",
+   "exp": "<unix seconds>",
+   "hop": {
+    "publication": "5"
+   },
+   "iat": "<unix seconds>",
+   "iss": "hop-service",
    "org": "root-unit-1",
    "role": "control"
   },
   "engine": {
+   "_header": {
+    "alg": "HS256",
+    "kid": "memory"
+   },
+   "aud": "memory",
    "customer": "acme",
-   "exp": 4102444800,
+   "exp": "<unix seconds>",
    "hop": {
     "name": "support-triage",
     "publication": "5",
     "version": "1.4.0"
    },
+   "iat": "<unix seconds>",
+   "iss": "scheduler",
    "limits": {
     "max_bytes": 10485760,
     "max_nodes": 5000,

@@ -27,6 +27,11 @@
   percent-encoded, JWT-shaped engine tokens), pinned with the client on W5's fixture
   (`test/fixtures/memory-store/fixture.json`, memory-graph e9b18ab, SHA256 c0662f00…) by
   `memory-store.contract.test.ts`.
+- Re-pinned on P5 1.5 (W5 approved): the fixture from memory-graph 99ea163 (SHA256 ad59639e…2f213). The client is
+  unchanged; every new error maps to its class (`sealed`, `store_full {nodes, limit}`, `unknown_store`,
+  `unknown_proposal`, `invalid_request`, the control `scope_forbidden`s). The fake follows the bodies that changed: a
+  run's checkpoint after it promoted or proposed is 409 `sealed`, an engine token outside the engine's routes is 403
+  `scope_forbidden`, and its tokens carry `kid: memory`, `aud`, `iss`, `iat` and a 3600 s lifetime.
 
 ### Engine store, D-2: the instance writer token (2026-10-28)
 

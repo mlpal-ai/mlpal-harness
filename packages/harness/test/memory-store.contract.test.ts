@@ -1,6 +1,6 @@
 /**
- * The client and the fake against W5's P5 fixture (test/fixtures/memory-store/fixture.json, memory-graph e9b18ab,
- * contract 1.3). Every error in it goes through MemoryStoreClient and must map to its class with its fields; the
+ * The client and the fake against W5's P5 fixture (test/fixtures/memory-store/fixture.json, memory-graph 99ea163,
+ * contract 1.5). Every error in it goes through MemoryStoreClient and must map to its class with its fields; the
  * checkpoint and promotion answers must parse; and the fake, driven through the fixture's own flow, must answer
  * with the same bodies (ids and messages aside) under the same mount and paths.
  */
@@ -11,6 +11,7 @@ import {
   MemoryScopeForbiddenError,
   MemoryStoreClient,
   MemoryStoreError,
+  MemoryStoreFullError,
   MemoryUnauthenticatedError,
   MemoryUnknownError,
   MemoryVersionConflictError,
@@ -26,12 +27,21 @@ const att = { sid: "sess-1", runId: "run-1" };
 const EXPECTED: Record<string, [abstract new (...a: never[]) => MemoryStoreError, Record<string, unknown>]> = {
   "401 unauthenticated": [MemoryUnauthenticatedError, {}],
   "403 scope_forbidden": [MemoryScopeForbiddenError, {}],
+  "403 scope_forbidden (another publication's store)": [MemoryScopeForbiddenError, {}],
+  "403 scope_forbidden (control on a read route)": [MemoryScopeForbiddenError, {}],
+  "403 scope_forbidden (engine on a control route)": [MemoryScopeForbiddenError, {}],
+  "404 unknown_proposal": [MemoryUnknownError, {}],
   "404 unknown_run": [MemoryUnknownError, {}],
+  "404 unknown_store": [MemoryUnknownError, {}],
   "409 already_decided": [MemoryStoreError, {}],
+  // 1.4+: a run that promoted or proposed is sealed; its later checkpoints are refused, the turn goes on.
+  "409 sealed": [MemoryStoreError, {}],
+  "413 store_full": [MemoryStoreFullError, { measure: "nodes", limit: 1 }],
   "409 version_conflict": [MemoryVersionConflictError, { key: "queue-owner", currentVersion: 1 }],
   "413 write_too_large": [MemoryWriteTooLargeError, { size: 506, limit: 64 }],
   "422 invalid_precondition": [MemoryInvalidPreconditionError, { key: "k" }],
-  // §f rollback's, a control token's route: the engine never sees it, and it maps to the base class.
+  // §f's, the control token's routes (rollback, redact): the engine never sees them; they map to the base class.
+  "422 invalid_request": [MemoryStoreError, {}],
   "422 invalid_version": [MemoryStoreError, {}],
   "422 note_not_staged": [MemoryStoreError, {}],
 };
@@ -74,8 +84,9 @@ describe("the fake against W5's fixture", () => {
   const claims = (over: Partial<FakeEngineClaims> = {}): FakeEngineClaims => ({ sid: tok.sid, runId: tok.run_id, store: tok.store, shared: tok.shared, promotion: tok.promotion, limits: tok.limits, customer: tok.customer, hopVersion: tok.hop.version, ...over });
   const send = (method: string, path: string, body?: unknown, bearer = token) =>
     fetch(`${fake.url}${path}`, { method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  /** A body with its ids, messages and serializer-dependent byte counts masked, as the fixture's own `<uuid>`s are. */
-  const shape = (b: unknown): unknown => JSON.parse(JSON.stringify(b, (k, v) => (k === "message" ? "<text>" : k === "size" && typeof v === "number" ? "<bytes>" : k === "proposal_id" && typeof v === "string" ? "<proposal>" : v)));
+  /** A body with its ids, messages and counts masked (byte counts depend on the serializer; node counts on how the
+   *  store builds its graph, Metric, MetricValue and Fact nodes per claim), as the fixture's own `<uuid>`s are. */
+  const shape = (b: unknown): unknown => JSON.parse(JSON.stringify(b, (k, v) => (k === "message" ? "<text>" : (k === "size" || k === "nodes" || k === "bytes") && typeof v === "number" ? "<count>" : k === "proposal_id" && typeof v === "string" ? "<proposal>" : v)));
   const promotePath = new URL(`http://x${fx.promote.request.split(" ")[1]}`).pathname.slice(fx.mount.length);
 
   beforeEach(() => {
@@ -124,11 +135,25 @@ describe("the fake against W5's fixture", () => {
     expect(body.proposal_id).toMatch(/^proposal:[0-9a-f]{40}$/);
   });
 
-  /** The fake's own way to each fixture error it can produce. scope_forbidden (a write outside staging) and
-   *  already_decided (the control queue) have no engine route on the fake; the client maps them above. */
+  /** The fake's own way to each fixture error an engine token can meet. The control token's errors (another
+   *  publication's store, control routes, the review queue, §f) have no engine route on the fake; the client maps
+   *  them above. */
   const scenarios: Record<string, () => Promise<Response>> = {
     "401 unauthenticated": () => send("POST", "/memory/checkpoint", fx.checkpoint.request, "not-a-token"),
+    "403 scope_forbidden": () => send("POST", "/episodes", { episodes: [] }),
+    "403 scope_forbidden (engine on a control route)": () => send("GET", "/memory/stores/hop:5/acme/export"),
     "404 unknown_run": () => send("POST", "/memory/stores/hop:5/acme/runs/run-9/promote", {}),
+    "404 unknown_store": () => send("POST", "/memory/stores/hop:5/other/runs/run-1/promote", {}),
+    "409 sealed": async () => {
+      await send("POST", "/memory/checkpoint", fx.checkpoint.request);
+      await send("POST", promotePath, {});
+      return send("POST", "/memory/checkpoint", { ...fx.checkpoint.request, event_id: "ck:sess-1:run-1:2" });
+    },
+    "413 store_full": async () => {
+      token = fake.mintEngine(claims({ limits: { ...tok.limits, max_nodes: 1 } }));
+      await send("POST", "/memory/checkpoint", fx.checkpoint.request);
+      return send("POST", promotePath, {});
+    },
     "409 version_conflict": async () => {
       await send("POST", "/memory/checkpoint", fx.checkpoint.request);
       await send("POST", promotePath, {});
