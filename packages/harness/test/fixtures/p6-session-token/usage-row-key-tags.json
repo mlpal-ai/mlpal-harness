@@ -1,0 +1,9 @@
+{
+  "case": "usage_logs.key_tags for a session-token request",
+  "key_tags": {
+    "publication": "infra-ro",
+    "sid": "ses_1",
+    "source": "hop-keyring",
+    "unit": "unit_acme_eng"
+  }
+}

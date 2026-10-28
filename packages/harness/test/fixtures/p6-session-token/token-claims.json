@@ -1,0 +1,31 @@
+{
+  "case": "hs256 over secrets/gateway_session_jwt; key_id is the S5 key's id (int or decimal string); iat <= now + 5 s, exp > now - 5 s, exp - iat <= 3600",
+  "claims": {
+    "aud": "gateway",
+    "exp": 1760003600,
+    "iat": 1760000000,
+    "iss": "harness-scheduler",
+    "key_id": "7",
+    "models_allow": [
+      "anthropic/claude-*",
+      "openai/gpt-6-*"
+    ],
+    "sid": "ses_1"
+  },
+  "header": {
+    "alg": "HS256",
+    "typ": "JWT"
+  },
+  "vector": {
+    "now": 1760000100,
+    "secret": "fixture-only-gateway-session-secret-0000",
+    "verifies_as": {
+      "key_id": 7,
+      "models_allow": [
+        "anthropic/claude-*",
+        "openai/gpt-6-*"
+      ],
+      "sid": "ses_1"
+    }
+  }
+}

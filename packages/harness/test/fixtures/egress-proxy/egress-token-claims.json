@@ -1,0 +1,23 @@
+{
+  "body": {
+    "exp": 1760003600,
+    "role": "engine",
+    "sid": "ses_1",
+    "unit": "unit_acme_eng",
+    "upstreams": [
+      {
+        "base_url": "https://api.githubcopilot.com/mcp/",
+        "inject": [
+          {
+            "header": "authorization",
+            "scheme": "bearer",
+            "secret": "vlt_01JC0000000000000000000000"
+          }
+        ],
+        "name": "github-mcp"
+      }
+    ]
+  },
+  "case": "the claims the proxy accepts (hs256, secrets/egress_proxy_jwt)",
+  "route": "X-Harness-Egress-Token"
+}

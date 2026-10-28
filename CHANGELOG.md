@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### P6: no credentials in the engine — the scoped gateway token and the engine egress proxy (2026-10-28)
+
+- No protocol change (a typed `egressRefusal` field is a 0.22.x item, ledgered).
+- `GatewayConfig.apiKey` also takes `{tokenFile}` (`SessionTokenFile`): the scoped per-session gateway token (P3b
+  `/run/session/gateway.token`), read on every request, never held. A `401 invalid_api_key` re-reads it once and
+  retries once (a rotation may have raced the request); a second 401 is `GatewayError.sessionTokenRejected`, which
+  the loop ends as the typed refusal `{code: model_access_denied, reason: gateway}` (logged `session token refused by
+  the gateway after its re-read`). A key's 401 is unchanged (one request, untyped). An unreadable or empty token file
+  is a non-retried error naming the path, before any request. `readSessionToken(file)` is exported.
+- P6 1.1: `403 model_not_allowed` (outside the token's `models_allow`) is `modelAccessDenied`, so it takes the
+  existing typed refusal path (`model_access_denied`, reason `gateway`) and a failover rung it refuses is skipped as a
+  policy-refused rung is. `403 budget_exceeded` is unchanged.
+- `src/egress/proxy.ts`: `EgressRoute {proxyUrl, upstream, tokenFile}`, `egressUrl` (`<proxy>/v1/u/<name>/<path>`),
+  `egressMcpServer`, `egressFetch` (sets `X-Harness-Egress-Token` from the token file per request, strips
+  `authorization`/`proxy-authorization`/`x-api-key`/`api-key`/`cookie`, `redirect: "manual"`, bodies streamed
+  untouched) and `EgressRefusedError` (`X-Harness-Egress: refused`, body `{code}`; a code that is not `[a-z_]` is
+  `unknown`, never prose).
+- MCP: `HttpServerConfig.egress` reaches a server through the proxy (streamable HTTP or SSE); its `headers` and
+  `oauth` are never sent. A proxy refusal is the tool's error text `egress refused (<code>) for <upstream>` (every
+  contract code, 1.2's `vault_unavailable` included) and, at connect, the server's status error. A 3xx is never
+  followed: `MCP server "<name>" answered a redirect (HTTP <status>); redirects are not followed through the egress proxy`.
+- `createEgressWebFetchTool(route, baseUrl)`: WebFetch on the platform, reaching only URLs under the `web-fetch`
+  upstream's `base_url`, through the proxy; a redirect is reported, never followed.
+- W4's proxy contract fixtures pinned at mlpal-harness-stack `d5d56a5` (`test/fixtures/egress-proxy/`, 26 files):
+  every `proxy-*` file is replayed through `egressFetch` against the fake proxy, which answers its refusals from the
+  files; the vault-only files are skipped by name. The gateway session-token fixture (mlpal-assistants-service
+  `p2-w4-session-tokens`) is a follow-up pin.
+- Review round 1:
+  - A request never leaves its upstream's route: `egressUrl` and `egressFetch` parse the url as fetch will send it
+    (dot segments resolved, `%2e`/`%2E` included) and once more after one decoding (`%252e`), and refuse anything off
+    the proxy's origin or outside `/v1/u/<name>/` with the engine's own `EgressRefusedError` `path_escape`, before a
+    request (`insideRoute`, `PATH_ESCAPE`). WebFetch compares the parsed origin and a segment-bounded, decoded-once
+    path against `base_url` (`pathUnderBase`), with the base normalised to a trailing slash.
+  - Streamable HTTP only through the proxy: an egress server of type `sse` fails to connect (`an egress upstream is
+    reached over streamable HTTP only`); an SSE `endpoint` event could name a path outside the route.
+  - A proxied server's non-credential `headers` are sent verbatim (no env expansion); credential headers are still
+    stripped by `egressFetch`.
+  - The refusal metric carries `cause` (`model_policy`, `budget`, `session_token`); a `postFeedback` dropped for an
+    unreadable token file is logged (`feedback dropped: no gateway credential`); every session or egress token read
+    is registered for masking (`gateway session token`, `egress token`).
+  - Test servers drain request bodies (an unread chunked body left the keep-alive connection dirty: the fixture
+    replay flaked 3/10, now 0/10).
+- P6 1.4:
+  - The egress proxy fixtures re-pinned at mlpal-harness-stack `f5902f8` (28 files): `proxy-401-echo-redacted` (an
+    upstream's echo of the injected credential comes back `[REDACTED]`, a plain answer, not a refusal) and
+    `proxy-502-upstream-encoding-refused`. `502 upstream_encoding_refused` is a refusal like `upstream_unreachable`:
+    the tool error text is `egress refused (upstream_encoding_refused) for <upstream>`. The fake proxy redacts an
+    echoed credential in headers and body.
+  - The proxy now decodes path segments before its own traversal checks; the engine keeps its own check as defence
+    in depth (a `%2e%2e` form is refused before any request, tested). Review round 2: that check is W4's
+    per-segment rule (`segmentsSafe`): each segment percent-decoded until stable, at most three rounds (not stable
+    after three is refused), and a segment that is then `.` or `..`, starts with `..;` or `.;`, or holds `/`, `\`
+    or NUL, is `path_escape` — so `%3f%2f..%2f..%2fgithub-mcp%2fx` is the engine's refusal, not the proxy's
+    `upstream_not_granted`. It replaces the decode-once re-parse in `insideRoute` and `pathUnderBase`;
+    `pathUnderBase` strips leading slashes of the rest, so it and `egressUrl` see one path (`/mcp//..%2fx`).
+  - Review round 3: a segment is decoded as W4 decodes it, each `%XX` to its byte and any other `%` left a literal
+    `%`, so `wiki/100%25` and `50%25off.md` are ordinary paths again (WebFetch fetches them, a settings MCP url keeps
+    its path instead of falling back to the base). A round whose bytes are not UTF-8 (overlong `%c0%ae`, a bare
+    `%E9`) is refused, never taken as stable (`%2e%2e%2f%` is `../%`, refused). `..;` and `.;` match as prefixes
+    (`..;jsessionid=1`, `%2e%2e%3bfoo`). Tested: the round cap (`A` encoded four times is refused, three times is
+    not), the not-UTF-8 branch, and an echoed credential reaching the model as `[REDACTED]` through WebFetch (a 200)
+    and an MCP tool result.
+  - The gateway session-token fixtures pinned at mlpal-assistants-service `a45fe8f`
+    (`test/fixtures/p6-session-token/`, read from the local object store): the 401 and both 403 bodies replayed
+    through the client (re-read and retry, `sessionTokenRejected`, the access refusal with the gateway's model), a
+    token built from the claims vector sent verbatim; the audit event and the usage row are gateway-internal and
+    skipped by name.
+
 ### Engine store, D-2: the instance writer token (2026-10-28)
 
 - No protocol change.

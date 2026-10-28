@@ -1,0 +1,14 @@
+{
+  "body": {
+    "code": "token_invalid"
+  },
+  "case": "no control token",
+  "content_type": "application/json",
+  "request": {
+    "name": "github",
+    "unit": "unit_acme_eng",
+    "value": "<value>"
+  },
+  "route": "POST /v1/secrets",
+  "status": 401
+}

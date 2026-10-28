@@ -1,0 +1,15 @@
+{
+  "body": {
+    "code": "invalid_api_key",
+    "detail": "Invalid or revoked API key",
+    "error": {
+      "code": "invalid_api_key",
+      "message": "Invalid or revoked API key",
+      "type": "authentication_error"
+    },
+    "message": "Invalid or revoked API key",
+    "type": "error"
+  },
+  "case": "an expired, wrong-audience, badly signed or over-long token, or a revoked, unknown or non-HOP key_id",
+  "status": 401
+}

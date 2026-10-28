@@ -1,0 +1,14 @@
+{
+  "body": {
+    "code": "vault_unavailable"
+  },
+  "case": "the vault's database is unreachable (every route answers so)",
+  "content_type": "application/json",
+  "request": {
+    "name": "github",
+    "unit": "unit_acme_eng",
+    "value": "<value>"
+  },
+  "route": "POST /v1/secrets",
+  "status": 503
+}

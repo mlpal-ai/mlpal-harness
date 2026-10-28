@@ -1,0 +1,25 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "code": "upstream_unreachable",
+    "event": "egress.refused",
+    "host": "api.githubcopilot.com",
+    "injected": [],
+    "method": "GET",
+    "sid": "ses_1",
+    "status": 502,
+    "unit": "unit_acme_eng",
+    "upstream": "github-mcp"
+  },
+  "body": {
+    "code": "upstream_unreachable"
+  },
+  "case": "the upstream refused or failed TLS",
+  "content_type": "application/json",
+  "headers": {
+    "x-harness-egress": "refused"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 502
+}

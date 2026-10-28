@@ -1,0 +1,13 @@
+{
+  "body": {
+    "error": {
+      "code": "model_not_allowed",
+      "message": "Model 'anthropic/claude-opus-4-8' is not allowed by this session's policy.",
+      "model": "anthropic/claude-opus-4-8",
+      "type": "permission_error"
+    },
+    "type": "error"
+  },
+  "case": "POST /v1/messages (Anthropic wire, typed like budget_exceeded; /v2/messages alike)",
+  "status": 403
+}

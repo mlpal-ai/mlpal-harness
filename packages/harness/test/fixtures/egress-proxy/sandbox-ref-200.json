@@ -1,0 +1,13 @@
+{
+  "body": {
+    "secret_id": "sec_fake_1",
+    "version": 2
+  },
+  "case": "mirrored into the router's store for the tenant (sec_ from the router)",
+  "content_type": "application/json",
+  "request": {
+    "tenant": "org:unit_acme"
+  },
+  "route": "POST /v1/secrets/{id}/sandbox-ref",
+  "status": 200
+}

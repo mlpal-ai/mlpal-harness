@@ -4,6 +4,7 @@ import { editTool, readTool, writeTool } from "./builtin/files";
 import { exitPlanModeTool } from "./builtin/plan";
 import { globTool, grepTool, listTool } from "./builtin/search";
 import { webFetchTool } from "./builtin/web";
+export { createEgressWebFetchTool, pathUnderBase } from "./builtin/web";
 import { ToolRegistry } from "./registry";
 import type { Tool } from "./types";
 

@@ -1,0 +1,25 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "code": "rate_limited",
+    "event": "egress.refused",
+    "host": "api.githubcopilot.com",
+    "injected": [],
+    "method": "GET",
+    "sid": "ses_1",
+    "status": 429,
+    "unit": "unit_acme_eng",
+    "upstream": "github-mcp"
+  },
+  "body": {
+    "code": "rate_limited"
+  },
+  "case": "64 requests of the sid already in flight",
+  "content_type": "application/json",
+  "headers": {
+    "x-harness-egress": "refused"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 429
+}

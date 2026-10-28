@@ -1,0 +1,24 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "event": "egress.request",
+    "host": "api.githubcopilot.com",
+    "injected": [
+      "authorization"
+    ],
+    "method": "GET",
+    "sid": "ses_1",
+    "status": 302,
+    "unit": "unit_acme_eng",
+    "upstream": "github-mcp"
+  },
+  "body": null,
+  "case": "a redirect is returned as is",
+  "content_type": "text/plain; charset=utf-8",
+  "headers": {
+    "location": "https://elsewhere.example/steal"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 302
+}

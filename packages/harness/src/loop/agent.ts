@@ -838,15 +838,15 @@ export class AgentSession {
           parent = yield* this.finish("cancelled", turns, totalUsage, parent);
           return;
         }
-        // The gateway refused the model for this HOP (rule 4), or the key's budget cap is spent
-        // (0.22.1): the run ends as a typed error the frontend reads from fields, not a thrown
-        // exception it must parse.
-        if (e instanceof GatewayError && (e.modelAccessDenied || e.budgetExceeded)) {
+        // The gateway refused the model for this HOP (rule 4) or the session token's models_allow (P6 1.1), the
+        // key's budget cap is spent (0.22.1), or it refused the session token itself after its re-read (P6): the
+        // run ends as a typed error the frontend reads from fields, not a thrown exception it must parse.
+        if (e instanceof GatewayError && (e.modelAccessDenied || e.budgetExceeded || e.sessionTokenRejected)) {
           const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
           const model = e.model ?? activeModel;
           const refusal = e.budgetExceeded ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt }) : modelRefusal(model, hop, "gateway");
-          log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : "model refused by the gateway", { model, hop, detail: e.message });
-          metrics.increment(`agent.${refusal.code}`, 1, { model });
+          log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
+          metrics.increment(`agent.${refusal.code}`, 1, { model, cause: e.budgetExceeded ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
           outcome = "error";
           parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;

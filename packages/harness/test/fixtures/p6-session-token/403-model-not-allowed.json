@@ -1,0 +1,16 @@
+{
+  "body": {
+    "code": "model_not_allowed",
+    "detail": "Model 'openai/gpt-6' is not allowed by this session's policy.",
+    "error": {
+      "code": "model_not_allowed",
+      "message": "Model 'openai/gpt-6' is not allowed by this session's policy.",
+      "type": "permission_error"
+    },
+    "message": "Model 'openai/gpt-6' is not allowed by this session's policy.",
+    "model": "openai/gpt-6",
+    "type": "error"
+  },
+  "case": "POST /v1/chat/completions (OpenAI wire; /mantle/v1/messages answers alike): no models_allow glob admits <provider>/<model>",
+  "status": 403
+}

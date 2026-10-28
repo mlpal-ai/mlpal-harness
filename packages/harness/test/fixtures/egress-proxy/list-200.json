@@ -1,0 +1,20 @@
+{
+  "body": {
+    "items": [
+      {
+        "created_at": 1760000000000,
+        "created_by": "hop-service",
+        "id": "vlt_01M624PVHV8C5JVNCNW76Q2CH0",
+        "name": "github",
+        "rotated_at": null,
+        "unit": "unit_acme_eng",
+        "version": 1
+      }
+    ],
+    "next_after_id": null
+  },
+  "case": "one unit's live secrets",
+  "content_type": "application/json",
+  "route": "GET /v1/secrets?unit=&after_id=&limit=",
+  "status": 200
+}

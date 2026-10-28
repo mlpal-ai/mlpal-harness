@@ -1,0 +1,9 @@
+{
+  "body": {
+    "code": "not_found"
+  },
+  "case": "an id that never existed",
+  "content_type": "application/json",
+  "route": "DELETE /v1/secrets/{id}",
+  "status": 404
+}

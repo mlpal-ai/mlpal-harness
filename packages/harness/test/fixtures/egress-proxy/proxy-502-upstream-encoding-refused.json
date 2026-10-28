@@ -1,0 +1,27 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "code": "upstream_encoding_refused",
+    "event": "egress.refused",
+    "host": "api.githubcopilot.com",
+    "injected": [
+      "authorization"
+    ],
+    "method": "GET",
+    "sid": "ses_1",
+    "status": 502,
+    "unit": "unit_acme_eng",
+    "upstream": "github-mcp"
+  },
+  "body": {
+    "code": "upstream_encoding_refused"
+  },
+  "case": "a credential was injected and the upstream answered with a Content-Encoding other than identity",
+  "content_type": "application/json",
+  "headers": {
+    "x-harness-egress": "refused"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 502
+}

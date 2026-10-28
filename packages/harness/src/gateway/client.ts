@@ -6,6 +6,8 @@ import type {
   Usage,
 } from "@mlpal/harness-protocol";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { registerSecret } from "../obs/redact";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, traceHeaders } from "../telemetry/stamp";
 import { type Metrics, noopMetrics } from "../obs/metrics";
@@ -18,11 +20,36 @@ export function resolveApiKey(k: KeyProvider): string {
   return typeof k === "function" ? k() : k;
 }
 
+/** The platform's gateway credential (contract P6 §"Scoped gateway tokens"): the scoped per-session token, a file
+ *  (P3b `/run/session/gateway.token`) the scheduler rewrites in place, read on every request. A `401
+ *  invalid_api_key` re-reads it once and retries once before the run ends as the typed refusal. */
+export interface SessionTokenFile {
+  tokenFile: string;
+}
+
+export type GatewayCredential = KeyProvider | SessionTokenFile;
+
+const isSessionToken = (c: GatewayCredential): c is SessionTokenFile => typeof c === "object";
+
+/** The session token file's content now. The path is named in an error, the value never. */
+export function readSessionToken(file: string): string {
+  let token: string;
+  try {
+    token = readFileSync(file, "utf8").trim();
+  } catch (e) {
+    throw new GatewayError(`gateway token file ${file} is unreadable (${(e as NodeJS.ErrnoException).code ?? "error"})`, 0, "http");
+  }
+  if (!token) throw new GatewayError(`gateway token file ${file} is empty`, 0, "http");
+  registerSecret("gateway session token", token); // masked wherever a tool result would echo it
+  return token;
+}
+
 export interface GatewayConfig {
   baseUrl: string;
   /** The key, or a provider read at every request — a rotating credential (a HOP keyring whose
-   *  bundle is re-minted on a TTL) must never be captured at construction. */
-  apiKey: KeyProvider;
+   *  bundle is re-minted on a TTL) must never be captured at construction — or, on the platform, the
+   *  session token file. */
+  apiKey: GatewayCredential;
   /** Anthropic API version header. The gateway forwards it. */
   anthropicVersion?: string;
   maxRetries?: number;
@@ -171,14 +198,23 @@ export class GatewayError extends Error {
      *  instant it resets, when the body names them (`error.window`, `error.reset_at`). */
     readonly window?: string,
     readonly resetAt?: string,
+    /** What the request authenticated with: a key, or the platform's session token file (P6). */
+    readonly credential: "key" | "session_token" = "key",
   ) {
     super(message);
     this.name = "GatewayError";
   }
 
-  /** The HOP's model policy (or the key's) refused the model: never retried, reported typed. */
+  /** The HOP's model policy (or the key's) refused the model, or the session token's `models_allow` did
+   *  (`model_not_allowed`, P6 1.1): never retried, reported typed. */
   get modelAccessDenied(): boolean {
-    return this.code === "model_access_denied";
+    return this.code === "model_access_denied" || this.code === "model_not_allowed";
+  }
+
+  /** The gateway refused the session token itself (revoked key, bad signature, expired) after its re-read: the
+   *  run ends as the typed refusal, never as an untyped failure. A key's 401 stays untyped. */
+  get sessionTokenRejected(): boolean {
+    return this.credential === "session_token" && this.status === 401 && this.code === "invalid_api_key";
   }
 
   /** A budget cap of the key is spent (the gateway's typed 403): never retried, reported typed. */
@@ -263,7 +299,7 @@ export function withConversationCache(messages: Message[]): unknown[] {
 
 export class GatewayClient implements ModelClient {
   private readonly baseUrl: string;
-  private readonly apiKey: KeyProvider;
+  private readonly apiKey: GatewayCredential;
   private readonly anthropicVersion: string;
   private readonly maxRetries: number;
   private readonly maxResume: number;
@@ -289,10 +325,18 @@ export class GatewayClient implements ModelClient {
    *  is best-effort telemetry that must never affect the delegation it describes. */
   postFeedback(fb: Feedback): void {
     this.metrics.increment("gateway.feedback", 1, { outcome: fb.outcome });
+    let authorization: string;
+    try {
+      authorization = `Bearer ${this.bearer()}`;
+    } catch (e) {
+      // No credential now (an unreadable token file): a dropped feedback event is fine, a silent one is not.
+      this.logger.warn("feedback dropped: no gateway credential", { error: (e as Error).message });
+      return;
+    }
     void fetch(`${this.baseUrl}/v1/feedback`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
+        authorization,
         "content-type": "application/json",
         "anthropic-version": this.anthropicVersion,
       },
@@ -500,16 +544,25 @@ export class GatewayClient implements ModelClient {
     traceHdrs: Record<string, string> = {},
   ): Promise<Response> {
     let attempt = 0;
+    let reread = false;
     for (;;) {
       if (userSignal?.aborted) {
         throw new GatewayError("request cancelled", 0, "cancelled");
       }
       try {
         idle.reset(); // each handshake attempt gets a fresh idle window
+        const headers = { ...traceHdrs, authorization: `Bearer ${this.bearer()}` };
         sent.requests++;
-        const res = await this.fetchOnce(body, idle.signal, traceHdrs);
+        const res = await this.fetchOnce(body, idle.signal, headers);
         if (res.ok) return res;
         const err = await this.toError(res);
+        // The scheduler refreshes the token file in place: a 401 may have raced a rotation. One re-read (the next
+        // attempt reads the file again), one retry; a second 401 is the session's refusal.
+        if (err.sessionTokenRejected && !reread) {
+          reread = true;
+          this.logger.warn("gateway session token refused; re-reading it once", { model, status: res.status });
+          continue;
+        }
         if (!err.retryable || attempt >= this.maxRetries) throw err;
         attempt++;
         const delay = this.retryDelay(res, attempt);
@@ -579,13 +632,18 @@ export class GatewayClient implements ModelClient {
     };
   }
 
-  private fetchOnce(body: Record<string, unknown>, signal: AbortSignal, extraHeaders: Record<string, string> = {}): Promise<Response> {
+  /** The bearer for one request: the key now, or the session token file's content now. */
+  private bearer(): string {
+    return isSessionToken(this.apiKey) ? readSessionToken(this.apiKey.tokenFile) : resolveApiKey(this.apiKey);
+  }
+
+  /** `headers` carries the request's authorization (the bearer read for this attempt) and its trace headers. */
+  private fetchOnce(body: Record<string, unknown>, signal: AbortSignal, headers: Record<string, string>): Promise<Response> {
     return fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
-        ...extraHeaders,
+        ...headers,
         "content-type": "application/json",
-        authorization: `Bearer ${resolveApiKey(this.apiKey)}`,
         "anthropic-version": this.anthropicVersion,
           // Opt-in usage trailer: one `mlpal_usage` SSE event after message_stop carrying the
           // meter's compute units (headers precede the body, so no header can). Off => byte-identical.
@@ -612,7 +670,7 @@ export class GatewayClient implements ModelClient {
     } catch {
       // non-JSON body
     }
-    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt);
+    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, isSessionToken(this.apiKey) ? "session_token" : "key");
   }
 
   private normalizeError(e: unknown, userSignal: AbortSignal | undefined): Error {
