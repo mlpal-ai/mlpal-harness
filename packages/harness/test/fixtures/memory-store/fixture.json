@@ -1,0 +1,523 @@
+{
+ "checkpoint": {
+  "request": {
+   "claims": [
+    {
+     "evidence_ids": [
+      "msg:1"
+     ],
+     "expected_version": 0,
+     "key": "queue-owner",
+     "kind": "state",
+     "topic": "support/triage/state",
+     "value": "Priya owns the queue"
+    },
+    {
+     "evidence_ids": [
+      "msg:2"
+     ],
+     "key": "d",
+     "kind": "learning",
+     "topic": "support/triage/decision",
+     "value": "Escalations go to the on-call lead before the account owner."
+    }
+   ],
+   "event_id": "ck:sess-1:run-1:1",
+   "window": {
+    "content": "Customer: who owns the triage queue now?\nAgent: Priya, as of today.",
+    "title": "turn 1",
+    "uri": "session://sess-1/1"
+   },
+   "workspace": "support"
+  },
+  "response": {
+   "claims": {
+    "accepted": 2,
+    "duplicates": 0,
+    "processed": 2,
+    "rejected": []
+   },
+   "event_id": "ck:sess-1:run-1:1",
+   "note_applied": false,
+   "note_version": null,
+   "window": {
+    "event_id": "ck:sess-1:run-1:1:window",
+    "status": "processed"
+   }
+  },
+  "staging_scope": {
+   "scope": "hop",
+   "scope_id": "5/acme/run/run-1"
+  }
+ },
+ "contract": "P5-memory-store",
+ "delete": {
+  "request": {
+   "by": "owner:2",
+   "reason": "fixture"
+  },
+  "response": {
+   "redacted": "<n>"
+  }
+ },
+ "error_envelope": {
+  "detail": {
+   "...": "fields named per code",
+   "code": "<code>",
+   "message": "<text>"
+  }
+ },
+ "errors": {
+  "401 unauthenticated": [
+   401,
+   {
+    "detail": {
+     "code": "unauthenticated",
+     "message": "Signature verification failed"
+    }
+   }
+  ],
+  "403 scope_forbidden": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "a engine token does not reach POST /api/v1/episodes"
+    }
+   }
+  ],
+  "403 scope_forbidden (another publication's store)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "this token is scoped to publication 7"
+    }
+   }
+  ],
+  "403 scope_forbidden (control on a read route)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "a control token does not reach GET /api/v1/memory/memories"
+    }
+   }
+  ],
+  "403 scope_forbidden (engine on a control route)": [
+   403,
+   {
+    "detail": {
+     "code": "scope_forbidden",
+     "message": "a engine token does not reach GET /api/v1/memory/stores/hop:5/acme/export"
+    }
+   }
+  ],
+  "404 unknown_proposal": [
+   404,
+   {
+    "detail": {
+     "code": "unknown_proposal",
+     "message": "no proposal proposal:0000"
+    }
+   }
+  ],
+  "404 unknown_run": [
+   404,
+   {
+    "detail": {
+     "code": "unknown_run",
+     "message": "this token is run run-1"
+    }
+   }
+  ],
+  "404 unknown_store": [
+   404,
+   {
+    "detail": {
+     "code": "unknown_store",
+     "message": "this run's store is hop:5/acme"
+    }
+   }
+  ],
+  "409 already_decided": [
+   409,
+   {
+    "detail": {
+     "code": "already_decided",
+     "message": "proposal:6c7f973cd9d1129bb268eeabe0b1ba14ea6437be was already decided"
+    }
+   }
+  ],
+  "409 sealed": [
+   409,
+   {
+    "detail": {
+     "code": "sealed",
+     "message": "run run-1 has already promoted or proposed; a new run is a new staging area"
+    }
+   }
+  ],
+  "409 version_conflict": [
+   409,
+   {
+    "detail": {
+     "code": "version_conflict",
+     "current_version": 1,
+     "key": "queue-owner",
+     "message": "queue-owner is at version 1, not 0"
+    }
+   }
+  ],
+  "413 store_full": [
+   413,
+   {
+    "detail": {
+     "code": "store_full",
+     "limit": 1,
+     "message": "9 nodes would pass the grant's 1",
+     "nodes": 9
+    }
+   }
+  ],
+  "413 write_too_large": [
+   413,
+   {
+    "detail": {
+     "code": "write_too_large",
+     "limit": 64,
+     "message": "506 bytes over the grant's 64",
+     "size": 506
+    }
+   }
+  ],
+  "422 invalid_precondition": [
+   422,
+   {
+    "detail": {
+     "code": "invalid_precondition",
+     "key": "k",
+     "message": "expected_version applies to keyed claims, not a learning"
+    }
+   }
+  ],
+  "422 invalid_request": [
+   422,
+   {
+    "detail": {
+     "code": "invalid_request",
+     "message": "name node_ids, episode_ids or document_ids"
+    }
+   }
+  ],
+  "422 invalid_version": [
+   422,
+   {
+    "detail": {
+     "code": "invalid_version",
+     "current_version": 3,
+     "message": "the store is at version 3; to_version must be below it"
+    }
+   }
+  ],
+  "422 note_not_staged": [
+   422,
+   {
+    "detail": {
+     "code": "note_not_staged",
+     "message": "a run's checkpoint stages claims and the window; note sections are not staged in this cut"
+    }
+   }
+  ]
+ },
+ "export": {
+  "content_type": "application/x-ndjson",
+  "first_line": {
+   "as_of_version": null,
+   "kind": "store",
+   "org": "root-unit-1",
+   "store": "hop:5/acme",
+   "store_version": 2
+  },
+  "kinds": [
+   "edge",
+   "episode_meta",
+   "node",
+   "store"
+  ],
+  "node_example": {
+   "derived_from": [
+    "promoted:e7cda942ddcc528a1603b62033937a844743faca"
+   ],
+   "id": "<uuid>",
+   "key": "state:support/triage/state:queue-owner=Priya owns the queue",
+   "kind": "node",
+   "name": "support/triage/state/queue-owner = Priya owns the queue",
+   "props": {
+    "claim_key": "queue-owner",
+    "evidence_ids": [
+     "msg:1"
+    ],
+    "grounded": true,
+    "hop": "support-triage",
+    "hop_version": "1.4.0",
+    "kind": "state",
+    "principal": "acme",
+    "promotion": "promote:e396f71d5e110ac598169efb8322ba0bd6b88b6f",
+    "run_id": "run-1",
+    "sid": "sess-1",
+    "topic": "support/triage/state",
+    "unit": "state",
+    "value": "Priya owns the queue"
+   },
+   "scope": "hop",
+   "scope_id": "5/acme",
+   "status": "committed",
+   "summary": null,
+   "type": "MetricValue",
+   "version": 1,
+   "workspace": "support"
+  },
+  "request": "GET /api/v1/memory/stores/hop:5/acme/export"
+ },
+ "mount": "/api/v1",
+ "note": "store_full (413) needs an unpromoted run over the limit; see tests/integration/test_p5_promotion.py::test_store_full",
+ "promote_auto": {
+  "request": "POST /api/v1/memory/stores/hop:5/acme/runs/run-1/promote",
+  "response": {
+   "conflicts": [],
+   "promoted": 2,
+   "proposal_id": null,
+   "state": "promoted",
+   "store_version": 1
+  }
+ },
+ "promote_repeat_is_same_body": {
+  "conflicts": [],
+  "promoted": 2,
+  "proposal_id": null,
+  "state": "promoted",
+  "store_version": 1
+ },
+ "promote_review": {
+  "response": {
+   "conflicts": [],
+   "promoted": 0,
+   "proposal_id": "proposal:6c7f973cd9d1129bb268eeabe0b1ba14ea6437be",
+   "state": "pending",
+   "store_version": null
+  }
+ },
+ "promotions_decide": {
+  "request": {
+   "by": "owner:2",
+   "decision": "approve",
+   "note": "ok"
+  },
+  "response": {
+   "conflicts": [],
+   "promoted": 1,
+   "state": "promoted",
+   "store_version": 2
+  }
+ },
+ "promotions_pending": {
+  "request": "GET /api/v1/memory/promotions/pending?store=hop:5/acme",
+  "response": {
+   "items": [
+    {
+     "claims": [
+      {
+       "event_id": "ck:sess-1:run-3:1:claim:0",
+       "key": "sla",
+       "kind": "state",
+       "topic": "support/triage/state",
+       "value": "4h first response"
+      }
+     ],
+     "hop_version": "1.4.0",
+     "n_nodes": 1,
+     "nodes": [
+      {
+       "key": "state:support/triage/state:sla",
+       "node_id": "<uuid>",
+       "summary": "support/triage/state/sla",
+       "type": "Metric"
+      }
+     ],
+     "proposal_id": "proposal:6c7f973cd9d1129bb268eeabe0b1ba14ea6437be",
+     "run_id": "run-3",
+     "sid": "sess-1",
+     "store": "hop:5/acme"
+    }
+   ],
+   "next_after_id": null
+  }
+ },
+ "read_after_promotion_from_another_run": {
+  "items": [
+   {
+    "contested": false,
+    "id": "<uuid>",
+    "key": "queue-owner",
+    "kind": "state",
+    "provenance": {
+     "commit": null,
+     "evidence_ids": [
+      "msg:1"
+     ],
+     "hop": "support-triage",
+     "label": "Written by support-triage for a person on 2026-10-28",
+     "run_id": "run-1",
+     "source": "harness_memory",
+     "written_by": null
+    },
+    "scope": "hop",
+    "scope_id": "5/acme",
+    "text": null,
+    "topic": "support/triage/state",
+    "trust": {
+     "endorsed_by": [],
+     "pinned": false,
+     "tier": null
+    },
+    "value": "Priya owns the queue",
+    "value_node_id": "<uuid>",
+    "workspace": "support"
+   }
+  ],
+  "limit": 25,
+  "offset": 0,
+  "total": 1
+ },
+ "read_other_run_sees_nothing_staged": {
+  "items": [],
+  "limit": 25,
+  "offset": 0,
+  "total": 0
+ },
+ "read_staging": {
+  "request": "GET /api/v1/memory/memories?kind=state",
+  "response": {
+   "items": [
+    {
+     "contested": false,
+     "id": "<uuid>",
+     "key": "queue-owner",
+     "kind": "state",
+     "provenance": {
+      "commit": null,
+      "evidence_ids": [
+       "msg:1"
+      ],
+      "hop": "support-triage",
+      "label": "Written by support-triage for a person on 2026-10-28",
+      "run_id": "run-1",
+      "source": "harness_memory",
+      "written_by": null
+     },
+     "scope": "hop",
+     "scope_id": "5/acme/run/run-1",
+     "text": null,
+     "topic": "support/triage/state",
+     "trust": {
+      "endorsed_by": [],
+      "pinned": false,
+      "tier": null
+     },
+     "value": "Priya owns the queue",
+     "value_node_id": "<uuid>",
+     "workspace": "support"
+    }
+   ],
+   "limit": 25,
+   "offset": 0,
+   "total": 1
+  }
+ },
+ "redact": {
+  "request": {
+   "by": "owner:2",
+   "node_ids": [
+    "<uuid>"
+   ],
+   "reason": "fixture"
+  },
+  "response": {
+   "redacted": 4
+  }
+ },
+ "rollback": {
+  "request": {
+   "by": "owner:2",
+   "reason": "fixture",
+   "to_version": 1
+  },
+  "response": {
+   "reverted": 1,
+   "store_version": 3
+  }
+ },
+ "store_id_percent_encoded": {
+  "note": "decoded before routing; same body as the plain spelling",
+  "request": "POST /api/v1/memory/stores/hop%3A5%2Facme/runs/run-1/promote",
+  "response": {
+   "conflicts": [],
+   "promoted": 2,
+   "proposal_id": null,
+   "state": "promoted",
+   "store_version": 1
+  }
+ },
+ "tokens": {
+  "control": {
+   "_header": {
+    "alg": "HS256",
+    "kid": "memory"
+   },
+   "aud": "memory",
+   "exp": "<unix seconds>",
+   "hop": {
+    "publication": "5"
+   },
+   "iat": "<unix seconds>",
+   "iss": "hop-service",
+   "org": "root-unit-1",
+   "role": "control"
+  },
+  "engine": {
+   "_header": {
+    "alg": "HS256",
+    "kid": "memory"
+   },
+   "aud": "memory",
+   "customer": "acme",
+   "exp": "<unix seconds>",
+   "hop": {
+    "name": "support-triage",
+    "publication": "5",
+    "version": "1.4.0"
+   },
+   "iat": "<unix seconds>",
+   "iss": "scheduler",
+   "limits": {
+    "max_bytes": 10485760,
+    "max_nodes": 5000,
+    "max_write_bytes": 65536
+   },
+   "org": "root-unit-1",
+   "promotion": "auto",
+   "role": "engine",
+   "run_id": "run-1",
+   "shared": [
+    {
+     "access": "read",
+     "scope_id": "hop:5/shared-playbook"
+    }
+   ],
+   "sid": "sess-1",
+   "store": "hop:5/acme",
+   "unit": "unit-7"
+  }
+ }
+}

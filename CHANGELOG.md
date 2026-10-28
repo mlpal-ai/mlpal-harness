@@ -88,6 +88,36 @@
   to the runner (one non-detached sandbox exec in hosted mode); exit 2 still blocks, a runner that throws is a
   no-op. Without a runner the hook is the local `/bin/bash -c` as before.
 - `HandsExecOptions.stdin`: written to the command's stdin whole.
+### W3 P5: the memory store client (contract P5 1.3, 2026-10-28)
+
+- No protocol change.
+- `MemoryStoreClient` (`store/memory-store.ts`): the routes the engine's memory rung calls under the grant's `url`
+  (the full base, `{MEMORY_URL}/api/v1`): `checkpoint` (`POST /memory/checkpoint`, staged under the token's run),
+  `search`, `projection`, `promote` (`POST /memory/stores/<store>/runs/<run_id>/promote`, the store id with its
+  slash). The bearer is the memory token, read per request; a 401 re-reads it once, then
+  `MemoryUnauthenticatedError`. `X-Session-Id` / `X-Run-Id` / `X-Hop` / `X-Origin` are trace headers only: the store
+  takes the run and session from the token.
+- Errors by `detail.code` (FastAPI's `{"detail": {"code", "message", …}}`): `MemoryUnauthenticatedError` (401),
+  `MemoryScopeForbiddenError` (403), `MemoryUnknownError` (404 `unknown_store` / `unknown_run`),
+  `MemoryVersionConflictError {key, currentVersion}` (409), `MemoryWriteTooLargeError {size, limit}` and
+  `MemoryStoreFullError {measure: nodes|bytes, limit}` (413), `MemoryInvalidPreconditionError {key}` (422),
+  `MemoryUnavailableError` (5xx, or `unreachable`); any other code (`note_not_staged`, `already_decided`) is a
+  `MemoryStoreError` with it. A string or list `detail`, or no body, is `http_<status>` with no fields.
+- `promote` answers `promoted {storeVersion, promoted, conflicts}`, `pending {proposalId}`, `rejected {proposalId}`
+  or `empty {storeVersion}`; any other body is `invalid_response`, never a guessed state.
+- `parseMemoryGrant(raw)`: RunContext `memory` typed at the boundary (`null` = no memory policy); a field the engine
+  cannot use throws `MemoryGrantError` naming it.
+- Tests: `test/fake-memory-store.ts`, the store per P5 1.3 (`/api/v1`, the envelope, preconditions on keyed kinds
+  against the promoted store, distinct-value versions, `note_not_staged`, conflicts left staged and reported,
+  `store_full` on nodes and bytes, 404 `unknown_store` / `unknown_run`, store ids with the slash or
+  percent-encoded, JWT-shaped engine tokens), pinned with the client on W5's fixture
+  (`test/fixtures/memory-store/fixture.json`, memory-graph e9b18ab, SHA256 c0662f00…) by
+  `memory-store.contract.test.ts`.
+- Re-pinned on P5 1.5 (W5 approved): the fixture from memory-graph 99ea163 (SHA256 ad59639e…2f213). The client is
+  unchanged; every new error maps to its class (`sealed`, `store_full {nodes, limit}`, `unknown_store`,
+  `unknown_proposal`, `invalid_request`, the control `scope_forbidden`s). The fake follows the bodies that changed: a
+  run's checkpoint after it promoted or proposed is 409 `sealed`, an engine token outside the engine's routes is 403
+  `scope_forbidden`, and its tokens carry `kid: memory`, `aud`, `iss`, `iat` and a 3600 s lifetime.
 
 ### Engine store, D-2: the instance writer token (2026-10-28)
 
