@@ -24,7 +24,7 @@ export interface LeaseKeeperOptions {
   logger?: Logger;
 }
 
-type State = { kind: "none" } | { kind: "held"; leaseId: string } | { kind: "lost"; err: LeaseLostError } | { kind: "released" };
+type State = { kind: "none" } | { kind: "held"; leaseId: string } | { kind: "lost"; err: LeaseLostError } | { kind: "released" } | { kind: "dropped" };
 
 export class LeaseKeeper {
   private state: State = { kind: "none" };
@@ -94,9 +94,16 @@ export class LeaseKeeper {
   async release(): Promise<void> {
     this.endHolding();
     const s = this.state;
-    if (s.kind === "lost") return;
+    if (s.kind === "lost" || s.kind === "dropped") return;
     this.state = { kind: "released" };
     if (s.kind === "held") await this.opts.client.release(this.opts.sid, s.leaseId);
+  }
+
+  /** Stops renewing and gives nothing back: the lease lapses at its ttl. For a writer that lost its place in the log
+   *  (`seq_conflict`), which must neither keep the lease alive nor hand it on. */
+  drop(): void {
+    this.endHolding();
+    if (this.state.kind === "held") this.state = { kind: "dropped" };
   }
 
   /** Sends one renew and schedules the next on the cadence, whether or not this one answers. */

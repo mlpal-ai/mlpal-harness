@@ -376,6 +376,23 @@ describe("SessionStoreClient over P1", () => {
     }
   });
 
+  test("list: a scoped reader pages its owner's and publication's sessions in sid order; listAll follows next_after_id", async () => {
+    store.createSession("s2");
+    store.createSession("s3", { publication: "other" });
+    store.createSession("s0", { owner: "cust_9" });
+    const token = store.scopeReaderToken("cust_7", "infra-ro");
+    const { c } = client({ tokenProvider: () => token });
+    const first = await c.list({ limit: 1 });
+    expect(first.sessions.map((p) => p.sid)).toEqual(["s1"]);
+    expect(first.nextAfterId).toBe("s1");
+    expect(first.sessions[0]).toMatchObject({ owner: "cust_7", publication: "infra-ro", status: "idle", parks: [], lastSeq: 0 });
+    expect((await c.list({ afterId: "s1" })).sessions.map((p) => p.sid)).toEqual(["s2"]);
+    expect((await c.listAll()).map((p) => p.sid)).toEqual(["s1", "s2"]);
+    const engine = store.grant("s1");
+    const { c: asEngine } = client({ tokenProvider: () => engine.token });
+    expect(await asEngine.list().catch((e) => e)).toMatchObject({ status: 403, code: "forbidden" });
+  });
+
   test("the bearer comes from the token provider on every request", async () => {
     let token = store.controlToken;
     const { c } = client({ tokenProvider: () => token });

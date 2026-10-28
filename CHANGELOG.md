@@ -24,6 +24,13 @@
 - `RemoteStore` has one "goes alone" threshold, the batcher's `batchMaxBytes` (`AppendBatcher.batchMaxBytes`),
   and an event over it reaches `head()`, `read()` and `tail()` only once the store acknowledged it, so no view
   shows an entry the store may still refuse.
+- What yodex serve's remote backend needs: the `sessionStore` settings (`backend` `file` | `remote`, `url`,
+  `tokenFile`, `readTokenFile`, `leaseTtlS` 1–60, `deltaFlushMs`, `batchMaxEvents`, `batchMaxBytes`,
+  `maxEventBytes`, `appendTimeoutMs`; defaults as box A runs the store); `SessionStoreClient.list` and `listAll`
+  (`GET /sessions`, paged by `next_after_id`; a scoped reader's owner and publication are imposed by the store);
+  `inFlightTurn(entries)`, the rule `resume()` uses, exported for a host deciding whether to resume; and
+  `LeaseKeeper.drop()`, which stops renewing without giving the lease back, for a writer that lost its place
+  (`seq_conflict`): it must neither keep the lease alive nor hand it on.
 
 ### Engine store, slice 2: the side-effect key and resume (2026-10-27)
 

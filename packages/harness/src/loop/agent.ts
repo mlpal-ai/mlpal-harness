@@ -320,7 +320,7 @@ function unansweredToolUses(turn: ConversationEntry[]): ToolUseBlock[] {
 
 /** The entries of the turn in flight: from its first user entry since the last `result` or `error`; empty when
  *  no turn is in flight. */
-function inFlightTurn(entries: ConversationEntry[]): ConversationEntry[] {
+export function inFlightTurn(entries: ConversationEntry[]): ConversationEntry[] {
   let start = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     const type = entries[i]!.payload.type;

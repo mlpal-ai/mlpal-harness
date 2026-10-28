@@ -367,4 +367,21 @@ describe("LeaseKeeper", () => {
     expect(k.signal.aborted).toBe(false);
     expect(() => k.leaseId).toThrow();
   });
+
+  test("drop stops renewing without giving the lease back: it lapses at its ttl, and nothing reports a loss", async () => {
+    const stub = stubClient(ok);
+    const { k, lost, watch } = keeper(stub.client);
+    watch();
+    k.adopt({ leaseId: "L" });
+    await tick();
+    k.drop();
+    await run(120_000);
+    expect(stub.renews).toHaveLength(1);
+    expect(stub.releases()).toBe(0);
+    expect(clock.pending()).toBe(0);
+    expect(lost).toEqual([]);
+    expect(() => k.leaseId).toThrow();
+    await k.release();
+    expect(stub.releases()).toBe(0);
+  });
 });

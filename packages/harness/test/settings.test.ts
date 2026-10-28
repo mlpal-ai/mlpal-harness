@@ -122,3 +122,31 @@ describe("mcpServers scope handling", () => {
     expect(s.mcpOrigins.both?.map((o) => o.scope)).toEqual(["user", "project"]);
   });
 });
+
+describe("sessionStore (engine store, plan §2)", () => {
+  test("defaults: the file backend, and the remote backend's limits as box A runs them", () => {
+    expect(loadSettings({ home, cwd, env: {} }).sessionStore).toEqual({
+      backend: "file",
+      readTokenFile: "/run/instance/session_store_read_token",
+      leaseTtlS: 60,
+      deltaFlushMs: 250,
+      batchMaxEvents: 256,
+      batchMaxBytes: 1048576,
+      maxEventBytes: 16 * 1024 * 1024,
+      appendTimeoutMs: 20000,
+    });
+  });
+
+  test("a project's remote backend merges over the user's file", async () => {
+    await writeFile(join(home, ".yodex", "config.json"), JSON.stringify({ sessionStore: { url: "http://session-store:7100/v1", leaseTtlS: 30 } }));
+    await writeFile(join(cwd, ".yodex", "settings.json"), JSON.stringify({ sessionStore: { backend: "remote", tokenFile: "/run/secrets/session_store_jwt" } }));
+    expect(loadSettings({ home, cwd, env: {} }).sessionStore).toMatchObject({ backend: "remote", url: "http://session-store:7100/v1", leaseTtlS: 30, tokenFile: "/run/secrets/session_store_jwt" });
+  });
+
+  test("validation: an unknown backend, a bad url and a lease over P1's 60 s throw", async () => {
+    for (const bad of [{ backend: "s3" }, { url: "not a url" }, { leaseTtlS: 61 }, { leaseTtlS: 0 }, { deltaFlushMs: -1 }]) {
+      await writeFile(join(cwd, ".yodex", "settings.json"), JSON.stringify({ sessionStore: bad }));
+      expect(() => loadSettings({ home, cwd, env: {} })).toThrow();
+    }
+  });
+});

@@ -192,7 +192,7 @@ const MAX_ATTEMPTS = 3;
 const RETRY_BUDGET_MS = 30_000;
 const RETRY_BASE_MS = 200;
 
-type Op = "lease" | "renew" | "release" | "append" | "read" | "projection" | "stream";
+type Op = "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream";
 
 /** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
  *  first): an append retries any network failure or 5xx (the store answers a replay with its original
@@ -204,9 +204,9 @@ const retryAfterMs = (res: Response) => Number(res.headers.get("retry-after") ??
 
 const num = (v: unknown) => (typeof v === "number" ? v : undefined);
 
-function httpError(op: Op, sid: string, status: number, body: Record<string, unknown>): StoreHttpError {
+function httpError(op: Op, sid: string | null, status: number, body: Record<string, unknown>): StoreHttpError {
   const code = typeof body.code === "string" ? body.code : `http_${status}`;
-  const message = `session store ${op} (${sid}): ${status} ${code}`;
+  const message = `session store ${op}${sid === null ? "" : ` (${sid})`}: ${status} ${code}`;
   if (status === 404) return new SessionNotFoundError(message, status, code);
   if (status === 410) return new SessionDeletedError(message, status, code, num(body.deleted_at));
   if (status === 413) return new BatchTooLargeError(message, status, code, num(body.max_events), num(body.max_bytes), num(body.max_event_bytes));
@@ -352,42 +352,32 @@ export class SessionStoreClient {
   }
 
   async projection(sid: string): Promise<SessionProjection> {
-    const b = await this.call<{
-      sid: string;
-      owner: string;
-      unit: string;
-      publication: string;
-      hop: SessionProjection["hop"];
-      status: SessionProjection["status"];
-      parks: SessionPark[];
-      park?: SessionPark;
-      stop_reason?: string;
-      refusal: { code: string } | null;
-      usage: { input_tokens: number; output_tokens: number; cost_cu: number };
-      lease: { holder?: string; expires_at: number } | null;
-      last_seq: number;
-      updated_at: number;
-    }>("projection", sid, "GET", "");
-    return {
-      sid: b.sid,
-      owner: b.owner,
-      unit: b.unit,
-      publication: b.publication,
-      hop: b.hop,
-      status: b.status,
-      parks: b.parks,
-      ...(b.park ? { park: b.park } : {}),
-      ...(b.stop_reason !== undefined ? { stopReason: b.stop_reason } : {}),
-      refusal: b.refusal,
-      usage: { inputTokens: b.usage.input_tokens, outputTokens: b.usage.output_tokens, costCu: b.usage.cost_cu },
-      lease: b.lease ? { ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
-      lastSeq: b.last_seq,
-      updatedAt: b.updated_at,
-    };
+    return projectionOf(await this.call<WireProjection>("projection", sid, "GET", ""));
   }
 
-  private async call<T>(op: Op, sid: string, method: string, path: string, body?: string, retry: Retry = "busy", limits: CallLimits = {}): Promise<T> {
-    const url = `${this.baseUrl}/sessions/${encodeURIComponent(sid)}${path}`;
+  /** One page of the sessions this token may list, in sid order (a scoped reader's `owner` and `publication` are
+   *  imposed by the store; control names a filter). `nextAfterId` continues the listing; null at its end. */
+  async list(opts: { afterId?: string; limit?: number; filter?: { owner?: string; publication?: string; unit?: string } } = {}): Promise<{ sessions: SessionProjection[]; nextAfterId: string | null }> {
+    const q = new URLSearchParams({ ...opts.filter, ...(opts.afterId ? { after_id: opts.afterId } : {}), ...(opts.limit !== undefined ? { limit: String(opts.limit) } : {}) });
+    const b = await this.call<{ sessions: WireProjection[]; next_after_id: string | null }>("list", null, "GET", q.size ? `?${q}` : "");
+    return { sessions: b.sessions.map(projectionOf), nextAfterId: b.next_after_id };
+  }
+
+  /** Every session `list` would page through. */
+  async listAll(filter?: { owner?: string; publication?: string; unit?: string }): Promise<SessionProjection[]> {
+    const out: SessionProjection[] = [];
+    let afterId: string | undefined;
+    for (;;) {
+      const page = await this.list({ ...(afterId ? { afterId } : {}), ...(filter ? { filter } : {}) });
+      out.push(...page.sessions);
+      if (page.nextAfterId === null) return out;
+      afterId = page.nextAfterId;
+    }
+  }
+
+  /** `sid` null: the collection, `/sessions`. */
+  private async call<T>(op: Op, sid: string | null, method: string, path: string, body?: string, retry: Retry = "busy", limits: CallLimits = {}): Promise<T> {
+    const url = `${this.baseUrl}/sessions${sid === null ? "" : `/${encodeURIComponent(sid)}`}${path}`;
     const { signal } = limits;
     const timeoutMs = Math.min(this.timeoutMs, limits.timeoutMs ?? Number.POSITIVE_INFINITY);
     const budgetEnd = this.now() + RETRY_BUDGET_MS;
@@ -415,7 +405,7 @@ export class SessionStoreClient {
         text = await res.text();
       } catch (e) {
         if (signal?.aborted) throw signal.reason;
-        failure = new StoreUnreachableError(`session store ${op} (${sid}): unreachable: ${redact(String((e as Error)?.message ?? e), token)}`, attempt);
+        failure = new StoreUnreachableError(`session store ${op}${sid === null ? "" : ` (${sid})`}: unreachable: ${redact(String((e as Error)?.message ?? e), token)}`, attempt);
         if (retry !== "append") break;
         waitMs = 0;
         continue;
@@ -459,6 +449,42 @@ export interface CallLimits {
   timeoutMs?: number;
   /** Stops the call: no attempt starts after it aborts, and the one in flight is abandoned. */
   signal?: AbortSignal;
+}
+
+interface WireProjection {
+  sid: string;
+  owner: string;
+  unit: string;
+  publication: string;
+  hop: SessionProjection["hop"];
+  status: SessionProjection["status"];
+  parks: SessionPark[];
+  park?: SessionPark;
+  stop_reason?: string;
+  refusal: { code: string } | null;
+  usage: { input_tokens: number; output_tokens: number; cost_cu: number };
+  lease: { holder?: string; expires_at: number } | null;
+  last_seq: number;
+  updated_at: number;
+}
+
+function projectionOf(b: WireProjection): SessionProjection {
+  return {
+    sid: b.sid,
+    owner: b.owner,
+    unit: b.unit,
+    publication: b.publication,
+    hop: b.hop,
+    status: b.status,
+    parks: b.parks,
+    ...(b.park ? { park: b.park } : {}),
+    ...(b.stop_reason !== undefined ? { stopReason: b.stop_reason } : {}),
+    refusal: b.refusal,
+    usage: { inputTokens: b.usage.input_tokens, outputTokens: b.usage.output_tokens, costCu: b.usage.cost_cu },
+    lease: b.lease ? { ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
+    lastSeq: b.last_seq,
+    updatedAt: b.updated_at,
+  };
 }
 
 interface WireLease {

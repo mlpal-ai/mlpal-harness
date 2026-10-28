@@ -94,6 +94,27 @@ export const settingsSchema = z.object({
         .default({}),
     })
     .default({}),
+  /**
+   * Where a session's conversation, logs and records live (engine store, seam P2). `file` (default): the local
+   * store under ~/.yodex. `remote`: the P1 session store at `url`, one lease per session; nothing for the session
+   * is written under ~/.yodex. Credentials are files read by path at each use, never values: `tokenFile` holds
+   * the `{lease_id, token}` a scheduler took for a single-session engine (phase 2), `readTokenFile` the
+   * instance read token box A replaces in place. The limits are the store's, as box A runs it.
+   */
+  sessionStore: z
+    .object({
+      backend: z.enum(["file", "remote"]).default("file"),
+      url: z.string().url().optional(),
+      tokenFile: z.string().optional(),
+      readTokenFile: z.string().default("/run/instance/session_store_read_token"),
+      leaseTtlS: z.number().int().min(1).max(60).default(60),
+      deltaFlushMs: z.number().int().positive().default(250),
+      batchMaxEvents: z.number().int().positive().default(256),
+      batchMaxBytes: z.number().int().positive().default(1048576),
+      maxEventBytes: z.number().int().positive().default(16 * 1024 * 1024),
+      appendTimeoutMs: z.number().int().positive().default(20000),
+    })
+    .default({}),
   /** A hook is one of: `command` (a shell command; the event JSON on stdin, a JSON result on
    *  stdout, exit 2 blocks), `url` (POST the event, read a JSON result), or `prompt` (a cheap
    *  model judges the event against a rule in plain words). `when` filters by tool name, a

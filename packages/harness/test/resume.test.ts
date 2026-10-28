@@ -12,7 +12,7 @@ import { type EngineEvent, HUMAN, type SDKMessage } from "@mlpal/harness-protoco
 import { z } from "zod";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { FunctionHook, HookEngine } from "../src/hooks/engine";
-import { AgentSession, type AgentConfig, INTERRUPTED_TOOL_RESULT } from "../src/loop/agent";
+import { AgentSession, type AgentConfig, INTERRUPTED_TOOL_RESULT, inFlightTurn } from "../src/loop/agent";
 import { loadMessages } from "../src/loop/messages";
 import { CODING_PROFILE } from "../src/profile/builtins/coding";
 import { createPolicy } from "../src/permission/engine";
@@ -633,5 +633,18 @@ describe("an oversize tool result", () => {
     const stored = (await b.store.conversation.read("s1")).find((e) => e.payload.type === "tool_result")!.payload as { content: string; isError: boolean };
     expect(stored.isError).toBe(false);
     expect(stored.content.length).toBeGreaterThanOrEqual(100 * 1024);
+  });
+});
+
+describe("inFlightTurn: the rule resume() and a host share", () => {
+  const entry = (type: string, i: number) => ({ uuid: `u${i}`, parentUuid: i ? `u${i - 1}` : null, ts: "t", payload: { type } as unknown as SDKMessage });
+  const of = (...types: string[]) => types.map(entry);
+  test("nothing in flight after a result or an error, or before any user entry", () => {
+    expect(inFlightTurn(of("system", "user", "assistant", "result"))).toEqual([]);
+    expect(inFlightTurn(of("system", "user", "error"))).toEqual([]);
+    expect(inFlightTurn(of("system"))).toEqual([]);
+  });
+  test("a turn in flight runs from its first user entry since the last result", () => {
+    expect(inFlightTurn(of("user", "result", "user", "assistant", "user", "tool_result")).map((e) => e.uuid)).toEqual(["u2", "u3", "u4", "u5"]);
   });
 });
