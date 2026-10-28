@@ -233,6 +233,25 @@ const scenarios: Record<string, Scenario> = {
   "list-200-page": async (c) => (await listSetup(c), c.send("GET", "/sessions?owner=cust_7&limit=2")),
   "list-400-filter-required": async (c) => (await listSetup(c), c.send("GET", "/sessions?status=running")),
   "list-400-invalid-status": async (c) => (await listSetup(c), c.send("GET", "/sessions?owner=cust_7&status=busy")),
+  "list-200-holder-prefix": async (c) => {
+    await listSetup(c);
+    c.fake.grant("sess-c", { ttlS: 30 });
+    c.fake.createSession("sess-d");
+    c.fake.grant("sess-d", { holder: "engine:eng-contract1:1" });
+    return c.send("GET", `/sessions?holder_prefix=${encodeURIComponent("engine:eng-contract1:")}`);
+  },
+  "list-200-updated-before": async (c) => {
+    await listSetup(c);
+    c.fake.grant("sess-c", { ttlS: 30 });
+    c.fake.createSession("sess-d");
+    c.fake.grant("sess-d", { holder: "engine:eng-contract1:1" });
+    // sess-a is written a minute later: only the others were last written before the cut (every lease lapsed by then).
+    c.clock.advance(60_000);
+    const a = c.fake.grant("sess-a");
+    [c.lease, c.engine] = [a.leaseId, a.token];
+    await c.append(0, [user()], "sess-a");
+    return c.send("GET", `/sessions?updated_before=${T0 + 30_000}`);
+  },
   "list-403-forbidden": async (c) => (await listSetup(c), c.send("GET", "/sessions?owner=cust_8", { token: c.fake.scopeReaderToken("cust_7", "infra-ro") })),
 };
 
@@ -242,7 +261,11 @@ function masked(v: unknown, generated: string[], top = true): unknown {
   if (!v || typeof v !== "object") return v;
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(v)) {
-    if (k === "at" || k.endsWith("_at")) {
+    if (k === "lease_id" && !top) {
+      // A lease id inside a listed projection (P1 1.1, control): minted per run, the fixture's placeholder.
+      expect(typeof x === "string" && x.length > 0).toBe(true);
+      out[k] = "<lease_id>";
+    } else if (k === "at" || k.endsWith("_at")) {
       expect(Number.isInteger(x)).toBe(true);
       out[k] = "<ms>";
     } else if (k === "content_sha256") {

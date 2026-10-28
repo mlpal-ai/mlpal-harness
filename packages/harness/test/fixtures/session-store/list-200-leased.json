@@ -11,7 +11,8 @@
         "last_seq": 1,
         "lease": {
           "expires_at": 1760000060000,
-          "holder": "engine:test:1"
+          "holder": "engine:test:1",
+          "lease_id": "<lease_id>"
         },
         "owner": "cust_7",
         "parks": [],
@@ -36,7 +37,8 @@
         "last_seq": 0,
         "lease": {
           "expires_at": 1760000030000,
-          "holder": "engine:test:1"
+          "holder": "engine:test:1",
+          "lease_id": "<lease_id>"
         },
         "owner": "cust_7",
         "parks": [],

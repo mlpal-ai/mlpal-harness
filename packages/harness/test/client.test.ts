@@ -92,6 +92,10 @@ describe("SessionStoreClient over P1", () => {
       lastSeq: 600,
       updatedAt: clock.now(),
     });
+    // P1 1.1: control is shown the lease's id too (the scheduler releases a dead pod's leases by it); a reader only when.
+    expect((await client().c.projection("s1")).lease).toEqual({ leaseId: l.leaseId, holder: "engine:test:1", expiresAt: clock.now() + 30_000 });
+    const reader = store.readerToken("s1");
+    expect((await client({ tokenProvider: () => reader }).c.projection("s1")).lease).toEqual({ expiresAt: clock.now() + 30_000 });
     await c.release("s1", l.leaseId);
     expect(store.lease("s1")).toBeNull();
   });
