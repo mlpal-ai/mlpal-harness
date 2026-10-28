@@ -4,6 +4,7 @@ import { z } from "zod";
 import type {
   EvalSuite,
   HopCredential,
+  HopMemoryLimits,
   HopProcesses,
   HopSandbox,
   HopWorkspace,
@@ -754,7 +755,7 @@ export function composeProfile(
   const memoryMode = y.memory.mode ?? parent.memory?.mode;
   const memorySharing = y.memory.sharing ?? parent.memory?.sharing;
   const memoryPromotion = y.memory.promotion ?? parent.memory?.promotion;
-  const memoryLimits = y.memory.limits ?? parent.memory?.limits;
+  const memoryLimits = composeBlock<HopMemoryLimits>(parent.memory?.limits, y.memory.limits);
   // A publication is this HOP version's own (hop-service id); a child never inherits a parent's.
   const memoryPublication = y.memory.publication;
   const memory =

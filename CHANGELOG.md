@@ -9,7 +9,7 @@
   `sandbox: {size_class?: 1c2g|2c4g, template?: hands|<name>@<version>, egress?: [host | host:port]}`,
   `workspace: {policy?: ephemeral|session|persistent}`, `credentials: [{ref, tool, host, header}]` (by reference
   only; a `value` key is refused with its own message), `memory.promotion?: auto|review` and
-  `memory.limits?: {max_nodes?, max_bytes?, max_write_bytes?}` beside the existing `memory.reads`/`writes`, and P4's
+  `memory.limits?: {max_nodes?, max_bytes?, max_write_bytes?}` (inherited per field) beside the existing `memory.reads`/`writes`, and P4's
   `processes: {mcp_stdio?: [{name, argv, env_names}], hooks?, lsp?}`. Validation and data only (`Profile.sandbox`,
   `.workspace`, `.credentials`, `.processes`, `.memory.promotion`, `.memory.limits`, snake-case as written); a child
   overrides per field, a list whole. Unknown keys still fail, the old `sandbox.size` and `sandbox.egress.allow`

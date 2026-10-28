@@ -77,6 +77,13 @@ describe("hop.yaml sandbox, workspace, credentials, memory promotion/limits and 
     expect(p.processes).toEqual({ mcp_stdio: [], hooks: true, lsp: false });
     hop("heir", "extends: parent\n");
     expect(load("heir").credentials).toHaveLength(2);
+    expect(load("heir").memory).toMatchObject({ promotion: "review", limits: { max_nodes: 5000, max_bytes: 10485760, max_write_bytes: 65536 } });
+  });
+
+  test("memory.limits are inherited per field, as sandbox is", () => {
+    hop("parent", FULL);
+    hop("tighter", "extends: parent\nmemory: { limits: { max_nodes: 100 } }\n");
+    expect(load("tighter").memory).toMatchObject({ promotion: "review", limits: { max_nodes: 100, max_bytes: 10485760, max_write_bytes: 65536 } });
   });
 
   const refused: Array<[string, string, RegExp]> = [
