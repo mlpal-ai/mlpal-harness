@@ -1,5 +1,5 @@
 /**
- * W3 P5: the engine's client for the memory store (contracts/P5-memory-store.md 1.2), against the fake: the grant at
+ * W3 P5: the engine's client for the memory store (contracts/P5-memory-store.md 1.3), against the fake: the grant at
  * the boundary, checkpoints to the run's staging with the session and run on every request, the bearer read per
  * request (rotation), one re-read on a 401, the `{detail: {code, …}}` envelope by class, preconditions against the
  * promoted store on keyed kinds only, reads overlaying staging and shared stores, and promotion in both modes,

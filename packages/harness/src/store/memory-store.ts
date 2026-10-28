@@ -245,7 +245,7 @@ export type MemoryPromotion =
   | { state: "empty"; storeVersion: number | null };
 
 export interface MemoryStoreClientOptions {
-  /** The grant's `url`, `…/v1`. */
+  /** The grant's `url`: the full base, mount included (`{MEMORY_URL}/api/v1`). */
   baseUrl: string;
   /** The engine's memory token, read per request (the token file is rewritten on refresh). */
   tokenProvider: () => string;
