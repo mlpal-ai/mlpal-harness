@@ -1,0 +1,25 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "code": "upstream_not_granted",
+    "event": "egress.refused",
+    "host": null,
+    "injected": [],
+    "method": "GET",
+    "sid": "ses_1",
+    "status": 403,
+    "unit": "unit_acme_eng",
+    "upstream": "slack-mcp"
+  },
+  "body": {
+    "code": "upstream_not_granted"
+  },
+  "case": "a name not in the token",
+  "content_type": "application/json",
+  "headers": {
+    "x-harness-egress": "refused"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 403
+}

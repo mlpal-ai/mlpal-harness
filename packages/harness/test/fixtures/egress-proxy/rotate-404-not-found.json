@@ -1,0 +1,12 @@
+{
+  "body": {
+    "code": "not_found"
+  },
+  "case": "an unknown or revoked id",
+  "content_type": "application/json",
+  "request": {
+    "value": "<new value>"
+  },
+  "route": "PUT /v1/secrets/{id}/value",
+  "status": 404
+}

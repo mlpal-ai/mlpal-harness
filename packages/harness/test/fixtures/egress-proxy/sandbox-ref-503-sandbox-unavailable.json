@@ -1,0 +1,13 @@
+{
+  "body": {
+    "code": "sandbox_unavailable",
+    "message": "no sandbox router is configured"
+  },
+  "case": "no sandbox router configured",
+  "content_type": "application/json",
+  "request": {
+    "tenant": "org:unit_acme"
+  },
+  "route": "POST /v1/secrets/{id}/sandbox-ref",
+  "status": 503
+}

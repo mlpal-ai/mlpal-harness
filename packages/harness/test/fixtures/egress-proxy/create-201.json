@@ -1,0 +1,23 @@
+{
+  "body": {
+    "created_at": 1760000000000,
+    "created_by": "hop-service",
+    "id": "vlt_01M624PVHV8C5JVNCNW76Q2CH0",
+    "name": "github",
+    "rotated_at": null,
+    "unit": "unit_acme_eng",
+    "version": 1
+  },
+  "case": "a new secret (Idempotency-Key: idem-1)",
+  "content_type": "application/json",
+  "generated": [
+    "id"
+  ],
+  "request": {
+    "name": "github",
+    "unit": "unit_acme_eng",
+    "value": "<value>"
+  },
+  "route": "POST /v1/secrets",
+  "status": 201
+}

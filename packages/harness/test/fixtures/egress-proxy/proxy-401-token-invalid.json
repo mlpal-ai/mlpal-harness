@@ -1,0 +1,25 @@
+{
+  "audit": {
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "code": "token_invalid",
+    "event": "egress.refused",
+    "host": null,
+    "injected": [],
+    "method": "GET",
+    "sid": null,
+    "status": 401,
+    "unit": null,
+    "upstream": null
+  },
+  "body": {
+    "code": "token_invalid"
+  },
+  "case": "no egress token",
+  "content_type": "application/json",
+  "headers": {
+    "x-harness-egress": "refused"
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 401
+}

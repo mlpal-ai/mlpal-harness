@@ -1,0 +1,12 @@
+{
+  "body": {
+    "code": "sandbox_unreachable"
+  },
+  "case": "the sandbox router is unreachable",
+  "content_type": "application/json",
+  "request": {
+    "tenant": "org:unit_other"
+  },
+  "route": "POST /v1/secrets/{id}/sandbox-ref",
+  "status": 502
+}

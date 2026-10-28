@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### P6: no credentials in the engine — the scoped gateway token and the engine egress proxy (2026-10-28)
+
+- No protocol change (a typed `egressRefusal` field is a 0.22.x item, ledgered).
+- `GatewayConfig.apiKey` also takes `{tokenFile}` (`SessionTokenFile`): the scoped per-session gateway token (P3b
+  `/run/session/gateway.token`), read on every request, never held. A `401 invalid_api_key` re-reads it once and
+  retries once (a rotation may have raced the request); a second 401 is `GatewayError.sessionTokenRejected`, which
+  the loop ends as the typed refusal `{code: model_access_denied, reason: gateway}` (logged `session token refused by
+  the gateway after its re-read`). A key's 401 is unchanged (one request, untyped). An unreadable or empty token file
+  is a non-retried error naming the path, before any request. `readSessionToken(file)` is exported.
+- P6 1.1: `403 model_not_allowed` (outside the token's `models_allow`) is `modelAccessDenied`, so it takes the
+  existing typed refusal path (`model_access_denied`, reason `gateway`) and a failover rung it refuses is skipped as a
+  policy-refused rung is. `403 budget_exceeded` is unchanged.
+- `src/egress/proxy.ts`: `EgressRoute {proxyUrl, upstream, tokenFile}`, `egressUrl` (`<proxy>/v1/u/<name>/<path>`),
+  `egressMcpServer`, `egressFetch` (sets `X-Harness-Egress-Token` from the token file per request, strips
+  `authorization`/`proxy-authorization`/`x-api-key`/`api-key`/`cookie`, `redirect: "manual"`, bodies streamed
+  untouched) and `EgressRefusedError` (`X-Harness-Egress: refused`, body `{code}`; a code that is not `[a-z_]` is
+  `unknown`, never prose).
+- MCP: `HttpServerConfig.egress` reaches a server through the proxy (streamable HTTP or SSE); its `headers` and
+  `oauth` are never sent. A proxy refusal is the tool's error text `egress refused (<code>) for <upstream>` (every
+  contract code, 1.2's `vault_unavailable` included) and, at connect, the server's status error. A 3xx is never
+  followed: `MCP server "<name>" answered a redirect (HTTP <status>); redirects are not followed through the egress proxy`.
+- `createEgressWebFetchTool(route, baseUrl)`: WebFetch on the platform, reaching only URLs under the `web-fetch`
+  upstream's `base_url`, through the proxy; a redirect is reported, never followed.
+- W4's proxy contract fixtures pinned at mlpal-harness-stack `d5d56a5` (`test/fixtures/egress-proxy/`, 26 files):
+  every `proxy-*` file is replayed through `egressFetch` against the fake proxy, which answers its refusals from the
+  files; the vault-only files are skipped by name. The gateway session-token fixture (mlpal-assistants-service
+  `p2-w4-session-tokens`) is a follow-up pin.
+
 ### Engine store, D-2: the instance writer token (2026-10-28)
 
 - No protocol change.

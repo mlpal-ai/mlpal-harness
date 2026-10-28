@@ -9,6 +9,7 @@ import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
 import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import { isLostResponse, lostResponseFetch } from "./lost-response";
+import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
 import { StoredOAuthProvider } from "./oauth";
 import { host } from "../host";
@@ -39,6 +40,9 @@ export interface HttpServerConfig {
   oauth?: { scope?: string; clientId?: string };
   /** Never defer this server's tools (they are always in the model's tool list). */
   alwaysLoad?: boolean;
+  /** Reached through the engine egress proxy (P6): `url` is the proxy's route for the upstream, every request
+   *  carries the egress token, and `headers` and `oauth` are never sent (the proxy injects the credential). */
+  egress?: EgressRoute;
 }
 
 export type McpServerConfig = StdioServerConfig | HttpServerConfig;
@@ -335,7 +339,18 @@ export class McpManager {
 
   private async connectOne(name: string, config: McpServerConfig): Promise<Tool<unknown>[]> {
     let transport;
-    if (isHttp(config)) {
+    if (isHttp(config) && config.egress) {
+      const route = config.egress;
+      const url = new URL(config.url);
+      if (config.type === "sse") {
+        transport = new SSEClientTransport(url, { fetch: egressFetch(route) });
+      } else {
+        const http: StreamableHTTPClientTransport = new StreamableHTTPClientTransport(url, {
+          fetch: lostResponseFetch((message) => http.onmessage?.(message), egressFetch(route)),
+        });
+        transport = http;
+      }
+    } else if (isHttp(config)) {
       const requestInit = config.headers
         ? {
             headers: Object.fromEntries(
@@ -497,6 +512,13 @@ export function wrapMcpTool(
         }
         return { content: toToolResultContent(res.content), isError: Boolean(res.isError) };
       } catch (e) {
+        // The proxy's own refusal is the whole answer: it names the code and the upstream, nothing else.
+        if (e instanceof EgressRefusedError) return { content: e.message, isError: true };
+        // Only a proxied server's transport leaves redirects unfollowed (the SDK's error carries the status).
+        const status = (e as { code?: unknown })?.code;
+        if (typeof status === "number" && status >= 300 && status < 400) {
+          return { content: `MCP server "${server}" answered a redirect (HTTP ${status}); redirects are not followed through the egress proxy`, isError: true };
+        }
         const scope = scopeUpgradeOf(e);
         if (scope) {
           opts.onScopeUpgrade?.(scope);

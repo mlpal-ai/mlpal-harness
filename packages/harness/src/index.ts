@@ -61,6 +61,7 @@ export * from "./context/attachments";
 export * from "./hooks/types";
 export * from "./hooks/engine";
 export * from "./mcp/manager";
+export { EGRESS_TOKEN_HEADER, EgressRefusedError, egressFetch, egressMcpServer, egressUrl, readEgressToken, type EgressRoute } from "./egress/proxy";
 export * from "./sandbox";
 export { distillDeviations, hostRecordedKinds, type Deviation, type DistillInput, type VerifierOutcome, type RunTerminal } from "./memory/distill";
 export { DeferredTools, schemaTokens } from "./tools/deferred";

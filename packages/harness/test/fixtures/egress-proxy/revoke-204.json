@@ -1,0 +1,7 @@
+{
+  "body": null,
+  "case": "a revocation (repeating it is also 204)",
+  "content_type": null,
+  "route": "DELETE /v1/secrets/{id}",
+  "status": 204
+}

@@ -1,0 +1,15 @@
+{
+  "body": {
+    "code": "invalid_body",
+    "message": "name: [a-z0-9-]{1,64}"
+  },
+  "case": "a name outside [a-z0-9-]{1,64}",
+  "content_type": "application/json",
+  "request": {
+    "name": "GitHub",
+    "unit": "unit_acme_eng",
+    "value": "<value>"
+  },
+  "route": "POST /v1/secrets",
+  "status": 422
+}

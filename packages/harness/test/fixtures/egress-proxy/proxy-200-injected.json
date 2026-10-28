@@ -1,0 +1,37 @@
+{
+  "audit": {
+    "bytes_in": 17,
+    "bytes_out": 11,
+    "event": "egress.request",
+    "host": "api.githubcopilot.com",
+    "injected": [
+      "authorization"
+    ],
+    "method": "POST",
+    "sid": "ses_1",
+    "status": 200,
+    "unit": "unit_acme_eng",
+    "upstream": "github-mcp"
+  },
+  "body": {
+    "ok": true
+  },
+  "case": "a granted upstream; the credential injected",
+  "content_type": "application/json",
+  "request": {
+    "body": {
+      "jsonrpc": "2.0"
+    },
+    "headers": {
+      "x-harness-egress-token": "<egress jwt>"
+    }
+  },
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 200,
+  "upstream_saw": {
+    "authorization": "Bearer <value of vlt_…>",
+    "method": "POST",
+    "path_and_query": "/mcp/tools/call",
+    "x-harness-egress-token": null
+  }
+}
