@@ -3,7 +3,7 @@ import type { HttpServerConfig } from "../mcp/manager";
 import { registerSecret } from "../obs/redact";
 
 /**
- * The engine egress proxy (contract P6-vault-egress 1.2, §"The engine egress proxy"). On the platform the engine
+ * The engine egress proxy (contract P6-vault-egress 1.4, §"The engine egress proxy"). On the platform the engine
  * holds no upstream credential: a named upstream is reached at `<proxy>/v1/u/<name>/<path>` with the session's
  * egress token (P3b `/run/session/egress.token`, read per request), and the proxy injects the vault's header. The
  * engine sends no credential header of its own, never follows a redirect (a 3xx could carry the injected credential
@@ -42,8 +42,32 @@ export class EgressRefusedError extends Error {
 /** The engine's own refusal of a url that resolves outside its upstream's route: never sent. */
 export const PATH_ESCAPE = "path_escape";
 
-/** True when `url`, as fetch will send it (dot segments resolved, `%2e` included) and once more after one decoding
- *  (what an upstream that decodes would resolve), stays on the proxy's origin under `/v1/u/<name>/`. */
+const UNSAFE_SEGMENTS = new Set([".", "..", "..;", ".;"]);
+
+/** W4's per-segment rule (P6 1.4): each `/`-separated segment percent-decoded until stable, at most three rounds
+ *  (not stable after three is refused); a segment that is then `.`, `..`, `..;` or `.;`, or that holds `/`, `\` or
+ *  NUL, is unsafe. So no encoding of a dot segment or a separator reaches the proxy, nor an upstream that decodes. */
+export function segmentsSafe(path: string): boolean {
+  for (const raw of path.split("/")) {
+    let seg = raw;
+    for (let round = 0; ; round++) {
+      let next: string;
+      try {
+        next = decodeURIComponent(seg);
+      } catch {
+        return false;
+      }
+      if (next === seg) break;
+      if (round === 3) return false;
+      seg = next;
+    }
+    if (UNSAFE_SEGMENTS.has(seg) || /[/\\\0]/.test(seg)) return false;
+  }
+  return true;
+}
+
+/** True when `url`, as fetch will send it (dot segments resolved, `%2e` included), stays on the proxy's origin under
+ *  `/v1/u/<name>/` and every segment past that is safe (segmentsSafe). */
 export function insideRoute(url: string, route: EgressRoute): boolean {
   let parsed: URL;
   let proxy: URL;
@@ -54,15 +78,7 @@ export function insideRoute(url: string, route: EgressRoute): boolean {
     return false;
   }
   const prefix = `${proxy.pathname.replace(/\/+$/, "")}/v1/u/${encodeURIComponent(route.upstream)}/`;
-  if (parsed.origin !== proxy.origin || !parsed.pathname.startsWith(prefix)) return false;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(parsed.pathname);
-  } catch {
-    return false;
-  }
-  const again = new URL(decoded, parsed.origin);
-  return again.origin === parsed.origin && again.pathname.startsWith(prefix);
+  return parsed.origin === proxy.origin && parsed.pathname.startsWith(prefix) && segmentsSafe(parsed.pathname.slice(prefix.length));
 }
 
 /** `<proxy>/v1/u/<name>/<path>`: `path` (with its query) is relative to the upstream's base_url. A path that resolves

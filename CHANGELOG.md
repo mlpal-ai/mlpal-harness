@@ -44,6 +44,24 @@
     is registered for masking (`gateway session token`, `egress token`).
   - Test servers drain request bodies (an unread chunked body left the keep-alive connection dirty: the fixture
     replay flaked 3/10, now 0/10).
+- P6 1.4:
+  - The egress proxy fixtures re-pinned at mlpal-harness-stack `f5902f8` (28 files): `proxy-401-echo-redacted` (an
+    upstream's echo of the injected credential comes back `[REDACTED]`, a plain answer, not a refusal) and
+    `proxy-502-upstream-encoding-refused`. `502 upstream_encoding_refused` is a refusal like `upstream_unreachable`:
+    the tool error text is `egress refused (upstream_encoding_refused) for <upstream>`. The fake proxy redacts an
+    echoed credential in headers and body.
+  - The proxy now decodes path segments before its own traversal checks; the engine keeps its own check as defence
+    in depth (a `%2e%2e` form is refused before any request, tested). Review round 2: that check is W4's
+    per-segment rule (`segmentsSafe`): each segment percent-decoded until stable, at most three rounds (not stable
+    after three is refused), and a segment that is then `.`, `..`, `..;` or `.;`, or holds `/`, `\` or NUL, is
+    `path_escape` — so `%3f%2f..%2f..%2fgithub-mcp%2fx` is the engine's refusal, not the proxy's
+    `upstream_not_granted`. It replaces the decode-once re-parse in `insideRoute` and `pathUnderBase`;
+    `pathUnderBase` strips leading slashes of the rest, so it and `egressUrl` see one path (`/mcp//..%2fx`).
+  - The gateway session-token fixtures pinned at mlpal-assistants-service `a45fe8f`
+    (`test/fixtures/p6-session-token/`, read from the local object store): the 401 and both 403 bodies replayed
+    through the client (re-read and retry, `sessionTokenRejected`, the access refusal with the gateway's model), a
+    token built from the claims vector sent verbatim; the audit event and the usage row are gateway-internal and
+    skipped by name.
 
 ### Engine store, D-2: the instance writer token (2026-10-28)
 

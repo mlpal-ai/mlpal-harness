@@ -1,0 +1,16 @@
+{
+  "case": "the model.call audit event (JSON log line, logger `audit`)",
+  "event": {
+    "action": "model.call",
+    "cost_cu": "0.0021",
+    "event": "model.call",
+    "input_tokens": 10,
+    "key_id": 7,
+    "model": "claude-opus-4-8",
+    "output_tokens": 4,
+    "provider": "anthropic",
+    "sid": "ses_1",
+    "status": "success",
+    "unit": "unit_acme_eng"
+  }
+}

@@ -1,15 +1,16 @@
 import { proxyRefusals } from "./egress-fixtures";
 
 /**
- * A stand-in for the engine egress proxy (contract P6-vault-egress 1.2, §"The engine egress proxy"); its refusals
- * are W4's fixtures (fixtures/egress-proxy, mlpal-harness-stack d5d56a5), answered byte for byte. `ANY
+ * A stand-in for the engine egress proxy (contract P6-vault-egress 1.4, §"The engine egress proxy"); its refusals
+ * are W4's fixtures (fixtures/egress-proxy, mlpal-harness-stack f5902f8), answered byte for byte. `ANY
  * /v1/u/{name}/{path…}`:
  *
  * - auth: `X-Harness-Egress-Token` must equal `token` (settable, to rotate), else 401 `token_invalid`;
  * - `name` must be one of `upstreams`, else 403 `upstream_not_granted`;
  * - it strips `X-Harness-Egress-Token`, `Proxy-*`, hop-by-hop headers and every header named in `inject`, sets each
  *   `inject` header (`Bearer <value>` for `bearer`, the value for `raw`), and forwards to `base_url + path` (with the
- *   query), never following a redirect; both bodies stream; a response header equal to an injected value is dropped;
+ *   query), never following a redirect; both bodies stream; an injected value the upstream echoes is replaced by
+ *   `[REDACTED]` in the response headers and body (1.4);
  * - `refuseNext(code)` answers the next request with that refusal, `X-Harness-Egress: refused`, body `{code}`.
  *
  * `seen` records what the ENGINE sent (before stripping), so a test can assert the engine added no credential.
@@ -79,9 +80,15 @@ export function startFakeEgressProxy(opts: { token: string; upstreams: FakeUpstr
       } catch {
         return refused("upstream_unreachable");
       }
+      const secrets = up.inject.map((i) => i.value);
+      const redact = (text: string): string => secrets.reduce((t, v) => t.split(v).join("[REDACTED]"), text);
       const out = new Headers();
-      for (const [k, v] of res.headers) if (!values.includes(v) && !HOP_BY_HOP.includes(k.toLowerCase()) && k.toLowerCase() !== "content-encoding") out.set(k, v);
-      return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
+      for (const [k, v] of res.headers) if (!HOP_BY_HOP.includes(k.toLowerCase()) && k.toLowerCase() !== "content-encoding") out.set(k, redact(v));
+      // Chunk-wise replacement: enough for a fake whose echoes fit in one chunk; the real proxy matches across chunks.
+      const enc = new TextEncoder();
+      const dec = new TextDecoder();
+      const body = res.body && secrets.length ? res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform: (chunk, c) => c.enqueue(enc.encode(redact(dec.decode(chunk, { stream: true })))) })) : res.body;
+      return new Response(body, { status: res.status, statusText: res.statusText, headers: out });
     },
   });
   return {

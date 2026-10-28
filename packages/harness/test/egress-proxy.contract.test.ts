@@ -38,6 +38,8 @@ beforeAll(() => {
       const u = new URL(req.url);
       saw.push({ headers: Object.fromEntries([...req.headers].map(([k, v]) => [k.toLowerCase(), v])), method: req.method, pathAndQuery: u.pathname + u.search });
       if (u.pathname === "/mcp/moved") return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/steal" } });
+      // An upstream that echoes the credential it was sent (1.4: the proxy redacts it in headers and body).
+      if (u.pathname === "/mcp/echo-auth") return new Response(`invalid token: ${req.headers.get("authorization")} (rejected)`, { status: 401, headers: { "content-type": "text/plain; charset=utf-8", "www-authenticate": `${req.headers.get("authorization")}` } });
       return Response.json({ ok: true });
     },
   });
@@ -64,7 +66,7 @@ async function through(r: EgressRoute, path: string, init: RequestInit = {}) {
   const recording = (async (input: Parameters<typeof fetch>[0], i?: RequestInit) => {
     const res = await fetch(input, i);
     const text = await res.clone().text();
-    answer = { status: res.status, headers: res.headers, body: text ? JSON.parse(text) : null };
+    answer = { status: res.status, headers: res.headers, body: !text ? null : (res.headers.get("content-type") ?? "").includes("json") ? JSON.parse(text) : text };
     return res;
   }) as typeof fetch;
   const result = await egressFetch(r, recording)(egressUrl(r, path), init).then(
@@ -94,10 +96,10 @@ function expectRefusal(f: EgressFixture, got: Awaited<ReturnType<typeof through>
 
 const fixtures = egressFixtures();
 
-describe("W4's egress proxy fixtures (mlpal-harness-stack d5d56a5)", () => {
-  test("the set is the one the README pins: 26 files, ten proxy routes, the token claims", () => {
-    expect(fixtures.length).toBe(26);
-    expect(fixtures.filter((f) => f.name.startsWith("proxy-")).length).toBe(10);
+describe("W4's egress proxy fixtures (mlpal-harness-stack f5902f8, P6 1.4)", () => {
+  test("the set is the one the README pins: 28 files, twelve proxy routes, the token claims", () => {
+    expect(fixtures.length).toBe(28);
+    expect(fixtures.filter((f) => f.name.startsWith("proxy-")).length).toBe(12);
     expect(fixtures.some((f) => f.name === "egress-token-claims")).toBe(true);
   });
 
@@ -146,6 +148,18 @@ describe("W4's egress proxy fixtures (mlpal-harness-stack d5d56a5)", () => {
       });
       continue;
     }
+    if (f.name === "proxy-401-echo-redacted") {
+      test(`${f.name}: ${f.case}: the upstream's answer passes back as is, the credential replaced, no refusal`, async () => {
+        const got = await through(route(), "echo-auth");
+        expect(got.error).toBeUndefined();
+        expect(got.res!.status).toBe(f.status!);
+        expect(got.res!.headers.get("content-type")).toStartWith(f.content_type!);
+        expect(got.res!.headers.get("x-harness-egress")).toBeNull();
+        expect(await got.res!.text()).toBe(f.body as string);
+        expect(got.res!.headers.get("www-authenticate")).toBe("Bearer [REDACTED]");
+      });
+      continue;
+    }
     if (f.headers?.["x-harness-egress"] === "refused") {
       test(`${f.name}: ${f.case}: a typed refusal, its status, body and header as the fixture`, async () => {
         const scenario = REFUSAL_SCENARIOS[f.name]?.();
@@ -159,4 +173,24 @@ describe("W4's egress proxy fixtures (mlpal-harness-stack d5d56a5)", () => {
       throw new Error(`add a scenario for ${f.name} (${f.case})`);
     });
   }
+});
+
+describe("P6 1.4 notes from W4", () => {
+  test("502 upstream_encoding_refused is a refusal like upstream_unreachable: the tool error text names it", async () => {
+    const f = fixtures.find((x) => x.name === "proxy-502-upstream-encoding-refused")!;
+    proxy.refuseNext("upstream_encoding_refused");
+    const got = await through(route(), "");
+    expectRefusal(f, got, "github-mcp");
+    expect((got.error as Error).message).toBe("egress refused (upstream_encoding_refused) for github-mcp");
+  });
+
+  test("the proxy now decodes path segments before its traversal checks; the engine still refuses %2e%2e first, sending nothing", async () => {
+    const before = proxy.seen.length;
+    for (const path of ["%2e%2e/dead-mcp/", "%2E%2E/dead-mcp/", "%252e%252e/dead-mcp/"]) {
+      const e = await egressFetch(route(), fetch)(`${proxy.url}/v1/u/github-mcp/${path}`).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(EgressRefusedError);
+      expect((e as EgressRefusedError).code).toBe("path_escape");
+    }
+    expect(proxy.seen.length).toBe(before);
+  });
 });

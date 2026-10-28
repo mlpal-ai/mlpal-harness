@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EgressRefusedError, egressFetch, egressUrl, type EgressRoute } from "../../egress/proxy";
+import { EgressRefusedError, egressFetch, egressUrl, type EgressRoute, segmentsSafe } from "../../egress/proxy";
 import { defineTool, err, ok, type ToolResult } from "../types";
 import { host } from "../../host";
 
@@ -73,7 +73,8 @@ export const webFetchTool = defineTool({
 });
 
 /** `url`'s path and query relative to `base`, or null when it is not under it: same origin, the parsed (dot
- *  segments resolved, `%2e` included) path under the base's on a segment boundary, and still so after one decoding. */
+ *  segments resolved, `%2e` included) path under the base's on a segment boundary, leading slashes of the rest
+ *  stripped (egressUrl strips them too, so both see one path), and every segment of the rest safe (segmentsSafe). */
 export function pathUnderBase(url: string, base: string): string | null {
   let t: URL;
   let b: URL;
@@ -85,15 +86,8 @@ export function pathUnderBase(url: string, base: string): string | null {
   }
   const prefix = b.pathname.endsWith("/") ? b.pathname : `${b.pathname}/`;
   if (t.origin !== b.origin || !t.pathname.startsWith(prefix)) return null;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(t.pathname);
-  } catch {
-    return null;
-  }
-  const again = new URL(decoded, t.origin);
-  if (again.origin !== t.origin || !again.pathname.startsWith(prefix)) return null;
-  return t.pathname.slice(prefix.length) + t.search;
+  const rest = t.pathname.slice(prefix.length).replace(/^\/+/, "");
+  return segmentsSafe(rest) ? rest + t.search : null;
 }
 
 /**

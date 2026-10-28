@@ -12,7 +12,7 @@ import { McpManager } from "../src/mcp/manager";
 import { createPolicy } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
 import { createEgressWebFetchTool } from "../src/tools/builtin/web";
-import { runTool, ToolRegistry } from "../src/tools/registry";
+import { ToolRegistry } from "../src/tools/registry";
 import { startFakeEgressProxy, startFakeMcpUpstream } from "./fake-egress-proxy";
 
 /**
@@ -24,7 +24,7 @@ import { startFakeEgressProxy, startFakeMcpUpstream } from "./fake-egress-proxy"
 
 const TOKEN = "eyJlZ3Jlc3MiOjF9.round1-egress.sig";
 const SECRET = "ghp_vault_value_only_the_proxy_holds";
-/** The four ways to write `..` the reviewer named, plus `..%2f` (a slash in disguise). */
+/** The four ways to write `..` the reviewer named. */
 const ESCAPES = ["..", "%2e%2e", "%2E%2E", "%252e%252e"];
 
 let dir: string;
@@ -156,14 +156,12 @@ describe("minors", () => {
     const gw = join(dir, "gateway.token");
     writeFileSync(gw, "eyJzIjoxfQ.round1-session.sig");
     const realFetch = globalThis.fetch;
-    const answers: Record<string, Response> = {};
     globalThis.fetch = (async (_u: string, init: RequestInit) => {
       const model = JSON.parse(init.body as string).model as string;
       return model === "m-401"
         ? new Response(JSON.stringify({ error: { type: "authentication_error", code: "invalid_api_key", message: "bad" } }), { status: 401 })
         : new Response(JSON.stringify({ error: { type: "permission_error", code: "model_not_allowed", message: "no" } }), { status: 403 });
     }) as unknown as typeof fetch;
-    void answers;
     try {
       const metrics = new MemoryMetrics();
       for (const model of ["m-401", "m-403"]) {
@@ -200,4 +198,46 @@ describe("minors", () => {
   });
 });
 
-void runTool;
+describe("review 2: W4's per-segment rule (decode each segment until stable, at most 3 rounds)", () => {
+  /** Each is refused by the engine itself (`path_escape`), never left for the proxy to answer. */
+  const REFUSED = [
+    "%3f%2f..%2f..%2fgithub-mcp%2fx", // a segment that decodes to a query and a path
+    "..;/github-mcp/x",
+    ".;/x",
+    "%2e%2e%3b/x", // ..;
+    "a%5c..%5cb", // backslashes
+    "a%00b", // NUL
+    "%25252e%25252e/github-mcp/x", // three encodings of ..
+    "%2525252e%2525252e/x", // four: not stable after three rounds
+    "ok/%2fetc", // a segment holding a slash
+  ];
+  for (const path of REFUSED) {
+    test(`egressUrl, egressFetch and pathUnderBase refuse ${path}`, async () => {
+      expect(() => egressUrl(fetchRoute(), path)).toThrow("egress refused (path_escape) for web-fetch");
+      let calls = 0;
+      const base = (async () => (calls++, new Response("ok"))) as unknown as typeof fetch;
+      const e = await egressFetch(fetchRoute(), base)(`${proxy.url}/v1/u/web-fetch/${path}`).catch((x: unknown) => x);
+      expect((e as EgressRefusedError).code).toBe("path_escape");
+      expect(calls).toBe(0);
+      const { pathUnderBase } = await import("../src/tools/builtin/web");
+      expect(pathUnderBase(`${site.base}${path}`, site.base)).toBeNull();
+    });
+  }
+
+  test("ordinary paths still pass: encoded spaces, dotted names, .well-known, a segment that merely starts with ..", async () => {
+    const { pathUnderBase } = await import("../src/tools/builtin/web");
+    for (const path of ["a%20b/c.d/file.txt", ".well-known/x", "..foo/bar", "v1.2/x?q=a/../b"]) {
+      expect(egressUrl(fetchRoute(), path)).toBe(`${proxy.url}/v1/u/web-fetch/${path}`);
+      expect(pathUnderBase(`${site.base}${path}`, site.base)).toBe(path);
+    }
+  });
+
+  test("a doubled slash under the base: pathUnderBase strips it and agrees with egressUrl (the serve crashed on `//..%2fx`)", async () => {
+    const { pathUnderBase } = await import("../src/tools/builtin/web");
+    expect(pathUnderBase(`${site.base}/x/y`, site.base)).toBe("x/y");
+    expect(pathUnderBase(`${site.base}/..%2fx`, site.base)).toBeNull();
+    const rest = pathUnderBase(`${site.base}//x`, site.base);
+    expect(rest).toBe("x");
+    expect(() => egressUrl(fetchRoute(), rest!)).not.toThrow();
+  });
+});

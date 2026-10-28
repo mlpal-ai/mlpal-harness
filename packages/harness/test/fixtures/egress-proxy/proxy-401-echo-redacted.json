@@ -1,0 +1,39 @@
+{
+  "audit": [
+    {
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "code": "body",
+      "event": "egress.credential_echo_redacted",
+      "host": "api.githubcopilot.com",
+      "injected": [
+        "authorization"
+      ],
+      "method": "GET",
+      "redacted": 1,
+      "sid": "ses_1",
+      "status": 401,
+      "unit": "unit_acme_eng",
+      "upstream": "github-mcp"
+    },
+    {
+      "bytes_in": 0,
+      "bytes_out": 43,
+      "event": "egress.request",
+      "host": "api.githubcopilot.com",
+      "injected": [
+        "authorization"
+      ],
+      "method": "GET",
+      "sid": "ses_1",
+      "status": 401,
+      "unit": "unit_acme_eng",
+      "upstream": "github-mcp"
+    }
+  ],
+  "body": "invalid token: Bearer [REDACTED] (rejected)",
+  "case": "the upstream echoes the injected credential: replaced in headers and body, audited without it",
+  "content_type": "text/plain; charset=utf-8",
+  "route": "ANY /v1/u/{name}/{path…}",
+  "status": 401
+}
