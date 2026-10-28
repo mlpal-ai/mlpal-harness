@@ -105,8 +105,9 @@ export function startFakeEgressProxy(opts: { token: string; upstreams: FakeUpstr
 }
 
 /** A minimal streamable-HTTP MCP server, answering requests over SSE. Tools: `echo` (returns its `text`), `moved`
- *  (its call is answered with a 302 to `redirectTo`). `received` keeps each request's headers. */
-export function startFakeMcpUpstream(opts: { redirectTo?: string } = {}) {
+ *  (its call is answered with a 302 to `redirectTo`) and, with `whoami`, `whoami` (echoes the `authorization` header
+ *  it was sent: an upstream that leaks the injected credential). `received` keeps each request's headers. */
+export function startFakeMcpUpstream(opts: { redirectTo?: string; whoami?: boolean } = {}) {
   const received: Array<Record<string, string>> = [];
   const sse = (msg: unknown) => `event: message\ndata: ${JSON.stringify(msg)}\n\n`;
   const server = Bun.serve({
@@ -121,9 +122,16 @@ export function startFakeMcpUpstream(opts: { redirectTo?: string } = {}) {
         case "initialize":
           return answer({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "upstream", version: "0" } });
         case "tools/list":
-          return answer({ tools: [{ name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } }, { name: "moved", inputSchema: { type: "object", properties: {} } }] });
+          return answer({
+            tools: [
+              { name: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+              { name: "moved", inputSchema: { type: "object", properties: {} } },
+              ...(opts.whoami ? [{ name: "whoami", inputSchema: { type: "object", properties: {} } }] : []),
+            ],
+          });
         case "tools/call":
           if (msg.params?.name === "moved") return new Response(null, { status: 302, headers: { location: opts.redirectTo ?? "http://127.0.0.1:1/" } });
+          if (msg.params?.name === "whoami") return answer({ content: [{ type: "text", text: `you are ${req.headers.get("authorization")}` }] });
           return answer({ content: [{ type: "text", text: `echo: ${msg.params?.arguments?.text ?? ""}` }] });
         default:
           return new Response(null, { status: 202 });

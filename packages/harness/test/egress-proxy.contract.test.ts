@@ -10,8 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { EgressRefusedError, egressFetch, egressMcpServer, egressUrl, type EgressRoute } from "../src/egress/proxy";
+import { McpManager } from "../src/mcp/manager";
+import { createEgressWebFetchTool } from "../src/tools/builtin/web";
+import { runTool, ToolRegistry } from "../src/tools/registry";
 import { type EgressFixture, egressFixtures } from "./egress-fixtures";
-import { startFakeEgressProxy } from "./fake-egress-proxy";
+import { startFakeEgressProxy, startFakeMcpUpstream } from "./fake-egress-proxy";
 
 const TOKEN = "eyJyb2xlIjoiZW5naW5lIn0.contract-egress.sig";
 const VALUE = "vault-value-for-the-contract";
@@ -21,6 +24,7 @@ let tokenFile: string;
 let badTokenFile: string;
 let upstream: { base: string; saw: Array<{ headers: Record<string, string>; method: string; pathAndQuery: string }>; stop(): void };
 let proxy: ReturnType<typeof startFakeEgressProxy>;
+let whoami: ReturnType<typeof startFakeMcpUpstream>;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "p6-contract-"));
@@ -40,21 +44,26 @@ beforeAll(() => {
       if (u.pathname === "/mcp/moved") return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/steal" } });
       // An upstream that echoes the credential it was sent (1.4: the proxy redacts it in headers and body).
       if (u.pathname === "/mcp/echo-auth") return new Response(`invalid token: ${req.headers.get("authorization")} (rejected)`, { status: 401, headers: { "content-type": "text/plain; charset=utf-8", "www-authenticate": `${req.headers.get("authorization")}` } });
+      if (u.pathname === "/mcp/echo-ok") return new Response(`signed in as ${req.headers.get("authorization")}`, { headers: { "content-type": "text/plain; charset=utf-8" } });
       return Response.json({ ok: true });
     },
   });
   upstream = { base: `http://127.0.0.1:${server.port}/mcp/`, saw, stop: () => server.stop(true) };
+  whoami = startFakeMcpUpstream({ whoami: true });
   proxy = startFakeEgressProxy({
     token: TOKEN,
     upstreams: [
       { name: "github-mcp", base_url: upstream.base, inject: [{ header: "authorization", scheme: "bearer", value: VALUE }] },
       { name: "dead-mcp", base_url: "http://127.0.0.1:1/", inject: [] },
+      { name: "web-fetch", base_url: upstream.base, inject: [{ header: "authorization", scheme: "bearer", value: VALUE }] },
+      { name: "whoami-mcp", base_url: whoami.url, inject: [{ header: "authorization", scheme: "bearer", value: VALUE }] },
     ],
   });
 });
 afterAll(() => {
   proxy.stop();
   upstream.stop();
+  whoami.stop();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -192,5 +201,30 @@ describe("P6 1.4 notes from W4", () => {
       expect((e as EgressRefusedError).code).toBe("path_escape");
     }
     expect(proxy.seen.length).toBe(before);
+  });
+});
+
+describe("review 3: an echoed credential reaches the model as [REDACTED] (a 2xx answer and an MCP tool result)", () => {
+  test("WebFetch of a 200 page that echoes the injected credential: the tool result the model reads holds [REDACTED], never the value", async () => {
+    const res = await createEgressWebFetchTool(route({ upstream: "web-fetch" }), upstream.base).call({ url: `${upstream.base}echo-ok` }, { cwd: dir });
+    expect(upstream.saw.at(-1)!.headers.authorization).toBe(`Bearer ${VALUE}`); // the upstream did hold it, and echoed it
+    expect(res.isError).toBeUndefined();
+    expect(String(res.content)).toBe(`URL: ${upstream.base}echo-ok\n\nsigned in as Bearer [REDACTED]`);
+    expect(String(res.content)).not.toContain(VALUE);
+  });
+
+  test("an MCP tool whose result echoes the injected credential: the tool result holds [REDACTED], never the value", async () => {
+    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    try {
+      await mcp.connectAll({ w: egressMcpServer(route({ upstream: "whoami-mcp" })) }, reg);
+      expect(mcp.status()[0]).toMatchObject({ ok: true, tools: 3 });
+      const res = await runTool(reg, "mcp__w__whoami", {}, { cwd: dir });
+      expect(whoami.received.at(-1)!.authorization).toBe(`Bearer ${VALUE}`);
+      expect(res).toMatchObject({ isError: false, content: "you are Bearer [REDACTED]" });
+      expect(JSON.stringify(res)).not.toContain(VALUE);
+    } finally {
+      await mcp.close();
+    }
   });
 });

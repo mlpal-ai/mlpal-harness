@@ -42,28 +42,39 @@ export class EgressRefusedError extends Error {
 /** The engine's own refusal of a url that resolves outside its upstream's route: never sent. */
 export const PATH_ESCAPE = "path_escape";
 
-const UNSAFE_SEGMENTS = new Set([".", "..", "..;", ".;"]);
+const MAX_DECODE_ROUNDS = 3;
+const PERCENT_BYTE = /%([0-9A-Fa-f]{2})/g;
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
-/** W4's per-segment rule (P6 1.4): each `/`-separated segment percent-decoded until stable, at most three rounds
- *  (not stable after three is refused); a segment that is then `.`, `..`, `..;` or `.;`, or that holds `/`, `\` or
- *  NUL, is unsafe. So no encoding of a dot segment or a separator reaches the proxy, nor an upstream that decodes. */
-export function segmentsSafe(path: string): boolean {
-  for (const raw of path.split("/")) {
-    let seg = raw;
-    for (let round = 0; ; round++) {
-      let next: string;
-      try {
-        next = decodeURIComponent(seg);
-      } catch {
-        return false;
-      }
-      if (next === seg) break;
-      if (round === 3) return false;
-      seg = next;
+/** `raw` percent-decoded until it stops changing, at most three rounds, as W4 decodes it: each `%XX` becomes its byte
+ *  and any other `%` stays a literal `%` (`100%25` is `100%`). Null when it still changes after three rounds or a
+ *  round's bytes are not UTF-8 (the overlong `%c0%ae` some decoders read as `.`, a bare `%E9`): a refusal, never
+ *  "stable", or `%2e%2e%2f%` would be judged undecoded. */
+function decodedSegment(raw: string): string | null {
+  let bytes = Buffer.from(raw, "utf8").toString("latin1");
+  let text = raw;
+  for (let round = 0; ; round++) {
+    const next = bytes.replace(PERCENT_BYTE, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+    if (next === bytes) return text;
+    if (round === MAX_DECODE_ROUNDS) return null;
+    try {
+      text = UTF8.decode(Buffer.from(next, "latin1"));
+    } catch {
+      return null;
     }
-    if (UNSAFE_SEGMENTS.has(seg) || /[/\\\0]/.test(seg)) return false;
+    bytes = next;
   }
-  return true;
+}
+
+/** W4's per-segment rule (P6 1.4): a `/`-separated segment that, decoded (decodedSegment), is `.` or `..`, starts
+ *  with `..;` or `.;` (path parameters some Java servers strip before normalising), or holds `/`, `\` or NUL is
+ *  unsafe, as is one that does not decode. So no encoding of a dot segment or a separator reaches the proxy, nor an
+ *  upstream that decodes. */
+export function segmentsSafe(path: string): boolean {
+  return path.split("/").every((raw) => {
+    const seg = decodedSegment(raw);
+    return seg !== null && seg !== "." && seg !== ".." && !seg.startsWith("..;") && !seg.startsWith(".;") && !/[/\\\0]/.test(seg);
+  });
 }
 
 /** True when `url`, as fetch will send it (dot segments resolved, `%2e` included), stays on the proxy's origin under

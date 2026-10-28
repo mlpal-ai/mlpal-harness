@@ -53,10 +53,17 @@
   - The proxy now decodes path segments before its own traversal checks; the engine keeps its own check as defence
     in depth (a `%2e%2e` form is refused before any request, tested). Review round 2: that check is W4's
     per-segment rule (`segmentsSafe`): each segment percent-decoded until stable, at most three rounds (not stable
-    after three is refused), and a segment that is then `.`, `..`, `..;` or `.;`, or holds `/`, `\` or NUL, is
-    `path_escape` — so `%3f%2f..%2f..%2fgithub-mcp%2fx` is the engine's refusal, not the proxy's
+    after three is refused), and a segment that is then `.` or `..`, starts with `..;` or `.;`, or holds `/`, `\`
+    or NUL, is `path_escape` — so `%3f%2f..%2f..%2fgithub-mcp%2fx` is the engine's refusal, not the proxy's
     `upstream_not_granted`. It replaces the decode-once re-parse in `insideRoute` and `pathUnderBase`;
     `pathUnderBase` strips leading slashes of the rest, so it and `egressUrl` see one path (`/mcp//..%2fx`).
+  - Review round 3: a segment is decoded as W4 decodes it, each `%XX` to its byte and any other `%` left a literal
+    `%`, so `wiki/100%25` and `50%25off.md` are ordinary paths again (WebFetch fetches them, a settings MCP url keeps
+    its path instead of falling back to the base). A round whose bytes are not UTF-8 (overlong `%c0%ae`, a bare
+    `%E9`) is refused, never taken as stable (`%2e%2e%2f%` is `../%`, refused). `..;` and `.;` match as prefixes
+    (`..;jsessionid=1`, `%2e%2e%3bfoo`). Tested: the round cap (`A` encoded four times is refused, three times is
+    not), the not-UTF-8 branch, and an echoed credential reaching the model as `[REDACTED]` through WebFetch (a 200)
+    and an MCP tool result.
   - The gateway session-token fixtures pinned at mlpal-assistants-service `a45fe8f`
     (`test/fixtures/p6-session-token/`, read from the local object store): the 401 and both 403 bodies replayed
     through the client (re-read and retry, `sessionTokenRejected`, the access refusal with the gateway's model), a

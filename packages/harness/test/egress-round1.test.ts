@@ -7,11 +7,11 @@ import { AgentSession } from "../src/loop/agent";
 import { MemoryMetrics } from "../src/obs/metrics";
 import { JsonLogger } from "../src/obs/logger";
 import { clearSecrets, redactText } from "../src/obs/redact";
-import { EgressRefusedError, egressFetch, egressMcpServer, egressUrl, type EgressRoute } from "../src/egress/proxy";
+import { EgressRefusedError, egressFetch, egressMcpServer, egressUrl, type EgressRoute, segmentsSafe } from "../src/egress/proxy";
 import { McpManager } from "../src/mcp/manager";
 import { createPolicy } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
-import { createEgressWebFetchTool } from "../src/tools/builtin/web";
+import { createEgressWebFetchTool, pathUnderBase } from "../src/tools/builtin/web";
 import { ToolRegistry } from "../src/tools/registry";
 import { startFakeEgressProxy, startFakeMcpUpstream } from "./fake-egress-proxy";
 
@@ -240,4 +240,75 @@ describe("review 2: W4's per-segment rule (decode each segment until stable, at 
     expect(rest).toBe("x");
     expect(() => egressUrl(fetchRoute(), rest!)).not.toThrow();
   });
+});
+
+describe("review 3: tolerant per-byte decoding, `..;`/`.;` by prefix, the round cap, invalid UTF-8", () => {
+  const githubRoute = (): EgressRoute => ({ proxyUrl: proxy.url, upstream: "github-mcp", tokenFile });
+
+  /** Each refused with path_escape by egressUrl, egressFetch (before any request) and pathUnderBase. */
+  async function expectRefused(path: string) {
+    expect(segmentsSafe(path)).toBe(false);
+    expect(() => egressUrl(fetchRoute(), path)).toThrow("egress refused (path_escape) for web-fetch");
+    let calls = 0;
+    const base = (async () => (calls++, new Response("ok"))) as unknown as typeof fetch;
+    const e = await egressFetch(fetchRoute(), base)(`${proxy.url}/v1/u/web-fetch/${path}`).catch((x: unknown) => x);
+    expect((e as EgressRefusedError).code).toBe("path_escape");
+    expect(calls).toBe(0);
+    expect(pathUnderBase(`${site.base}${path}`, site.base)).toBeNull();
+  }
+
+  /** A `%` that is not `%XX` is a literal `%` (W4's rule), never a decode error: W4 forwards each of these. */
+  const ACCEPTED = ["wiki/100%25", "50%25off.md", "wiki/100%", "50%off.md", "a/%25%25/b", "%252541", "caf%C3%A9"];
+  for (const path of ACCEPTED) {
+    test(`${path} is an ordinary path: egressUrl and pathUnderBase keep it as sent`, () => {
+      expect(segmentsSafe(path)).toBe(true);
+      expect(egressUrl(fetchRoute(), path)).toBe(`${proxy.url}/v1/u/web-fetch/${path}`);
+      expect(pathUnderBase(`${site.base}${path}`, site.base)).toBe(path);
+    });
+  }
+
+  for (const path of ["wiki/100%25", "50%25off.md"]) {
+    test(`WebFetch of ${path} is fetched at that path through the proxy, not refused`, async () => {
+      const before = proxy.seen.length;
+      const res = await createEgressWebFetchTool(fetchRoute(), site.base).call({ url: `${site.base}${path}` }, { cwd: dir });
+      expect(res.isError).toBeUndefined();
+      expect(proxy.seen.slice(before).map((r) => `${r.name}/${r.path}`)).toEqual([`web-fetch/${path}`]);
+    });
+
+    test(`an MCP server at ${path} under its upstream connects at that path, not the base`, async () => {
+      const before = proxy.seen.length;
+      const reg = new ToolRegistry();
+      const mcp = new McpManager();
+      try {
+        await mcp.connectAll({ gh: egressMcpServer(githubRoute(), path) }, reg);
+        expect(mcp.status()[0]).toMatchObject({ ok: true });
+        const paths = proxy.seen.slice(before).map((r) => r.path);
+        expect(paths.length).toBeGreaterThan(0);
+        expect(new Set(paths)).toEqual(new Set([path]));
+      } finally {
+        await mcp.close();
+      }
+    });
+  }
+
+  const REFUSED: Array<[string, string]> = [
+    ["%2e%2e%2f%/x", "a decode that leaves a lone `%` is not stable: `../%` holds a slash"],
+    ["%2e%2e%2f%zz/x", "`../%zz` holds a slash"],
+    ["..;jsessionid=1/x", "starts with `..;`"],
+    [".;x/y", "starts with `.;`"],
+    ["%2e%2e%3bfoo/x", "decodes to `..;foo`"],
+    ["%2e%3bx/y", "decodes to `.;x`"],
+    ["%25252541", "`A` encoded four times: not stable after three rounds"],
+    ["%2525252541", "`A` encoded five times"],
+    ["%c0%ae", "overlong `.`: not UTF-8"],
+    ["%c0%ae%c0%ae/github-mcp/x", "overlong `..`: not UTF-8"],
+    ["%E9", "a bare Latin-1 byte: not UTF-8"],
+    ["%25E9", "a Latin-1 byte after two rounds: not UTF-8"],
+    ["%e0%80%ae", "three-byte overlong `.`"],
+  ];
+  for (const [path, why] of REFUSED) {
+    test(`${path} is refused: ${why}`, async () => {
+      await expectRefused(path);
+    });
+  }
 });
