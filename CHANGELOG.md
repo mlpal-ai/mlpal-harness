@@ -31,6 +31,9 @@
   `inFlightTurn(entries)`, the rule `resume()` uses, exported for a host deciding whether to resume; and
   `LeaseKeeper.drop()`, which stops renewing without giving the lease back, for a writer that lost its place
   (`seq_conflict`): it must neither keep the lease alive nor hand it on.
+- `parkHeadless: "every_ask"` parks a run on any ask with no answerer, not only a §10 safety edge: the result is
+  `needs_approval` with `pendingApproval {command, reason: "approval_required"}`. `true` keeps its meaning. yodex
+  uses it for a turn it resumes with nobody attached.
 
 ### Engine store, slice 2: the side-effect key and resume (2026-10-27)
 

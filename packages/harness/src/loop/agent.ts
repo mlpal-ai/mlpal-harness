@@ -187,8 +187,10 @@ export interface AgentConfig {
   /** Headless safety runs (§10): when a safety-edge ask has no interactive answerer, END the run
    *  as NEEDS_APPROVAL (stop-and-wait) rather than denying the action and continuing. The host sets
    *  this for a headless run under a HOP with a safety envelope; it writes the hop-run-result-v1
-   *  artifact from the terminal result event's pendingApproval. */
-  parkHeadless?: boolean;
+   *  artifact from the terminal result event's pendingApproval. `"every_ask"` parks on any ask with no
+   *  answerer (reason `approval_required`): a turn resumed with nobody attached waits for the person
+   *  instead of losing the ask. */
+  parkHeadless?: boolean | "every_ask";
   /**
    * Completion self-check: nudge once to verify-or-admit when a run made >= selfCheckMinEdits
    * successful edits but never ran a test/build/typecheck. Default on (undefined => on); set
@@ -278,7 +280,7 @@ export interface AskContext {
 class SafetyParkSignal extends Error {
   constructor(
     readonly command: string,
-    readonly reason: SafetyReason,
+    readonly reason: SafetyReason | "approval_required",
   ) {
     super("safety approval edge (headless park)");
     this.name = "SafetyParkSignal";
@@ -1793,11 +1795,12 @@ export class AgentSession {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
       }
     }
-    // A §10 safety edge with no interactive answerer: park the whole run (stop-and-wait) instead of
-    // denying just this action and continuing — the infra HOP must not proceed past the edge.
-    if (d.safetyReason && this.cfg.parkHeadless) {
+    // A §10 safety edge with no interactive answerer (with `every_ask`, any ask): park the whole run
+    // (stop-and-wait) instead of denying just this action and continuing — the infra HOP must not
+    // proceed past the edge.
+    if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
-      throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason);
+      throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason ?? "approval_required");
     }
     return {
       decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),

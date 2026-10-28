@@ -244,6 +244,30 @@ describe("agentic loop", () => {
     expect(result && "subtype" in result ? result.subtype : "").toBe("needs_approval");
   });
 
+  test("parkHeadless every_ask: an ordinary ask with no answerer parks the run too, before the tool runs", async () => {
+    const model = new ScriptedModel([toolUse("Bash", { command: "echo hi > out.txt" }), textDone("done")]);
+    const sess = session(model, "manual", {
+      parkHeadless: "every_ask",
+      canUseTool: (req) => (req.toolName === "Bash" ? { behavior: "ask", reason: "writes a file" } : { behavior: "allow" }),
+      onAsk: async () => null,
+    });
+    const events = await collect(sess.run({ text: "write it" }));
+    expect(events.find((e) => e.type === "tool_result")).toBeUndefined();
+    expect(events.at(-1)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { command: "echo hi > out.txt", reason: "approval_required" } });
+  });
+
+  test("parkHeadless true still parks only the safety edge: an ordinary ask is refused and the run goes on", async () => {
+    const model = new ScriptedModel([toolUse("Bash", { command: "echo hi > out.txt" }), textDone("done")]);
+    const sess = session(model, "manual", {
+      parkHeadless: true,
+      canUseTool: (req) => (req.toolName === "Bash" ? { behavior: "ask", reason: "writes a file" } : { behavior: "allow" }),
+      onAsk: async () => null,
+    });
+    const events = await collect(sess.run({ text: "write it" }));
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ isError: true });
+    expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success" });
+  });
+
   test("onAsk receives the ask context: a safety edge carries its safetyReason", async () => {
     const seen: Array<{ command: unknown; safetyReason?: string; reason?: string }> = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "terraform destroy" }), textDone("done")]);
