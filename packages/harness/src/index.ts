@@ -33,6 +33,7 @@ export { LeaseKeeper, type LeaseKeeperOptions } from "./store/remote/lease";
 export { DeltaCoalescer, type DeltaCoalescerOptions } from "./store/remote/coalescer";
 export { ENTRY_KINDS, MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "./store/remote/remote-store";
 export { systemTimers, type Timers } from "./store/remote/timers";
+export * from "./store/memory-store";
 export * from "./memory/memory";
 export * from "./memory/derived";
 export * from "./memory/projection";
