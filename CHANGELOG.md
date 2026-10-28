@@ -2,15 +2,18 @@
 
 ## Unreleased
 
-### P4: the sandbox profile seams — HOP sandbox/workspace/processes, the stdio process host, hooks elsewhere (2026-10-28)
+### P4: the sandbox profile seams — the HOP platform declaration, the stdio process host, hooks elsewhere (2026-10-28)
 
 - No protocol change.
-- HOP schema (`mlpal/hop-v1`, additive): `sandbox: {size?: 1c2g|2c4g, template?: hands|<name>@<version>,
-  egress?: {allow: [host | host:port]}}`, `workspace: {policy?: ephemeral|session|persistent, idle_after_s?,
-  retention_s?, outputs?: [/workspace/… | /tmp/… globs]}` and `processes: {mcp_stdio?: [{name, argv,
-  env_names}], hooks?, lsp?}`. Validation and data only (`Profile.sandbox`, `.workspace`, `.processes`, snake-case
-  fields as P4's `SandboxProfile` names them); a child overrides per field, a list whole. Inline env values, a
-  `volume` and `secrets` are refused: those are the platform's.
+- HOP schema (`mlpal/hop-v1`, additive; the platform declaration as the controller ruled it 2026-10-28):
+  `sandbox: {size_class?: 1c2g|2c4g, template?: hands|<name>@<version>, egress?: [host | host:port]}`,
+  `workspace: {policy?: ephemeral|session|persistent}`, `credentials: [{ref, tool, host, header}]` (by reference
+  only; a `value` key is refused with its own message), `memory.promotion?: auto|review` and
+  `memory.limits?: {max_nodes?, max_bytes?, max_write_bytes?}` beside the existing `memory.reads`/`writes`, and P4's
+  `processes: {mcp_stdio?: [{name, argv, env_names}], hooks?, lsp?}`. Validation and data only (`Profile.sandbox`,
+  `.workspace`, `.credentials`, `.processes`, `.memory.promotion`, `.memory.limits`, snake-case as written); a child
+  overrides per field, a list whole. Unknown keys still fail, the old `sandbox.size` and `sandbox.egress.allow`
+  shapes included; inline env values, workspace volume/outputs/idle/retention and secrets are the platform's.
 - `ProcessHost` / `ProcessHostTransport` (`mcp/process-host.ts`): `StdioServerConfig.host` runs a stdio MCP
   server's process through the host (the sandbox's `exec/stream` in hosted mode) with the SDK's own framing, so
   the MCP client is unchanged. Without `host` a stdio server is the local child it always was.

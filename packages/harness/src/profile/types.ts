@@ -225,26 +225,39 @@ export interface SafetyPolicy {
   sandbox?: SandboxPolicy;
 }
 
-/** P4 — the sandbox a HOP asks for. Snake-case fields are the sandbox profile's own (P4
- *  `SandboxProfile`), so the host can send them as written. On the platform hop-service computes
- *  the effective profile and the engine never widens it from these; in file mode the host sends
- *  `egress` on create. */
+/** The `mlpal/hop-v1` declaration blocks the platform reads (controller ruling 2026-10-28): what the
+ *  HOP asks for. hop-service computes the effective profile and grant from them and the unit
+ *  policy; the engine never widens the RunContext from these. In file mode the host maps `sandbox`
+ *  onto the create (`size_class` → `size`, `egress` → `egress.allow`). */
 export type SandboxSize = "1c2g" | "2c4g";
 export interface HopSandbox {
-  size?: SandboxSize;
+  size_class?: SandboxSize;
   /** `hands`, or `<name>@<version>`. */
   template?: string;
   /** `host` or `host:port` entries; no wildcard, no scheme. */
-  egress?: { allow: string[] };
+  egress?: string[];
 }
 
 export type WorkspacePolicy = "ephemeral" | "session" | "persistent";
 export interface HopWorkspace {
   policy?: WorkspacePolicy;
-  idle_after_s?: number;
-  retention_s?: number;
-  /** Guest globs under /workspace or /tmp copied into the session log at an ephemeral turn's end. */
-  outputs?: string[];
+}
+
+/** A credential the HOP needs, by reference only (P6): the publication binds `ref` to a vault
+ *  secret; a value never appears in a HOP. */
+export interface HopCredential {
+  ref: string;
+  /** The MCP server that uses it, or `sandbox`. */
+  tool: string;
+  host: string;
+  header: string;
+}
+
+/** P5 — the memory store limits a HOP asks for (the grant's are the effective ones). */
+export interface HopMemoryLimits {
+  max_nodes?: number;
+  max_bytes?: number;
+  max_write_bytes?: number;
 }
 
 /** A stdio MCP server the HOP runs inside the sandbox. `env_names` are the variables it may see
@@ -330,16 +343,19 @@ export interface Profile {
     /** memory v7: the HOP's ontology extension (domain classes under a core parent) and its registry fields. */
     ontology?: { name: string; parent: string; description?: string }[]; owner?: string; mode?: "auto" | "review" | "manual"; sharing?: "none" | "org" | "fleet";
     /** managed HOPs: the publication this HOP version is published as; consented feedback goes to its HOP store. */
-    publication?: string };
+    publication?: string;
+    /** P5: how a run's staged claims reach the store, and the store limits asked for (the grant decides). */
+    promotion?: "auto" | "review"; limits?: HopMemoryLimits };
 
   /** HOP model policy (2026-10-23): the gateway's allow/deny globs the HOP declares; the key the
    *  HOP runs on carries it and the gateway enforces it. Absent = all models. Not inherited. */
   modelPolicy?: { allow: string[]; deny: string[] };
-  /** P4 — the sandbox, workspace and in-sandbox processes the HOP declares (validation and data
-   *  only; inherited per field down the chain). Absent => none declared. */
+  /** The platform declaration blocks (validation and data only; inherited per field down the
+   *  chain, a list whole). Absent => none declared. `processes` is P4's. */
   sandbox?: HopSandbox;
   workspace?: HopWorkspace;
   processes?: HopProcesses;
+  credentials?: HopCredential[];
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */

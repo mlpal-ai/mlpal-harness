@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type {
   EvalSuite,
+  HopCredential,
   HopProcesses,
   HopSandbox,
   HopWorkspace,
@@ -109,6 +110,12 @@ const memorySchema = z
     // managed HOPs: the publication this HOP version is published as (hop-service id); the
     // consent call names it and the HOP store is keyed by it.
     publication: z.string().min(1).optional(),
+    // P5: how a run's staged claims are promoted, and the limits the HOP asks for (validation only).
+    promotion: z.enum(["auto", "review"]).optional(),
+    limits: z
+      .object({ max_nodes: z.number().int().positive().optional(), max_bytes: z.number().int().positive().optional(), max_write_bytes: z.number().int().positive().optional() })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -254,29 +261,33 @@ const validEgressEntry = (e: string): boolean => {
   const m = EGRESS_ENTRY.exec(e);
   return Boolean(m) && (m![2] === undefined || (Number(m![2]) >= 1 && Number(m![2]) <= 65535));
 };
+const egressEntry = z.string().refine(validEgressEntry, (e) => ({ message: `not a host or host:port entry: ${JSON.stringify(e)} (no wildcard, no scheme)` }));
 const sandboxSchema = z
   .object({
-    size: z.enum(["1c2g", "2c4g"]).optional(),
+    size_class: z.enum(["1c2g", "2c4g"]).optional(),
     template: z
       .string()
       .regex(/^(hands|[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*)$/, "template must be hands or <name>@<version>")
       .optional(),
-    egress: z
-      .object({ allow: z.array(z.string().refine(validEgressEntry, (e) => ({ message: `not a host or host:port entry: ${JSON.stringify(e)} (no wildcard, no scheme)` }))) })
-      .strict()
-      .optional(),
+    egress: z.array(egressEntry).optional(),
   })
   .strict();
-const workspaceSchema = z
-  .object({
-    policy: z.enum(["ephemeral", "session", "persistent"]).optional(),
-    idle_after_s: z.number().int().positive().optional(),
-    retention_s: z.number().int().positive().optional(),
-    outputs: z
-      .array(z.string().regex(/^\/(workspace|tmp)\/./, "an output is an absolute guest path under /workspace or /tmp"))
-      .optional(),
-  })
-  .strict();
+const workspaceSchema = z.object({ policy: z.enum(["ephemeral", "session", "persistent"]).optional() }).strict();
+// P6: by reference only; a `value` is refused with its own message, any other unknown key as usual.
+const credentialSchema = z
+  .object({})
+  .passthrough()
+  .refine((c) => !("value" in c), "a credential is a reference (ref); a value never appears in a HOP")
+  .pipe(
+    z
+      .object({
+        ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/, "ref names a vault secret (an id or a name), never a value"),
+        tool: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "tool is the MCP server that uses it, or sandbox"),
+        host: z.string().refine((h) => validEgressEntry(h) && !h.includes(":"), "host is a bare host name"),
+        header: z.string().regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, "header is an HTTP field name"),
+      })
+      .strict(),
+  );
 const processesSchema = z
   .object({
     mcp_stdio: z
@@ -408,6 +419,7 @@ export const profileYamlSchema = z
     sandbox: sandboxSchema.optional(),
     workspace: workspaceSchema.optional(),
     processes: processesSchema.optional(),
+    credentials: z.array(credentialSchema).optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -668,11 +680,12 @@ function composeTools(include: string[] | undefined, modules: Profile["modules"]
   return { include: extra.length ? [...new Set([...include, ...extra])] : include };
 }
 
-function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes"> {
+function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes" | "credentials"> {
   const sandbox = composeBlock<HopSandbox>(parent.sandbox, y.sandbox);
   const workspace = composeBlock<HopWorkspace>(parent.workspace, y.workspace);
   const processes = composeBlock<HopProcesses>(parent.processes, y.processes);
-  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}) };
+  const credentials: HopCredential[] | undefined = y.credentials ?? parent.credentials;
+  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials ? { credentials } : {}) };
 }
 
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
@@ -740,10 +753,12 @@ export function composeProfile(
   const memoryOwner = y.memory.owner ?? parent.memory?.owner;
   const memoryMode = y.memory.mode ?? parent.memory?.mode;
   const memorySharing = y.memory.sharing ?? parent.memory?.sharing;
+  const memoryPromotion = y.memory.promotion ?? parent.memory?.promotion;
+  const memoryLimits = y.memory.limits ?? parent.memory?.limits;
   // A publication is this HOP version's own (hop-service id); a child never inherits a parent's.
   const memoryPublication = y.memory.publication;
   const memory =
-    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length
+    memoryWorkspace || memoryPolicy || memoryTenant || topics.length || reads.length || writes.length || ontology.length || memoryPromotion || memoryLimits
       ? {
           ...(memoryWorkspace ? { workspace: memoryWorkspace } : {}),
           ...(memoryTenant ? { tenant: memoryTenant } : {}),
@@ -756,6 +771,8 @@ export function composeProfile(
           ...(memoryMode ? { mode: memoryMode } : {}),
           ...(memorySharing ? { sharing: memorySharing } : {}),
           ...(memoryPublication ? { publication: memoryPublication } : {}),
+          ...(memoryPromotion ? { promotion: memoryPromotion } : {}),
+          ...(memoryLimits ? { limits: memoryLimits } : {}),
         }
       : undefined;
   // Safety is LOCKED whenever present — no child, user setting, or tuner may override it.
