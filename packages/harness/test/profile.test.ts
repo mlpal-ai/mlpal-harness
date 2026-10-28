@@ -244,9 +244,9 @@ describe("profile loading", () => {
       "spec: mlpal/hop-v1",
       "name: junk",
       "version: 0.1.0",
-      "sandbox: { mode: strict }",
+      "sandbox_mode: strict",
     ].join("\n"));
-    expect(() => loadProfile(pdir, opts())).toThrow(/junk|unrecognized/i);
+    expect(() => loadProfile(pdir, opts())).toThrow("Unrecognized key(s) in object: 'sandbox_mode'");
   });
 
   test("a child may not override a parent-locked path; error names the parent", () => {
