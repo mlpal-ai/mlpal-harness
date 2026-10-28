@@ -11,7 +11,10 @@
  * `413 event_too_large`. Anything else that fails an append ends this writer (fail closed): a hole
  * in the durable log would contradict what the engine already holds in memory.
  */
+import { EventTooLargeError } from "../errors";
 import { BatchTooLargeError, type EncodedEvent, encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
+
+export { EventTooLargeError };
 
 export interface AppendBatcherOptions {
   client: Pick<SessionStoreClient, "appendEncoded">;
@@ -31,17 +34,6 @@ export interface AppendBatcherOptions {
   onAck?: (events: StoredEvent[]) => void;
   /** Called once, with the error that stopped the writer. */
   onFatal?: (err: Error) => void;
-}
-
-/** One event is larger than the store takes: refused alone, never fatal to the writer. */
-export class EventTooLargeError extends Error {
-  constructor(
-    readonly bytes: number,
-    readonly limit: number,
-  ) {
-    super(`session store event of ${bytes} bytes is over the store's limit of ${limit}`);
-    this.name = "EventTooLargeError";
-  }
 }
 
 interface Queued {

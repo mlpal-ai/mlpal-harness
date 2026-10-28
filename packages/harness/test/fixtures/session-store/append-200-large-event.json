@@ -1,0 +1,10 @@
+{
+  "body": {
+    "first_seq": 1,
+    "last_seq": 1
+  },
+  "case": "a batch of one 10 MiB tool_result (up to max_event_bytes, 16 MiB): accepted, spilled to object storage, read as a page of its own; request omitted",
+  "content_type": "application/json",
+  "route": "POST /v1/sessions/{sid}/events",
+  "status": 200
+}

@@ -16,7 +16,8 @@ import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
 import type { AgentRecord, ConversationStore, LogChannel, LogStore, Mailbox, MemoryStore, Registry, SessionRecord, Store } from "../types";
-import { AppendBatcher, EventTooLargeError } from "./batcher";
+import { EventTooLargeError } from "../errors";
+import { AppendBatcher } from "./batcher";
 import { encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
 import type { LeaseKeeper } from "./lease";
 
@@ -67,6 +68,7 @@ export class RemoteStore implements Store {
 
   private readonly sid: string;
   private readonly now: () => number;
+  private readonly batchMaxBytes: number;
   private readonly log: Logger;
   private batcher: AppendBatcher | null = null;
   private readonly entries: ConversationEntry[] = [];
@@ -80,6 +82,7 @@ export class RemoteStore implements Store {
     this.sid = opts.sid;
     this.root = opts.artifactsDir;
     this.now = opts.now ?? Date.now;
+    this.batchMaxBytes = opts.batchMaxBytes ?? 1024 * 1024;
     this.log = opts.logger ?? silentLogger;
     this.memory = opts.memory;
 
@@ -89,7 +92,9 @@ export class RemoteStore implements Store {
         self.check(sessionId);
         self.writable();
         const entry: ConversationEntry = { uuid: crypto.randomUUID(), parentUuid, ts: self.iso(), payload };
-        self.entries.push(self.write(payload.type, entry, (snap) => remove(self.entries, snap)));
+        const { snapshot, stored } = self.write(payload.type, entry, (snap) => remove(self.entries, snap));
+        self.entries.push(snapshot);
+        await stored;
         return entry;
       },
       async read(sessionId: string) {
@@ -110,8 +115,9 @@ export class RemoteStore implements Store {
         self.check(sessionId);
         self.writable();
         const records = self.channel(channel);
-        const snap = self.write("log", { channel, record: { ts: self.iso(), ...record } }, (s) => remove(records, s.record));
-        records.push(snap.record);
+        const { snapshot, stored } = self.write("log", { channel, record: { ts: self.iso(), ...record } }, (s) => remove(records, s.record));
+        records.push(snapshot.record);
+        await stored;
       },
       async read(sessionId: string, channel: LogChannel) {
         self.check(sessionId);
@@ -134,13 +140,17 @@ export class RemoteStore implements Store {
       async putSession(s: SessionRecord) {
         self.check(s.sessionId);
         self.writable();
-        self.foldRecord(self.write("record", s));
+        const { snapshot, stored } = self.write("record", s);
+        self.foldRecord(snapshot);
+        await stored;
       },
       async patchSession(sessionId: string, patch: Partial<SessionRecord>) {
         self.check(sessionId);
         self.writable();
         if (!self.record) return;
-        self.foldRecord(self.write("record", { ...patch, updatedAt: self.iso() }));
+        const { snapshot, stored } = self.write("record", { ...patch, updatedAt: self.iso() });
+        self.foldRecord(snapshot);
+        await stored;
       },
       async getSession(sessionId: string) {
         self.check(sessionId);
@@ -263,14 +273,26 @@ export class RemoteStore implements Store {
     if (fatal) throw fatal;
   }
 
-  /** Serializes and queues without waiting for the store, and returns the snapshot the memory views
-   *  keep. Throws, queuing nothing, when `data` cannot be serialized or is over the known per-event
-   *  limit. A later refusal of this one event as too large calls `drop` with the snapshot; any other
-   *  failure stops the writer and reaches the host through onFatal. */
-  private write<T>(kind: string, data: T, drop?: (snapshot: T) => void): T {
+  /**
+   * Serializes and queues, and returns the snapshot the memory views keep. Throws, queuing nothing,
+   * when `data` cannot be serialized or is over the known per-event limit.
+   *
+   * An event over the batch size goes out alone; `stored` then settles on the store's answer, so the
+   * caller sees a refusal as too large before going on (`drop` has taken the snapshot out by then).
+   * A smaller event resolves `stored` at once: a later refusal calls `drop` and is logged as a hole,
+   * and any other failure stops the writer and reaches the host through onFatal.
+   */
+  private write<T>(kind: string, data: T, drop?: (snapshot: T) => void): { snapshot: T; stored: Promise<unknown> } {
     const event = encodeEvent(kind, data, this.now());
     const seq = this.writer().push(event);
     const snapshot = JSON.parse(event.json) as T;
+    if (event.bytes > this.batchMaxBytes) {
+      const stored = seq.catch((err) => {
+        if (err instanceof EventTooLargeError) drop?.(snapshot);
+        throw err;
+      });
+      return { snapshot, stored };
+    }
     seq.catch((err) => {
       if (!(err instanceof EventTooLargeError)) return;
       // Queued and then refused: later entries may already name it as their parent, so the hole is
@@ -279,7 +301,7 @@ export class RemoteStore implements Store {
       this.log.error("store.event_dropped", { sid: this.sid, ...(typeof uuid === "string" ? { uuid } : {}), kind, bytes: err.bytes, limit: err.limit });
       drop?.(snapshot);
     });
-    return snapshot;
+    return { snapshot, stored: Promise.resolve() };
   }
 
   private iso(): string {

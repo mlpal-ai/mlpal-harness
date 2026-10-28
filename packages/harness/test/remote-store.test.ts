@@ -233,24 +233,41 @@ describe("RemoteStore: the contract with LocalStore", () => {
     expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "assistant"]);
   });
 
-  test("an event the store refuses as event_too_large leaves memory too, the limit is learned, and the writer goes on", async () => {
+  test("an event that goes alone is acknowledged before append returns: the store's event_too_large rejects it, the limit is learned, the writer goes on", async () => {
     await fake.stop();
     fake = startFakeSessionStore({ maxEventBytes: 1536 * 1024 });
     fake.createSession("s1");
     const logs: Record<string, unknown>[] = [];
     const { store } = await openRemote({ logger: new JsonLogger({ level: "debug", sink: (line) => void logs.push(JSON.parse(line)) }) });
     const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
-    const huge = await store.conversation.append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(2 * 1024 * 1024), isError: false, ts: "t" } as SDKMessage, a.uuid);
-    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid, huge.uuid]); // not known to be too large yet
-    await store.flush();
+    const err = await store.conversation
+      .append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(2 * 1024 * 1024), isError: false, ts: "t" } as SDKMessage, a.uuid)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(EventTooLargeError);
+    expect(err).toMatchObject({ limit: 1536 * 1024 });
     expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
     expect(await store.appendEvent("s1", "tool_result", "x".repeat(2 * 1024 * 1024)).catch((e) => e)).toBeInstanceOf(EventTooLargeError); // learned
     await store.appendEvent("s1", "tool_started", { toolUseId: "tu2" });
     await store.close();
     expect(fake.events("s1").map((e) => e.kind)).toEqual(["user", "tool_started"]);
+    expect(logs.filter((l) => l.msg === "store.event_dropped")).toEqual([]); // the caller was told: no hole
+  });
+
+  test("an event that shared a batch and is refused later leaves memory and is logged as store.event_dropped", async () => {
+    await fake.stop();
+    fake = startFakeSessionStore({ maxEventBytes: 512 * 1024 });
+    fake.createSession("s1");
+    const logs: Record<string, unknown>[] = [];
+    const { store } = await openRemote({ logger: new JsonLogger({ level: "debug", sink: (line) => void logs.push(JSON.parse(line)) }) });
+    const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
+    await store.flush();
+    const big = await store.conversation.append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(600 * 1024), isError: false, ts: "t" } as SDKMessage, a.uuid);
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid, big.uuid]); // not known to be too large yet
+    await store.flush();
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
+    await store.close();
     const dropped = logs.filter((l) => l.msg === "store.event_dropped");
-    expect(dropped).toEqual([expect.objectContaining({ level: "error", sid: "s1", uuid: huge.uuid, kind: "tool_result", limit: 1536 * 1024 })]);
-    expect(dropped[0]!.bytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(dropped).toEqual([expect.objectContaining({ level: "error", sid: "s1", uuid: big.uuid, kind: "tool_result", limit: 512 * 1024 })]);
   });
 
   test("mailbox: post is refused with a clear error; peek and drain are empty", async () => {

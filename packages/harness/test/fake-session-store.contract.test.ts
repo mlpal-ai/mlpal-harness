@@ -54,6 +54,7 @@ const ev = (kind: string, data: unknown, ts_ms: number) => ({ kind, data: sorted
 const user = () => ev("user", { uuid: "u1", parentUuid: null, ts: "2025-10-09T08:53:20.000Z", payload: { type: "user", message: { role: "user", content: "Reply pong" } } }, T0);
 const result = (subtype: string) =>
   ev("result", { uuid: "r1", parentUuid: "u1", ts: "2025-10-09T08:53:21.000Z", payload: { type: "result", subtype, numTurns: 1, usage: { input_tokens: 12, output_tokens: 3, compute_units: 0.0004 } } }, T0 + 1_000);
+const largeRead = (n: number) => ev("tool_result", { type: "tool_result", toolUseId: "t1", content: "b".repeat(n) }, T0);
 const deltas = (n: number) => Array.from({ length: n }, (_, i) => ev("text_delta", { type: "text_delta", text: `t${i}` }, T0));
 
 // ── a scenario per fixture ───────────────────────────────────────────────────────────────────
@@ -145,6 +146,12 @@ const scenarios: Record<string, Scenario> = {
   "release-204": (c) => (c.leased(SID, 30), c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine })),
   "release-409-lease-lost": async (c) => (c.leased(SID, 30), await c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine }), c.send("DELETE", `/sessions/${SID}/lease/${c.lease}`, { token: c.engine })),
   "append-200": (c, f) => (c.leased(), appendReq(c, f)),
+  "append-200-large-event": (c) => (c.leased(), c.send("POST", `/sessions/${SID}/events`, { token: c.engine, body: { lease_id: c.lease, after_seq: 0, events: [largeRead(10 * 1024 * 1024)] } })),
+  "append-413-event-too-large": async (c) => (
+    c.leased(),
+    await c.append(0, [largeRead(10 * 1024 * 1024)]),
+    c.send("POST", `/sessions/${SID}/events`, { token: c.engine, body: { lease_id: c.lease, after_seq: 1, events: [largeRead(17 * 1024 * 1024)] } })
+  ),
   "append-200-retried": async (c, f) => (c.leased(), await appendReq(c, f), appendReq(c, f)),
   "append-409-seq-conflict": async (c, f) => (await first(c), appendReq(c, f)),
   "append-422-invalid-event": async (c, f) => (await first(c), appendReq(c, f)),
@@ -370,7 +377,8 @@ describe("SessionStoreClient reads every fixture body of its routes", () => {
       if (out.e instanceof SeqConflictError) expect(out.e.lastSeq).toBe(body.last_seq as number);
       if (out.e instanceof LeaseHeldError) expect(out.e.expiresAt).toBe(body.expires_at as number);
       if (out.e instanceof SessionDeletedError) expect(out.e.deletedAt).toBe(body.deleted_at as number);
-      if (out.e instanceof BatchTooLargeError) expect([out.e.maxEvents, out.e.maxBytes]).toEqual([256, 1024 * 1024]);
+      if (out.e instanceof BatchTooLargeError && out.e.code === "batch_too_large") expect([out.e.maxEvents, out.e.maxBytes]).toEqual([256, 1024 * 1024]);
+      if (out.e instanceof BatchTooLargeError && out.e.code === "event_too_large") expect(out.e.maxEventBytes).toBe(body.max_event_bytes as number);
     });
   }
 });

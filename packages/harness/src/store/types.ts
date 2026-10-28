@@ -127,9 +127,11 @@ export interface Store {
   flush?(): Promise<void>;
   /** Flush any buffered writes; the host calls it on exit. Optional: a synchronous backend has nothing to flush. */
   close?(): Promise<void>;
-  /** A durable event that is not a conversation entry (the loop's `tool_started` marker); resolves once
-   *  it is stored (the remote backend resolves to its seq). Optional: without it the loop records no
-   *  markers, and a resume treats every unfinished tool as never started. */
+  /** An event that is not a conversation entry (the loop's `tool_started` marker). It resolves once the
+   *  event is durable where the backend can resume: the remote backend on the store's acknowledgement
+   *  (to its seq); the file backend when it is queued, since file mode never resumes. Optional: without
+   *  it the loop records no markers, and a resume treats every unfinished tool as never started. The
+   *  file backend keeps markers in the events log, so `YODEX_LOG=off` turns them off in file mode. */
   appendEvent?(sessionId: string, kind: string, data: Record<string, unknown>): Promise<unknown>;
   /** The data of the session's events of `kind`, in the order they were appended. */
   readEvents?(sessionId: string, kind: string): Promise<Record<string, unknown>[]>;
