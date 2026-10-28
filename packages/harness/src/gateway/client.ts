@@ -7,6 +7,7 @@ import type {
 } from "@mlpal/harness-protocol";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { registerSecret } from "../obs/redact";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, traceHeaders } from "../telemetry/stamp";
 import { type Metrics, noopMetrics } from "../obs/metrics";
@@ -39,6 +40,7 @@ export function readSessionToken(file: string): string {
     throw new GatewayError(`gateway token file ${file} is unreadable (${(e as NodeJS.ErrnoException).code ?? "error"})`, 0, "http");
   }
   if (!token) throw new GatewayError(`gateway token file ${file} is empty`, 0, "http");
+  registerSecret("gateway session token", token); // masked wherever a tool result would echo it
   return token;
 }
 
@@ -326,8 +328,10 @@ export class GatewayClient implements ModelClient {
     let authorization: string;
     try {
       authorization = `Bearer ${this.bearer()}`;
-    } catch {
-      return; // no credential now (an unreadable token file): a dropped feedback event is fine
+    } catch (e) {
+      // No credential now (an unreadable token file): a dropped feedback event is fine, a silent one is not.
+      this.logger.warn("feedback dropped: no gateway credential", { error: (e as Error).message });
+      return;
     }
     void fetch(`${this.baseUrl}/v1/feedback`, {
       method: "POST",

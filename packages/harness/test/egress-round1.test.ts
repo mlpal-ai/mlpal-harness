@@ -1,0 +1,203 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { GatewayClient } from "../src/gateway/client";
+import { AgentSession } from "../src/loop/agent";
+import { MemoryMetrics } from "../src/obs/metrics";
+import { JsonLogger } from "../src/obs/logger";
+import { clearSecrets, redactText } from "../src/obs/redact";
+import { EgressRefusedError, egressFetch, egressMcpServer, egressUrl, type EgressRoute } from "../src/egress/proxy";
+import { McpManager } from "../src/mcp/manager";
+import { createPolicy } from "../src/permission/engine";
+import { LocalStore } from "../src/store/local";
+import { createEgressWebFetchTool } from "../src/tools/builtin/web";
+import { runTool, ToolRegistry } from "../src/tools/registry";
+import { startFakeEgressProxy, startFakeMcpUpstream } from "./fake-egress-proxy";
+
+/**
+ * P6 review round 1. Critical 1: no dot segment, in any encoding, takes a request from one upstream's route to
+ * another's (fetch normalises the url before the proxy sees it). Important 5: SSE upstreams are refused (streamable
+ * HTTP only). Minors: non-credential headers reach a proxied upstream; the refusal metric names its cause; a dropped
+ * feedback event is logged; every token the engine reads is registered for masking.
+ */
+
+const TOKEN = "eyJlZ3Jlc3MiOjF9.round1-egress.sig";
+const SECRET = "ghp_vault_value_only_the_proxy_holds";
+/** The four ways to write `..` the reviewer named, plus `..%2f` (a slash in disguise). */
+const ESCAPES = ["..", "%2e%2e", "%2E%2E", "%252e%252e"];
+
+let dir: string;
+let tokenFile: string;
+let github: ReturnType<typeof startFakeMcpUpstream>;
+let site: { base: string; stop(): void };
+let proxy: ReturnType<typeof startFakeEgressProxy>;
+
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), "p6-round1-"));
+  tokenFile = join(dir, "egress.token");
+  writeFileSync(tokenFile, TOKEN);
+  github = startFakeMcpUpstream();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (req) => (await req.arrayBuffer(), new Response("<p>docs</p>", { headers: { "content-type": "text/html" } })) });
+  site = { base: `http://127.0.0.1:${server.port}/docs/`, stop: () => server.stop(true) };
+  proxy = startFakeEgressProxy({
+    token: TOKEN,
+    upstreams: [
+      { name: "web-fetch", base_url: site.base, inject: [] },
+      { name: "github-mcp", base_url: github.url, inject: [{ header: "authorization", scheme: "bearer", value: SECRET }] },
+    ],
+  });
+});
+afterAll(() => {
+  proxy.stop();
+  github.stop();
+  site.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+const fetchRoute = (): EgressRoute => ({ proxyUrl: proxy.url, upstream: "web-fetch", tokenFile });
+
+describe("Critical 1: a request never leaves its upstream's route", () => {
+  for (const dots of ESCAPES) {
+    test(`egressUrl / egressMcpServer refuse ${dots}: path_escape`, () => {
+      for (const path of [`${dots}/github-mcp/x`, `a/${dots}/${dots}/github-mcp/x`, `${dots}%2fgithub-mcp/x`]) {
+        let e: unknown;
+        try {
+          egressUrl(fetchRoute(), path);
+        } catch (x) {
+          e = x;
+        }
+        expect(e).toBeInstanceOf(EgressRefusedError);
+        expect((e as Error).message).toBe("egress refused (path_escape) for web-fetch");
+        expect(() => egressMcpServer(fetchRoute(), path)).toThrow("egress refused (path_escape) for web-fetch");
+      }
+    });
+
+    test(`egressFetch refuses a url that resolves outside the route (${dots}), before any request`, async () => {
+      let calls = 0;
+      const base = (async () => (calls++, new Response("ok"))) as unknown as typeof fetch;
+      const e = await egressFetch(fetchRoute(), base)(`${proxy.url}/v1/u/web-fetch/${dots}/github-mcp/x`).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(EgressRefusedError);
+      expect((e as EgressRefusedError).code).toBe("path_escape");
+      expect(calls).toBe(0);
+    });
+
+    test(`an MCP server whose url escapes its route (${dots}) never connects: the github upstream sees nothing`, async () => {
+      const before = github.received.length;
+      const reg = new ToolRegistry();
+      const mcp = new McpManager();
+      try {
+        await mcp.connectAll({ docs: { url: `${proxy.url}/v1/u/web-fetch/${dots}/github-mcp/`, egress: fetchRoute() } }, reg);
+        expect(mcp.status()[0]).toMatchObject({ ok: false });
+        expect(mcp.status()[0]!.error).toContain("egress refused (path_escape) for web-fetch");
+        expect(github.received.length).toBe(before);
+      } finally {
+        await mcp.close();
+      }
+    });
+
+    test(`WebFetch refuses a url that escapes its base (${dots}): an error, the github upstream never reached`, async () => {
+      const before = github.received.length;
+      const tool = createEgressWebFetchTool(fetchRoute(), site.base);
+      // base /docs/ → the route /v1/u/web-fetch/; one `..` past it is /v1/u/github-mcp/ (the reviewer's escape).
+      const res = await tool.call({ url: `${site.base}${dots}/github-mcp/x` }, { cwd: dir });
+      expect(res.isError).toBe(true);
+      expect(String(res.content)).not.toContain("echo");
+      expect(github.received.length).toBe(before);
+    });
+  }
+
+  test("WebFetch compares the parsed origin and a segment-bounded path: a sibling prefix or another port is outside", async () => {
+    const tool = createEgressWebFetchTool(fetchRoute(), site.base);
+    const u = new URL(site.base);
+    expect((await tool.call({ url: `${u.origin}/docs/x` }, { cwd: dir })).isError).toBeUndefined();
+    expect((await tool.call({ url: `${u.origin}/docs-private/x` }, { cwd: dir })).isError).toBe(true);
+    expect((await tool.call({ url: `http://127.0.0.1:1/docs/x` }, { cwd: dir })).isError).toBe(true);
+  });
+
+  test("a base_url without its trailing slash is the same base", async () => {
+    const tool = createEgressWebFetchTool(fetchRoute(), site.base.replace(/\/$/, ""));
+    expect((await tool.call({ url: `${site.base}guide` }, { cwd: dir })).isError).toBeUndefined();
+    expect((await tool.call({ url: `${site.base.replace(/\/$/, "")}-private/x` }, { cwd: dir })).isError).toBe(true);
+  });
+});
+
+describe("Important 5: SSE upstreams are not reached through the proxy", () => {
+  test("an egress server of type sse is refused at connect: streamable HTTP only", async () => {
+    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    try {
+      await mcp.connectAll({ gh: { ...egressMcpServer({ proxyUrl: proxy.url, upstream: "github-mcp", tokenFile }), type: "sse" } }, reg);
+      expect(mcp.status()[0]!.error).toContain("streamable HTTP only");
+    } finally {
+      await mcp.close();
+    }
+  });
+});
+
+describe("minors", () => {
+  test("a proxied server's non-credential headers reach the proxy; its credential headers never do", async () => {
+    const before = proxy.seen.length;
+    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    try {
+      await mcp.connectAll({ gh: { ...egressMcpServer({ proxyUrl: proxy.url, upstream: "github-mcp", tokenFile }), headers: { "X-Trace-Tag": "t-1", Authorization: "Bearer engine-held" } } }, reg);
+      expect(mcp.status()[0]!.ok).toBe(true);
+      for (const r of proxy.seen.slice(before)) {
+        expect(r.headers["x-trace-tag"]).toBe("t-1");
+        expect(r.headers.authorization).toBeUndefined();
+      }
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  test("the refusal metric names its cause: a rejected session token is not a policy refusal", async () => {
+    const gw = join(dir, "gateway.token");
+    writeFileSync(gw, "eyJzIjoxfQ.round1-session.sig");
+    const realFetch = globalThis.fetch;
+    const answers: Record<string, Response> = {};
+    globalThis.fetch = (async (_u: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model as string;
+      return model === "m-401"
+        ? new Response(JSON.stringify({ error: { type: "authentication_error", code: "invalid_api_key", message: "bad" } }), { status: 401 })
+        : new Response(JSON.stringify({ error: { type: "permission_error", code: "model_not_allowed", message: "no" } }), { status: 403 });
+    }) as unknown as typeof fetch;
+    void answers;
+    try {
+      const metrics = new MemoryMetrics();
+      for (const model of ["m-401", "m-403"]) {
+        const root = mkdtempSync(join(tmpdir(), "p6-metric-"));
+        const session = new AgentSession({ agentId: "a", sessionId: "s", workspace: "w", cwd: root, model, systemPrompt: "t", tools: new ToolRegistry(), store: new LocalStore(root), model_client: new GatewayClient({ baseUrl: "http://gw", apiKey: { tokenFile: gw } }), canUseTool: createPolicy({ mode: "autopilot" }), metrics, stamp: { hop: "infra@1.0.0", origin: "test", workspace: "w" } });
+        for await (const _ of session.run({ text: "go" })) void _;
+        rmSync(root, { recursive: true, force: true });
+      }
+      expect(metrics.counters.get("agent.model_access_denied{cause=session_token,model=m-401}")).toBe(1);
+      expect(metrics.counters.get("agent.model_access_denied{cause=model_policy,model=m-403}")).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("postFeedback with an unreadable token file is logged, never silent, never a throw", () => {
+    const lines: string[] = [];
+    const client = new GatewayClient({ baseUrl: "http://gw", apiKey: { tokenFile: join(dir, "missing.token") }, logger: new JsonLogger({ sink: (l) => lines.push(l) }) });
+    expect(() => client.postFeedback({ model: "m", task_type: "coding", outcome: "accepted" })).not.toThrow();
+    expect(lines.some((l) => l.includes("feedback dropped") && l.includes("missing.token"))).toBe(true);
+  });
+
+  test("every session or egress token the engine reads is registered for masking", async () => {
+    clearSecrets();
+    const gw = join(dir, "gw-mask.token");
+    writeFileSync(gw, "eyJtYXNrIjoxfQ.session-to-mask.sig");
+    const { readSessionToken } = await import("../src/gateway/client");
+    const { readEgressToken } = await import("../src/egress/proxy");
+    readSessionToken(gw);
+    readEgressToken(tokenFile);
+    expect(redactText("a eyJtYXNrIjoxfQ.session-to-mask.sig b")).toBe("a [redacted:gateway session token] b");
+    expect(redactText(`x ${TOKEN} y`)).toBe("x [redacted:egress token] y");
+    clearSecrets();
+  });
+});
+
+void runTool;

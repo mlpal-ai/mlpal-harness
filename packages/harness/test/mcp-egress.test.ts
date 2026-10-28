@@ -30,7 +30,7 @@ beforeAll(() => {
   tokenFile = join(dir, "egress.token");
   writeFileSync(tokenFile, `${TOKEN}\n`);
   const evilState = { hits: 0 };
-  const evilServer = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => (evilState.hits++, new Response("stolen")) });
+  const evilServer = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (req) => (await req.arrayBuffer(), evilState.hits++, new Response("stolen")) });
   evil = { url: `http://127.0.0.1:${evilServer.port}/steal`, get hits() { return evilState.hits; }, stop: () => evilServer.stop(true) };
   upstream = startFakeMcpUpstream({ redirectTo: evil.url });
   proxy = startFakeEgressProxy({ token: TOKEN, upstreams: [{ name: "github-mcp", base_url: upstream.url, inject: [{ header: "authorization", scheme: "bearer", value: SECRET }] }] });
@@ -173,7 +173,7 @@ describe("egressFetch", () => {
   test("redirect is manual, the token header is set from the file, engine credential headers are stripped", async () => {
     let init: RequestInit | undefined;
     const base = (async (_u: unknown, i: RequestInit) => ((init = i), new Response("ok"))) as unknown as typeof fetch;
-    await egressFetch(route, base)("http://p/v1/u/github-mcp/", { headers: { authorization: "Bearer x", cookie: "c", accept: "text/event-stream" } });
+    await egressFetch(route, base)(`${proxy.url}/v1/u/github-mcp/`, { headers: { authorization: "Bearer x", cookie: "c", accept: "text/event-stream" } });
     const h = new Headers(init!.headers);
     expect(init!.redirect).toBe("manual");
     expect(h.get("x-harness-egress-token")).toBe(TOKEN);
@@ -182,17 +182,17 @@ describe("egressFetch", () => {
 
   test("a refusal is a typed EgressRefusedError; a non-refusal error status passes through", async () => {
     const refusedBase = (async () => new Response(JSON.stringify({ code: "secret_revoked" }), { status: 403, headers: { "x-harness-egress": "refused" } })) as unknown as typeof fetch;
-    const e = await egressFetch(route, refusedBase)("http://p/v1/u/github-mcp/").catch((x: unknown) => x);
+    const e = await egressFetch(route, refusedBase)(`${proxy.url}/v1/u/github-mcp/`).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(EgressRefusedError);
     expect([(e as EgressRefusedError).code, (e as EgressRefusedError).status, (e as Error).message]).toEqual(["secret_revoked", 403, "egress refused (secret_revoked) for github-mcp"]);
     const upstream403 = (async () => new Response("nope", { status: 403 })) as unknown as typeof fetch;
-    expect((await egressFetch(route, upstream403)("http://p/v1/u/github-mcp/")).status).toBe(403);
+    expect((await egressFetch(route, upstream403)(`${proxy.url}/v1/u/github-mcp/`)).status).toBe(403);
   });
 
   test("an unreadable token file: no request, an error naming the path", async () => {
     let calls = 0;
     const base = (async () => (calls++, new Response("ok"))) as unknown as typeof fetch;
-    const e = await egressFetch({ ...route, tokenFile: join(dir, "missing.token") }, base)("http://p/").catch((x: unknown) => x);
+    const e = await egressFetch({ ...route, tokenFile: join(dir, "missing.token") }, base)(`${proxy.url}/v1/u/github-mcp/`).catch((x: unknown) => x);
     expect(String((e as Error).message)).toContain(join(dir, "missing.token"));
     expect(calls).toBe(0);
   });
@@ -205,7 +205,8 @@ describe("WebFetch through the web-fetch upstream", () => {
     const site = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
-      fetch: (req) => {
+      fetch: async (req) => {
+        await req.arrayBuffer();
         got.push(Object.fromEntries([...req.headers].map(([k, v]) => [k.toLowerCase(), v])));
         const u = new URL(req.url);
         if (u.pathname === "/docs/moved") return new Response(null, { status: 301, headers: { location: evil.url } });

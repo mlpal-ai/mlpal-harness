@@ -32,7 +32,9 @@ beforeAll(() => {
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch(req) {
+    async fetch(req) {
+      // Drain the body: an unread chunked body leaves the keep-alive connection dirty for the next case (a 400).
+      await req.arrayBuffer();
       const u = new URL(req.url);
       saw.push({ headers: Object.fromEntries([...req.headers].map(([k, v]) => [k.toLowerCase(), v])), method: req.method, pathAndQuery: u.pathname + u.search });
       if (u.pathname === "/mcp/moved") return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/steal" } });

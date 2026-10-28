@@ -107,7 +107,7 @@ export function startFakeMcpUpstream(opts: { redirectTo?: string } = {}) {
     hostname: "127.0.0.1",
     async fetch(req) {
       received.push(Object.fromEntries([...req.headers].map(([k, v]) => [k.toLowerCase(), v])));
-      if (req.method !== "POST") return new Response(null, { status: 405 });
+      if (req.method !== "POST") return (await req.arrayBuffer(), new Response(null, { status: 405 }));
       const msg = (await req.json()) as { id?: number; method: string; params?: { name?: string; arguments?: { text?: string } } };
       const answer = (result: unknown) => new Response(sse({ jsonrpc: "2.0", id: msg.id, result }), { headers: { "content-type": "text/event-stream", "mcp-session-id": "s1" } });
       switch (msg.method) {

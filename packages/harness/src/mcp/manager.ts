@@ -40,8 +40,9 @@ export interface HttpServerConfig {
   oauth?: { scope?: string; clientId?: string };
   /** Never defer this server's tools (they are always in the model's tool list). */
   alwaysLoad?: boolean;
-  /** Reached through the engine egress proxy (P6): `url` is the proxy's route for the upstream, every request
-   *  carries the egress token, and `headers` and `oauth` are never sent (the proxy injects the credential). */
+  /** Reached through the engine egress proxy (P6), over streamable HTTP only: `url` is the proxy's route for the
+   *  upstream, every request carries the egress token, `oauth` is never used and a credential header is never sent
+   *  (the proxy injects the credential); other `headers` are sent verbatim. */
   egress?: EgressRoute;
 }
 
@@ -340,16 +341,16 @@ export class McpManager {
   private async connectOne(name: string, config: McpServerConfig): Promise<Tool<unknown>[]> {
     let transport;
     if (isHttp(config) && config.egress) {
+      // Streamable HTTP only: an SSE server names its POST endpoint in an `endpoint` event, and an absolute-path one
+      // would resolve outside the upstream's route (egressFetch would refuse every call).
+      if (config.type === "sse") throw new Error(`an egress upstream is reached over streamable HTTP only; ${config.egress.upstream} is configured as SSE`);
       const route = config.egress;
-      const url = new URL(config.url);
-      if (config.type === "sse") {
-        transport = new SSEClientTransport(url, { fetch: egressFetch(route) });
-      } else {
-        const http: StreamableHTTPClientTransport = new StreamableHTTPClientTransport(url, {
-          fetch: lostResponseFetch((message) => http.onmessage?.(message), egressFetch(route)),
-        });
-        transport = http;
-      }
+      // Non-credential headers ride along verbatim (no env expansion); egressFetch strips any credential header.
+      const http: StreamableHTTPClientTransport = new StreamableHTTPClientTransport(new URL(config.url), {
+        ...(config.headers ? { requestInit: { headers: { ...config.headers } } } : {}),
+        fetch: lostResponseFetch((message) => http.onmessage?.(message), egressFetch(route)),
+      });
+      transport = http;
     } else if (isHttp(config)) {
       const requestInit = config.headers
         ? {

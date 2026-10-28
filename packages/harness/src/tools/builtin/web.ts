@@ -72,23 +72,49 @@ export const webFetchTool = defineTool({
   },
 });
 
+/** `url`'s path and query relative to `base`, or null when it is not under it: same origin, the parsed (dot
+ *  segments resolved, `%2e` included) path under the base's on a segment boundary, and still so after one decoding. */
+export function pathUnderBase(url: string, base: string): string | null {
+  let t: URL;
+  let b: URL;
+  try {
+    t = new URL(url);
+    b = new URL(base);
+  } catch {
+    return null;
+  }
+  const prefix = b.pathname.endsWith("/") ? b.pathname : `${b.pathname}/`;
+  if (t.origin !== b.origin || !t.pathname.startsWith(prefix)) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(t.pathname);
+  } catch {
+    return null;
+  }
+  const again = new URL(decoded, t.origin);
+  if (again.origin !== t.origin || !again.pathname.startsWith(prefix)) return null;
+  return t.pathname.slice(prefix.length) + t.search;
+}
+
 /**
  * WebFetch on the platform (P6): no generic egress, so it reaches only the session's `web-fetch` upstream, through
- * the egress proxy. A URL under the upstream's `base_url` is fetched at `<proxy>/v1/u/web-fetch/<rest>`; any other
- * URL is refused before a request. A redirect is reported, never followed.
+ * the egress proxy. A URL under the upstream's `base_url` (compared parsed, see pathUnderBase) is fetched at
+ * `<proxy>/v1/u/web-fetch/<rest>`; any other URL is refused before a request. A redirect is reported, never followed.
  */
 export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string) {
   const fetchVia = egressFetch(route);
+  const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return defineTool({
     name: "WebFetch",
-    description: `Fetch a page under ${baseUrl} and return its readable text content (HTML is reduced to text). Only that site is reachable from this session. Large pages are truncated.`,
+    description: `Fetch a page under ${base} and return its readable text content (HTML is reduced to text). Only that site is reachable from this session. Large pages are truncated.`,
     readOnly: false,
     schema: webFetchSchema,
     async call(input, ctx) {
-      if (!input.url.startsWith(baseUrl)) return err(`WebFetch reaches ${baseUrl} only in this session (its web-fetch upstream); ${input.url} is outside it`);
+      const rest = pathUnderBase(input.url, base);
+      if (rest === null) return err(`WebFetch reaches ${base} only in this session (its web-fetch upstream); ${input.url} is outside it`);
       let res: Response;
       try {
-        res = await fetchVia(egressUrl(route, input.url.slice(baseUrl.length)), {
+        res = await fetchVia(egressUrl(route, rest), {
           signal: ctx.signal ?? AbortSignal.timeout(15_000),
           headers: { "user-agent": `${host().name}/1.0 (+https://mlpal.ai)` },
         });

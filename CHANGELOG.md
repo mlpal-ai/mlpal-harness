@@ -29,6 +29,21 @@
   every `proxy-*` file is replayed through `egressFetch` against the fake proxy, which answers its refusals from the
   files; the vault-only files are skipped by name. The gateway session-token fixture (mlpal-assistants-service
   `p2-w4-session-tokens`) is a follow-up pin.
+- Review round 1:
+  - A request never leaves its upstream's route: `egressUrl` and `egressFetch` parse the url as fetch will send it
+    (dot segments resolved, `%2e`/`%2E` included) and once more after one decoding (`%252e`), and refuse anything off
+    the proxy's origin or outside `/v1/u/<name>/` with the engine's own `EgressRefusedError` `path_escape`, before a
+    request (`insideRoute`, `PATH_ESCAPE`). WebFetch compares the parsed origin and a segment-bounded, decoded-once
+    path against `base_url` (`pathUnderBase`), with the base normalised to a trailing slash.
+  - Streamable HTTP only through the proxy: an egress server of type `sse` fails to connect (`an egress upstream is
+    reached over streamable HTTP only`); an SSE `endpoint` event could name a path outside the route.
+  - A proxied server's non-credential `headers` are sent verbatim (no env expansion); credential headers are still
+    stripped by `egressFetch`.
+  - The refusal metric carries `cause` (`model_policy`, `budget`, `session_token`); a `postFeedback` dropped for an
+    unreadable token file is logged (`feedback dropped: no gateway credential`); every session or egress token read
+    is registered for masking (`gateway session token`, `egress token`).
+  - Test servers drain request bodies (an unread chunked body left the keep-alive connection dirty: the fixture
+    replay flaked 3/10, now 0/10).
 
 ### Engine store, D-2: the instance writer token (2026-10-28)
 

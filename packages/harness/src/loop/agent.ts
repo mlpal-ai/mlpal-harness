@@ -846,7 +846,7 @@ export class AgentSession {
           const model = e.model ?? activeModel;
           const refusal = e.budgetExceeded ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt }) : modelRefusal(model, hop, "gateway");
           log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
-          metrics.increment(`agent.${refusal.code}`, 1, { model });
+          metrics.increment(`agent.${refusal.code}`, 1, { model, cause: e.budgetExceeded ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
           outcome = "error";
           parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;
