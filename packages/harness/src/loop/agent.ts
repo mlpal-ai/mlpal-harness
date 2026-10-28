@@ -318,6 +318,52 @@ function unansweredToolUses(turn: ConversationEntry[]): ToolUseBlock[] {
   return (asst.message.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use" && !answered.has(b.id));
 }
 
+/** The entries of the turn in flight: from its first user entry since the last `result` or `error`; empty when
+ *  no turn is in flight. */
+function inFlightTurn(entries: ConversationEntry[]): ConversationEntry[] {
+  let start = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const type = entries[i]!.payload.type;
+    if (type === "result" || type === "error") break;
+    if (type === "user") start = i;
+  }
+  return start < 0 ? [] : entries.slice(start);
+}
+
+/** The end-of-turn signals a live turn counts as it goes, rebuilt from a turn's entries: its model calls, its
+ *  successful edits (in all and per file), and whether a check command ran and whether one passed. */
+interface TurnCounts {
+  turns: number;
+  editsMade: number;
+  editsByFile: Map<string, number>;
+  verifyRan: boolean;
+  verifyObserved: boolean;
+}
+
+function countTurn(turn: ConversationEntry[], tools: ToolRegistry, loop: LoopPolicy): TurnCounts {
+  const counts: TurnCounts = { turns: 0, editsMade: 0, editsByFile: new Map(), verifyRan: false, verifyObserved: false };
+  const results = new Map(turn.flatMap((e) => (e.payload.type === "tool_result" ? [[e.payload.toolUseId, e.payload] as const] : [])));
+  for (const e of turn) {
+    if (e.payload.type !== "assistant") continue;
+    counts.turns++;
+    for (const tu of (e.payload.message.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use")) {
+      const tool = tools.get(tu.name);
+      const r = results.get(tu.id);
+      if (!r) continue;
+      if (tool?.edits) {
+        if (r.isError) continue;
+        counts.editsMade++;
+        const path = String((tu.input as { path?: unknown }).path ?? "");
+        if (path) counts.editsByFile.set(path, (counts.editsByFile.get(path) ?? 0) + 1);
+      } else if (tool?.executes && loop.verifyCommandRe?.test(String((tu.input as { command?: unknown }).command ?? ""))) {
+        counts.verifyRan = true;
+        if (!(loop.envBrokenRe?.test(r.content) ?? false)) counts.verifyObserved = true;
+      }
+    }
+  }
+  return counts;
+}
+
 async function serial<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = [];
   for (const item of items) out.push(await fn(item));
@@ -595,7 +641,11 @@ export class AgentSession {
     let pendingAnswer = t.answered;
     const toolCalls: Record<string, number> = {}; // d11.7: per-tool call counts, names only
     const providerLabels: Record<string, number> = {}; // d11.8: provider CLI counts from Bash calls
-    let turns = 0;
+    const loop = cfg.loop ?? CODING_PROFILE.loop;
+    // A resumed turn goes on from what the dead engine's part of it did, so the self-check and the anti-churn
+    // breaker fire as they would have in the live turn; an answered head is counted by the first iteration.
+    const counted = t.resumed ? countTurn(inFlightTurn(effectiveEntries(await this.store.conversation.read(cfg.sessionId))), cfg.tools, loop) : null;
+    let turns = counted ? counted.turns - (t.answered ? 1 : 0) : 0;
     let stopContinuations = 0;
     // Max-tokens recovery: a response cut off by the per-request output cap shouldn't be silently
     // accepted (a truncated answer or half-written file). Bounded so a persistently-too-large task
@@ -607,19 +657,18 @@ export class AgentSession {
     // Completion self-check state. Steps aside when any Stop verifier is wired (that takes
     // precedence). Counts successful edits and whether the run ran a test/build/typecheck, so
     // it can nudge once if the run is about to finish having edited real code but never checked.
-    const loop = cfg.loop ?? CODING_PROFILE.loop;
     const selfCheckOn = cfg.selfCheck !== false && !cfg.hooks?.has("Stop");
     const selfCheckMinEdits = cfg.selfCheckMinEdits ?? 3;
     const antiChurnOn = cfg.antiChurn !== false && !cfg.hooks?.has("Stop");
-    let editsMade = 0;
-    let verifyObserved = false;
+    let editsMade = counted?.editsMade ?? 0;
+    let verifyObserved = counted?.verifyObserved ?? false;
     // A verification command RAN (matched the vocab), independent of whether it passed — the
     // observe mechanism's {ran} vs {passed} for telemetry checks.observe. verifyObserved is
     // {passed} (ran and not env-broken).
-    let verifyRan = false;
+    let verifyRan = counted?.verifyRan ?? false;
     let selfCheckFired = false;
     // Anti-churn: edits-per-file this run, and whether the breaker has already fired once.
-    const editsByFile = new Map<string, number>();
+    const editsByFile = counted?.editsByFile ?? new Map<string, number>();
     let churnFired = false;
     // HOP telemetry run-state (only assembled at the finish point when cfg.telemetry is set).
     const startMs = Date.now();
@@ -640,7 +689,8 @@ export class AgentSession {
     const maxStopContinuations = cfg.maxStopContinuations ?? Math.max(3, ladder.length * patience);
 
     // Proactive routing: a cheap classifier picks the rung to START on. Fail-safe to 0.
-    if (cfg.classifyStart && ladder.length > 1) {
+    // A resumed answer is already on record: the rung that would have made it is not asked for again.
+    if (cfg.classifyStart && ladder.length > 1 && !t.answered) {
       const classifyModel = cfg.router?.resolve("classify") ?? ladder[0]!;
       const rung = await classifyStartRung({
         model_client: cfg.model_client,
@@ -1528,17 +1578,10 @@ export class AgentSession {
    */
   async *resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
     const { cfg } = this;
-    const entries = effectiveEntries(await this.store.conversation.read(cfg.sessionId));
-    let turnStart = -1;
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const type = entries[i]!.payload.type;
-      if (type === "result" || type === "error") break;
-      if (type === "user") turnStart = i;
-    }
-    if (turnStart < 0) return { resumed: false };
+    const turnEntries = inFlightTurn(effectiveEntries(await this.store.conversation.read(cfg.sessionId)));
+    if (turnEntries.length === 0) return { resumed: false };
 
     await this.init();
-    const turnEntries = entries.slice(turnStart);
     // The person's turn, not a system-seeded one ahead of it, names the run's author and its task.
     const asked = (turnEntries.find((e) => e.payload.type === "user" && e.payload.author?.type !== "system") ?? turnEntries[0]!).payload as UserEvent;
     const author = asked.author?.type === "system" ? HUMAN : (asked.author ?? HUMAN);

@@ -253,6 +253,38 @@ describe("RemoteStore: the contract with LocalStore", () => {
     expect(logs.filter((l) => l.msg === "store.event_dropped")).toEqual([]); // the caller was told: no hole
   });
 
+  test("an event that goes alone is not in head(), read() or tail() until the store acknowledges it", async () => {
+    const g = fake.grant("s1", { ttlS: 30 });
+    const client = new SessionStoreClient({ baseUrl: fake.url, tokenProvider: () => g.token });
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const gated: RemoteStoreOptions["client"] = {
+      readAll: (sid) => client.readAll(sid),
+      appendEncoded: async (sid, o) => {
+        if (o.events.some((e) => e.bytes > 4096)) await held;
+        return client.appendEncoded(sid, o);
+      },
+    };
+    const lease = new LeaseKeeper({ client, sid: "s1", ttlS: 30 });
+    lease.adopt({ leaseId: g.leaseId });
+    const store = new RemoteStore({ client: gated, sid: "s1", lease, memory, artifactsDir: join(root, "artifacts"), batchMaxBytes: 4096 });
+    await store.open();
+    const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "a" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
+    const pending = store.conversation.append("s1", { type: "tool_result", toolUseId: "tu1", content: "x".repeat(8192), isError: false, ts: "t" } as SDKMessage, a.uuid);
+    const logged = store.logs.write("s1", "exec", { kind: "tool.out", out: "y".repeat(8192) });
+    await Bun.sleep(20);
+    expect(await store.conversation.head("s1")).toBe(a.uuid);
+    expect((await store.conversation.read("s1")).map((e) => e.uuid)).toEqual([a.uuid]);
+    expect((await store.conversation.tail!("s1", 0)).entries.map((e) => e.uuid)).toEqual([a.uuid]);
+    expect(await store.logs.read("s1", "exec")).toEqual([]);
+    release();
+    const big = await pending;
+    await logged;
+    expect(await store.conversation.head("s1")).toBe(big.uuid);
+    expect(await store.logs.read("s1", "exec")).toEqual([expect.objectContaining({ kind: "tool.out" })]);
+    await store.close();
+  });
+
   test("an event that shared a batch and is refused later leaves memory and is logged as store.event_dropped", async () => {
     await fake.stop();
     fake = startFakeSessionStore({ maxEventBytes: 512 * 1024 });

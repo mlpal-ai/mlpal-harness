@@ -2,7 +2,8 @@
  * The `remote` backend of the engine's Store (seam P2): one session, one lease, one writer.
  * The session's P1 log is read once at open; after that every view answers from memory, which
  * holds exactly what was read plus what this engine queued (single writer: what is queued is what
- * the store will hold), as snapshots taken when queued; reads hand out copies, as LocalStore's do.
+ * the store will hold), as snapshots taken when queued (an event over the batch size, which goes out
+ * alone, once the store acknowledged it); reads hand out copies, as LocalStore's do.
  * Writes go through one AppendBatcher; a fatal append ends the session for this engine, and every
  * later write throws it. An event too large for the store is refused alone (EventTooLargeError) and
  * kept out of memory, or taken out again when the store's 413 teaches the limit.
@@ -68,7 +69,6 @@ export class RemoteStore implements Store {
 
   private readonly sid: string;
   private readonly now: () => number;
-  private readonly batchMaxBytes: number;
   private readonly log: Logger;
   private batcher: AppendBatcher | null = null;
   private readonly entries: ConversationEntry[] = [];
@@ -82,7 +82,6 @@ export class RemoteStore implements Store {
     this.sid = opts.sid;
     this.root = opts.artifactsDir;
     this.now = opts.now ?? Date.now;
-    this.batchMaxBytes = opts.batchMaxBytes ?? 1024 * 1024;
     this.log = opts.logger ?? silentLogger;
     this.memory = opts.memory;
 
@@ -92,9 +91,12 @@ export class RemoteStore implements Store {
         self.check(sessionId);
         self.writable();
         const entry: ConversationEntry = { uuid: crypto.randomUUID(), parentUuid, ts: self.iso(), payload };
-        const { snapshot, stored } = self.write(payload.type, entry, (snap) => remove(self.entries, snap));
-        self.entries.push(snapshot);
-        await stored;
+        await self.write(
+          payload.type,
+          entry,
+          (snap) => self.entries.push(snap),
+          (snap) => remove(self.entries, snap),
+        );
         return entry;
       },
       async read(sessionId: string) {
@@ -115,9 +117,12 @@ export class RemoteStore implements Store {
         self.check(sessionId);
         self.writable();
         const records = self.channel(channel);
-        const { snapshot, stored } = self.write("log", { channel, record: { ts: self.iso(), ...record } }, (s) => remove(records, s.record));
-        records.push(snapshot.record);
-        await stored;
+        await self.write(
+          "log",
+          { channel, record: { ts: self.iso(), ...record } },
+          (s) => records.push(s.record),
+          (s) => remove(records, s.record),
+        );
       },
       async read(sessionId: string, channel: LogChannel) {
         self.check(sessionId);
@@ -140,17 +145,13 @@ export class RemoteStore implements Store {
       async putSession(s: SessionRecord) {
         self.check(s.sessionId);
         self.writable();
-        const { snapshot, stored } = self.write("record", s);
-        self.foldRecord(snapshot);
-        await stored;
+        await self.write("record", s, (snap) => self.foldRecord(snap));
       },
       async patchSession(sessionId: string, patch: Partial<SessionRecord>) {
         self.check(sessionId);
         self.writable();
         if (!self.record) return;
-        const { snapshot, stored } = self.write("record", { ...patch, updatedAt: self.iso() });
-        self.foldRecord(snapshot);
-        await stored;
+        await self.write("record", { ...patch, updatedAt: self.iso() }, (snap) => self.foldRecord(snap));
       },
       async getSession(sessionId: string) {
         self.check(sessionId);
@@ -274,25 +275,22 @@ export class RemoteStore implements Store {
   }
 
   /**
-   * Serializes and queues, and returns the snapshot the memory views keep. Throws, queuing nothing,
-   * when `data` cannot be serialized or is over the known per-event limit.
+   * Serializes and queues, and hands the memory views their snapshot through `keep`. Throws, queuing
+   * nothing, when `data` cannot be serialized or is over the known per-event limit.
    *
-   * An event over the batch size goes out alone; `stored` then settles on the store's answer, so the
-   * caller sees a refusal as too large before going on (`drop` has taken the snapshot out by then).
-   * A smaller event resolves `stored` at once: a later refusal calls `drop` and is logged as a hole,
-   * and any other failure stops the writer and reaches the host through onFatal.
+   * An event over the batch size goes out alone and is kept only once the store acknowledged it, so no
+   * view ever shows an entry the store may refuse; the returned promise settles on the store's answer,
+   * so the caller sees a refusal as too large before going on. A smaller event is kept at once and the
+   * promise resolves at once: a later refusal calls `drop` and is logged as a hole, and any other
+   * failure stops the writer and reaches the host through onFatal.
    */
-  private write<T>(kind: string, data: T, drop?: (snapshot: T) => void): { snapshot: T; stored: Promise<unknown> } {
+  private write<T>(kind: string, data: T, keep: (snapshot: T) => void, drop?: (snapshot: T) => void): Promise<unknown> {
     const event = encodeEvent(kind, data, this.now());
-    const seq = this.writer().push(event);
+    const writer = this.writer();
+    const seq = writer.push(event);
     const snapshot = JSON.parse(event.json) as T;
-    if (event.bytes > this.batchMaxBytes) {
-      const stored = seq.catch((err) => {
-        if (err instanceof EventTooLargeError) drop?.(snapshot);
-        throw err;
-      });
-      return { snapshot, stored };
-    }
+    if (event.bytes > writer.batchMaxBytes) return seq.then(() => keep(snapshot));
+    keep(snapshot);
     seq.catch((err) => {
       if (!(err instanceof EventTooLargeError)) return;
       // Queued and then refused: later entries may already name it as their parent, so the hole is
@@ -301,7 +299,7 @@ export class RemoteStore implements Store {
       this.log.error("store.event_dropped", { sid: this.sid, ...(typeof uuid === "string" ? { uuid } : {}), kind, bytes: err.bytes, limit: err.limit });
       drop?.(snapshot);
     });
-    return { snapshot, stored: Promise.resolve() };
+    return Promise.resolve();
   }
 
   private iso(): string {

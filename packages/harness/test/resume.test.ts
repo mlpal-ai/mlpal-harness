@@ -14,6 +14,7 @@ import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } f
 import { FunctionHook, HookEngine } from "../src/hooks/engine";
 import { AgentSession, type AgentConfig, INTERRUPTED_TOOL_RESULT } from "../src/loop/agent";
 import { loadMessages } from "../src/loop/messages";
+import { CODING_PROFILE } from "../src/profile/builtins/coding";
 import { createPolicy } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
 import { SessionStoreClient } from "../src/store/remote/client";
@@ -437,6 +438,87 @@ for (const [name, make] of backends) {
       await store.flush?.();
       const start = (await store.logs.read("s1", "events")).find((r) => r.kind === "run.start")!;
       expect(start.author).toBe("human");
+    });
+
+    /** A dead turn that edited `edits` times (one file each, or `onePath` for all) and, when `checked`,
+     *  ran a passing check; then the model answered without a tool call, or, when `midTools`, nothing
+     *  after the last result. */
+    async function deadAfterEdits(store: Store, opts: { edits: number; checked?: boolean; onePath?: boolean; midTools?: boolean }): Promise<void> {
+      let at = (await store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null)).uuid;
+      at = (await store.conversation.append("s1", { type: "user", message: { role: "user", content: "fix it" }, author: HUMAN, ts: "t1" } as SDKMessage, at)).uuid;
+      const calls = [
+        ...Array.from({ length: opts.edits }, (_, i) => ({ id: `e${i}`, name: "Edit", input: { path: opts.onePath ? "a.ts" : `f${i}.ts` } })),
+        ...(opts.checked ? [{ id: "c1", name: "Bash", input: { command: "bun test" } }] : []),
+      ];
+      for (const c of calls) {
+        const asst = { role: "assistant" as const, content: [{ type: "tool_use" as const, ...c }] };
+        at = (await store.conversation.append("s1", { type: "assistant", message: asst, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use", model: "test", ts: "t2" } as SDKMessage, at)).uuid;
+        at = (await store.conversation.append("s1", { type: "tool_result", toolUseId: c.id, toolName: c.name, content: "ok", isError: false, ts: "t3" } as SDKMessage, at)).uuid;
+      }
+      if (!opts.midTools) {
+        await store.conversation.append("s1", { type: "assistant", message: textDone("done").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t4" } as SDKMessage, at);
+      }
+      await store.flush?.();
+    }
+    const editing = () =>
+      registry(
+        defineTool({ name: "Edit", description: "edits", readOnly: false, edits: true, schema: z.object({ path: z.string() }), call: async () => ({ content: "ok" }) }) as never,
+        defineTool({ name: "Bash", description: "runs", readOnly: false, executes: true, schema: z.object({ command: z.string() }), call: async () => ({ content: "ok" }) }) as never,
+      );
+    const nudges = async (store: Store) =>
+      (await store.conversation.read("s1")).filter((e) => e.payload.type === "user" && e.payload.author?.type === "system").map((e) => JSON.stringify(e.payload));
+
+    test("a resumed turn rebuilds its edit count: four edits and no check get the one self-check nudge", async () => {
+      const b = await make();
+      await deadAfterEdits(b.store, { edits: 4 });
+      const store = await b.reopen();
+      const model = new ScriptedModel([textDone("checked it")]);
+      const { events } = await drain(session(store, model, editing()).resume());
+      expect(model.seen).toHaveLength(1);
+      expect(events.map((e) => e.type)).toEqual(["user", "assistant", "result"]);
+      expect(await nudges(store)).toHaveLength(1);
+    });
+
+    test("a resumed turn rebuilds its verify flag: four edits and a passing check get no nudge", async () => {
+      const b = await make();
+      await deadAfterEdits(b.store, { edits: 4, checked: true });
+      const store = await b.reopen();
+      const model = new ScriptedModel([]);
+      const { events } = await drain(session(store, model, editing()).resume());
+      expect(model.seen).toHaveLength(0);
+      expect(events.map((e) => e.type)).toEqual(["result"]);
+    });
+
+    test("a resumed turn rebuilds its per-file edits: the anti-churn breaker fires on the next edit of that file", async () => {
+      const b = await make();
+      await deadAfterEdits(b.store, { edits: 2, onePath: true, midTools: true });
+      const store = await b.reopen();
+      const model = new ScriptedModel([
+        { model: "test", message: { role: "assistant", content: [{ type: "tool_use", id: "e9", name: "Edit", input: { path: "a.ts" } }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" },
+        textDone("done"),
+      ]);
+      await drain(session(store, model, editing(), { loop: { ...CODING_PROFILE.loop, churnThreshold: 3 }, selfCheck: false }).resume());
+      expect(JSON.stringify(model.seen[1]!.messages.at(-1))).toContain(CODING_PROFILE.loop.antiChurnNudge("a.ts", 3));
+    });
+
+    test("a resumed turn rebuilds its turn count from the turn's assistant entries", async () => {
+      const b = await make();
+      await deadAfterEdits(b.store, { edits: 2, midTools: true });
+      const store = await b.reopen();
+      const model = new ScriptedModel([]);
+      const { events } = await drain(session(store, model, editing(), { maxTurns: 2 }).resume());
+      expect(model.seen).toHaveLength(0);
+      expect(events.at(-1)).toMatchObject({ type: "result", subtype: "max_turns", numTurns: 2 });
+    });
+
+    test("an answered resume spends no classifier call", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store);
+      const { tool } = counting();
+      const store = await b.reopen();
+      const model = new ScriptedModel([]);
+      await drain(session(store, model, registry(tool), { classifyStart: true, escalation: ["cheap", "dear"] }).resume());
+      expect(model.seen).toHaveLength(0);
     });
 
     test("a hook-blocked or a denied call leaves no marker", async () => {

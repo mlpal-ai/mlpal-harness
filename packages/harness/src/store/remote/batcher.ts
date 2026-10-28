@@ -71,6 +71,11 @@ export class AppendBatcher {
     return this.fatalError;
   }
 
+  /** The batch size in `data` bytes; an event over it goes out alone. */
+  get batchMaxBytes(): number {
+    return this.maxBytes;
+  }
+
   /** The store's per-event limit, as configured or learned; undefined while unknown. */
   get maxEventBytes(): number | undefined {
     return this.eventLimit;

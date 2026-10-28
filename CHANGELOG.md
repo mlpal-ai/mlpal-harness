@@ -11,6 +11,20 @@
 - `store?: SessionStoreGrant` on `run`, `permission_response`, `question_response` and `approval_response`. A
   `file`-mode engine ignores it; a multi-session remote-store engine refuses a writing message without it.
 
+### Engine store, slice 3: the harness side (2026-10-27)
+
+- No protocol change beyond 0.22.5 (above).
+- A resumed turn rebuilds its end-of-turn counters from the turn's entries: its model calls (the assistant
+  entries since the turn's first user entry; an answered head is counted by the first iteration), its edits in
+  all and per file (successful results of the tools tagged `edits`), and whether a check ran and passed (the
+  `executes` tools' commands against the HOP's verify vocabulary, an env-broken output not counting as passed).
+  The self-check, the anti-churn breaker and `maxTurns` act as they would have in the live turn. Whether a nudge
+  already fired before the restart is not rebuilt: a resumed turn may give the one nudge again.
+- A resumed answer spends no classifier call (`classifyStart`): the answer is on record, and the rung stays unset.
+- `RemoteStore` has one "goes alone" threshold, the batcher's `batchMaxBytes` (`AppendBatcher.batchMaxBytes`),
+  and an event over it reaches `head()`, `read()` and `tail()` only once the store acknowledged it, so no view
+  shows an entry the store may still refuse.
+
 ### Engine store, slice 2: the side-effect key and resume (2026-10-27)
 
 - No protocol change. `run()` is unchanged in what it persists to the conversation; its body after the user turn
@@ -33,9 +47,8 @@
   from the head without a new user entry, to its result, and `{resumed: true}`. A head whose model call had
   answered without a tool call is the first iteration's answer, with no second model call, and the
   end-of-turn path runs (the max_tokens continuation, the self-check, the background wait, Stop hooks, owed
-  handoff replies). Its in-memory counters (edit counts, verify flags, turns, the escalation rung) start from
-  zero on a resume, so the self-check may not fire where the live turn's would have; slice 3 rebuilds them
-  from the turn's entries. The head is the last user, assistant or tool_result entry (a trailing sub-agent entry
+  handoff replies). Its counters are rebuilt from the turn's entries (slice 3, above); the escalation rung is
+  not carried across a restart. The head is the last user, assistant or tool_result entry (a trailing sub-agent entry
   is not); the run's author is the turn's first user entry not seeded by the system; its result counts the
   turn's model calls before the restart. `markInterrupted` (file mode) is untouched, and `resume()` writes no
   `result {interrupted}`.
