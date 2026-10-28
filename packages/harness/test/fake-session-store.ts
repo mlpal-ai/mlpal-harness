@@ -76,7 +76,7 @@ export interface FakeSessionStore {
   readerToken(sid: string, principal?: string | null): string;
   scopeReaderToken(owner: string, publication: string): string;
   /** The instance writer token: creates sessions of its `{owner, publication}` (its `unit` filling theirs), and
-   *  leases, writes and reads any session of that scope; a write to a session outside it is 403. */
+   *  leases, writes and reads any session of that scope; outside it a session is unknown (404), as to a reader. */
   writerToken(owner: string, publication: string, unit: string): string;
   /** Creates a session as control would (the identity defaults to the store's contract fixtures'). */
   createSession(sid: string, identity?: Partial<FakeIdentity>): void;
@@ -109,8 +109,6 @@ const MAX_TTL_S = 60;
 const MAX_LIMIT = 500;
 const KIND = /^[A-Za-z0-9_.:-]{1,64}$/;
 const SID = /^[A-Za-z0-9_-]{1,128}$/;
-/** The routes an instance writer writes through: outside its scope they are 403 (its reads there are 404). */
-const WRITES = new Set<FakeRoute>(["lease", "renew", "release", "append"]);
 const RUNNING_KINDS = new Set(["user", "system", "assistant", "tool_started", "tool_result", "tool_use_start", "text_delta", "thinking_delta"]);
 const STATUSES = new Set(["idle", "running", "requires_action", "ended"]);
 /** The store's Retry-After for the refusals that carry one. */
@@ -546,9 +544,6 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
     const leaseId = r === "renew" || r === "release" ? parts[3] : undefined;
     if (!permitted(r, claims, sid, leaseId)) return fail(403, "forbidden");
     const s = sessions.get(sid);
-    if (s && claims.role === "engine" && "scope" in claims && !inScope(claims, s) && WRITES.has(r)) {
-      return fail(403, "forbidden", { message: "the session is outside this writer's scope" });
-    }
     if (!s || !inScope(claims, s)) return fail(404, "unknown_session");
     if (s.deleted) return r === "delete" ? handleDelete(s) : fail(410, "session_deleted", { deleted_at: s.deleted.deletedAt });
     return handleSession(r, s, req, url, claims, leaseId);

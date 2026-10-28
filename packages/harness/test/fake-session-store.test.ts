@@ -162,10 +162,10 @@ describe("fake P1 session store", () => {
     expect((await call("POST", `/sessions/s1/lease/${g.leaseId}/renew`, {}, w)).status).toBe(200);
     expect((await call("DELETE", `/sessions/s1/lease/${g.leaseId}`, undefined, w)).status).toBe(204);
     expect((await append("s1", g, 1, [ev(2)])).body).toEqual({ code: "lease_lost" });
-    // Another owner's or publication's session: every write there is 403, a read 404; a missing sid is 404.
+    // Another owner's or publication's session is unknown to it, for every write and read alike (no probing).
     store.createSession("s2", { owner: "cust_9" });
     const g2 = store.grant("s2");
-    const outside = { code: "forbidden", message: "the session is outside this writer's scope" };
+    const outside = { code: "unknown_session" };
     expect((await call("POST", "/sessions/s2/lease", { holder: "engine:inst-1:42", ttl_s: 60 }, w)).body).toEqual(outside);
     expect((await call("POST", `/sessions/s2/lease/${g2.leaseId}/renew`, {}, w)).body).toEqual(outside);
     expect((await call("DELETE", `/sessions/s2/lease/${g2.leaseId}`, undefined, w)).body).toEqual(outside);

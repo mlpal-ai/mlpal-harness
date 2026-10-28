@@ -1,9 +1,8 @@
 {
   "body": {
-    "code": "forbidden",
-    "message": "the session is outside this writer's scope"
+    "code": "unknown_session"
   },
-  "case": "a session of another owner: the writer may not lease, renew, release or append there",
+  "case": "a session of another owner: unknown to the writer, for lease, renew, release and append alike (no probing)",
   "content_type": "application/json",
   "request": {
     "after_seq": 0,
@@ -28,5 +27,5 @@
     "lease_id": "<lease_id>"
   },
   "route": "POST /v1/sessions/{sid}/events",
-  "status": 403
+  "status": 404
 }

@@ -1,0 +1,22 @@
+{
+  "body": {
+    "code": "session_exists",
+    "message": "the sid belongs to a session with another identity"
+  },
+  "case": "the sid with another identity (here another HOP version)",
+  "content_type": "application/json",
+  "request": {
+    "hop": {
+      "digest": "sha256:9f2c",
+      "name": "infra-ro",
+      "version": "0.9.3"
+    },
+    "origin": "api",
+    "owner": "cust_7",
+    "publication": "infra-ro",
+    "sid": "sess-contract-1",
+    "unit": "unit_platform"
+  },
+  "route": "POST /v1/sessions",
+  "status": 409
+}

@@ -14,12 +14,12 @@
 - `lease` is also the writer token's, on any session of its scope.
 - `sessionStore.writeTokenFile` (default `/run/instance/session_store_write_token`): the writer token's file, which
   box A replaces in place; re-read by path on each use.
-- The fake session store, kept to mlpal-harness-stack 2b738e3 (its 62 contract fixtures, the writer token's nine
-  among them): `writerToken(owner, publication, unit)`. Such a token creates sessions of its scope (an owner,
-  publication or unit other than its own → 403; no body `unit` → the token's), and leases, renews, releases,
-  appends to and reads any session of its scope. Outside it a write (lease, renew, release, append) is 403
-  `forbidden`, a read 404 `unknown_session`; it lists nothing. The projection's `hop.digest` is null when the
-  session was created without one.
+- The fake session store, kept to mlpal-harness-stack ef6f888 (its 66 contract fixtures, the writer token's
+  thirteen among them): `writerToken(owner, publication, unit)`. Such a token creates sessions of its scope (an
+  owner, publication or unit other than its own → 403; no body `unit` → the token's; the same identity again → 200,
+  another → 409 `session_exists`), and leases, renews, releases, appends to and reads any session of its scope.
+  Outside it a session is unknown, `404 unknown_session`, for writes and reads alike (no probing); it lists nothing.
+  The projection's `hop.digest` is null when the session was created without one.
 
 ### Protocol 0.22.5: `SessionStoreGrant`, the session store credential on the messages that write (2026-10-27)
 

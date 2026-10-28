@@ -1,0 +1,13 @@
+{
+  "body": {
+    "code": "unknown_session"
+  },
+  "case": "a session of another owner exists: unknown to the writer (no probing)",
+  "content_type": "application/json",
+  "request": {
+    "holder": "engine:box-a:7",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 404
+}

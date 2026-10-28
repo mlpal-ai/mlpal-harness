@@ -151,6 +151,8 @@ const scenarios: Record<string, Scenario> = {
   "create-201-writer-token": (c, f) => create(c, f, c.writer),
   "create-201-writer-token-unit-omitted": (c, f) => create(c, f, c.writer),
   "create-403-writer-token-cross-scope": (c, f) => create(c, f, c.writer),
+  "create-200-writer-token-retried": async (c, f) => (await create(c, f, c.writer), create(c, f, c.writer)),
+  "create-409-writer-token-session-exists": async (c, f) => (await create(c, { ...f, request: { ...f.request, hop: { ...(f.request!.hop as object), version: "0.9.2" } } }, c.writer), create(c, f, c.writer)),
   "create-410-session-deleted": async (c, f) => (c.fake.createSession(SID), await c.erase(), create(c, f)),
   "delete-200": async (c) => (c.leased(), await c.append(0, [user(), result("success")]), c.clock.advance(5_000), c.send("DELETE", `/sessions/${SID}`)),
   "delete-200-repeated": async (c) => (c.leased(), await c.append(0, [user(), result("success")]), c.clock.advance(5_000), await c.erase(), c.send("DELETE", `/sessions/${SID}`)),
@@ -160,6 +162,8 @@ const scenarios: Record<string, Scenario> = {
   "lease-422-invalid-ttl": (c, f) => (c.fake.createSession(SID), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
   "lease-200-writer-token": (c, f) => (c.fake.createSession(SID), c.send("POST", `/sessions/${SID}/lease`, { token: c.writer, body: f.request })),
   "lease-409-writer-token-session-leased": async (c, f) => (await c.writerLeased(), c.send("POST", `/sessions/${SID}/lease`, { body: f.request })),
+  "lease-404-writer-token-unknown-session": (c, f) => c.send("POST", "/sessions/sess-not-yet/lease", { token: c.writer, body: f.request }),
+  "lease-404-writer-token-cross-scope": (c, f) => (c.fake.createSession("sess-other-owner", { owner: "cust_8" }), c.send("POST", "/sessions/sess-other-owner/lease", { token: c.writer, body: f.request })),
   "lease-404-unknown-session": (c, f) => c.send("POST", "/sessions/sess-none/lease", { body: f.request }),
   "renew-200": (c) => (c.leased(), c.clock.advance(20_000), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.engine })),
   "renew-403-forbidden": (c) => (c.leased(), c.send("POST", `/sessions/${SID}/lease/${c.lease}/renew`, { token: c.fake.engineToken(SID, "another-lease") })),
@@ -176,7 +180,7 @@ const scenarios: Record<string, Scenario> = {
     c.send("POST", `/sessions/${SID}/events`, { token: c.engine, body: { lease_id: c.lease, after_seq: 1, events: [largeRead(17 * 1024 * 1024)] } })
   ),
   "append-200-writer-token": async (c, f) => (await c.writerLeased(), appendReq(c, f, c.writer)),
-  "append-403-writer-token-cross-scope": async (c, f) => {
+  "append-404-writer-token-cross-scope": async (c, f) => {
     c.fake.createSession("sess-other-owner", { owner: "cust_8" });
     c.lease = c.fake.grant("sess-other-owner").leaseId;
     return c.send("POST", "/sessions/sess-other-owner/events", { token: c.writer, body: c.request(f) });

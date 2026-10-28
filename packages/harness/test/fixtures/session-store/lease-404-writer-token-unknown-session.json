@@ -1,0 +1,13 @@
+{
+  "body": {
+    "code": "unknown_session"
+  },
+  "case": "the writer's first lease of a new session: unknown, so the engine creates it",
+  "content_type": "application/json",
+  "request": {
+    "holder": "engine:box-a:7",
+    "ttl_s": 60
+  },
+  "route": "POST /v1/sessions/{sid}/lease",
+  "status": 404
+}
