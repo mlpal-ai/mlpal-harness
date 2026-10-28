@@ -291,12 +291,18 @@ for (const [name, make] of backends) {
 
     /** A turn whose model call answered without a tool call; only the run's end was lost. A trailing
      *  sub-agent entry, when `subagent`, sits after the answer. */
-    async function deadAfterAnswer(store: Store, opts: { subagent?: boolean; seeded?: boolean } = {}): Promise<void> {
+    async function deadAfterAnswer(store: Store, opts: { subagent?: boolean; seeded?: boolean; onlySystem?: boolean; cutOff?: boolean } = {}): Promise<void> {
       let at = (await store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null)).uuid;
       if (opts.seeded) at = (await store.conversation.append("s1", { type: "user", message: { role: "user", content: "seeded context" }, author: { type: "system" }, ts: "t1" } as SDKMessage, at)).uuid;
-      const author = opts.seeded ? { type: "agent", id: "peer-1" } : HUMAN;
+      const author = opts.onlySystem ? { type: "system" } : opts.seeded ? { type: "agent", id: "peer-1" } : HUMAN;
       at = (await store.conversation.append("s1", { type: "user", message: { role: "user", content: "hi" }, author, ts: "t1" } as SDKMessage, at)).uuid;
-      at = (await store.conversation.append("s1", { type: "assistant", message: textDone("hello").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t2" } as SDKMessage, at)).uuid;
+      at = (
+        await store.conversation.append(
+          "s1",
+          { type: "assistant", message: textDone("hello").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: opts.cutOff ? "max_tokens" : "end_turn", model: "test", ts: "t2" } as SDKMessage,
+          at,
+        )
+      ).uuid;
       if (opts.subagent) {
         await store.conversation.append("s1", { type: "subagent", kind: "end", toolUseId: "tu9", childSessionId: "c1", description: "child", background: true, outcome: "success", ts: "t3" } as SDKMessage, at);
       }
@@ -367,6 +373,70 @@ for (const [name, make] of backends) {
       expect(typeof start.prompt).toBe("string");
       expect(end.prompt).toBe(start.prompt);
       expect(outcomes).toHaveLength(1);
+    });
+
+    test("the resumed result counts the turn's model calls before the restart", async () => {
+      const b = await make();
+      await deadMidTool(b.store, true); // its assistant entry spent 1 + 1 tokens
+      const { tool } = counting();
+      const store = await b.reopen();
+      const { events } = await drain(session(store, new ScriptedModel([textDone("done")]), registry(tool)).resume());
+      expect(events.at(-1)).toMatchObject({ type: "result", usage: { input_tokens: 9, output_tokens: 5 } }); // 1 + 8, 1 + 4
+    });
+
+    test("the answered iteration is not compacted first", async () => {
+      const b = await make();
+      // An earlier finished turn to summarize, then the dead one's answered turn.
+      let at = (await b.store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null)).uuid;
+      at = (await b.store.conversation.append("s1", { type: "user", message: { role: "user", content: "first" }, author: HUMAN, ts: "t1" } as SDKMessage, at)).uuid;
+      at = (await b.store.conversation.append("s1", { type: "assistant", message: textDone("one").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t2" } as SDKMessage, at)).uuid;
+      at = (await b.store.conversation.append("s1", { type: "result", subtype: "success", numTurns: 1, usage: { input_tokens: 1, output_tokens: 1 }, ts: "t3" } as SDKMessage, at)).uuid;
+      at = (await b.store.conversation.append("s1", { type: "user", message: { role: "user", content: "hi" }, author: HUMAN, ts: "t4" } as SDKMessage, at)).uuid;
+      await b.store.conversation.append("s1", { type: "assistant", message: textDone("hello").message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "test", ts: "t5" } as SDKMessage, at);
+      await b.store.flush?.();
+      const { tool } = counting();
+      const store = await b.reopen();
+      const model = new ScriptedModel([]);
+      // A window this small is over budget at once: any compaction check here would summarize the first turn.
+      const tight = { maxTokens: 100, contextWindow: 1600, compaction: { enabled: true, keepRecentTurns: 1 } };
+      const { events } = await drain(session(store, model, registry(tool), tight).resume());
+      expect(model.seen).toHaveLength(0);
+      expect(events.map((e) => e.type)).toEqual(["result"]);
+      expect((await store.conversation.read("s1")).some((e) => e.payload.type === "compact")).toBe(false);
+    });
+
+    test("the answered iteration gets no memory-checkpoint nudge", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store);
+      const { tool } = counting();
+      const store = await b.reopen();
+      const { events } = await drain(session(store, new ScriptedModel([]), registry(tool), { memoryCheckpoint: { everyTurns: 1, nudge: () => "checkpoint now" } }).resume());
+      expect(events.map((e) => e.type)).toEqual(["result"]);
+      expect(JSON.stringify(await store.conversation.read("s1"))).not.toContain("checkpoint now");
+    });
+
+    test("a resumed answer cut off at max_tokens gets the continuation, as a live one does", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store, { cutOff: true });
+      const { tool } = counting();
+      const store = await b.reopen();
+      const model = new ScriptedModel([textDone("…and the rest")]);
+      const { events } = await drain(session(store, model, registry(tool)).resume());
+      expect(model.seen).toHaveLength(1);
+      const notes = (await store.conversation.read("s1")).filter((e) => e.payload.type === "user" && JSON.stringify(e.payload).includes("[Output limit]"));
+      expect(notes).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success", numTurns: 2 });
+    });
+
+    test("a turn whose every user entry is system-seeded resumes with the human as its author", async () => {
+      const b = await make();
+      await deadAfterAnswer(b.store, { onlySystem: true });
+      const { tool } = counting();
+      const store = await b.reopen();
+      await drain(session(store, new ScriptedModel([]), registry(tool)).resume());
+      await store.flush?.();
+      const start = (await store.logs.read("s1", "events")).find((r) => r.kind === "run.start")!;
+      expect(start.author).toBe("human");
     });
 
     test("a hook-blocked or a denied call leaves no marker", async () => {

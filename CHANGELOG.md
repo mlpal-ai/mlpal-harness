@@ -22,9 +22,11 @@
   settled: one with a `tool_started` marker is never run again and gets an error result
   `INTERRUPTED_TOOL_RESULT` (exported); one without runs now, through the normal path. The turn then continues
   from the head without a new user entry, to its result, and `{resumed: true}`. A head whose model call had
-  answered without a tool call is the first iteration's answer: the turn's end runs as in a live one (the
-  max_tokens continuation, the self-check, the background wait, Stop hooks, owed handoff replies) without
-  calling the model again. The head is the last user, assistant or tool_result entry (a trailing sub-agent entry
+  answered without a tool call is the first iteration's answer, with no second model call, and the
+  end-of-turn path runs (the max_tokens continuation, the self-check, the background wait, Stop hooks, owed
+  handoff replies). Its in-memory counters (edit counts, verify flags, turns, the escalation rung) start from
+  zero on a resume, so the self-check may not fire where the live turn's would have; slice 3 rebuilds them
+  from the turn's entries. The head is the last user, assistant or tool_result entry (a trailing sub-agent entry
   is not); the run's author is the turn's first user entry not seeded by the system; its result counts the
   turn's model calls before the restart. `markInterrupted` (file mode) is untouched, and `resume()` writes no
   `result {interrupted}`.
