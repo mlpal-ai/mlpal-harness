@@ -30,6 +30,8 @@ export interface HandsExecOptions {
   timeoutMs?: number;
   detach?: boolean;
   env?: Record<string, string>;
+  /** Written to the command's stdin whole (a hook's event JSON). */
+  stdin?: string;
 }
 
 export interface HandsClient {

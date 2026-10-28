@@ -97,9 +97,15 @@ export class FunctionHook implements Hook {
   }
 }
 
+/** Runs a hook's command somewhere other than a local shell (P4: one non-detached exec in the
+ *  sandbox). The event JSON is `stdin`; `timeoutMs` is the hook's own. */
+export type CommandRunner = (command: string, o: { stdin: string; timeoutMs: number }) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
+
 export interface CommandHookOptions {
   timeoutMs?: number;
   logger?: Logger;
+  /** Absent = `/bin/bash -c` here, in the context's cwd. */
+  runner?: CommandRunner;
 }
 
 /**
@@ -110,6 +116,7 @@ export interface CommandHookOptions {
 export class CommandHook implements Hook {
   private readonly timeoutMs: number;
   private readonly logger: Logger;
+  private readonly runner: CommandRunner | undefined;
 
   constructor(
     readonly id: string,
@@ -119,9 +126,24 @@ export class CommandHook implements Hook {
   ) {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.logger = opts.logger ?? silentLogger;
+    this.runner = opts.runner;
   }
 
   run(input: HookInput, ctx: HookContext): Promise<HookResult> {
+    return this.runner ? this.runElsewhere(this.runner, input) : this.runLocal(input, ctx);
+  }
+
+  private async runElsewhere(runner: CommandRunner, input: HookInput): Promise<HookResult> {
+    try {
+      const r = await runner(this.command, { stdin: JSON.stringify(input), timeoutMs: this.timeoutMs });
+      return hookResultOf(r.exitCode, r.stdout, r.stderr);
+    } catch (e) {
+      this.logger.warn("command hook runner failed; treated as a no-op", { hook: this.id, error: String((e as Error)?.message ?? e) });
+      return {};
+    }
+  }
+
+  private runLocal(input: HookInput, ctx: HookContext): Promise<HookResult> {
     return new Promise((resolve) => {
       const child = spawn("/bin/bash", ["-c", this.command], { cwd: ctx.cwd });
       let stdout = "";
@@ -136,19 +158,20 @@ export class CommandHook implements Hook {
       });
       child.on("close", (code) => {
         clearTimeout(timer);
-        const parsed = clipHookResult(parseHookOutput(stdout));
-        // exit code 2 = block; stderr becomes the reason if not provided
-        if (code === 2) {
-          resolve({ ...parsed, block: true, reason: parsed.reason ?? (stderr.trim().slice(0, HOOK_OUTPUT_CAP) || "blocked by hook") });
-        } else {
-          resolve(parsed);
-        }
+        resolve(hookResultOf(code, stdout, stderr));
       });
 
       child.stdin.write(JSON.stringify(input));
       child.stdin.end();
     });
   }
+}
+
+/** Exit code 2 = block; stderr becomes the reason if the output gave none. */
+function hookResultOf(code: number | null, stdout: string, stderr: string): HookResult {
+  const parsed = clipHookResult(parseHookOutput(stdout));
+  if (code !== 2) return parsed;
+  return { ...parsed, block: true, reason: parsed.reason ?? (stderr.trim().slice(0, HOOK_OUTPUT_CAP) || "blocked by hook") };
 }
 
 function parseHookOutput(stdout: string): HookResult {

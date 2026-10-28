@@ -225,6 +225,41 @@ export interface SafetyPolicy {
   sandbox?: SandboxPolicy;
 }
 
+/** P4 — the sandbox a HOP asks for. Snake-case fields are the sandbox profile's own (P4
+ *  `SandboxProfile`), so the host can send them as written. On the platform hop-service computes
+ *  the effective profile and the engine never widens it from these; in file mode the host sends
+ *  `egress` on create. */
+export type SandboxSize = "1c2g" | "2c4g";
+export interface HopSandbox {
+  size?: SandboxSize;
+  /** `hands`, or `<name>@<version>`. */
+  template?: string;
+  /** `host` or `host:port` entries; no wildcard, no scheme. */
+  egress?: { allow: string[] };
+}
+
+export type WorkspacePolicy = "ephemeral" | "session" | "persistent";
+export interface HopWorkspace {
+  policy?: WorkspacePolicy;
+  idle_after_s?: number;
+  retention_s?: number;
+  /** Guest globs under /workspace or /tmp copied into the session log at an ephemeral turn's end. */
+  outputs?: string[];
+}
+
+/** A stdio MCP server the HOP runs inside the sandbox. `env_names` are the variables it may see
+ *  there; their values come from the sandbox profile's placeholders, never from the HOP. */
+export interface HopMcpStdio {
+  name: string;
+  argv: string[];
+  env_names: string[];
+}
+export interface HopProcesses {
+  mcp_stdio?: HopMcpStdio[];
+  hooks?: boolean;
+  lsp?: boolean;
+}
+
 /** The composed, validated profile — what the loader hands the host. */
 export interface Profile {
   spec: typeof PROFILE_SPEC_ID;
@@ -300,6 +335,11 @@ export interface Profile {
   /** HOP model policy (2026-10-23): the gateway's allow/deny globs the HOP declares; the key the
    *  HOP runs on carries it and the gateway enforces it. Absent = all models. Not inherited. */
   modelPolicy?: { allow: string[]; deny: string[] };
+  /** P4 — the sandbox, workspace and in-sandbox processes the HOP declares (validation and data
+   *  only; inherited per field down the chain). Absent => none declared. */
+  sandbox?: HopSandbox;
+  workspace?: HopWorkspace;
+  processes?: HopProcesses;
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */
