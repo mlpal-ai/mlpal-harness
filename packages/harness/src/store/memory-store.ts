@@ -1,9 +1,9 @@
 /**
- * The engine's client for the P5 memory store (contracts/P5-memory-store.md): the routes the engine's memory rung
- * uses under `{MEMORY_URL}/v1` — checkpoint (writes stage under the run), search and projection (the run's
- * staging overlaid on the promoted store, shared stores as granted), and promotion at the turn's end. The
- * bearer is the engine's memory token, read per request; a 401 re-reads it once. Every non-2xx is an error
- * class by the body's `code`; no call retries anything else (the rung degrades instead).
+ * The engine's client for the P5 memory store (contracts/P5-memory-store.md 1.3): the routes the engine's memory rung
+ * uses under the grant's base (`{MEMORY_URL}/api/v1`) — checkpoint (writes stage under the run), search and
+ * projection (the run's staging overlaid on the promoted store, shared stores as granted), and promotion at the
+ * turn's end. The bearer is the engine's memory token, read per request; a 401 re-reads it once. Every non-2xx is an
+ * error class by `detail.code` (FastAPI's envelope); no call retries anything else (the rung degrades instead).
  */
 import type { Logger } from "../obs/logger";
 import { silentLogger } from "../obs/logger";
@@ -14,7 +14,7 @@ import type { StoreFetch } from "./remote/client";
 // ── the grant (RunContext `memory`, P5 §a) ───────────────────────────────────────────────────
 
 export interface MemoryGrant {
-  /** The store's base, `{MEMORY_URL}/v1`. */
+  /** The store's full base, mount included (`{MEMORY_URL}/api/v1`): routes are appended to it as they are. */
   url: string;
   /** The root unit id. */
   org: string;
@@ -68,7 +68,7 @@ export function parseMemoryGrant(raw: unknown): MemoryGrant | null {
   };
 }
 
-// ── errors (P5 "Errors": `{code, message?}`) ─────────────────────────────────────────────────
+// ── errors (P5 "Errors": `{"detail": {"code", "message", …fields}}`) ─────────────────────────────
 
 export class MemoryStoreError extends Error {
   override name = "MemoryStoreError";
@@ -106,29 +106,67 @@ export class MemoryVersionConflictError extends MemoryStoreError {
     super(message, status, code);
   }
 }
-/** 413 `write_too_large`: one checkpoint over the grant's `max_write_bytes`. */
+/** 413 `write_too_large {size, limit}`: one checkpoint's body over the grant's `max_write_bytes`. */
 export class MemoryWriteTooLargeError extends MemoryStoreError {
   override name = "MemoryWriteTooLargeError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    readonly size: number | undefined,
+    readonly limit: number | undefined,
+  ) {
+    super(message, status, code);
+  }
 }
-/** 413 `store_full`: the promotion would pass `max_nodes` or `max_bytes`; nothing was promoted. */
+/** 413 `store_full {nodes|bytes, limit}`: the promotion would pass `max_nodes` or `max_bytes`; nothing was promoted. */
 export class MemoryStoreFullError extends MemoryStoreError {
   override name = "MemoryStoreFullError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    /** Which limit: the body names `nodes` or `bytes`. */
+    readonly measure: "nodes" | "bytes" | undefined,
+    readonly limit: number | undefined,
+  ) {
+    super(message, status, code);
+  }
+}
+/** 422 `invalid_precondition {key}`: `expected_version` on a claim with no anchor (a learning). */
+export class MemoryInvalidPreconditionError extends MemoryStoreError {
+  override name = "MemoryInvalidPreconditionError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    readonly key: string,
+  ) {
+    super(message, status, code);
+  }
 }
 /** 503 `store_unavailable`, any other 5xx, a timeout or no answer (`unreachable`). */
 export class MemoryUnavailableError extends MemoryStoreError {
   override name = "MemoryUnavailableError";
 }
 
-function errorFor(op: string, status: number, body: Record<string, unknown>): MemoryStoreError {
-  const code = typeof body.code === "string" ? body.code : `http_${status}`;
-  const message = `memory store ${op}: ${status} ${code}${typeof body.message === "string" ? ` (${body.message})` : ""}`;
+const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+
+/** A P5 refusal's `detail` object; a legacy string detail, pydantic's list or no body has none, and keeps its status as
+ *  the code (`http_<status>`) and no fields. */
+function errorFor(op: string, status: number, body: unknown): MemoryStoreError {
+  const detail = isObj(body) && isObj(body.detail) && typeof body.detail.code === "string" ? body.detail : null;
+  const code = detail ? (detail.code as string) : `http_${status}`;
+  const message = `memory store ${op}: ${status} ${code}${detail && typeof detail.message === "string" ? ` (${detail.message})` : ""}`;
   if (status === 401) return new MemoryUnauthenticatedError(message, status, code);
   if (status === 403) return new MemoryScopeForbiddenError(message, status, code);
   if (status === 404) return new MemoryUnknownError(message, status, code);
-  if (status === 409 && code === "version_conflict") return new MemoryVersionConflictError(message, status, code, String(body.key ?? ""), typeof body.current_version === "number" ? body.current_version : 0);
-  if (status === 413 && code === "store_full") return new MemoryStoreFullError(message, status, code);
-  if (status === 413) return new MemoryWriteTooLargeError(message, status, code);
   if (status >= 500) return new MemoryUnavailableError(message, status, code);
+  if (!detail) return new MemoryStoreError(message, status, code);
+  if (status === 409 && code === "version_conflict") return new MemoryVersionConflictError(message, status, code, String(detail.key ?? ""), num(detail.current_version) ?? 0);
+  if (status === 413 && code === "store_full") return new MemoryStoreFullError(message, status, code, "nodes" in detail ? "nodes" : "bytes" in detail ? "bytes" : undefined, num(detail.limit));
+  if (status === 413 && code === "write_too_large") return new MemoryWriteTooLargeError(message, status, code, num(detail.size), num(detail.limit));
+  if (status === 422 && code === "invalid_precondition") return new MemoryInvalidPreconditionError(message, status, code, String(detail.key ?? ""));
   return new MemoryStoreError(message, status, code);
 }
 
@@ -190,7 +228,21 @@ export interface MemoryProjectionQuery {
   tokenBudget: number;
 }
 
-export type MemoryPromotion = { state: "promoted"; storeVersion: number; promoted: number } | { state: "empty" } | { state: "pending"; proposalId: string };
+/** A staged key the store moved since it was staged (§e): left staged, never written over the newer value. */
+export interface MemoryPromotionConflict {
+  key: string;
+  topic: string;
+  seen_version: number;
+  current_version: number;
+  staged_event_id: string;
+}
+
+/** P5 §d, 200 in every state. `promoted` counts claims. */
+export type MemoryPromotion =
+  | { state: "promoted"; storeVersion: number; promoted: number; conflicts: MemoryPromotionConflict[] }
+  | { state: "pending"; proposalId: string }
+  | { state: "rejected"; proposalId: string | null }
+  | { state: "empty"; storeVersion: number | null };
 
 export interface MemoryStoreClientOptions {
   /** The grant's `url`, `…/v1`. */
@@ -243,12 +295,16 @@ export class MemoryStoreClient {
     return { markdown: r.markdown, estimatedTokens: typeof r.estimated_tokens === "number" ? r.estimated_tokens : 0, factCount: r.fact_count, truncated: r.truncated === true };
   }
 
-  /** P5 §d. Idempotent per run at the store: a repeat answers the first body. */
+  /** P5 §d. Idempotent per run at the store: a repeat answers the first body. The store's name keeps its slash in
+   *  the path (`/memory/stores/hop:5/acme/runs/…`: the route takes a path converter). */
   async promote(store: string, runId: string, att: MemoryAttribution): Promise<MemoryPromotion> {
-    const r = await this.request("promote", "POST", `/memory/stores/${encodeURIComponent(store)}/runs/${encodeURIComponent(runId)}/promote`, att, {});
-    if (r.state === "empty") return { state: "empty" };
-    if (r.state === "promoted" && typeof r.store_version === "number" && typeof r.promoted === "number") return { state: "promoted", storeVersion: r.store_version, promoted: r.promoted };
+    const storePath = store.split("/").map((s) => encodeURIComponent(s).replaceAll("%3A", ":")).join("/");
+    const r = await this.request("promote", "POST", `/memory/stores/${storePath}/runs/${encodeURIComponent(runId)}/promote`, att, {});
+    if (r.state === "empty") return { state: "empty", storeVersion: num(r.store_version) ?? null };
+    if (r.state === "promoted" && typeof r.store_version === "number" && typeof r.promoted === "number" && Array.isArray(r.conflicts))
+      return { state: "promoted", storeVersion: r.store_version, promoted: r.promoted, conflicts: r.conflicts as MemoryPromotionConflict[] };
     if (r.state === "pending" && typeof r.proposal_id === "string") return { state: "pending", proposalId: r.proposal_id };
+    if (r.state === "rejected") return { state: "rejected", proposalId: typeof r.proposal_id === "string" ? r.proposal_id : null };
     throw invalid("promote");
   }
 
@@ -260,11 +316,10 @@ export class MemoryStoreClient {
       this.log.info("memory.store.reauth", { op, sid: att.sid, run_id: att.runId });
       res = await this.send(op, method, path, att, payload);
     }
-    const parsed = await res.json().catch(() => null);
-    const json = isObj(parsed) ? parsed : {};
-    if (!res.ok) throw errorFor(op, res.status, json);
+    const parsed: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw errorFor(op, res.status, parsed);
     if (!isObj(parsed)) throw invalid(op);
-    return json;
+    return parsed;
   }
 
   private async send(op: string, method: "GET" | "POST", path: string, att: MemoryAttribution, payload: string | undefined): Promise<Response> {
