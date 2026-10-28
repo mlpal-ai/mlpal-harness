@@ -157,6 +157,8 @@ function fold(events: FakeEvent[]) {
         parks = parks.filter((k) => !(isLive(k) && k.id === p.id));
         break;
       case "question_parked":
+        // The turn ends: its live asks cannot outlive it (the store's end_turn).
+        parks = parks.filter((k) => !isLive(k));
         parks.push({ kind: "parked_question", id: String(p.id), at: e.ts_ms });
         running = false;
         break;
@@ -175,6 +177,7 @@ function fold(events: FakeEvent[]) {
         }
         break;
       case "done":
+        parks = parks.filter((k) => !isLive(k));
         running = false;
         if (!turn.stop) stopReason = p.subtype;
         if (!turn.usage) addUsage(p);

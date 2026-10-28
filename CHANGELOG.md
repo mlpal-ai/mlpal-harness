@@ -34,6 +34,8 @@
 - `parkHeadless: "every_ask"` parks a run on any ask with no answerer, not only a §10 safety edge: the result is
   `needs_approval` with `pendingApproval {command, reason: "approval_required"}`. `true` keeps its meaning. yodex
   uses it for a turn it resumes with nobody attached.
+- The fake session store's projection drops live asks at `done` and `question_parked` (the store's `end_turn`,
+  mlpal-harness-stack c921134).
 
 ### Engine store, slice 2: the side-effect key and resume (2026-10-27)
 

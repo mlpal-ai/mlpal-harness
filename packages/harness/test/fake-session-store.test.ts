@@ -167,6 +167,23 @@ describe("fake P1 session store", () => {
     expect(answered.park).toBeUndefined();
   });
 
+  test("live asks cannot outlive their turn: done and question_parked drop them, as the store's end_turn does", async () => {
+    const g = leased();
+    let seq = 0;
+    const post = async (...events: { kind: string; data: unknown }[]) => {
+      const r = await append("s1", g, seq, events.map((e, i) => ({ ...e, ts_ms: 1000 + seq + i })));
+      expect(r.status).toBe(200);
+      seq = r.body!.last_seq;
+      return (await call("GET", "/sessions/s1")).body!;
+    };
+    const user = { kind: "user", data: { uuid: crypto.randomUUID(), parentUuid: null, ts: "t", payload: { type: "user" } } };
+    expect(await post(user, { kind: "permission_request", data: { id: "p1" } })).toMatchObject({ status: "requires_action" });
+    expect(await post({ kind: "done", data: { type: "done", subtype: "error" } })).toMatchObject({ status: "idle", parks: [] });
+    await post(user, { kind: "question_request", data: { id: "q1" } });
+    const parked = await post({ kind: "question_parked", data: { id: "pq1", questions: [] } });
+    expect(parked).toMatchObject({ status: "idle", parks: [{ kind: "parked_question", id: "pq1" }] });
+  });
+
   test("erasure: the stub answers again; the session is 410 to its readers and gone from listings", async () => {
     const g = leased();
     await append("s1", g, 0, [ev(1)]);
