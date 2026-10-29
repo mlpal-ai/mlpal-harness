@@ -98,8 +98,9 @@ export class FunctionHook implements Hook {
 }
 
 /** Runs a hook's command somewhere other than a local shell (P4: one non-detached exec in the
- *  sandbox). The event JSON is `stdin`; `timeoutMs` is the hook's own. */
-export type CommandRunner = (command: string, o: { stdin: string; timeoutMs: number }) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
+ *  sandbox). The event JSON is `stdin`; `timeoutMs` is the hook's own; `sessionId` is the session the hook fired in
+ *  (a host with one sandbox per session runs it in that session's). */
+export type CommandRunner = (command: string, o: { stdin: string; timeoutMs: number; sessionId: string }) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
 
 export interface CommandHookOptions {
   timeoutMs?: number;
@@ -130,12 +131,12 @@ export class CommandHook implements Hook {
   }
 
   run(input: HookInput, ctx: HookContext): Promise<HookResult> {
-    return this.runner ? this.runElsewhere(this.runner, input) : this.runLocal(input, ctx);
+    return this.runner ? this.runElsewhere(this.runner, input, ctx) : this.runLocal(input, ctx);
   }
 
-  private async runElsewhere(runner: CommandRunner, input: HookInput): Promise<HookResult> {
+  private async runElsewhere(runner: CommandRunner, input: HookInput, ctx: HookContext): Promise<HookResult> {
     try {
-      const r = await runner(this.command, { stdin: JSON.stringify(input), timeoutMs: this.timeoutMs });
+      const r = await runner(this.command, { stdin: JSON.stringify(input), timeoutMs: this.timeoutMs, sessionId: ctx.sessionId });
       return hookResultOf(r.exitCode, r.stdout, r.stderr);
     } catch (e) {
       this.logger.warn("command hook runner failed; treated as a no-op", { hook: this.id, error: String((e as Error)?.message ?? e) });

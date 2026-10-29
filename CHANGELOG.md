@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### W3 integration: a command hook's runner knows its session (2026-10-29)
+
+- `CommandRunner` options gain `sessionId` (the hook's `HookContext.sessionId`), so a host with one sandbox per served
+  session (the engine's connection mode, P4 step f) runs a hosted command hook in that session's sandbox. Additive;
+  no protocol change.
+
 ### Profile `confineTo`: `hop.yaml` itself, and required at every prompt site (2026-10-28)
 
 - Under `LoadProfileOptions.confineTo` the loader confines `hop.yaml` itself: one that is a symlink out of the HOP's

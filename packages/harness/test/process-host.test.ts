@@ -123,7 +123,15 @@ describe("CommandHook with a runner (P4: a hook is one exec in the sandbox)", ()
     });
     const input = { event: "PreToolUse" as const, toolName: "Bash", input: { command: "ls" } };
     expect(await hook.run(input, ctx)).toEqual({ injectContext: "from the guest" });
-    expect(calls).toEqual([{ command: "check-it", stdin: JSON.stringify(input), timeoutMs: 1234 }]);
+    expect(calls).toEqual([{ command: "check-it", stdin: JSON.stringify(input), timeoutMs: 1234, sessionId: "s" }]);
+  });
+
+  test("W3 integration: the runner is told the hook's session, so a host with one sandbox per session picks the right one", async () => {
+    const seen: Array<string | undefined> = [];
+    const hook = new CommandHook("h", ["PreToolUse"], "check-it", { runner: async (_c, o) => (seen.push(o.sessionId), { exitCode: 0, stdout: "", stderr: "" }) });
+    await hook.run({ event: "PreToolUse", toolName: "Bash", input: {} }, { ...ctx, sessionId: "s-a" });
+    await hook.run({ event: "PreToolUse", toolName: "Bash", input: {} }, { ...ctx, sessionId: "s-b" });
+    expect(seen).toEqual(["s-a", "s-b"]);
   });
 
   test("exit 2 blocks with stderr as the reason; a runner that throws is a no-op, as a failed spawn is", async () => {
