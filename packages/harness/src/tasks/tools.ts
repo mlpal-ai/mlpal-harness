@@ -24,6 +24,7 @@ const SID_FALLBACK = "default";
 export function createTaskTools(store: TaskStore): Tool<never>[] {
   const taskCreate = defineTool({
     name: "TaskCreate",
+    hands: "pure",
     description:
       "Add a task to the persistent plan. Returns its stable #id — update it later with TaskUpdate. Use for multi-step work so progress stays visible (and survives restarts); skip for trivial single-step requests. Keep exactly one task in_progress at a time.",
     readOnly: true,
@@ -41,6 +42,7 @@ export function createTaskTools(store: TaskStore): Tool<never>[] {
 
   const taskUpdate = defineTool({
     name: "TaskUpdate",
+    hands: "pure",
     description:
       'Update one task by its #id — set status ("mark #3 completed"), or revise subject/description. Move the next task to in_progress as you finish the current one.',
     readOnly: true,
@@ -64,6 +66,7 @@ export function createTaskTools(store: TaskStore): Tool<never>[] {
 
   const taskList = defineTool({
     name: "TaskList",
+    hands: "pure",
     description: "The current plan: every task with its #id, status, and description.",
     readOnly: true,
     schema: z.object({}),

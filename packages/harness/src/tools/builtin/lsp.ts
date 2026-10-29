@@ -80,6 +80,7 @@ export function renderDiagnostics(d: LspDiagnostic[], path: string, cwd: string)
 export function createLspTool(manager: LspManager): Tool<LspToolInput> {
   return defineTool<LspToolInput>({
     name: "Lsp",
+    hands: "local",
     description: `Code intelligence from a language server (${manager.languages().join(", ") || "none configured"}): go to a symbol's definition, list its references, read its type and docs (hover), outline a file (symbols), or get the server's diagnostics for a file. Prefer this over Grep when the question is about one identifier: it understands scope, imports and types. Name the file plus a symbol, or a line and column.`,
     readOnly: true,
     schema,

@@ -88,6 +88,7 @@ export function resolveModelRef(deps: GatewayToolDeps, ref: string): { model: st
 export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?: string; provider?: string; dimension?: string }> {
   return defineTool({
     name: "ListModels",
+    hands: "pure",
     description:
       "List the models this gateway serves to you: the tier aliases (cheap|mid|frontier|max) with cost and what each is good for, the meta-models (mlpal, mlpal-flash, mlpal-lite), each provider's flagship, benchmark leaders per quality dimension, and every served chat model with context window, capabilities (tools/vision/pdf/audio), and cost per million tokens in compute units. Use it before AskModel or Agent(model=…) when you need a specific strength (long context, vision, a provider's latest) rather than a tier alias. Filter with capability (vision|pdf|audio|tools), provider (anthropic|openai|google|bedrock), or dimension (a benchmark dimension) to keep the answer short.",
     readOnly: true,
@@ -244,6 +245,7 @@ export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore =
   const cap = deps.maxTokensCap ?? 16384;
   return defineTool({
     name: "AskModel",
+    hands: "pure",
     description:
       "Ask another model a question and get its answer — one completion, no tools, in parallel across up to four models when you pass `models`. This is the way to get a second opinion, a specialist's take (a stronger reasoner, a longer-context reader, a different provider), a vision/PDF read, or a quick draft from a cheaper tier. The model sees ONLY what you send: `prompt` (+ `system`), optional `attachments` (image/PDF paths, capability-gated), and, with context=\"recent\", the recent turns of this conversation rendered as text. `model` is a tier alias (cheap|mid|frontier|max), a meta-model (mlpal|mlpal-flash|mlpal-lite), or any served id (see ListModels). To CONTINUE a conversation with the same model (follow-up questions, refining its draft, a multi-round review), pass `thread` — a name you choose; the first call pins the model, later calls with that name carry the whole history so the model remembers its own earlier answers; `reset: true` starts it over. Threads are single-model, capped, and live only in this running process. It costs tokens on that model. maxTokens defaults to 4096 and that is right for a review or a draft; a one-liner can use 200, but do not go below 2048 for an Anthropic model doing real analysis — it thinks before it writes and a tight cap truncates the answer. For work that needs repo access or tools, use Agent(model=…) instead. Never hand-roll HTTP calls to the gateway.",
     readOnly: true,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool, err, ok, type Tool, type ToolContext, type ToolResult } from "../types";
+import { defineTool, err, ok, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../types";
 
 /**
  * WebSearch + Research: live web access as first-class tools. Backend-agnostic — the host wires
@@ -24,6 +24,8 @@ export interface WebSearchDeps {
   spill: (ctx: ToolContext, name: string, text: string) => Promise<string>;
   /** Metering hook for the host's /cost line. */
   onCall?: (kind: SearchKind, ms: number, ok: boolean) => void;
+  /** The backend's hands class (ToolHands): `routed` when the host reaches it through the egress proxy. Default local. */
+  hands?: ToolHands;
   /** Per-session caps (defaults: 200 searches, 20 research calls). */
   maxSearches?: number;
   maxResearch?: number;
@@ -87,6 +89,7 @@ export function createWebSearchTools(deps: WebSearchDeps): Tool<unknown>[] {
 
   const webSearch = defineTool({
     name: "WebSearch",
+    hands: deps.hands ?? "local",
     description:
       "Search the live web and get a synthesized answer with cited sources. Use it for anything current or beyond your training data — versions, prices, docs, news, APIs, errors — instead of disclaiming that you lack current information; never guess at current facts. Results are compact (answer + up to 10 sources); use WebFetch to read a specific source in full. For hard multi-part questions or a full report, use Research.",
     readOnly: true,
@@ -109,6 +112,7 @@ export function createWebSearchTools(deps: WebSearchDeps): Tool<unknown>[] {
 
   const research = defineTool({
     name: "Research",
+    hands: deps.hands ?? "local",
     description:
       "Deeper web research than WebSearch, at a higher cost. depth=\"pro\": nuanced or multi-part comparisons (seconds). depth=\"reasoning\": step-by-step analysis across sources (seconds). depth=\"deep\": an exhaustive report over dozens of sources, taking minutes — the full report is saved to a file whose path is returned with the report's head; Read the file for the rest. Each call is billed; use it when a quick WebSearch is not enough, not by default.",
     readOnly: true,

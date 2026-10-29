@@ -124,6 +124,7 @@ export function resolvePeer(
 export function createPeerTools(deps: PeerToolsDeps): Tool[] {
   const listAgents = defineTool({
     name: "ListAgents",
+    hands: "local",
     description:
       `List everything you can message: this session's own agents (steer them by id) and other live ${host().name} ` +
       "sessions on this machine (other terminals the user has open). Use before SendMessage when you don't " +
@@ -168,6 +169,7 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
 
   const sendMessage = defineTool({
     name: "SendMessage",
+    hands: "local",
     description:
       "Send a message to one of your own agents (by id, e.g. agent1 — delivered as steering) or to another " +
       `${host().name} session on this machine (by workspace name or session id from ListAgents). A running peer sees ` +

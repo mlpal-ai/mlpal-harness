@@ -51,6 +51,7 @@ async function readable(url: string, res: Response): Promise<ToolResult> {
 
 export const webFetchTool = defineTool({
   name: "WebFetch",
+  hands: "local",
   description:
     "Fetch a URL over HTTP(S) and return its readable text content (HTML is reduced to text). Use for reading docs or pages. Large pages are truncated.",
   readOnly: false,
@@ -100,6 +101,7 @@ export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string) {
   const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return defineTool({
     name: "WebFetch",
+    hands: "routed",
     description: `Fetch a page under ${base} and return its readable text content (HTML is reduced to text). Only that site is reachable from this session. Large pages are truncated.`,
     readOnly: false,
     schema: webFetchSchema,

@@ -36,6 +36,7 @@ export function createListPeersTool(list: ListPeers): Tool<Record<string, never>
   const norm = (p: string) => p.replace(/\/+$/, "");
   return defineTool({
     name: "ListPeers",
+    hands: "local",
     description:
       `List ${host().name} agents/sessions in OTHER repositories (their workspace, working directory, status, and model). Use this to see what work is happening elsewhere before handing off a cross-repo change with HandoffTask.`,
     readOnly: true,
@@ -72,6 +73,7 @@ export function createListPeersTool(list: ListPeers): Tool<Record<string, never>
 export function createHandoffTool(run: HandoffRun): Tool<{ repo: string; task: string }> {
   return defineTool({
     name: "HandoffTask",
+    hands: "local",
     description:
       "Hand off a self-contained code change to another repository and get the result back. Use when the current task needs work in a DIFFERENT repo. `repo` is a workspace name (from ListPeers) or an absolute path to the target repo. `task` is complete, standalone instructions — the other agent does not see this conversation. If an agent is already working in that repo, the task is routed to it; otherwise a fresh agent is dispatched there. Blocks until the other repo reports back.",
     readOnly: false,

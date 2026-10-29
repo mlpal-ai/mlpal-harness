@@ -107,6 +107,7 @@ export function formatOutcome(outcome: AskOutcome | { parked: true }): string {
 export function createAskUserQuestionTool(present: PresentQuestions): Tool<{ questions: AskQuestion[] }> {
   return defineTool({
     name: "AskUserQuestion",
+    hands: "pure",
     description:
       "Ask the developer up to 4 structured questions when you are blocked on a decision that is genuinely theirs to make — ambiguous requirements, a fork between approaches, missing context you cannot read from the repo. Each question is its own tab and picks its shape: 2–5 labeled options for a choice (put your recommended one FIRST with '(Recommended)' appended to its label), multiSelect for several answers, option previews to compare concrete artifacts (UI mockups, code variants, configs), or NO options at all for an open-ended question — the form then shows a free-text field. Every choice question also gets free-text entry and notes automatically, so answers may contain text you didn't list. Batch related decisions into ONE call rather than asking serially. Do NOT use it for choices with an obvious default, facts the code answers, or permission to proceed.",
     readOnly: true,

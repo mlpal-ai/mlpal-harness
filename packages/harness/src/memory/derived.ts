@@ -210,6 +210,7 @@ export function createMemorizeTool(deps: MemorizeDeps): Tool<{
 }> {
   return defineTool({
     name: "Memorize",
+    hands: "local",
     description:
       "Save a durable fact to persistent memory so future sessions know it: decisions + why, hard-won gotchas, user preferences, important commands/URLs. NOT for anything derivable from the repo itself or only relevant right now. Re-using an existing slug updates that memory (state the fact fresh, don't append). scope=global for user-level facts, project (default) for this workspace.",
     readOnly: true, // writes user memory, not the workspace — never worth a permission stop

@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
-import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
+import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../tools/types";
 import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
@@ -421,6 +421,7 @@ export class McpManager {
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
     return result.tools.map((t) =>
       wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, {
+        hands: mcpHands(config),
         memory: this.memoryServers.has(name),
         maxDescriptionLength: this.maxDescriptionLength,
         onScopeUpgrade: (scope) => {
@@ -462,6 +463,12 @@ export class McpManager {
   }
 }
 
+/** Where a server's tools reach (ToolHands): through the egress proxy or a ProcessHost (the sandbox) they are routed;
+ *  a local process or a direct URL is the host's own. */
+export function mcpHands(config: McpServerConfig): ToolHands {
+  return (isHttp(config) ? config.egress : config.host) ? "routed" : "local";
+}
+
 /** Where a server lives, for error messages: its URL, or the command that starts it. */
 export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
@@ -473,7 +480,7 @@ export function wrapMcpTool(
   def: RawMcpTool,
   endpoint?: string,
   meta?: (ctx: ToolContext) => Record<string, unknown> | null,
-  opts: { memory?: boolean; maxDescriptionLength?: number; onScopeUpgrade?: (scope: string) => void } = {},
+  opts: { hands?: ToolHands; memory?: boolean; maxDescriptionLength?: number; onScopeUpgrade?: (scope: string) => void } = {},
 ): Tool<unknown> {
   const cap = opts.maxDescriptionLength ?? DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
   const rawDescription = def.description ?? `${def.name} (via ${server} MCP server)`;
@@ -489,6 +496,7 @@ export function wrapMcpTool(
     // Honor the server's readOnlyHint (e.g. web search); otherwise assume mutating so the
     // permission layer gates it.
     readOnly: def.annotations?.readOnlyHint === true,
+    ...(opts.hands ? { hands: opts.hands } : {}),
     ...(opts.memory ? { memory: true } : {}),
     schema: z.record(z.unknown()) as unknown as Tool<unknown>["schema"],
     jsonSchema: js,

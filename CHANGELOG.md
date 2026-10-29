@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Tool hands classes: a host with no local hands offers only pure and routed tools (2026-10-29)
+
+- `Tool.hands?: ToolHands` (`"pure" | "routed" | "local"`, also a `defineTool` option): where a tool's model-chosen
+  paths, commands, URLs and code land. Every builtin and factory tool is classified; an MCP server's tools are
+  `routed` through the egress proxy or a `ProcessHost`, else `local` (`mcpHands(config)`); `createWebSearchTools`
+  takes `hands` (default `local`) since its backend is the host's.
+- `ToolRegistry.restrictHands(allowed, onRefused?)` admits only the named classes from then on and drops the refused
+  ones (an unclassified tool is refused); a registry made by `filter()` shares the restriction; `handsRestriction`
+  reads it. An unrestricted registry behaves as before. Additive; no protocol change.
+
 ### W3 integration: a command hook's runner knows its session (2026-10-29)
 
 - `CommandRunner` options gain `sessionId` (the hook's `HookContext.sessionId`), so a host with one sandbox per served

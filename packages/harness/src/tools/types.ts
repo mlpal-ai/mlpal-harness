@@ -55,9 +55,23 @@ export interface ToolResult {
   };
 }
 
+/**
+ * Where a tool's model-chosen paths, commands, URLs and code land:
+ * - `pure`: nowhere outside the engine's own state and its platform services at fixed endpoints (the gateway, the
+ *   session store, the scheduler, the memory store); no model input names a path, command, URL or code that reaches the
+ *   host's filesystem, processes or network;
+ * - `routed`: only a remote sandbox (its execs and fs) or the egress proxy;
+ * - `local`: the host itself (its filesystem, its processes, its network).
+ * A host with no local hands (an engine pod) offers only `pure` and `routed` tools (ToolRegistry.restrictHands), and
+ * a tool without a class is refused there like a `local` one.
+ */
+export type ToolHands = "pure" | "routed" | "local";
+
 export interface Tool<I = unknown> {
   name: string;
   description: string;
+  /** See ToolHands. Absent = unclassified: admitted only by a registry nobody restricted. */
+  hands?: ToolHands;
   /** Read-only tools can be auto-allowed by default policy. */
   readOnly: boolean;
   /** Mutates the workspace by editing files (Write/Edit). Auto-approved in accept-edits
@@ -126,6 +140,7 @@ export function sanitizeJsonSchema(node: unknown): void {
 export function defineTool<I>(def: {
   name: string;
   description: string;
+  hands?: ToolHands;
   readOnly: boolean;
   edits?: boolean;
   executes?: boolean;
@@ -141,6 +156,7 @@ export function defineTool<I>(def: {
   return {
     name: def.name,
     description: def.description,
+    ...(def.hands ? { hands: def.hands } : {}),
     readOnly: def.readOnly,
     edits: def.edits,
     executes: def.executes,
