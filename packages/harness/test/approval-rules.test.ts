@@ -47,3 +47,61 @@ describe("parseApprovalEntry: P7's grammar, strictly", () => {
     for (const bad of ["Bash()", "Bash(a(b)", "Ba sh", " Bash", "Bash(x\ty)"]) expect(parseApprovalEntry(bad)).toBeNull();
   });
 });
+
+describe("Bash rules fail closed on what the splitter cannot decompose (P3 critical-fix review, addendum)", () => {
+  const push = (command: string) => fires("Bash(git push*)", "Bash", { command });
+  const BYPASSES = [
+    'echo "$(git push)"',
+    'echo "`git push`"',
+    "( git push )",
+    "{ git push; }",
+    "if true; then git push; fi",
+    "for i in 1; do git push; done",
+    "! git push",
+    "FOO=1 git push",
+    "FOO=1 BAR=2 git push",
+    "env git push",
+    "env FOO=1 git push",
+    "env -i git push",
+    "command git push",
+    "time git push",
+    "nohup git push",
+    "echo x | xargs git push",
+    "bash -c 'git push'",
+    'sh -c "git push"',
+    "eval 'git push'",
+    "/usr/bin/git push",
+    "\\git push",
+    "git  push",
+    "git\tpush",
+  ];
+  for (const command of BYPASSES) test(`asks for ${JSON.stringify(command)}`, async () => expect(await push(command)).toBe(true));
+
+  test("ordinary commands match exactly as before", async () => {
+    expect(await push("git push origin main")).toBe(true);
+    expect(await push("git status")).toBe(false);
+    expect(await push("ls -la && git pull")).toBe(false);
+    expect(await push("ls -la && git push")).toBe(true);
+    expect(await push("git log | head -5")).toBe(false);
+    expect(await push('echo "hello world" > out.txt 2>&1')).toBe(false);
+    expect(await push("echo $(git rev-parse HEAD)")).toBe(false);
+    expect(await push('git commit -m "push it"')).toBe(false);
+    expect(await push("npm test")).toBe(false);
+    // Arithmetic expansion runs no command: it is not a subshell.
+    expect(await push("echo E5-shell-$((6 * 7))")).toBe(false);
+    expect(await push("echo $((1 + 2)) && git push")).toBe(true);
+  });
+
+  test("a rule that does not target Bash is unaffected by an opaque command", async () => {
+    expect(await fires("Deploy*", "Bash", { command: "bash -c 'git push'" })).toBe(false);
+    expect(await fires("Edit(src/*)", "Bash", { command: "( git push )" })).toBe(false);
+  });
+});
+
+describe("M5: the glob's length counts code points, as Python does", () => {
+  test("256 astral characters are one glob; 257 are not", () => {
+    const astral = "\u{1F600}";
+    expect(parseApprovalEntry(`Bash(${astral.repeat(256)})`)).not.toBeNull();
+    expect(parseApprovalEntry(`Bash(${astral.repeat(257)})`)).toBeNull();
+  });
+});

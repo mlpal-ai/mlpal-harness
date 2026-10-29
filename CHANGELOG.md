@@ -9,7 +9,15 @@
   of that server, and an MCP name with a digit, `:`, `.` or `-` matches at all (it used to parse as no rule, so the
   approval was silently never asked, W6 D-15). An exact name still matches exactly; the argument side is unchanged;
   allow rules are unchanged (no auto-approval widens).
-- `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null.
+- `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null; its glob length
+  counts code points (`u`), as Python does.
+- **Bash deny rules and approvals fail closed.** Each simple command is normalised before matching (whitespace
+  collapsed; leading `VAR=…` and `env`/`command`/`time`/`nohup` stripped; the command path and a leading `\` reduced to
+  its name; arithmetic `$((…))` read as a literal), and a command that does not decompose into simple commands the
+  matcher understands (a `$(` or backtick inside double quotes, a subshell or group, `if`/`for`/`while`/`case` bodies,
+  `!`, `xargs`, `eval`, `exec`, `sudo`, a shell such as `bash -c`/`sh -c`, a prefix with options such as `env -i`)
+  fires every deny rule and approval on Bash, whatever its pattern. With no rule on Bash nothing changes; allow rules
+  are unchanged. (`bashSubjects`, `normaliseSimpleCommand`.)
 
 ### Paths named by HOP content or a client stay where the host meant (2026-10-29)
 

@@ -194,12 +194,86 @@ function denyMatches(rule: string, req: PermissionRequest): boolean {
   const pattern = m[2];
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
-    return splitShellCommands(String(req.input.command ?? "")).some((sub) => globMatch(pattern, sub));
+    // Fail closed: a command the splitter cannot fully decompose into simple commands fires every deny rule and every
+    // approval on Bash, whatever its pattern; a governance control is never passed by an unparsed shape.
+    const { subs, opaque } = bashSubjects(String(req.input.command ?? ""));
+    return opaque || subs.some((sub) => globMatch(pattern, sub));
   }
   return globMatch(pattern, representativeArg(req));
 }
 
-const APPROVAL_ENTRY = /^([A-Za-z0-9_*:.-]{1,128})(?:\((.{1,256})\))?$/;
+/** Prefixes that run the command after them: stripped (with nothing but the command after them). */
+const RUNS_NEXT = new Set(["env", "command", "time", "nohup"]);
+/** A first word that runs something the matcher cannot see: a shell, `eval`, `xargs`, `exec`, a privilege wrapper. */
+const OPAQUE_HEAD = new Set(["xargs", "eval", "exec", "source", ".", "sudo", "doas", "su", "bash", "sh", "zsh", "dash", "ksh", "fish", "busybox"]);
+/** Shell syntax that wraps commands the splitter does not open (compound commands, groups, negation). */
+const KEYWORD = new Set(["if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "in", "!", "{", "}", "[[", "]]", "coproc"]);
+const basename = (w: string) => w.slice(w.lastIndexOf("/") + 1);
+
+/** One simple command as a rule sees it: whitespace collapsed, leading `VAR=…` and the `env`/`command`/`time`/`nohup`
+ *  prefixes stripped, the command's path and a leading backslash reduced to its name; null when it is not a simple
+ *  command the matcher understands (a group, a subshell, a compound, a shell or `eval` or `xargs` running more). */
+export function normaliseSimpleCommand(sub: string): string | null {
+  if (/^[({]/.test(sub)) return null;
+  const words = sub.split(/\s+/).filter(Boolean);
+  for (;;) {
+    const w = words[0];
+    if (w === undefined) return "";
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      words.shift();
+      continue;
+    }
+    if (RUNS_NEXT.has(basename(w))) {
+      if (words[1]?.startsWith("-")) return null;
+      words.shift();
+      continue;
+    }
+    break;
+  }
+  const head = basename(words[0]!.replace(/^\\+/, ""));
+  if (KEYWORD.has(head) || OPAQUE_HEAD.has(head)) return null;
+  return [head, ...words.slice(1)].join(" ");
+}
+
+/** A `$(` or a backtick inside double quotes: a command the splitter does not open. */
+function substitutionInQuotes(command: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (c === "\\" && quote !== "'") {
+      i++;
+      continue;
+    }
+    if (quote === "'") {
+      if (c === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "`" || (c === "$" && command[i + 1] === "(")) return true;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+  }
+  return false;
+}
+
+/** The simple commands a Bash command runs, normalised, and whether any part of it could not be decomposed. */
+export function bashSubjects(command: string): { subs: string[]; opaque: boolean } {
+  // Arithmetic expansion (`$((6 * 7))`) runs no command: a literal, so the splitter does not read it as a subshell.
+  command = command.replace(/\$\(\([^()]*\)\)/g, "0");
+  if (substitutionInQuotes(command)) return { subs: [], opaque: true };
+  const subs: string[] = [];
+  for (const raw of splitShellCommands(command)) {
+    const sub = normaliseSimpleCommand(raw);
+    if (sub === null) return { subs: [], opaque: true };
+    if (sub) subs.push(sub);
+  }
+  return { subs, opaque: false };
+}
+
+// `u`: the glob's 1-256 counts code points, as Python does (an astral character is one, not two UTF-16 units).
+const APPROVAL_ENTRY = /^([A-Za-z0-9_*:.-]{1,128})(?:\((.{1,256})\))?$/u;
 /** A character Python's `str.isprintable` refuses (a control, format, separator other than the space, unassigned). */
 const UNPRINTABLE = /[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u;
 
