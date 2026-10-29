@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Approval entries and deny rules: the tool part is a glob over P7 1.7's grammar (2026-10-29)
+
+- A deny rule's tool part (and so a publication's `approvals_required` entry, which the engine matches as one) takes
+  `[A-Za-z0-9_*:.-]` with `*` as a case-sensitive wildcard: `Deploy*` names `DeployProd`, `mcp__github__*` every tool
+  of that server, and an MCP name with a digit, `:`, `.` or `-` matches at all (it used to parse as no rule, so the
+  approval was silently never asked, W6 D-15). An exact name still matches exactly; the argument side is unchanged;
+  allow rules are unchanged (no auto-approval widens).
+- `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null.
+
 ### Paths named by HOP content or a client stay where the host meant (2026-10-29)
 
 - `loadCatalog`: a `catalog.profile` (HOP content) with characters outside `[a-z0-9_-]` names its cache file by a hash;

@@ -176,19 +176,51 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   return globMatch(pattern, representativeArg(req));
 }
 
+/** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
+ *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). */
+function toolMatches(tool: string, name: string): boolean {
+  return tool.includes("*") ? globMatch(tool, name) : tool === name;
+}
+
 /** Deny matching is sub-command aware for Bash: a rule fires if ANY simple-command in a
  *  chain matches, so `Bash(rm*)` catches `git status && rm x`. (Allow stays whole-command,
- *  so a partial match can never auto-approve a compound command.) */
+ *  so a partial match can never auto-approve a compound command.) The tool part takes P7's characters and `*` (a
+ *  publication's approvals are deny rules here): a rule that parsed before still means the same, and a deny or an
+ *  approval can only ever name more tools, never fewer. */
 function denyMatches(rule: string, req: PermissionRequest): boolean {
-  const m = rule.match(/^([A-Za-z_]+)(?:\((.*)\))?$/);
+  const m = rule.match(/^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/);
   if (!m) return false;
-  if (m[1] !== req.toolName) return false;
+  if (!toolMatches(m[1]!, req.toolName)) return false;
   const pattern = m[2];
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
     return splitShellCommands(String(req.input.command ?? "")).some((sub) => globMatch(pattern, sub));
   }
   return globMatch(pattern, representativeArg(req));
+}
+
+const APPROVAL_ENTRY = /^([A-Za-z0-9_*:.-]{1,128})(?:\((.{1,256})\))?$/;
+/** A character Python's `str.isprintable` refuses (a control, format, separator other than the space, unassigned). */
+const UNPRINTABLE = /[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u;
+
+/**
+ * An `approvals_required` entry under P7 1.7's grammar (hop-service's `_approval`): `Tool` or `Tool(<arg-glob>)`, the
+ * tool `[A-Za-z0-9_*:.-]{1,128}`, the glob 1-256 printable characters with balanced parentheses, nothing around it.
+ * Null when it does not parse: the engine refuses such an entry rather than skip it.
+ */
+export function parseApprovalEntry(entry: string): { tool: string; pattern?: string } | null {
+  const m = APPROVAL_ENTRY.exec(entry);
+  if (!m || UNPRINTABLE.test(entry)) return null;
+  const pattern = m[2];
+  if (pattern !== undefined) {
+    let depth = 0;
+    for (const c of pattern) {
+      depth += c === "(" ? 1 : c === ")" ? -1 : 0;
+      if (depth < 0) return null;
+    }
+    if (depth !== 0) return null;
+  }
+  return { tool: m[1]!, ...(pattern !== undefined ? { pattern } : {}) };
 }
 
 /** The arg a rule pattern is matched against, per tool. */
