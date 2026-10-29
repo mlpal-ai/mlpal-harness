@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -145,7 +146,9 @@ export class TaskStore {
     let t = this.trackers.get(sessionId);
     if (!t) {
       if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
-      t = new TaskTracker(join(this.dir, `${sessionId}.json`));
+      // A session id is a client's (yodex serve): one with path characters is named by its hash, inside `dir`.
+      const name = /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : `sid-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`;
+      t = new TaskTracker(join(this.dir, `${name}.json`));
       this.trackers.set(sessionId, t);
     }
     return t;

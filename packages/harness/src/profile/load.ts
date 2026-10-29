@@ -465,6 +465,10 @@ export class HopPathError extends Error {
 /** `abs` itself when no confinement applies or it resolves (after links) inside `root`; else HopPathError. */
 function confined(abs: string, root: string | undefined, field: string): string {
   if (root === undefined) return abs;
+  // By the text first: a path outside is refused before anything stats it (an engine pod never touches a pod path a
+  // HOP names); one inside is then judged again after links.
+  const textual = relative(resolve(root), resolve(abs));
+  if (textual === ".." || textual.startsWith(`..${sep}`) || isAbsolute(textual)) throw new HopPathError(field, abs);
   let real: string;
   let realRoot: string;
   try {
