@@ -78,6 +78,7 @@ export function createToolSearchTool(deferred: DeferredTools, registry: ToolRegi
   sanitizeJsonSchema(jsonSchema);
   return {
     name: "ToolSearch",
+    hands: "pure",
     get description() {
       return describe(deferred);
     },

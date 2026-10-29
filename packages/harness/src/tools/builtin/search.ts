@@ -112,6 +112,7 @@ function withScanTimeout<T>(work: Promise<T>): Promise<T | null> {
 
 export const globTool = defineTool({
   name: "Glob",
+  hands: "local",
   description:
     "Find files matching a glob pattern (e.g. '**/*.ts'). Respects .gitignore. Returns matching paths.",
   readOnly: true,
@@ -156,6 +157,7 @@ export const globTool = defineTool({
 
 export const grepTool = defineTool({
   name: "Grep",
+  hands: "local",
   description:
     "Search file contents with a regular expression (ripgrep-backed; respects .gitignore). Returns file:line:match. Optionally scoped by a glob.",
   readOnly: true,
@@ -234,6 +236,7 @@ export const grepTool = defineTool({
 
 export const listTool = defineTool({
   name: "List",
+  hands: "local",
   description: "List the entries of a directory. Directories are suffixed with '/'.",
   readOnly: true,
   schema: z.object({

@@ -127,6 +127,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const bash = defineTool({
     name: "Bash",
+    hands: "routed",
     description:
       "Execute a shell command in the sandbox's working directory. Returns combined stdout+stderr. Set run_in_background for long-lived commands (dev servers, watchers): returns an exec id immediately; read output later with BashOutput and stop it with Kill. A foreground command that outlives its timeout (default 120s, max 600s) is reported as timed out.",
     readOnly: false,
@@ -152,6 +153,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const bashOutput = defineTool({
     name: "BashOutput",
+    hands: "routed",
     description: "Read the output so far of a background task started with Bash (run_in_background), by its id.",
     readOnly: true,
     schema: z.object({ id: z.string().describe("exec id from Bash") }),
@@ -166,6 +168,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const kill = defineTool({
     name: "Kill",
+    hands: "routed",
     description: "Stop a background task started with Bash (run_in_background).",
     readOnly: false,
     executes: true,
@@ -183,6 +186,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const read = defineTool({
     name: "Read",
+    hands: "routed",
     description: "Read a file from the sandbox. Returns numbered lines. Supports offset/limit for large files.",
     readOnly: true,
     schema: z.object({
@@ -208,6 +212,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const write = defineTool({
     name: "Write",
+    hands: "routed",
     description: "Write a file in the sandbox (creates or overwrites; parent directories are made).",
     readOnly: false,
     edits: true,
@@ -232,6 +237,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const edit = defineTool({
     name: "Edit",
+    hands: "routed",
     description: "Replace an exact string in a sandbox file. old_string must be unique unless replace_all is set.",
     readOnly: false,
     edits: true,
@@ -263,6 +269,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const globTool = defineTool({
     name: "Glob",
+    hands: "routed",
     description: "Find files in the sandbox matching a glob pattern (e.g. '**/*.ts'). Respects .gitignore. Returns matching paths.",
     readOnly: true,
     schema: z.object({ pattern: z.string(), path: z.string().optional().describe("base dir (default the working directory)") }),
@@ -281,6 +288,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const grep = defineTool({
     name: "Grep",
+    hands: "routed",
     description: "Search sandbox file contents with a regular expression (ripgrep-backed; respects .gitignore). Returns file:line:match. Optionally scoped by a glob.",
     readOnly: true,
     schema: z.object({
@@ -307,6 +315,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
 
   const list = defineTool({
     name: "List",
+    hands: "routed",
     description: "List the entries of a sandbox directory. Directories are suffixed with '/'.",
     readOnly: true,
     schema: z.object({ path: z.string().optional().describe("directory (default the working directory)") }),

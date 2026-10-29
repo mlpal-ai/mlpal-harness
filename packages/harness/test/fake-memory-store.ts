@@ -16,6 +16,11 @@ import { CryptoHasher } from "bun";
 
 export type FakeMemoryRoute = "checkpoint" | "search" | "projection" | "promote";
 
+/** W5's run-id rule (P5 1.6; mlpal-memory-graph 73576cd `core/run_grant.py` `SEGMENT`): a token whose `run_id` is not
+ *  a plain segment is refused at decode, 401, on every route. yodex pins this pattern against the source
+ *  (test/fixtures/w5-run-grant-segment.txt). */
+export const W5_RUN_SEGMENT = /^[A-Za-z0-9._\-]+$/;
+
 export interface FakeEngineClaims {
   sid: string;
   runId: string;
@@ -186,6 +191,7 @@ export function startFakeMemoryStore(): FakeMemoryStore {
     const auth = req.headers.get("authorization");
     const claims = auth?.startsWith("Bearer ") ? tokens.get(auth.slice(7)) : undefined;
     if (!claims) return refuse(401, "unauthenticated", "the memory token is missing, bad or expired");
+    if (!W5_RUN_SEGMENT.test(claims.runId)) return refuse(401, "unauthenticated", "customer and run_id are plain segments");
     // 1.5: an engine token reaches the P5 engine routes only; anything else is refused before routing.
     if (!route) return refuse(403, "scope_forbidden", `a engine token does not reach ${req.method} ${url.pathname}`);
     const fault = faults.get(route)?.shift();

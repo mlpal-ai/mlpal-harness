@@ -1,13 +1,40 @@
 import type { ToolSchema } from "../gateway/client";
 import { MALFORMED_INPUT_KEY } from "./json";
 import { redactResult } from "../obs/redact";
-import type { Tool, ToolContext, ToolResult } from "./types";
+import type { Tool, ToolContext, ToolHands, ToolResult } from "./types";
 
 export class ToolRegistry {
   private readonly map = new Map<string, Tool<unknown>>();
   private lateResolver?: (name: string) => Promise<void>;
   /** Which registered tools the model is shown (tool deferral); default: all. */
   private schemaFilter: (t: Tool<unknown>) => boolean = () => true;
+  private hands: { allowed: readonly ToolHands[]; onRefused?: (t: Tool<unknown>) => void; refused: Set<string> } | null = null;
+
+  /**
+   * From now on admit only tools whose `hands` class is in `allowed` (an unclassified tool is refused), and drop the
+   * registered ones it refuses. `onRefused` hears each refused name once. A registry made from this one by filter()
+   * shares the restriction. For a host with no local hands: what it refuses is never offered or run, whenever and
+   * wherever it is registered later.
+   */
+  restrictHands(allowed: readonly ToolHands[], onRefused?: (t: Tool<unknown>) => void): void {
+    this.hands = { allowed: [...allowed], ...(onRefused ? { onRefused } : {}), refused: new Set() };
+    for (const t of this.list()) if (!this.admits(t)) this.map.delete(t.name);
+  }
+
+  /** The classes restrictHands admits, or null when the registry is unrestricted. */
+  get handsRestriction(): readonly ToolHands[] | null {
+    return this.hands?.allowed ?? null;
+  }
+
+  private admits(t: Tool<unknown>): boolean {
+    const h = this.hands;
+    if (!h || (t.hands !== undefined && h.allowed.includes(t.hands))) return true;
+    if (!h.refused.has(t.name)) {
+      h.refused.add(t.name);
+      h.onRefused?.(t);
+    }
+    return false;
+  }
 
   /** Restrict `schemas()` to tools the predicate admits. A tool the filter hides stays
    *  registered and resolvable, but calling it before it is shown is refused (see runTool),
@@ -22,6 +49,7 @@ export class ToolRegistry {
   }
 
   register(tool: Tool<unknown>): void {
+    if (!this.admits(tool)) return;
     this.map.set(tool.name, tool);
   }
 
@@ -63,6 +91,8 @@ export class ToolRegistry {
   filter(pred: (t: Tool<unknown>) => boolean): ToolRegistry {
     const out = new ToolRegistry();
     out.setSchemaFilter(this.schemaFilter);
+    // The same restriction, its refused names included: a child never reports a name its parent already refused.
+    out.hands = this.hands;
     for (const t of this.list()) if (pred(t)) out.register(t);
     const late = this.lateResolver;
     if (late) {

@@ -130,6 +130,7 @@ export function createSkillTool(
   const isEnabled = opts?.isEnabled ?? (() => true);
   return defineTool({
     name: "Skill",
+    hands: "local",
     description:
       `Load a skill's full instructions by name. Some skills bundle scripts/reference files — ` +
       `pass \`file\` to read one of the bundled files listed when you load the skill. Available skills: ${names}`,

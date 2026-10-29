@@ -10,6 +10,7 @@ import { defineTool } from "../types";
  */
 export const exitPlanModeTool = defineTool({
   name: "ExitPlanMode",
+  hands: "pure",
   description:
     "Call this ONLY when you are in read-only planning mode and have finished researching: present your implementation plan (in `plan`, as markdown) for the user to approve BEFORE making any changes. Do NOT use it for trivial edits, for questions, or when you are already in an editing mode — just do the work in those cases.",
   readOnly: true,

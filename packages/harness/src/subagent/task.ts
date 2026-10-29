@@ -102,6 +102,7 @@ export function createTaskTool(
     : "";
   return defineTool({
     name: "Agent",
+    hands: "pure",
     description:
       "Delegate a focused, self-contained subtask to a sub-agent that works autonomously and returns a result. Use it for well-scoped or parallelizable work (research a question, implement a contained piece). Put COMPLETE instructions in `prompt` — the sub-agent does not see this conversation. It has the same tools but cannot spawn further sub-agents. `model` runs it on any gateway-served model (tier alias or id) — the way to get another model's take on something. Set run_in_background to start it detached and keep working: it runs READ-ONLY (research/verification/analysis, no edits) unless isolation is \"worktree\", and its result is delivered to you when it finishes — check with AgentOutput, stop with Kill. isolation: \"worktree\" gives the child its own git worktree and branch, so it can edit in parallel with you (and other isolated children) without touching your tree; its changes come back committed on that branch for you to merge or inspect." +
       catalog,
@@ -259,6 +260,7 @@ export function createTaskTool(
 /** Read a background sub-agent task's status, and its full result once it has finished. */
 export const agentOutputTool = defineTool({
   name: "AgentOutput",
+  hands: "pure",
   description:
     "Check a background sub-agent started by Agent(run_in_background). Returns its status while running, and its full result once finished. The result is also delivered to you automatically on completion, so you don't have to poll — use this only when you want it sooner.",
   readOnly: true,

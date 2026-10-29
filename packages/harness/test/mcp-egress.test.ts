@@ -241,3 +241,15 @@ describe("WebFetch through the web-fetch upstream", () => {
     }
   }, 15_000);
 });
+
+describe("the hands class (ToolHands)", () => {
+  test("an egress upstream's tools are routed: an engine with no local hands may offer them", async () => {
+    const { reg, mcp } = await connected();
+    try {
+      expect(reg.list().length).toBeGreaterThan(0);
+      expect(new Set(reg.list().map((t) => t.hands))).toEqual(new Set(["routed"]));
+    } finally {
+      await mcp.close();
+    }
+  });
+});

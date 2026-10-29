@@ -127,6 +127,7 @@ function run(
 
 export const bashTool = defineTool({
   name: "Bash",
+  hands: "local",
   description:
     "Execute a shell command via bash in the working directory. Returns combined stdout+stderr. Set run_in_background for long-lived commands (dev servers, watchers): returns a task id immediately; read output later with BashOutput and stop it with Kill. A foreground command that outlives its timeout (default 120s, max 600s) is not killed — it is adopted as a background task and you get an event when it finishes; investigate instead of re-running if it should have been quick.",
   readOnly: false,
@@ -164,6 +165,7 @@ export const bashTool = defineTool({
 
 export const bashOutputTool = defineTool({
   name: "BashOutput",
+  hands: "local",
   description:
     "Read new output from a background task started by Bash(run_in_background). Returns output since the last read plus the task's status. Call again later for more.",
   readOnly: true,
@@ -194,6 +196,7 @@ const MONITOR_MAX_TIMEOUT_S = 3_600;
 
 export const monitorTool = defineTool({
   name: "Monitor",
+  hands: "local",
   description:
     "Watch something long-running WITHOUT blocking: starts a detached shell script and returns its id immediately so you can keep working. The script's output streams back to you automatically as events (batched), and you're notified when it exits or times out — do NOT poll for it; you can also read output anytime with BashOutput or stop it with Kill. Write the script to emit output only when something noteworthy happens (e.g. a check-loop that echoes on state changes: `for i in $(seq 1 60); do check && { echo done; break; }; sleep 10; done`).",
   readOnly: false,
@@ -228,6 +231,7 @@ export const monitorTool = defineTool({
 
 export const killTool = defineTool({
   name: "Kill",
+  hands: "local",
   description:
     'Stop background work by id — a shell from Bash(run_in_background) (e.g. "bg1"), a monitor ("mon1"), or a sub-agent from Agent(run_in_background) (e.g. "agent1").',
   readOnly: false,

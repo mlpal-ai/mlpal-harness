@@ -11,6 +11,7 @@ import { defineTool, type Tool } from "../types";
  */
 export const digestTool: Tool<{ text: string; algorithm?: "sha256" | "sha1" | "md5" }> = defineTool({
   name: "Digest",
+  hands: "pure",
   description:
     "Hex digest of a string (default sha256). Use it wherever a result needs a hash of a command or plan; never compute hashes through the shell.",
   readOnly: true,

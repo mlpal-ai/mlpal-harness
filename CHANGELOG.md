@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### WebFetch: a streamed 3 MiB cap and its own deadline (2026-10-29)
+
+- Both WebFetch tools (the local one and the platform's through the egress route) read the body as it streams and
+  cancel it once it passes 3 MiB (`response too large (over 3.1 MB)`, nothing of the body returned); they used to
+  buffer the whole body before the check, so a large page could exhaust an engine pod's memory.
+- A fetch now has its own 15 s deadline beside the turn's signal (`AbortSignal.any`), whichever fires first; the turn's
+  signal used to replace it, so a page that never finished held the turn. A timeout reads `fetch timed out after 15 s`,
+  a cancelled turn `fetch aborted: the turn was cancelled`. `createWebFetchTool({timeoutMs})` and the third argument
+  of `createEgressWebFetchTool` set the deadline. No protocol change.
+
+### Tool hands classes: a host with no local hands offers only pure and routed tools (2026-10-29)
+
+- `Tool.hands?: ToolHands` (`"pure" | "routed" | "local"`, also a `defineTool` option): where a tool's model-chosen
+  paths, commands, URLs and code land. Every builtin and factory tool is classified; an MCP server's tools are
+  `routed` through the egress proxy or a `ProcessHost`, else `local` (`mcpHands(config)`); `createWebSearchTools`
+  takes `hands` (default `local`) since its backend is the host's.
+- `ToolRegistry.restrictHands(allowed, onRefused?)` admits only the named classes from then on and drops the refused
+  ones (an unclassified tool is refused); a registry made by `filter()` shares the restriction; `handsRestriction`
+  reads it. An unrestricted registry behaves as before. Additive; no protocol change.
+
 ### W3 integration: a command hook's runner knows its session (2026-10-29)
 
 - `CommandRunner` options gain `sessionId` (the hook's `HookContext.sessionId`), so a host with one sandbox per served

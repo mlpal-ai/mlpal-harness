@@ -31,6 +31,7 @@ export function createWorkflowTool(
     : "(none defined yet)";
   return defineTool({
     name: "Workflow",
+    hands: "local",
     description:
       "Run a named multi-agent workflow — deterministic orchestration that fans sub-agents across a " +
       "task and returns a combined result. Use for exhaustive or parallelizable work (broad review, " +

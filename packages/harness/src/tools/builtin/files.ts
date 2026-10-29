@@ -17,6 +17,7 @@ const DEFAULT_READ_LINES = 2000;
 
 export const readTool = defineTool({
   name: "Read",
+  hands: "local",
   description:
     "Read a file. Text files return numbered lines; images (png/jpg/gif/webp) and PDFs return rich content you can see directly. Supports offset/limit for large text files.",
   readOnly: true,
@@ -69,6 +70,7 @@ export const readTool = defineTool({
 
 export const writeTool = defineTool({
   name: "Write",
+  hands: "local",
   description: "Write content to a file, creating parent directories. Overwrites if it exists.",
   readOnly: false,
   edits: true,
@@ -90,6 +92,7 @@ export const writeTool = defineTool({
 
 export const editTool = defineTool({
   name: "Edit",
+  hands: "local",
   description:
     "Replace an exact string in a file. old_string must be unique unless replace_all is set.",
   readOnly: false,
