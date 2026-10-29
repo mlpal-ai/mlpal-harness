@@ -11,7 +11,20 @@
   allow rules are unchanged (no auto-approval widens).
 - `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null; its glob length
   counts code points (`u`), as Python does.
-- **Bash deny rules and approvals fail closed.** Each simple command is normalised before matching (whitespace
+- **Bash rules see what the shell runs, failing closed only on what cannot be decomposed (W3 window defect D-27).**
+  `decomposeBash` (permission/shell-decompose.ts) decomposes recursively, depth ≤ 3: `sh|bash -c '<literal>'` (option
+  bundles ending in `c`), `$(…)`, backticks, `<(…)`, subshells, groups, `if`/`for`/`while`/`until`/`case` bodies; it
+  normalises leading assignments, the prefixes `env`/`command`/`builtin`/`time`/`nohup`/`timeout`/`nice`/`stdbuf`/
+  `ionice` (with their options), git's global options before the subcommand, `xargs` (its command is checked), absolute
+  command paths (basename and as written), arithmetic, redirections and here-doc bodies; a shell running a script file
+  and a command run by a relative path are checked as named (best-effort, logged `bash.rule_opaque {command}` through
+  `PermissionConfig.logger`); what still cannot be decomposed (an expansion as the command name, `eval`, `source`/`.`,
+  `exec`, `sudo`, a non-literal or stdin script, a here-doc into a shell, a function definition, an unknown prefix
+  option, unbalanced quoting, depth > 3) fires every rule on Bash. The probe's `sh -c` scripts pass a `Bash(git push*)`
+  deny again. Deny and allow see the same commands (an allow never approves an undecomposable one). A deny names the
+  rule and what matched (`denied by rule "R": <sub-command>` or `: undecomposable: <form>`); `ruleMatch(rule, req,
+  logger?)` is exported for hosts.
+- **Bash deny rules and approvals fail closed.** (Superseded by the entry above for what is decomposed.) Each simple command is normalised before matching (whitespace
   collapsed; leading `VAR=…` and `env`/`command`/`time`/`nohup` stripped; the command path and a leading `\` reduced to
   its name; arithmetic `$((…))` read as a literal), and a command that does not decompose into simple commands the
   matcher understands (a `$(` or backtick inside double quotes, a subshell or group, `if`/`for`/`while`/`case` bodies,

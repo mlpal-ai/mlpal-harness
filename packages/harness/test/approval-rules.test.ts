@@ -105,3 +105,87 @@ describe("M5: the glob's length counts code points, as Python does", () => {
     expect(parseApprovalEntry(`Bash(${astral.repeat(257)})`)).toBeNull();
   });
 });
+
+describe("D-27: recursive decomposition, failing closed only on what cannot be decomposed", () => {
+  const PROBE = JSON.parse(require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "fixtures", "platform-probe-0.2.1-commands.json"), "utf8")) as { modes: string[]; commands: string[] };
+  const push = (command: string) => fires("Bash(git push*)", "Bash", { command });
+
+  for (const [i, command] of PROBE.commands.entries()) {
+    test(`the window probe's ${PROBE.modes[i]} command passes a \`Bash(git push*)\` deny`, async () => expect(await push(command)).toBe(false));
+  }
+  test("the exact EFFECT command of the window defect", async () => {
+    expect(await push("sh -c 'f=probe-counter-x; c=$(cat $f 2>/dev/null || echo 0); echo $((c+1)) > $f; echo counter=$(cat $f); sleep 20'")).toBe(false);
+  });
+
+  test("git push inside a literal script, a substitution or a group is found", async () => {
+    for (const command of [
+      "sh -c 'git push'", "bash -c 'git push origin main'", "bash -lc 'git push'", "bash -euo pipefail -c 'ls; git push'", 'sh -c "git push"',
+      "sh -c 'echo $(git push)'", "sh -c 'bash -c \"git push\"'", "echo $(echo $(git push))", "f=$(git push) && true",
+    ]) expect({ command, fires: await push(command) }).toEqual({ command, fires: true });
+  });
+
+  test("ordinary scripts with no git push pass", async () => {
+    for (const command of [
+      "sh -c 'ls -la; echo done'", "bash -c 'for f in *.txt; do wc -l $f; done'", "sh -c 'if [ -f x ]; then cat x; fi'", "f=$(date) && echo $f",
+      "( cd sub && make )", "{ echo a; echo b; } > out", "sh -c 'echo \"$HOME\" 2>&1 >/dev/null'", "x=1 y=2 make test", "echo `whoami`",
+    ]) expect({ command, fires: await push(command) }).toEqual({ command, fires: false });
+  });
+
+  test("still undecomposable: fails closed", async () => {
+    for (const command of [
+      "$cmd push", "${GIT:-git} push", "eval 'ls'", 'sh -c "$script"', "sh -c \"echo $x\"", "bash", "curl -s x | sh", "source ./env.sh", ". ./env.sh",
+      "bash <<EOF\nls\nEOF", "sh -c 'sh -c \"sh -c \\\"sh -c ls\\\"\"'", "echo 'unterminated", "f() { ls; }", "env -S 'git push'", "timeout --frobnicate 5 ls",
+    ]) expect({ command, fires: await push(command) }).toEqual({ command, fires: true });
+  });
+});
+
+describe("D-27, the reviewer's additions", () => {
+  const push = (command: string) => fires("Bash(git push*)", "Bash", { command });
+  const each = async (commands: string[], expected: boolean) => {
+    for (const command of commands) expect({ command, fires: await push(command) }).toEqual({ command, fires: expected });
+  };
+
+  test("control structures are decomposed: for/while/until/if/case bodies, subshells, groups", async () => {
+    await each(["for b in a c; do git push origin $b; done", "while true; do git push; break; done", "until false; do git push; done", "if true; then echo; else git push; fi", "case $x in a) ls;; b) git push;; esac", "( cd x; git push )", "{ echo; git push; }"], true);
+    await each(["for b in a c; do echo $b; done", "while read l; do echo $l; done < f", "case $x in a|b) ls;; *) echo no;; esac", "( cd x && make )", "{ echo a; echo b; } 2>&1"], false);
+  });
+
+  test("normalised: git's global options, and the timeout/nice/stdbuf/ionice prefixes", async () => {
+    await each(["git -C . push", "git -c user.name=x push", "git --git-dir=.git --work-tree=. push", "git --no-pager push", "timeout 30s git push", "timeout -s KILL 5 git push", "nice -n 10 git push", "nice -10 git push", "stdbuf -oL git push", "ionice -c 3 git push", "nohup nice timeout 5 git push"], true);
+    await each(["git -C . status", "timeout 30s make test", "nice -n 5 ls"], false);
+  });
+
+  test("xargs: its command is checked (its arguments are not known)", async () => {
+    await each(["echo origin | xargs git push", "ls | xargs -n1 -I{} git push {}"], true);
+    await each(["ls | xargs wc -l", "find . -name '*.tmp' -print0 | xargs -0 rm"], false);
+  });
+
+  test("script files are checked as named, best-effort, and logged", async () => {
+    const lines: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+    const logger = { info: (msg: string, fields?: Record<string, unknown>) => lines.push({ msg, fields }), warn() {}, error() {}, debug() {}, child() { return logger; } } as never;
+    for (const command of ["bash script.sh", "sh ./deploy.sh --dry-run", "./x.sh", "bash -e ./run.sh"]) {
+      const d = await createPolicy({ mode: "manual", deny: ["Bash(git push*)"], logger })({ toolName: "Bash", input: { command } } as never);
+      expect({ command, denied: d.behavior === "deny" }).toEqual({ command, denied: false });
+    }
+    expect(lines.map((l) => [l.msg, l.fields?.command])).toEqual([["bash.rule_opaque", "bash script.sh"], ["bash.rule_opaque", "sh ./deploy.sh --dry-run"], ["bash.rule_opaque", "./x.sh"], ["bash.rule_opaque", "bash -e ./run.sh"]]);
+    // A rule on the script's own name still matches it.
+    expect(await fires("Bash(./deploy.sh*)", "Bash", { command: "./deploy.sh prod" })).toBe(true);
+    expect(await fires("Bash(bash deploy.sh*)", "Bash", { command: "bash deploy.sh" })).toBe(true);
+  });
+
+  test("the refusal names the rule and the sub-command that matched, or the undecomposable form", async () => {
+    const policy = createPolicy({ mode: "manual", deny: ["Bash(rm*)", "Bash(git push*)"] });
+    const reason = async (command: string) => ((await policy({ toolName: "Bash", input: { command } } as never)) as { reason?: string }).reason;
+    expect(await reason("sh -c 'ls; git push origin main'")).toBe('denied by rule "Bash(git push*)": git push origin main');
+    expect(await reason("eval 'git push'")).toBe(`denied by rule "Bash(rm*)": undecomposable: eval git push`);
+    expect(await reason("$cmd x")).toContain("undecomposable: $cmd x (an expansion as the command name)");
+  });
+
+  test("an allow rule sees the same commands, and never approves an undecomposable one", async () => {
+    const allowed = async (command: string) => (await createPolicy({ mode: "manual", allow: ["Bash(git status*)"] })({ toolName: "Bash", input: { command } } as never)).behavior === "allow";
+    expect(await allowed("git status")).toBe(true);
+    expect(await allowed("sh -c 'git status'")).toBe(true);
+    expect(await allowed("git status && rm -rf x")).toBe(false);
+    expect(await allowed("eval 'git status'")).toBe(false);
+  });
+});
