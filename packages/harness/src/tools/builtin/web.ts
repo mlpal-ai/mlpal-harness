@@ -11,6 +11,7 @@ import { host } from "../../host";
  */
 const MAX_BYTES = 3 * 1024 * 1024;
 const MAX_TEXT = 60_000;
+const TIMEOUT_MS = 15_000;
 
 function htmlToText(html: string): string {
   return html
@@ -34,12 +35,46 @@ const webFetchSchema = z.object({
   url: z.string().url().describe("Absolute http(s) URL"),
 });
 
+/** One fetch's signal: the turn's and the tool's own deadline, whichever fires first; and which one it was. */
+function fetchBounds(turn: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; why(e: unknown): string } {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return {
+    signal: turn ? AbortSignal.any([turn, deadline]) : deadline,
+    why: (e) => (turn?.aborted ? "fetch aborted: the turn was cancelled" : deadline.aborted ? `fetch timed out after ${timeoutMs / 1000} s` : `fetch failed: ${(e as Error).message}`),
+  };
+}
+
+/** The body as it streams, abandoned (the stream cancelled) once it passes `max` bytes: null then. */
+async function readCapped(res: Response, max: number): Promise<Buffer | null> {
+  if (Number(res.headers.get("content-length")) > max) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks);
+    n += value.length;
+    if (n > max) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+}
+
 /** A fetched page as the model reads it. */
 async function readable(url: string, res: Response): Promise<ToolResult> {
-  if (!res.ok) return err(`HTTP ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    return err(`HTTP ${res.status} ${res.statusText}`);
+  }
   const type = res.headers.get("content-type") ?? "";
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_BYTES) return err(`response too large (${(buf.length / 1e6).toFixed(1)} MB)`);
+  const buf = await readCapped(res, MAX_BYTES);
+  if (!buf) return err(`response too large (over ${(MAX_BYTES / 1e6).toFixed(1)} MB)`);
   const body = buf.toString("utf8");
 
   const isText = /text\/|json|xml|javascript|application\/x-/.test(type);
@@ -49,7 +84,13 @@ async function readable(url: string, res: Response): Promise<ToolResult> {
   return ok(`URL: ${url}\n\n${clipped}`);
 }
 
-export const webFetchTool = defineTool({
+/** A fetch's own bounds; `timeoutMs` is the deadline beside the turn's signal. */
+export interface WebFetchOptions {
+  timeoutMs?: number;
+}
+
+export function createWebFetchTool(opts: WebFetchOptions = {}) {
+  return defineTool({
   name: "WebFetch",
   hands: "local",
   description:
@@ -58,20 +99,22 @@ export const webFetchTool = defineTool({
   schema: webFetchSchema,
   async call(input, ctx) {
     if (!/^https?:\/\//i.test(input.url)) return err("URL must start with http:// or https://");
-    const signal = ctx.signal ?? AbortSignal.timeout(15_000);
-    let res: Response;
+    const bounds = fetchBounds(ctx.signal, opts.timeoutMs ?? TIMEOUT_MS);
     try {
-      res = await fetch(input.url, {
-        signal,
+      const res = await fetch(input.url, {
+        signal: bounds.signal,
         redirect: "follow",
         headers: { "user-agent": `${host().name}/1.0 (+https://mlpal.ai)` },
       });
+      return await readable(input.url, res);
     } catch (e) {
-      return err(`fetch failed: ${(e as Error).message}`);
+      return err(bounds.why(e));
     }
-    return readable(input.url, res);
   },
-});
+  });
+}
+
+export const webFetchTool = createWebFetchTool();
 
 /** `url`'s path and query relative to `base`, or null when it is not under it: same origin, the parsed (dot
  *  segments resolved, `%2e` included) path under the base's on a segment boundary, leading slashes of the rest
@@ -96,7 +139,7 @@ export function pathUnderBase(url: string, base: string): string | null {
  * the egress proxy. A URL under the upstream's `base_url` (compared parsed, see pathUnderBase) is fetched at
  * `<proxy>/v1/u/web-fetch/<rest>`; any other URL is refused before a request. A redirect is reported, never followed.
  */
-export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string) {
+export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string, opts: WebFetchOptions = {}) {
   const fetchVia = egressFetch(route);
   const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return defineTool({
@@ -108,18 +151,21 @@ export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string) {
     async call(input, ctx) {
       const rest = pathUnderBase(input.url, base);
       if (rest === null) return err(`WebFetch reaches ${base} only in this session (its web-fetch upstream); ${input.url} is outside it`);
-      let res: Response;
+      const bounds = fetchBounds(ctx.signal, opts.timeoutMs ?? TIMEOUT_MS);
       try {
-        res = await fetchVia(egressUrl(route, rest), {
-          signal: ctx.signal ?? AbortSignal.timeout(15_000),
+        const res = await fetchVia(egressUrl(route, rest), {
+          signal: bounds.signal,
           headers: { "user-agent": `${host().name}/1.0 (+https://mlpal.ai)` },
         });
+        if (res.status >= 300 && res.status < 400) {
+          await res.body?.cancel().catch(() => undefined);
+          return err(`HTTP ${res.status}: a redirect, not followed through the egress proxy`);
+        }
+        return await readable(input.url, res);
       } catch (e) {
         if (e instanceof EgressRefusedError) return err(e.message);
-        return err(`fetch failed: ${(e as Error).message}`);
+        return err(bounds.why(e));
       }
-      if (res.status >= 300 && res.status < 400) return err(`HTTP ${res.status}: a redirect, not followed through the egress proxy`);
-      return readable(input.url, res);
     },
   });
 }

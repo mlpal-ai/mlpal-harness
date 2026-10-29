@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### WebFetch: a streamed 3 MiB cap and its own deadline (2026-10-29)
+
+- Both WebFetch tools (the local one and the platform's through the egress route) read the body as it streams and
+  cancel it once it passes 3 MiB (`response too large (over 3.1 MB)`, nothing of the body returned); they used to
+  buffer the whole body before the check, so a large page could exhaust an engine pod's memory.
+- A fetch now has its own 15 s deadline beside the turn's signal (`AbortSignal.any`), whichever fires first; the turn's
+  signal used to replace it, so a page that never finished held the turn. A timeout reads `fetch timed out after 15 s`,
+  a cancelled turn `fetch aborted: the turn was cancelled`. `createWebFetchTool({timeoutMs})` and the third argument
+  of `createEgressWebFetchTool` set the deadline. No protocol change.
+
 ### Tool hands classes: a host with no local hands offers only pure and routed tools (2026-10-29)
 
 - `Tool.hands?: ToolHands` (`"pure" | "routed" | "local"`, also a `defineTool` option): where a tool's model-chosen
