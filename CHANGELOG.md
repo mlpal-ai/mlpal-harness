@@ -16,6 +16,8 @@
 - Both WebFetch tools (the local one and the platform's through the egress route) read the body as it streams and
   cancel it once it passes 3 MiB (`response too large (over 3.1 MB)`, nothing of the body returned); they used to
   buffer the whole body before the check, so a large page could exhaust an engine pod's memory.
+- Past the cap the request itself is dropped (its own abort beside the turn's signal and the deadline): cancelling the
+  reader alone left Bun draining an endless body until the 15 s deadline, most of a core per fetch (FIXPASS review M1).
 - A fetch now has its own 15 s deadline beside the turn's signal (`AbortSignal.any`), whichever fires first; the turn's
   signal used to replace it, so a page that never finished held the turn. A timeout reads `fetch timed out after 15 s`,
   a cancelled turn `fetch aborted: the turn was cancelled`. `createWebFetchTool({timeoutMs})` and the third argument
