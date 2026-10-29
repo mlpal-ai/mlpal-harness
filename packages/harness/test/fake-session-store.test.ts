@@ -123,6 +123,22 @@ describe("fake P1 session store", () => {
     }
   });
 
+  test("P1 1.1 filters: holder_prefix and updated_before are control's, each enough alone; a bad cut is 400", async () => {
+    store.createSession("s1");
+    store.createSession("s2");
+    store.grant("s1", { holder: "engine:eng-pod1:1" });
+    store.grant("s2", { holder: "engine:eng-pod10:1" });
+    const listed = async (q: string) => ((await call("GET", `/sessions?${q}`)).body!.sessions as Array<{ sid: string }>).map((p) => p.sid);
+    expect(await listed(`holder_prefix=${encodeURIComponent("engine:eng-pod1:")}`)).toEqual(["s1"]);
+    expect(await listed(`holder_prefix=${encodeURIComponent("engine:eng-pod1")}`)).toEqual(["s1", "s2"]);
+    expect(await listed(`updated_before=${clock.now() + 1}`)).toEqual(["s1", "s2"]);
+    expect(await listed(`updated_before=${clock.now()}`)).toEqual([]);
+    expect((await call("GET", "/sessions?updated_before=soon")).body).toMatchObject({ code: "invalid_updated_before" });
+    const scoped = store.scopeReaderToken("cust_7", "infra-ro");
+    expect((await call("GET", "/sessions?holder_prefix=engine:", undefined, scoped)).status).toBe(403);
+    expect((await call("GET", "/sessions?updated_before=1", undefined, scoped)).status).toBe(403);
+  });
+
   test("tokens: none or unknown is 401; an engine token is scoped to its session and lease; a reader reads only its own session", async () => {
     const g = leased("s1");
     store.createSession("s2", { owner: "cust_9" });
@@ -133,7 +149,9 @@ describe("fake P1 session store", () => {
     expect((await call("POST", "/sessions/s1/events", { lease_id: "other", after_seq: 0, events: [ev(1)] }, g.token)).body).toEqual({ code: "forbidden" });
     const reader = store.readerToken("s1");
     expect((await call("GET", "/sessions/s1", undefined, reader)).body!.lease).toEqual({ expires_at: clock.now() + 30_000 });
-    expect((await call("GET", "/sessions/s1")).body!.lease).toEqual({ holder: "engine:test:1", expires_at: clock.now() + 30_000 });
+    // P1 1.1: control sees the lease id, an engine the holder, a reader only when it expires.
+    expect((await call("GET", "/sessions/s1")).body!.lease).toEqual({ lease_id: g.leaseId, holder: "engine:test:1", expires_at: clock.now() + 30_000 });
+    expect((await call("GET", "/sessions/s1", undefined, g.token)).body!.lease).toEqual({ holder: "engine:test:1", expires_at: clock.now() + 30_000 });
     expect((await call("GET", "/sessions/s1", undefined, store.readerToken("s1", "cust_9"))).body).toEqual({ code: "unknown_session" });
     expect((await call("POST", "/sessions/s1/events", { lease_id: g.leaseId, after_seq: 0, events: [ev(1)] }, reader)).status).toBe(403);
     expect((await call("GET", "/sessions/s1", undefined, store.readerToken("s1", null))).body).toEqual({ code: "unauthorized" }); // a {sid} reader needs a principal

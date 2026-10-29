@@ -1,0 +1,37 @@
+{
+  "body": {
+    "next_after_id": null,
+    "sessions": [
+      {
+        "hop": {
+          "digest": "sha256:9f2c",
+          "name": "infra-ro",
+          "version": "0.9.2"
+        },
+        "last_seq": 0,
+        "lease": {
+          "expires_at": 1760000060000,
+          "holder": "engine:eng-contract1:1",
+          "lease_id": "<lease_id>"
+        },
+        "owner": "cust_7",
+        "parks": [],
+        "publication": "infra-ro",
+        "refusal": null,
+        "sid": "sess-d",
+        "status": "idle",
+        "unit": "unit_platform",
+        "updated_at": 1760000000000,
+        "usage": {
+          "cost_cu": 0.0,
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ]
+  },
+  "case": "the live leases one engine pod holds (P1 1.1, control only): what the scheduler releases when it dies",
+  "content_type": "application/json",
+  "route": "GET /v1/sessions?holder_prefix={h}",
+  "status": 200
+}

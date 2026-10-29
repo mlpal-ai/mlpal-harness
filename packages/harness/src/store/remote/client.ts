@@ -64,8 +64,8 @@ export interface SessionProjection {
   stopReason?: string;
   refusal: { code: string } | null;
   usage: { inputTokens: number; outputTokens: number; costCu: number };
-  /** The live lease; a reader is not shown its holder. */
-  lease: { holder?: string; expiresAt: number } | null;
+  /** The live lease. Control is shown its id too (P1 1.1), an engine its holder, a reader only when it expires. */
+  lease: { leaseId?: string; holder?: string; expiresAt: number } | null;
   lastSeq: number;
   updatedAt: number;
 }
@@ -488,7 +488,7 @@ interface WireProjection {
   stop_reason?: string;
   refusal: { code: string } | null;
   usage: { input_tokens: number; output_tokens: number; cost_cu: number };
-  lease: { holder?: string; expires_at: number } | null;
+  lease: { lease_id?: string; holder?: string; expires_at: number } | null;
   last_seq: number;
   updated_at: number;
 }
@@ -506,7 +506,7 @@ function projectionOf(b: WireProjection): SessionProjection {
     ...(b.stop_reason !== undefined ? { stopReason: b.stop_reason } : {}),
     refusal: b.refusal,
     usage: { inputTokens: b.usage.input_tokens, outputTokens: b.usage.output_tokens, costCu: b.usage.cost_cu },
-    lease: b.lease ? { ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
+    lease: b.lease ? { ...(b.lease.lease_id !== undefined ? { leaseId: b.lease.lease_id } : {}), ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
     lastSeq: b.last_seq,
     updatedAt: b.updated_at,
   };

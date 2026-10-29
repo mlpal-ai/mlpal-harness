@@ -245,7 +245,8 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
       ...(f.stopReason !== undefined ? { stop_reason: f.stopReason } : {}),
       refusal: f.refusal,
       usage: f.usage,
-      lease: l ? (claims.role === "reader" ? { expires_at: l.expiresAt } : { holder: l.holder, expires_at: l.expiresAt }) : null,
+      // P1 1.1: control sees the lease id too (the scheduler releases a dead pod's leases by it); a reader only when.
+      lease: l ? (claims.role === "reader" ? { expires_at: l.expiresAt } : { ...(claims.role === "control" ? { lease_id: l.id } : {}), holder: l.holder, expires_at: l.expiresAt }) : null,
       last_seq: s.lastSeq,
       updated_at: s.updatedAt,
     };
@@ -327,13 +328,20 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
   function handleList(url: URL, claims: Claims): Response {
     const q = url.searchParams;
     const filter = { publication: q.get("publication"), owner: q.get("owner"), unit: q.get("unit") };
+    // P1 1.1, control only, each enough on its own: the live leases a holder prefix names (byte for byte), and the
+    // sessions last written before a time.
+    const holderPrefix = q.get("holder_prefix");
+    const updatedBeforeRaw = q.get("updated_before");
+    if ((holderPrefix !== null || updatedBeforeRaw !== null) && claims.role !== "control") return fail(403, "forbidden");
+    const updatedBefore = updatedBeforeRaw === null ? null : Number(updatedBeforeRaw);
+    if (updatedBefore !== null && (updatedBeforeRaw === "" || !Number.isInteger(updatedBefore) || updatedBefore < 0)) return fail(400, "invalid_updated_before", { message: "updated_before must be an integer ≥ 0 (unix ms)" });
     if (claims.role === "reader") {
       if ("sid" in claims) return fail(403, "forbidden");
       if ((filter.owner && filter.owner !== claims.owner) || (filter.publication && filter.publication !== claims.publication)) return fail(403, "forbidden");
       filter.owner = claims.owner;
       filter.publication = claims.publication;
     } else if (claims.role !== "control") return fail(403, "forbidden");
-    if (!filter.publication && !filter.owner && !filter.unit) return fail(400, "filter_required", { message: "name at least one of publication, owner, unit" });
+    if (!filter.publication && !filter.owner && !filter.unit && holderPrefix === null && updatedBefore === null) return fail(400, "filter_required", { message: "name at least one of publication, owner, unit" });
     const status = q.get("status");
     if (status !== null && !STATUSES.has(status)) return fail(400, "invalid_status", { message: "status must be idle, running, requires_action or ended" });
     const leased = q.get("leased");
@@ -345,6 +353,8 @@ export function startFakeSessionStore(opts: { clock?: () => number; maxEventByte
       .filter((s) => !s.deleted)
       .filter((s) => (!filter.publication || s.identity.publication === filter.publication) && (!filter.owner || s.identity.owner === filter.owner) && (!filter.unit || s.identity.unit === filter.unit))
       .filter((s) => leased === null || (liveLease(s) !== null) === (leased === "true"))
+      .filter((s) => holderPrefix === null || liveLease(s)?.holder.startsWith(holderPrefix) === true)
+      .filter((s) => updatedBefore === null || s.updatedAt < updatedBefore)
       .filter((s) => afterId === null || s.sid > afterId)
       .sort((a, b) => (a.sid < b.sid ? -1 : 1))
       .map((s) => projection(s, claims))

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Profile `confineTo`: `hop.yaml` itself, and required at every prompt site (2026-10-28)
+
+- Under `LoadProfileOptions.confineTo` the loader confines `hop.yaml` itself: one that is a symlink out of the HOP's
+  directory is `HopPathError {field: "hop.yaml"}` before it is read.
+- `composeProfile` and the prompt resolver take `confineTo` as a required parameter (`string | undefined`), so no call
+  site (system, verifierAgent, summarizer, condenser, a module's prompt) can drop it by omission; each is tested.
 ### P6: no credentials in the engine — the scoped gateway token and the engine egress proxy (2026-10-28)
 
 - No protocol change (a typed `egressRefusal` field is a 0.22.x item, ledgered).
