@@ -91,3 +91,77 @@ for (const kind of ["egress", "local"] as const) {
     }, 10_000);
   });
 }
+
+/** An upstream that writes an endless chunked body as fast as the socket drains, on its own socket: what it wrote, and
+ *  when the client closed it. */
+function endlessUpstream(): { port: number; written: () => number; closedAt: () => number | null; stop(): void } {
+  let written = 0;
+  let closedAt: number | null = null;
+  const chunk = Buffer.concat([Buffer.from(`${(CHUNK).toString(16)}\r\n`), Buffer.alloc(CHUNK, 97), Buffer.from("\r\n")]);
+  let rest: Buffer = Buffer.alloc(0);
+  let started = false;
+  const pump = (s: { write(b: Buffer): number }) => {
+    for (;;) {
+      const out = rest.length ? rest : chunk;
+      const n = s.write(out);
+      written += Math.max(n, 0);
+      rest = n < out.length ? out.subarray(Math.max(n, 0)) : Buffer.alloc(0);
+      if (rest.length) return;
+    }
+  };
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(s) {
+        if (started) return;
+        started = true;
+        rest = Buffer.from("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ntransfer-encoding: chunked\r\n\r\n");
+        pump(s);
+      },
+      drain(s) {
+        pump(s);
+      },
+      close() {
+        closedAt ??= Date.now();
+      },
+      error() {
+        closedAt ??= Date.now();
+      },
+    },
+  });
+  return { port: server.port, written: () => written, closedAt: () => closedAt, stop: () => server.stop(true) };
+}
+
+describe("past the cap, the connection is dropped at once (FIXPASS review M1)", () => {
+  for (const kind of ["egress", "local"] as const) {
+    test(`${kind}: an endless body is refused as too large and its socket closed within 500 ms, long before the deadline; the fetch reads no further`, async () => {
+      const up = endlessUpstream();
+      try {
+        const tool = kind === "egress"
+          ? (createEgressWebFetchTool({ proxyUrl: `http://127.0.0.1:${up.port}`, upstream: "web-fetch", tokenFile }, base, { timeoutMs: 8_000 }) as Tool)
+          : (createWebFetchTool({ timeoutMs: 8_000 }) as Tool);
+        const url = kind === "egress" ? `${base}endless` : `http://127.0.0.1:${up.port}/v1/u/web-fetch/endless`;
+        const t0 = Date.now();
+        const cpu0 = process.cpuUsage();
+        const r = await tool.call({ url }, { cwd: dir, signal: new AbortController().signal });
+        const answered = Date.now();
+        expect(String(r.content)).toContain("response too large");
+        const deadline = answered + 2_000;
+        while (up.closedAt() === null && Date.now() < deadline) await Bun.sleep(10);
+        const settled = up.written();
+        await Bun.sleep(500);
+        const cpu = process.cpuUsage(cpu0);
+        console.log(`${kind}: answered in ${answered - t0} ms, socket closed ${up.closedAt() === null ? "never" : `${up.closedAt()! - answered} ms after`}, ${up.written()} bytes written, cpu ${Math.round((cpu.user + cpu.system) / 1000)} ms`);
+        expect(answered - t0).toBeLessThan(2_000);
+        expect(up.closedAt()).not.toBeNull();
+        expect(up.closedAt()! - answered).toBeLessThan(500);
+        // Nothing more is read once it closed.
+        expect(up.written()).toBe(settled);
+      } finally {
+        up.stop();
+      }
+    }, 20_000);
+  }
+});
+

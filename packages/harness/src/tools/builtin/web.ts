@@ -35,18 +35,24 @@ const webFetchSchema = z.object({
   url: z.string().url().describe("Absolute http(s) URL"),
 });
 
-/** One fetch's signal: the turn's and the tool's own deadline, whichever fires first; and which one it was. */
-function fetchBounds(turn: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; why(e: unknown): string } {
+/** One fetch's signal: the turn's, the tool's own deadline and the fetch's own stop (`drop`, once the body is past the
+ *  cap: cancelling the reader alone leaves Bun draining the connection until the deadline), whichever fires first; and
+ *  which one it was. */
+function fetchBounds(turn: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; drop(): void; why(e: unknown): string } {
   const deadline = AbortSignal.timeout(timeoutMs);
+  const own = new AbortController();
   return {
-    signal: turn ? AbortSignal.any([turn, deadline]) : deadline,
+    signal: AbortSignal.any(turn ? [turn, deadline, own.signal] : [deadline, own.signal]),
+    drop: () => own.abort(),
     why: (e) => (turn?.aborted ? "fetch aborted: the turn was cancelled" : deadline.aborted ? `fetch timed out after ${timeoutMs / 1000} s` : `fetch failed: ${(e as Error).message}`),
   };
 }
 
-/** The body as it streams, abandoned (the stream cancelled) once it passes `max` bytes: null then. */
-async function readCapped(res: Response, max: number): Promise<Buffer | null> {
+/** The body as it streams, abandoned once it passes `max` bytes (the reader cancelled and the request dropped, so
+ *  nothing more is read): null then. */
+async function readCapped(res: Response, max: number, drop: () => void): Promise<Buffer | null> {
   if (Number(res.headers.get("content-length")) > max) {
+    drop();
     await res.body?.cancel().catch(() => undefined);
     return null;
   }
@@ -59,6 +65,7 @@ async function readCapped(res: Response, max: number): Promise<Buffer | null> {
     if (done) return Buffer.concat(chunks);
     n += value.length;
     if (n > max) {
+      drop();
       await reader.cancel().catch(() => undefined);
       return null;
     }
@@ -67,13 +74,13 @@ async function readCapped(res: Response, max: number): Promise<Buffer | null> {
 }
 
 /** A fetched page as the model reads it. */
-async function readable(url: string, res: Response): Promise<ToolResult> {
+async function readable(url: string, res: Response, drop: () => void): Promise<ToolResult> {
   if (!res.ok) {
     await res.body?.cancel().catch(() => undefined);
     return err(`HTTP ${res.status} ${res.statusText}`);
   }
   const type = res.headers.get("content-type") ?? "";
-  const buf = await readCapped(res, MAX_BYTES);
+  const buf = await readCapped(res, MAX_BYTES, drop);
   if (!buf) return err(`response too large (over ${(MAX_BYTES / 1e6).toFixed(1)} MB)`);
   const body = buf.toString("utf8");
 
@@ -106,7 +113,7 @@ export function createWebFetchTool(opts: WebFetchOptions = {}) {
         redirect: "follow",
         headers: { "user-agent": `${host().name}/1.0 (+https://mlpal.ai)` },
       });
-      return await readable(input.url, res);
+      return await readable(input.url, res, bounds.drop);
     } catch (e) {
       return err(bounds.why(e));
     }
@@ -161,7 +168,7 @@ export function createEgressWebFetchTool(route: EgressRoute, baseUrl: string, op
           await res.body?.cancel().catch(() => undefined);
           return err(`HTTP ${res.status}: a redirect, not followed through the egress proxy`);
         }
-        return await readable(input.url, res);
+        return await readable(input.url, res, bounds.drop);
       } catch (e) {
         if (e instanceof EgressRefusedError) return err(e.message);
         return err(bounds.why(e));
