@@ -199,7 +199,10 @@ export async function loadCatalog(o: LoadCatalogOptions): Promise<{ catalog: Cat
   // OFFLINE run against the other. Prod keeps the historical unsuffixed name.
   const host = createHash("sha256").update(o.baseUrl.replace(/\/$/, "")).digest("hex").slice(0, 8);
   const suffix = o.baseUrl.replace(/\/$/, "") === "https://models.mlpal.ai" ? "" : `-${host}`;
-  const cachePath = hostDir(o.home, `catalog-${profile}${suffix}.json`);
+  // The profile name comes from the HOP (`catalog.profile`): one with path characters is named by its hash, so the
+  // cache never lands outside the home's config dir.
+  const key = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile) ? profile : `h${createHash("sha256").update(profile).digest("hex").slice(0, 16)}`;
+  const cachePath = hostDir(o.home, `catalog-${key}${suffix}.json`);
   const cached = readCache(cachePath);
 
   try {

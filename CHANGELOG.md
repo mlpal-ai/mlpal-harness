@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Paths named by HOP content or a client stay where the host meant (2026-10-29)
+
+- `loadCatalog`: a `catalog.profile` (HOP content) with characters outside `[a-z0-9_-]` names its cache file by a hash;
+  `x/../../…` used to read, create and write a JSON file outside the home's config dir.
+- `TaskStore.for`: a session id outside `[A-Za-z0-9_-]{1,128}` (a serve client names it) names its plan file by a hash;
+  `../` used to leave the tasks directory.
+- Profile confinement (`confineTo`) refuses a `file:` reference or `extends` path outside the HOP's directory by its text
+  before anything stats it (a realpath of the outside path ran first). No protocol change.
+
 ### WebFetch: a streamed 3 MiB cap and its own deadline (2026-10-29)
 
 - Both WebFetch tools (the local one and the platform's through the egress route) read the body as it streams and
