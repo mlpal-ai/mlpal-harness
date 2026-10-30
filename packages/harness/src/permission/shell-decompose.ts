@@ -16,7 +16,12 @@
  * - opaque (`opaque` names the form; a rule on Bash fails closed): an expansion as the command name, `eval`, `source`/
  *   `.`, `exec`, `sudo`/`doas`/`su`, a shell with a non-literal script or reading stdin, a here-doc into a shell, a
  *   function definition, `select`/`coproc`, an option a prefix does not take, `env -S`, unbalanced quotes or
- *   parentheses, depth > 3.
+ *   parentheses, depth > 3;
+ * - environment-changing (every command of the line `envInjected`; D-27 round 3): any `NAME=value` (before a command
+ *   or standing alone), `env` with an option or assignment, a builtin that assigns (`export`, `read`, `declare`, `let`,
+ *   `alias`, `hash`, `printf -v`, …), a `for` loop variable, an assignment in `$((…))` or `${NAME:=…}`, a login or
+ *   interactive shell (`-l`, `--login`, `-i`, `-o login|interactive`): it can point a later `git` at a planted binary,
+ *   config or rc file, and in a loop it reaches the commands before it too.
  */
 
 export interface DecomposedCommand {
@@ -28,9 +33,10 @@ export interface DecomposedCommand {
   /** It runs with arguments the matcher cannot see (`xargs <cmd>`): a deny or approval still checks the command, but
    *  an allow rule never auto-approves it (its arguments could be anything). */
   argsUnknown?: boolean;
-  /** It runs with an environment the command line sets (`VAR=… cmd`, `env NAME=VALUE|-i|-u … cmd`): a deny or approval
-   *  still checks the command, but an allow rule never auto-approves it (LD_PRELOAD, GIT_SSH_COMMAND, BASH_ENV, PAGER …
-   *  run code, and the matcher cannot judge which variable is safe). */
+  /** It runs in a line that changes the environment (`VAR=… cmd`, `PATH=…; cmd`, `env -i cmd`, `for PATH in …`,
+   *  `$((PATH=0))`, `bash -lc …`): a deny or approval still checks the command, but an allow rule never auto-approves
+   *  it (LD_PRELOAD, GIT_SSH_COMMAND, BASH_ENV, PATH, HOME, PAGER … run code, and the matcher cannot judge which
+   *  variable is safe). */
   envInjected?: boolean;
 }
 
@@ -46,6 +52,20 @@ const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh"]);
 /** Words that open or close shell syntax around the commands of a compound; the command after them is checked. */
 const COMPOUND = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}"]);
 const UNSUPPORTED = new Set(["select", "function", "coproc"]);
+/** Builtins that assign a variable, an alias or a command's path for the rest of the line. */
+const ASSIGNING_BUILTINS = new Set(["export", "declare", "typeset", "local", "readonly", "unset", "read", "mapfile", "readarray", "let", "getopts", "alias", "unalias", "hash", "enable"]);
+/** An assignment in arithmetic (`x=1`, `x+=1`, `x<<=1`, `a[i]=1`, `x++`, `--x`); `==`, `!=`, `<=`, `>=` are not. */
+const ARITHMETIC_ASSIGNMENT = /[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\s*(?:<<|>>|[-+*/%&^|])?=(?!=)|\+\+|--/;
+/** A parameter expansion that assigns (`${x=…}`, `${x:=…}`). */
+const PARAMETER_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?:?=/;
+/** Shell options that read a login or interactive rc file before the script runs. */
+const RC_SHELL_OPTIONS = new Set(["login", "interactive"]);
+
+/** What the whole line does beyond its commands. */
+interface Line {
+  /** Something on the line changes the environment a command runs in (see the module comment). */
+  envChanged: boolean;
+}
 
 interface PrefixSpec {
   noArg?: string[];
@@ -103,8 +123,10 @@ const clip = (s: string) => (s.length > 120 ? `${s.slice(0, 120)}…` : s);
 
 export function decomposeBash(command: string): Decomposed {
   const commands: DecomposedCommand[] = [];
+  const line: Line = { envChanged: false };
   try {
-    decompose(command, 0, commands);
+    decompose(command, 0, commands, line);
+    if (line.envChanged) for (const c of commands) c.envInjected = true;
     return { commands, opaque: null };
   } catch (e) {
     if (e instanceof Opaque) return { commands: [], opaque: e.form };
@@ -112,9 +134,9 @@ export function decomposeBash(command: string): Decomposed {
   }
 }
 
-function decompose(command: string, depth: number, out: DecomposedCommand[]): void {
+function decompose(command: string, depth: number, out: DecomposedCommand[], line: Line): void {
   if (depth > MAX_DEPTH) throw new Opaque(`nested deeper than ${MAX_DEPTH}`);
-  const inner = (s: string) => decompose(s, depth + 1, out);
+  const inner = (s: string) => decompose(s, depth + 1, out, line);
   let words: Word[] = [];
   let word: Word | null = null;
   let skipNext = false;
@@ -137,7 +159,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
   const endCommand = () => {
     endWord();
     if (skipNext) throw new Opaque("a redirection with no target");
-    simple(words, depth, out, heredoc);
+    simple(words, depth, out, line, heredoc);
     words = [];
     heredoc = false;
   };
@@ -200,7 +222,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
           if (eol < 0) break;
         }
         if (!found) throw new Opaque("an unterminated here-doc");
-        if (!h.quoted) substitutions(body.join("\n"), inner, close, false);
+        if (!h.quoted) substitutions(body.join("\n"), inner, line, false);
       }
       continue;
     }
@@ -292,7 +314,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
         if (d === "\\" && j + 1 < command.length) {
           w.text += command[j + 1];
           j++;
-        } else if (d === "$" || d === "`") j = expansion(command, j, w, inner, close);
+        } else if (d === "$" || d === "`") j = expansion(command, j, w, inner, close, line);
         else w.text += d;
       }
       if (j >= command.length) throw new Opaque("unbalanced quotes");
@@ -300,7 +322,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
       continue;
     }
     if (c === "$" || c === "`") {
-      i = expansion(command, i, cur(), inner, close);
+      i = expansion(command, i, cur(), inner, close, line);
       continue;
     }
     const w = cur();
@@ -314,7 +336,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
 
 /** An expansion at `i` (`$((…))`, `$(…)`, backticks, `$name`, `${…}`): substitutions decomposed, the word marked.
  *  Answers the index of its last character. */
-function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, close: (open: number) => number): number {
+function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, close: (open: number) => number, line: Line): number {
   if (s[i] === "`") {
     const end = s.indexOf("`", i + 1);
     if (end < 0) throw new Opaque("unbalanced backticks");
@@ -335,7 +357,7 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
   if (next === "(" && s[i + 2] === "(") {
     // arithmetic: no command runs itself, but substitutions inside it do (kept as written, so a refusal shows it)
     const end = close(i + 1);
-    substitutions(s.slice(i + 3, end - 1), inner, close, true);
+    arithmetic(s.slice(i + 3, end - 1), inner, line, true);
     w.text += s.slice(i, end + 1);
     w.expanded = true;
     w.literal = false;
@@ -353,7 +375,7 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
     // a parameter expansion: its operators (`${x:-…}`, `${x/…/…}`) may hold substitutions, which run
     const end = matchBrace(s, i + 1);
     if (end < 0) throw new Opaque("an unterminated ${…}");
-    substitutions(s.slice(i + 2, end), inner, close, true);
+    parameter(s.slice(i + 2, end), inner, line, true);
     w.text += s.slice(i, end + 1);
     w.expanded = true;
     w.literal = false;
@@ -370,15 +392,26 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
   return i + m[0].length - 1;
 }
 
+/** A `$((…))` body: its substitutions decomposed, an assignment in it recorded. */
+function arithmetic(body: string, inner: (cmd: string) => void, line: Line, quotes: boolean): void {
+  if (ARITHMETIC_ASSIGNMENT.test(body)) line.envChanged = true;
+  substitutions(body, inner, line, quotes);
+}
+
+/** A `${…}` body: its substitutions decomposed, an assigning form recorded. */
+function parameter(body: string, inner: (cmd: string) => void, line: Line, quotes: boolean): void {
+  if (PARAMETER_ASSIGNMENT.test(body)) line.envChanged = true;
+  substitutions(body, inner, line, quotes);
+}
+
 /** Every command substitution in `text` (`$(…)`, backticks, and those inside `${…}` and `$((…))`), decomposed. With
  *  `quotes`, single-quoted spans are data (a word); without (a here-doc body), quotes are literal characters. */
-function substitutions(text: string, inner: (cmd: string) => void, close: (open: number) => number, quotes: boolean): void {
+function substitutions(text: string, inner: (cmd: string) => void, line: Line, quotes: boolean): void {
   const local = (open: number) => {
     const end = matchParen(text, open);
     if (end < 0) throw new Opaque("unbalanced parentheses");
     return end;
   };
-  void close;
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
     if (c === "\\") {
@@ -401,7 +434,7 @@ function substitutions(text: string, inner: (cmd: string) => void, close: (open:
     if (c !== "$") continue;
     if (text[i + 1] === "(" && text[i + 2] === "(") {
       const end = local(i + 1);
-      substitutions(text.slice(i + 3, end - 1), inner, close, quotes);
+      arithmetic(text.slice(i + 3, end - 1), inner, line, quotes);
       i = end;
     } else if (text[i + 1] === "(") {
       const end = local(i + 1);
@@ -410,7 +443,7 @@ function substitutions(text: string, inner: (cmd: string) => void, close: (open:
     } else if (text[i + 1] === "{") {
       const end = matchBrace(text, i + 1);
       if (end < 0) throw new Opaque("an unterminated ${…}");
-      substitutions(text.slice(i + 2, end), inner, close, quotes);
+      parameter(text.slice(i + 2, end), inner, line, quotes);
       i = end;
     }
   }
@@ -495,10 +528,8 @@ function afterPrefix(name: string, spec: PrefixSpec, words: Word[]): Word[] | nu
 
 /** One simple command: syntax, assignments and prefixes stripped, a shell's literal script decomposed, the rest
  *  recorded for the rules. */
-function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc: boolean): void {
+function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Line, heredoc: boolean): void {
   let words = input;
-  let envInjected = false;
-  const from = out.length;
   for (;;) {
     const head = words[0];
     if (!head) return;
@@ -506,12 +537,17 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
       words = words.slice(1);
       continue;
     }
-    if (head.literal && head.text === "for") return; // `for NAME in WORDS`: its words' substitutions were decomposed
+    if (head.literal && head.text === "for") {
+      // `for NAME in WORDS`: its words' substitutions were decomposed; any loop variable is an assignment (the matcher
+      // does not judge which name is safe)
+      line.envChanged = true;
+      return;
+    }
     if (head.literal && (UNSUPPORTED.has(head.text) || head.text === "case" || head.text === "esac")) throw new Opaque(clip(text(words)));
     if (ASSIGNMENT.test(head.text) && !head.text.slice(0, head.text.indexOf("=")).includes("$")) {
       words = words.slice(1);
-      // an assignment with a command after it is that command's environment
-      if (words.length) envInjected = true;
+      // before a command, its environment; alone, the environment of the rest of the line
+      line.envChanged = true;
       continue;
     }
     const prefix = head.literal ? PREFIXES[basename(head.text)] : undefined;
@@ -519,36 +555,32 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
       const rest = afterPrefix(basename(head.text), prefix, words.slice(1));
       if (rest === null) return;
       // `env` with any option or NAME=VALUE sets the command's environment
-      if (basename(head.text) === "env" && rest.length < words.length - 1) envInjected = true;
+      if (basename(head.text) === "env" && rest.length < words.length - 1) line.envChanged = true;
       words = rest;
       continue;
     }
     break;
   }
-  const mark = () => {
-    if (envInjected) for (const c of out.slice(from)) c.envInjected = true;
-  };
   const head = words[0]!;
   if (!head.literal || head.expanded) throw new Opaque(clip(`${text(words)} (an expansion as the command name)`));
   if (head.glob && head.text !== "[" && head.text !== "[[") throw new Opaque(clip(`${text(words)} (a glob or brace expansion as the command name)`));
   const name = basename(head.text);
   if (OPAQUE_HEAD.has(name)) throw new Opaque(clip(text(words)));
+  if (ASSIGNING_BUILTINS.has(name) || (name === "printf" && words.slice(1).some((w) => /^-[A-Za-z]*v/.test(w.text)))) line.envChanged = true;
   // `trap '<command>' SIG` runs a string later, as eval would; `trap - SIG`, `trap '' SIG`, `trap -l|-p` run nothing
   if (name === "trap" && words[1] && !["-", "", "-l", "-p", "--"].includes(words[1].text)) throw new Opaque(clip(`${text(words)} (trap runs a command string)`));
   if (name === "xargs") {
     // its command runs with arguments the matcher cannot know: the command itself is checked
     const rest = afterPrefix("xargs", PREFIXES.xargs!, words.slice(1));
     const from = out.length;
-    if (rest && rest.length) simple(rest, depth, out, false);
+    if (rest && rest.length) simple(rest, depth, out, line, false);
     else out.push({ forms: ["echo"], argsUnknown: true }); // xargs's default command
     for (const c of out.slice(from)) c.argsUnknown = true;
-    mark();
     return;
   }
   if (SHELLS.has(name)) {
     if (heredoc) throw new Opaque(clip(`${text(words)} <<… (a here-doc into a shell)`));
-    shell(name, words, depth, out);
-    mark(); // the environment reaches every command the shell runs (BASH_ENV, PATH, …)
+    shell(name, words, depth, out, line);
     return;
   }
   let args = words.slice(1).map((w) => w.text);
@@ -557,7 +589,6 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
   const asWritten = [head.text, ...args].join(" ").replace(/\s+/g, " ").trim();
   const relative = head.text.includes("/") && !head.text.startsWith("/");
   out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}) });
-  mark();
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */
@@ -568,8 +599,9 @@ function withoutGitGlobalOptions(args: string[]): string[] {
 }
 
 /** `sh -c '<literal script>'` is decomposed; `sh script.sh` is checked as named (best-effort); anything else (a
- *  non-literal script, stdin) is opaque. */
-function shell(name: string, words: Word[], depth: number, out: DecomposedCommand[]): void {
+ *  non-literal script, stdin) is opaque. A login or interactive shell reads an rc file first: the line changes the
+ *  environment. */
+function shell(name: string, words: Word[], depth: number, out: DecomposedCommand[], line: Line): void {
   const args = words.slice(1);
   let command = false;
   for (let i = 0; i < args.length; i++) {
@@ -578,13 +610,16 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
     if (a.literal && t === "--") {
       // the end of the options: the script (with -c) or the script file follows
       const rest = args.slice(i + 1);
-      if (command) return script(rest[0], words, depth, out);
+      if (command) return script(rest[0], words, depth, out, line);
       if (!rest.length) break;
       out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
       return;
     }
     if (a.literal && t.startsWith("--")) {
-      if (SHELL_LONG_FLAGS.has(t)) continue;
+      if (SHELL_LONG_FLAGS.has(t)) {
+        if (t === "--login") line.envChanged = true;
+        continue;
+      }
       if (SHELL_LONG_WITH_VALUE.has(t)) {
         i++;
         continue;
@@ -594,10 +629,15 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
     if (a.literal && /^[-+][A-Za-z]+$/.test(t)) {
       if (t.includes("s")) break; // read the script from stdin
       if (t.includes("c")) command = true;
-      if (/[oO]$/.test(t)) i++; // `-o pipefail`, `-O extglob`: the option's argument
+      if (/[li]/.test(t)) line.envChanged = true;
+      if (/[oO]$/.test(t)) {
+        // `-o pipefail`, `-O extglob`: the option's argument (zsh ignores case and underscores in it)
+        i++;
+        if (RC_SHELL_OPTIONS.has((args[i]?.text ?? "").replace(/_/g, "").toLowerCase())) line.envChanged = true;
+      }
       continue;
     }
-    if (command) return script(a, words, depth, out);
+    if (command) return script(a, words, depth, out, line);
     // a script file: checked as named, its contents not inspected
     out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
     return;
@@ -606,7 +646,7 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
 }
 
 /** `-c`'s script: decomposed when it is literal, opaque otherwise. */
-function script(w: Word | undefined, words: Word[], depth: number, out: DecomposedCommand[]): void {
+function script(w: Word | undefined, words: Word[], depth: number, out: DecomposedCommand[], line: Line): void {
   if (!w || !w.literal) throw new Opaque(clip(`${text(words)} (a shell with a non-literal script)`));
-  decompose(w.text, depth + 1, out);
+  decompose(w.text, depth + 1, out, line);
 }
