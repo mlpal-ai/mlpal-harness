@@ -177,7 +177,7 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (req.toolName === "Bash") {
     // Every simple command it runs must match (one of its forms); one that cannot be decomposed is never auto-approved.
     const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
-    return opaque === null && commands.length > 0 && commands.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
+    return opaque === null && commands.length > 0 && commands.every((c) => !c.argsUnknown && !c.envInjected && c.forms.some((f) => globMatch(pattern, f)));
   }
   return globMatch(pattern, representativeArg(req));
 }
