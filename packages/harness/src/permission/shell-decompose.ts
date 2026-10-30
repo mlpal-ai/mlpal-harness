@@ -20,8 +20,12 @@
  * - environment-changing (every command of the line `envInjected`; D-27 round 3): any `NAME=value` (before a command
  *   or standing alone), `env` with an option or assignment, a builtin that assigns (`export`, `read`, `declare`, `let`,
  *   `alias`, `hash`, `printf -v`, …), a `for` loop variable, an assignment in `$((…))` or `${NAME:=…}`, a login or
- *   interactive shell (`-l`, `--login`, `-i`, `-o login|interactive`): it can point a later `git` at a planted binary,
- *   config or rc file, and in a loop it reaches the commands before it too.
+ *   interactive shell (`-l`, `--login`, `-i`, `-o login|interactive`), a shell that reads a user rc file with `-c`
+ *   (`zsh` without `-f` reads `~/.zshenv`; `bash --debugger`): it can point a later `git` at a planted binary, config
+ *   or rc file, and in a loop it reaches the commands before it too;
+ * - environment-changing for that command only (`envInjected`; D-27 round 4): a `git` with any global option stripped
+ *   (`-c core.fsmonitor=…` runs a command; `-C`, `--git-dir`, `--exec-path` move git onto planted files). The deny side
+ *   matches the stripped form; the allow side never auto-approves it.
  */
 
 export interface DecomposedCommand {
@@ -34,8 +38,9 @@ export interface DecomposedCommand {
    *  an allow rule never auto-approves it (its arguments could be anything). */
   argsUnknown?: boolean;
   /** It runs in a line that changes the environment (`VAR=… cmd`, `PATH=…; cmd`, `env -i cmd`, `for PATH in …`,
-   *  `$((PATH=0))`, `bash -lc …`): a deny or approval still checks the command, but an allow rule never auto-approves
-   *  it (LD_PRELOAD, GIT_SSH_COMMAND, BASH_ENV, PATH, HOME, PAGER … run code, and the matcher cannot judge which
+   *  `$((PATH=0))`, `bash -lc …`, `zsh -c …`), or is a `git` whose global options were stripped (`git -c k=v status`):
+   *  a deny or approval still checks the command, but an allow rule never auto-approves it (LD_PRELOAD,
+   *  GIT_SSH_COMMAND, BASH_ENV, PATH, HOME, PAGER, core.fsmonitor … run code, and the matcher cannot judge which
    *  variable is safe). */
   envInjected?: boolean;
 }
@@ -583,12 +588,14 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Li
     shell(name, words, depth, out, line);
     return;
   }
-  let args = words.slice(1).map((w) => w.text);
-  if (name === "git") args = withoutGitGlobalOptions(args);
+  const written = words.slice(1).map((w) => w.text);
+  const args = name === "git" ? withoutGitGlobalOptions(written) : written;
   const form = [name, ...args].join(" ").replace(/\s+/g, " ").trim();
   const asWritten = [head.text, ...args].join(" ").replace(/\s+/g, " ").trim();
   const relative = head.text.includes("/") && !head.text.startsWith("/");
-  out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}) });
+  // a stripped git global option is matched by a deny, but changes what the allowed form would run
+  const gitOptions = args.length < written.length;
+  out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}), ...(gitOptions ? { envInjected: true } : {}) });
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */
@@ -599,25 +606,34 @@ function withoutGitGlobalOptions(args: string[]): string[] {
 }
 
 /** `sh -c '<literal script>'` is decomposed; `sh script.sh` is checked as named (best-effort); anything else (a
- *  non-literal script, stdin) is opaque. A login or interactive shell reads an rc file first: the line changes the
- *  environment. */
+ *  non-literal script, stdin) is opaque. A login or interactive shell, `zsh` without `-f` (it reads `~/.zshenv`
+ *  whenever it starts) and `bash --debugger` read an rc file first: the line changes the environment. */
 function shell(name: string, words: Word[], depth: number, out: DecomposedCommand[], line: Line): void {
   const args = words.slice(1);
   let command = false;
+  // zsh's `-f` (NO_RCS) skips the user rc files; `+f` turns them back on, and the last one wins
+  let noRcs = false;
+  const runs = () => {
+    if (name === "zsh" && !noRcs) line.envChanged = true;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     const t = a.text;
     if (a.literal && t === "--") {
       // the end of the options: the script (with -c) or the script file follows
       const rest = args.slice(i + 1);
-      if (command) return script(rest[0], words, depth, out, line);
+      if (command) {
+        runs();
+        return script(rest[0], words, depth, out, line);
+      }
       if (!rest.length) break;
+      runs();
       out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
       return;
     }
     if (a.literal && t.startsWith("--")) {
       if (SHELL_LONG_FLAGS.has(t)) {
-        if (t === "--login") line.envChanged = true;
+        if (t === "--login" || t === "--debugger") line.envChanged = true;
         continue;
       }
       if (SHELL_LONG_WITH_VALUE.has(t)) {
@@ -630,6 +646,7 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
       if (t.includes("s")) break; // read the script from stdin
       if (t.includes("c")) command = true;
       if (/[li]/.test(t)) line.envChanged = true;
+      if (t.includes("f")) noRcs = t.startsWith("-");
       if (/[oO]$/.test(t)) {
         // `-o pipefail`, `-O extglob`: the option's argument (zsh ignores case and underscores in it)
         i++;
@@ -637,6 +654,7 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
       }
       continue;
     }
+    runs();
     if (command) return script(a, words, depth, out, line);
     // a script file: checked as named, its contents not inspected
     out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
