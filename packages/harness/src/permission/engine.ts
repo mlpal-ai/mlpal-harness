@@ -3,7 +3,7 @@ import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
-import { type Decomposed, decomposeBash, envChangedOrUndecomposable } from "./shell-decompose";
+import { type Decomposed, decomposeBash, refusesAutoApproval } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 
@@ -93,10 +93,15 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
       if (c) return { behavior: "deny", reason: c, source: "hard_deny" };
     }
 
+    // A Write/Edit deny the call's redirections cannot be checked against (a non-literal target, an undecomposable
+    // line) leaves the call to a human: nothing below may allow it.
+    let unchecked: string | null = null;
     for (const rule of deny) {
       const hit = ruleMatch(rule, req, config.logger);
       if (hit !== null) return { behavior: "deny", reason: `denied by rule "${rule}"${hit ? `: ${hit}` : ""}`, source: "deny_rule" };
+      unchecked ??= uncheckedWriteRule(rule, req);
     }
+    const unlessUnchecked = (d: Decision): Decision => (unchecked !== null && d.behavior === "allow" ? { behavior: "ask", reason: unchecked } : d);
     // The safety envelope decides after the host/user denials (it can never widen them) and before
     // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
     if (config.safety) {
@@ -105,13 +110,13 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
       if (d?.outcome === "park") return { behavior: "ask", reason: safetyReasonText(d), safetyReason: d.reason };
       // recon is bypass-immune: an in-envelope allow makes a MUTATIVE action autonomous, and
       // recon exists precisely to refuse those. Fall through so the mode default denies it.
-      if (d?.outcome === "allow" && config.mode !== "recon") return { behavior: "allow" };
+      if (d?.outcome === "allow" && config.mode !== "recon") return unlessUnchecked({ behavior: "allow" });
       // d === null (or an allow under recon): fall through to the mode default.
     }
     for (const rule of allow) {
-      if (ruleMatches(rule, req)) return { behavior: "allow" };
+      if (ruleMatches(rule, req)) return unlessUnchecked({ behavior: "allow" });
     }
-    return defaultForMode(config.mode, req);
+    return unlessUnchecked(defaultForMode(config.mode, req));
   };
 }
 
@@ -175,11 +180,13 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (tool !== req.toolName) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
-    // Every simple command it runs must match (one of its forms); a line that cannot be decomposed or changes the
-    // environment is never auto-approved.
+    // Every simple command it runs must match (one of its forms); a line that cannot be decomposed, changes the
+    // environment or writes a file through a redirection is never auto-approved.
     const subjects = bashSubjects(String(req.input.command ?? ""));
-    if (envChangedOrUndecomposable(subjects)) return false;
-    return subjects.commands.length > 0 && subjects.commands.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
+    if (refusesAutoApproval(subjects)) return false;
+    // an entry with no forms runs no command (`> /dev/null` alone, `command -v git > /dev/null`)
+    const run = subjects.commands.filter((c) => c.forms.length > 0);
+    return run.length > 0 && run.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
   }
   return globMatch(pattern, representativeArg(req));
 }
@@ -190,31 +197,69 @@ function toolMatches(tool: string, name: string): boolean {
   return tool.includes("*") ? globMatch(tool, name) : tool === name;
 }
 
+/** A deny rule or an approval entry: its tool part (P7's characters and `*`) and an optional argument pattern. */
+const DENY_RULE = /^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/;
+
 /**
  * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
  * null when it does not; `""` when it names the call outright (no argument pattern, or a tool other than Bash);
  * for Bash, the simple command that matched, or `undecomposable: <form>` when the command could not be decomposed (it
  * then fires every rule on Bash, whatever the pattern: fail closed). For Bash a rule fires if ANY simple command the
  * shell would run matches (inside `sh -c '…'`, substitutions, groups, compound bodies, behind prefixes), so `Bash(rm*)`
- * catches `git status && rm x`. The tool part takes P7's characters and `*`: a rule that parsed before still means the
- * same, and a deny or an approval can only ever name more tools, never fewer. A command checked only as named (a
- * script file run by a shell or by a relative path) is logged `bash.rule_opaque {command}` when `logger` is given.
+ * catches `git status && rm x`; each command is matched with and without its redirections as written, so `Bash(*>*)`
+ * or a glob on the target catches `grep a b > /etc/x`. A Write or Edit rule also names a Bash command that redirects
+ * into a file it matches (`a redirect to <target>`, literal targets only: see uncheckedWriteRule). The tool part takes
+ * P7's characters and `*`: a rule that parsed before still means the same, and a deny or an approval can only ever name
+ * more tools, never fewer. A command checked only as named (a script file run by a shell or by a relative path) is
+ * logged `bash.rule_opaque {command}` when `logger` is given.
  */
 export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger): string | null {
-  const m = rule.match(/^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/);
+  const m = rule.match(DENY_RULE);
   if (!m) return null;
-  if (!toolMatches(m[1]!, req.toolName)) return null;
   const pattern = m[2];
+  if (namesRedirectWrites(m[1]!, req)) {
+    const r = writeRuleOnBash(pattern, bashSubjects(String(req.input.command ?? "")));
+    return r !== null && "hit" in r ? r.hit : null;
+  }
+  if (!toolMatches(m[1]!, req.toolName)) return null;
   if (req.toolName !== "Bash") return pattern === undefined || globMatch(pattern, representativeArg(req)) ? "" : null;
   const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
   if (pattern === undefined) return commands[0]?.forms[0] ?? "";
   for (const c of commands) {
-    const hit = c.forms.find((f) => globMatch(pattern, f));
+    const hit = [...c.forms, ...(c.redirected ?? [])].find((f) => globMatch(pattern, f));
     if (hit !== undefined) return hit;
   }
   return null;
+}
+
+/** A Write/Edit deny rule (not one that names Bash itself) on a Bash call: it is checked against the files the call's
+ *  redirections write (D-37 round 6). */
+function namesRedirectWrites(tool: string, req: PermissionRequest): boolean {
+  return req.toolName === "Bash" && !toolMatches(tool, "Bash") && (toolMatches(tool, "Write") || toolMatches(tool, "Edit"));
+}
+
+/** A Write/Edit rule against a Bash line's file-writing redirections: `hit` when a literal target matches (or the rule
+ *  names every path); `unchecked` when a target is not literal or the line could not be decomposed, so the rule cannot
+ *  be judged; null when it names none of them. */
+function writeRuleOnBash(pattern: string | undefined, d: Decomposed): { hit: string } | { unchecked: string } | null {
+  if (d.opaque !== null) return { unchecked: `undecomposable: ${d.opaque}` };
+  let unchecked: string | null = null;
+  for (const w of d.writes) {
+    if (pattern === undefined || (w.literal && globMatch(pattern, w.target))) return { hit: `a redirect to ${w.target}` };
+    if (!w.literal) unchecked ??= `the redirect target ${w.target} is not literal`;
+  }
+  return unchecked === null ? null : { unchecked };
+}
+
+/** Why a Write/Edit deny rule cannot be checked against this Bash call (a non-literal redirect target, an
+ *  undecomposable line), or null: the call then asks rather than being allowed. */
+function uncheckedWriteRule(rule: string, req: PermissionRequest): string | null {
+  const m = rule.match(DENY_RULE);
+  if (!m || !namesRedirectWrites(m[1]!, req)) return null;
+  const r = writeRuleOnBash(m[2], bashSubjects(String(req.input.command ?? "")));
+  return r !== null && "unchecked" in r ? `cannot check rule "${rule}": ${r.unchecked}` : null;
 }
 
 /** The simple commands a Bash command runs, decomposed recursively (`sh -c '…'`, `$(…)`, backticks, groups,

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createPolicy } from "../src/permission/engine";
 import { isReadOnlyShell } from "../src/permission/readonly-shell";
-import { decomposeBash, envChangedOrUndecomposable } from "../src/permission/shell-decompose";
+import { decomposeBash, refusesAutoApproval } from "../src/permission/shell-decompose";
 import { createPolicy as oracle } from "./fixtures/oracle-22701ca/engine";
 
 const allowedBy = (policy: typeof createPolicy, allow: string[]) => async (command: string) =>
@@ -73,6 +73,43 @@ const GIT_GLOBAL = NARROW_GIT_SUBCOMMANDS.flatMap((sub) => GIT_GLOBAL_OPTIONS.ma
 /** Round 4 minors: a shell that reads a user rc file even with `-c` (zsh without `-f` reads `~/.zshenv`; `bash
  *  --debugger` runs the debugger profile). */
 const RC_READING_SHELLS = ["zsh -c 'git status'", "zsh -o pipefail -c 'git status'", "zsh +f -c 'git status'", "zsh -f +f -c 'git status'", "bash --debugger -c 'git status'"];
+
+/**
+ * Round 6 (D-37, the reviewer's table; controller ruling): a redirect that writes a file other than `/dev/null`,
+ * `/dev/std{in,out,err}` or `/dev/fd/N` is never auto-approved, on a simple command or a compound one; 22701ca
+ * auto-approved the simple forms under these rules, and a9ca0b5 the compound ones and `>|` too.
+ */
+const REDIRECT_RULES = ["Bash(grep *)", "Bash(cut *)", "Bash(echo *)", "Bash(tr *)", "Bash(head *)"];
+const REDIRECT_SIMPLE = [
+  "grep a b > /etc/x", "grep a b >> /etc/x", "grep a b &> /etc/x", "grep a b &>> /etc/x", "grep a b 2> /etc/x", "grep a b 3> /etc/x",
+  "grep a b <> /etc/x", "grep a b >&/etc/x", "grep a b >& /etc/x", "grep a b 3>/etc/x 1>&3", "grep a b <<< x > /etc/x", "grep a b >| /etc/x",
+  "grep a b 2>&1 >/etc/x", "grep a b > out.txt", "echo a > f", "cut -d, -f1 f > out", "tr a b < f > g", "head -1 f >> log",
+  "exec 3>/etc/x; echo a >&3", "echo a > /dev/nullx", "echo a > /dev/tty",
+];
+const REDIRECT_COMPOUND = [
+  "{ echo a; echo b; } > /etc/x", "( echo a ) > /etc/x", "{ echo a; } >| /etc/x", "( echo a ) >> /etc/x", "{ echo a; } 2>&1 > /etc/x",
+  "if grep a b; then echo a; fi > /etc/x", "echo a | tr a b > /etc/x", "case x in a) echo a;; esac > /etc/x",
+  // an allow rule must match every command on its own, so these are the ones only the redirect makes ask
+  "if echo a; then echo b; fi > /etc/x", "while echo a; do echo b; done > /etc/x", "until echo a; do echo b; done >> /etc/x", "echo a | echo b > /etc/x",
+  "sh -c 'echo a > /etc/x'", "bash -c 'echo a' > /etc/x", "echo $(echo a > /etc/x)", "> /etc/x",
+];
+/** A target the matcher cannot read (D-37 ruling 2): the file is not known, so it asks. */
+const REDIRECT_NON_LITERAL = ['grep a b > "$HOME/.bashrc"', "echo a > $f", 'echo a > "$f"', "echo a > $(mktemp)", 'echo a > ~/"$x"', "echo a > ~/x", "echo a >> ${f:-/etc/x}"];
+/** Redirects that write no file: still auto-approved (the simple ones are in the corpus; 22701ca allowed them). */
+const REDIRECT_HARMLESS = ["grep a b > /dev/null", "grep a b 2>/dev/null", "grep a b 2>&1", "grep a b &>/dev/null", "echo a >&2", "echo a > /dev/stderr", "echo a >/dev/stdout", "echo a > /dev/fd/2", "grep a b < f", "grep a b <<< x", "grep a b 2>&-"];
+const REDIRECT_HARMLESS_COMPOUND = ["{ echo a; echo b; } > /dev/null", "( echo a ) 2>&1", "echo a | echo b 2>/dev/null", "if echo a; then echo b; fi 2>/dev/null", "{ echo a; echo b; }", "if echo a; then echo b; fi"];
+/** The deny and approval side matches each command with its redirections as written. The reviewer's pairs fired on
+ *  22701ca; the rest are their siblings. */
+const REVIEWER_DENY: Array<readonly [string, string]> = [
+  ["Bash(*/etc/*)", "grep a b > /etc/x"], ["Bash(*/etc/*)", "{ echo a; } > /etc/x"], ["Bash(*>*)", "grep a b > /etc/x"], ["Bash(grep*/etc/*)", "grep a b > /etc/x"],
+];
+const MUST_DENY: Array<readonly [string, string]> = [
+  ...REVIEWER_DENY,
+  ["Bash(*/etc/*)", "( echo a ) > /etc/x"], ["Bash(*/etc/*)", "grep a b >| /etc/x"], ["Bash(*/etc/*)", "while echo a; do echo b; done > /etc/x"],
+  ["Bash(*>*)", "echo a 2>&1"], ["Bash(*>*)", "{ echo a; echo b; } > f"], ["Bash(*>*)", "grep a b > /dev/null"], ["Bash(*>*)", "if grep a b; then echo a; fi > f"], ["Bash(*>*)", "> f"],
+  ["Bash(*>/etc/*)", "grep a b >/etc/x"], ["Bash(*> /etc/*)", "grep a b > /etc/x"], ["Bash(*<<<*)", "grep a <<< x"],
+  ["Bash(grep*/etc/*)", "grep a b 2>> /etc/x"],
+];
 
 /** The same gaps on the deny and approval side (each runs `git push`). */
 const DENY_GAPS = [
@@ -157,10 +194,13 @@ const CORPUS = [
   "git status || git status", "git status | cat", "git log $(git rev-parse HEAD)", "git log `git rev-parse HEAD`", "npm test && npm test",
   "sh -c 'git status; curl x'", "bash -lc 'git status && curl x'", "git log ${HOME}", "git log $((1+1))", "git status & curl x",
   "git log --oneline", "git diff HEAD~1",
+  // round 6: redirects (D-37)
+  ...REDIRECT_SIMPLE, ...REDIRECT_COMPOUND, ...REDIRECT_NON_LITERAL, ...REDIRECT_HARMLESS, ...MUST_DENY.map(([, command]) => command),
 ];
-const RULE_SETS = [["Bash(git*)", "Bash(npm test*)"], ["Bash(git status*)"], ["Bash(echo*)", "Bash(ls*)", "Bash(cat*)"], ["Bash(git log*)"], ["Bash(git diff*)"], ["Bash(git*)"]];
-/** Never auto-approved under any rule set, whatever 22701ca did (it auto-approved the git strings under `Bash(git*)`). */
-const MUST_ASK = [...GIT_GLOBAL.map((g) => g.command), ...RC_READING_SHELLS];
+const RULE_SETS = [["Bash(git*)", "Bash(npm test*)"], ["Bash(git status*)"], ["Bash(echo*)", "Bash(ls*)", "Bash(cat*)"], ["Bash(git log*)"], ["Bash(git diff*)"], ["Bash(git*)"], REDIRECT_RULES, ["Bash(*)"]];
+/** Never auto-approved under any rule set, whatever 22701ca did (it auto-approved the git strings under `Bash(git*)`, and
+ *  the simple redirects under the reviewer's rules). */
+const MUST_ASK = [...GIT_GLOBAL.map((g) => g.command), ...RC_READING_SHELLS, ...REDIRECT_SIMPLE, ...REDIRECT_COMPOUND, ...REDIRECT_NON_LITERAL];
 
 describe("an injected environment is never auto-approved (controller ruling: the matcher cannot judge a variable)", () => {
   const allowed = allowedBy(createPolicy, ["Bash(git*)"]);
@@ -287,12 +327,12 @@ describe("round 5: cruise never auto-approves an environment change, a git globa
 
 describe("round 5: one predicate refuses for both auto-approval paths", () => {
   const corpus = [...new Set([...CORPUS, ...CRUISE_HOLES, ...INJECTED_ENV, ...CRUISE_STILL_READ_ONLY])];
-  test(`over ${corpus.length} commands: a line envChangedOrUndecomposable refuses is neither read-only nor allowed by Bash(*)`, async () => {
+  test(`over ${corpus.length} commands: a line refusesAutoApproval refuses is neither read-only nor allowed by Bash(*)`, async () => {
     const allowAll = allowedBy(createPolicy, ["Bash(*)"]);
     const leaks: Array<{ command: string; readOnly: boolean; allowed: boolean }> = [];
     let refused = 0;
     for (const command of corpus) {
-      if (!envChangedOrUndecomposable(decomposeBash(command))) continue;
+      if (!refusesAutoApproval(decomposeBash(command))) continue;
       refused++;
       const readOnly = isReadOnlyShell(command);
       const allowed = await allowAll(command);
@@ -304,7 +344,71 @@ describe("round 5: one predicate refuses for both auto-approval paths", () => {
   test("what it does not refuse, Bash(*) allows, and the read-only programs stay read-only", async () => {
     const allowAll = allowedBy(createPolicy, ["Bash(*)"]);
     for (const command of CRUISE_STILL_READ_ONLY) {
-      expect({ command, refused: envChangedOrUndecomposable(decomposeBash(command)), readOnly: isReadOnlyShell(command), allowed: await allowAll(command) }).toEqual({ command, refused: false, readOnly: true, allowed: true });
+      expect({ command, refused: refusesAutoApproval(decomposeBash(command)), readOnly: isReadOnlyShell(command), allowed: await allowAll(command) }).toEqual({ command, refused: false, readOnly: true, allowed: true });
     }
+  });
+});
+
+describe("round 6 (D-37): a redirect that writes a file is never auto-approved; the deny side sees it as written", () => {
+  const decide = async (config: Parameters<typeof createPolicy>[0], command: string) =>
+    (await createPolicy(config)({ toolName: "Bash", input: { command }, readOnly: false, isEdit: false } as never)).behavior;
+  const table = async (commands: string[], f: (command: string) => Promise<unknown>) => Object.fromEntries(await Promise.all(commands.map(async (c) => [c, await f(c)] as const)));
+  const same = (commands: string[], v: unknown) => Object.fromEntries(commands.map((c) => [c, v]));
+  const allowed = allowedBy(createPolicy, REDIRECT_RULES);
+
+  test("allow side, simple commands: every operator to a file asks; /dev/null, the std streams and fd duplication stay allowed", async () => {
+    expect(await table(REDIRECT_SIMPLE, allowed)).toEqual(same(REDIRECT_SIMPLE, false));
+    expect(await table(REDIRECT_HARMLESS, allowed)).toEqual(same(REDIRECT_HARMLESS, true));
+  });
+
+  test("allow side, compound commands: a group's, a subshell's, a compound's or a nested script's redirect asks", async () => {
+    expect(await table(REDIRECT_COMPOUND, allowed)).toEqual(same(REDIRECT_COMPOUND, false));
+    expect(await table(REDIRECT_HARMLESS_COMPOUND, allowed)).toEqual(same(REDIRECT_HARMLESS_COMPOUND, true));
+  });
+
+  test("deny and approval side: Bash(*>*), Bash(*/etc/*) and Bash(grep*/etc/*) fire on the redirect as written, as on 22701ca", async () => {
+    const firesNow = await Promise.all(MUST_DENY.map(async ([rule, command]) => ({ rule, command, fires: await fires(rule, command) })));
+    expect(firesNow.filter((r) => !r.fires)).toEqual([]);
+    const oracleFires = await Promise.all(REVIEWER_DENY.map(async ([rule, command]) => ({ rule, command, d: await (oracle as typeof createPolicy)({ mode: "manual", deny: [rule] })({ toolName: "Bash", input: { command } } as never) })));
+    expect(oracleFires.filter((r) => r.d.behavior !== "deny").map(({ rule, command }) => ({ rule, command }))).toEqual([]);
+    // a target glob still needs the target: the plain command, an input file and an argument do not fire
+    expect(await fires("Bash(*>*)", "grep a b")).toBe(false);
+    expect(await fires("Bash(*/etc/*)", "grep a b > /tmp/x")).toBe(false);
+    expect(await fires("Bash(git push*)", "echo a > /etc/x")).toBe(false);
+    // a here-doc's operator is written too (its body is data, not part of any form)
+    expect(await fires("Bash(cat <<EOF)", "cat <<EOF\nx\nEOF")).toBe(true);
+  });
+
+  test("a literal redirect target is checked against Write and Edit deny rules", async () => {
+    const WRITE_DENIED = ["grep a b > /etc/x", "echo a >> /etc/x", "echo a &> /etc/x", "echo a >| /etc/x", "echo a 2> /etc/x", "cat f <> /etc/x", "echo a >&/etc/x", "{ echo a; } > /etc/x", "( echo a ) > /etc/x", "sh -c 'echo a > /etc/x'", "echo $(echo a > /etc/x)", "echo a > '/etc/x'", "echo a >/etc/x"];
+    const WRITE_NOT_DENIED = ["grep a b > /tmp/x", "grep a b < /etc/x", "grep a b /etc/x", "grep a b <<< /etc/x", "echo a 2>&1", "cat /etc/x > /dev/null"];
+    const writeDenies = (rule: string) => (command: string) => fires(rule, command);
+    expect(await table(WRITE_DENIED, writeDenies("Write(/etc/**)"))).toEqual(same(WRITE_DENIED, true));
+    expect(await table(WRITE_NOT_DENIED, writeDenies("Write(/etc/**)"))).toEqual(same(WRITE_NOT_DENIED, false));
+    expect(await fires("Edit(/etc/**)", "grep a b > /etc/x")).toBe(true);
+    expect(await fires("Edit(/etc/**)", "grep a b > /tmp/x")).toBe(false);
+    // a rule naming every path names every file a redirect writes, and none of the harmless ones
+    expect(await table(["echo a > f", "echo a > $f", "echo a 2>/tmp/err"], writeDenies("Write"))).toEqual(same(["echo a > f", "echo a > $f", "echo a 2>/tmp/err"], true));
+    expect(await table(["echo a > /dev/null", "echo a 2>&1", "grep a < f", "echo a"], writeDenies("Write"))).toEqual(same(["echo a > /dev/null", "echo a 2>&1", "grep a < f", "echo a"], false));
+    // in autopilot too, and the refusal names the rule and the target
+    const d = await createPolicy({ mode: "autopilot", deny: ["Write(/etc/**)"] })({ toolName: "Bash", input: { command: "grep a b > /etc/x" } } as never);
+    expect(d).toMatchObject({ behavior: "deny", source: "deny_rule", reason: 'denied by rule "Write(/etc/**)": a redirect to /etc/x' });
+    // the Write tool itself is matched as before
+    expect(await createPolicy({ mode: "autopilot", deny: ["Write(/etc/**)"] })({ toolName: "Write", input: { path: "/etc/x" } } as never)).toMatchObject({ behavior: "deny" });
+  });
+
+  test("a non-literal target asks: the allow side never approves it, and a Write/Edit deny that cannot be checked asks even in autopilot", async () => {
+    expect(await table(REDIRECT_NON_LITERAL, allowed)).toEqual(same(REDIRECT_NON_LITERAL, false));
+    const autopilot = { mode: "autopilot" as const, deny: ["Write(/etc/**)"] };
+    const unchecked = ["echo a > $f", 'echo a > ~/"$x"', "echo a > $(mktemp)", "echo a > ~/x", "echo a > /e*/x", "eval 'echo a > /etc/x'"];
+    expect(await table(unchecked, (c) => decide(autopilot, c))).toEqual(same(unchecked, "ask"));
+    expect(await decide({ ...autopilot, allow: ["Bash"] }, "echo a > $f")).toBe("ask");
+    expect(await decide(autopilot, "echo a > /tmp/x")).toBe("allow");
+    expect(await decide(autopilot, "echo a > /etc/x")).toBe("deny");
+    expect(await decide({ mode: "recon", deny: ["Write(/etc/**)"] }, "echo a > $f")).toBe("deny");
+    // without a Write/Edit deny there is nothing to check: autopilot is unchanged
+    expect(await decide({ mode: "autopilot", deny: ["Bash(git push*)"] }, "echo a > $f")).toBe("allow");
+    // a rule naming every path needs no target
+    expect(await decide({ mode: "autopilot", deny: ["Write"] }, "echo a > $f")).toBe("deny");
   });
 });

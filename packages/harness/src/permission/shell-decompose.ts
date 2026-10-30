@@ -10,7 +10,10 @@
  *   `builtin`, `time` (`-p`), `nohup`, `timeout` (its options and duration), `nice` (`-n N`, `-N`), `stdbuf` (`-i|-o|-e
  *   MODE`), `ionice` (`-c N`, `-n N`, `-t`); git's global options before its subcommand (`-C <path>`, `-c k=v`,
  *   `--git-dir=…`, `--work-tree=…`, …); `xargs` and its options; an absolute command path to its basename (both forms
- *   are tried); `$((…))` (arithmetic, no command; kept as written); redirections and their targets; here-doc bodies (data);
+ *   are tried); `$((…))` (arithmetic, no command; kept as written); here-doc bodies (data);
+ * - redirections (D-37, round 6): recorded per command as written (`redirected`, for a deny or an approval: a group's,
+ *   subshell's or compound's redirection is each inner command's), and on the line, every one that writes a file other
+ *   than `/dev/null`, `/dev/std{in,out,err}` or `/dev/fd/N` (`writes`): such a line is never auto-approved;
  * - best-effort (checked as the command named, contents not inspected; `bestEffort`): a shell running a script file
  *   (`bash script.sh`), a command run by a relative path (`./x.sh`);
  * - opaque (`opaque` names the form; a rule on Bash fails closed): an expansion as the command name, `eval`, `source`/
@@ -28,6 +31,15 @@
  *   matches the stripped form; the allow side never auto-approves it.
  */
 
+/** A redirection as written: its operator with any fd (`>`, `2>>`, `&>`, `>|`, `<>`, `<<<`, `>&`, `3>&`), and its
+ *  target with quotes removed (an fd for a duplication, the delimiter for a here-doc). */
+export interface Redirection {
+  operator: string;
+  target: string;
+  /** The target is exactly the file opened: no expansion, no unquoted `~` or glob. */
+  literal: boolean;
+}
+
 export interface DecomposedCommand {
   /** The forms a rule is matched against (any one matching counts): the command name, then its arguments with quotes
    *  removed, single-spaced; for an absolute path, both the basename form and the form as written. */
@@ -43,21 +55,39 @@ export interface DecomposedCommand {
    *  GIT_SSH_COMMAND, BASH_ENV, PATH, HOME, PAGER, core.fsmonitor … run code, and the matcher cannot judge which
    *  variable is safe). */
   envInjected?: boolean;
+  /** Its forms with its redirections appended as written (`grep a b > /etc/x`), when it has any: a deny or an approval
+   *  matches these too, an allow rule only `forms`. An entry with no `forms` runs no command (`> f`, `command -v git
+   *  > /dev/null`): it is recorded for its redirections. */
+  redirected?: string[];
 }
 
 export interface Decomposed {
   commands: DecomposedCommand[];
   /** The form that could not be decomposed, or null: a rule on Bash must treat the command as matching. */
   opaque: string | null;
+  /** Every redirection on the line, at any depth, that writes a file other than `/dev/null`, `/dev/std{in,out,err}`
+   *  or `/dev/fd/N` (empty when `opaque`). */
+  writes: Redirection[];
 }
 
 /**
- * Whether no part of this line may be auto-approved, whatever runs on it: it could not be decomposed, or a command of
- * it runs in a changed environment (`envInjected`). The one judgement both auto-approval paths refuse on — an allow
- * rule (engine.ts) and cruise's read-only check (readonly-shell.ts) — so the two cannot drift (D-27 round 5).
+ * Whether no part of this line may be auto-approved, whatever runs on it: it could not be decomposed, a command of it
+ * runs in a changed environment (`envInjected`), or it writes a file through a redirection (`writes`). The one judgement
+ * both auto-approval paths refuse on — an allow rule (engine.ts) and cruise's read-only check (readonly-shell.ts) — so
+ * the two cannot drift (D-27 round 5, D-37 round 6).
  */
-export function envChangedOrUndecomposable(d: Decomposed): boolean {
-  return d.opaque !== null || d.commands.some((c) => c.envInjected === true);
+export function refusesAutoApproval(d: Decomposed): boolean {
+  return d.opaque !== null || d.writes.length > 0 || d.commands.some((c) => c.envInjected === true);
+}
+
+/** Files a redirection may write without touching the estate. */
+const HARMLESS_TARGET = /^\/dev\/(?:null|stdin|stdout|stderr|fd\/\d+)$/;
+
+/** Whether a redirection to a target word opens a file for writing (`>`, `>>`, `>|`, `&>`, `<>`, `>&file`, with any fd),
+ *  other than a harmless one; an input (`<`, `<<<`) writes nothing, nor does a duplication (`2>&1`, `>&-`) or a here-doc,
+ *  which have no target word. */
+function writesFile(r: Redirection): boolean {
+  return r.operator.includes(">") && !(r.literal && HARMLESS_TARGET.test(r.target));
 }
 
 const MAX_DEPTH = 3;
@@ -79,7 +109,12 @@ const RC_SHELL_OPTIONS = new Set(["login", "interactive"]);
 interface Line {
   /** Something on the line changes the environment a command runs in (see the module comment). */
   envChanged: boolean;
+  /** The redirections that write a file (`Decomposed.writes`). */
+  writes: Redirection[];
 }
+/** Words that open a group or compound whose redirections apply to every command in it, and the words that close one. */
+const OPENERS = new Set(["{", "if", "while", "until", "for"]);
+const CLOSERS = new Set(["}", "fi", "done"]);
 
 interface PrefixSpec {
   noArg?: string[];
@@ -126,6 +161,8 @@ interface Word {
   literal: boolean;
   /** An unquoted glob or brace character (`*?[{}`): as a command name, bash would expand it. */
   glob?: boolean;
+  /** It starts with an unquoted `~` (tilde expansion). */
+  tilde?: boolean;
 }
 
 class Opaque extends Error {
@@ -137,13 +174,13 @@ const clip = (s: string) => (s.length > 120 ? `${s.slice(0, 120)}…` : s);
 
 export function decomposeBash(command: string): Decomposed {
   const commands: DecomposedCommand[] = [];
-  const line: Line = { envChanged: false };
+  const line: Line = { envChanged: false, writes: [] };
   try {
     decompose(command, 0, commands, line);
     if (line.envChanged) for (const c of commands) c.envInjected = true;
-    return { commands, opaque: null };
+    return { commands, opaque: null, writes: line.writes };
   } catch (e) {
-    if (e instanceof Opaque) return { commands: [], opaque: e.form };
+    if (e instanceof Opaque) return { commands: [], opaque: e.form, writes: [] };
     throw e;
   }
 }
@@ -158,24 +195,56 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
   const pendingHeredocs: Array<{ delimiter: string; strip: boolean; quoted: boolean }> = [];
   /** Open `case` statements: reading an arm's pattern, or its commands. */
   const cases: Array<"pattern" | "body"> = [];
+  /** This simple command's redirections as written; the operator awaiting its target word (`skipNext`). */
+  let redirections: string[] = [];
+  let pending: { operator: string; spaced: boolean } | null = null;
+  /** Where each open group or compound's commands start in `out`, and the start of the one this command closed. */
+  const openers: number[] = [];
+  let closed: number | null = null;
+  const written = (r: Redirection, spaced: boolean) => redirections.push(`${r.operator}${spaced ? " " : ""}${r.target}`);
   const endWord = () => {
     if (word) {
-      if (skipNext) skipNext = false;
-      else words.push(word);
+      if (skipNext) {
+        skipNext = false;
+        const r = { operator: pending!.operator, target: word.text, literal: word.literal && !word.glob && !word.tilde };
+        written(r, pending!.spaced);
+        if (writesFile(r)) line.writes.push(r);
+        pending = null;
+      } else {
+        if (word.literal && words.every((w) => w.literal && COMPOUND.has(w.text))) {
+          if (OPENERS.has(word.text)) openers.push(out.length);
+          else if (CLOSERS.has(word.text)) closed = openers.pop() ?? null;
+        }
+        words.push(word);
+      }
     }
     word = null;
     if (words.length === 3 && words[0]!.literal && words[0]!.text === "case" && words[2]!.literal && words[2]!.text === "in") {
       words = [];
       cases.push("pattern");
+      openers.push(out.length);
     }
+  };
+  const esac = () => {
+    cases.pop();
+    closed = openers.pop() ?? null;
   };
   const cur = (): Word => (word ??= { text: "", expanded: false, literal: true });
   const endCommand = () => {
     endWord();
     if (skipNext) throw new Opaque("a redirection with no target");
+    const from = out.length;
     simple(words, depth, out, line, heredoc);
+    if (redirections.length) {
+      // a closing word's redirections are its group's; a line of redirections alone is recorded as written
+      const to = closed ?? from;
+      if (to < out.length) for (const c of out.slice(to)) c.redirected = (c.redirected ?? c.forms).map((f) => `${f} ${redirections.join(" ")}`);
+      else out.push({ forms: [], redirected: [[...words.map((w) => w.text), ...redirections].join(" ")] });
+    }
     words = [];
     heredoc = false;
+    redirections = [];
+    closed = null;
   };
   const close = (open: number): number => {
     const end = matchParen(command, open);
@@ -190,7 +259,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
     if (inCase === "pattern" && word === null) {
       if (/\s/.test(c)) continue;
       if (atWord(i, "esac")) {
-        cases.pop();
+        esac();
         i += 3;
         continue;
       }
@@ -210,7 +279,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       continue;
     }
     if (inCase === "body" && word === null && words.length === 0 && atWord(i, "esac")) {
-      cases.pop();
+      esac();
       i += 3;
       continue;
     }
@@ -270,18 +339,24 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
         continue;
       }
       const w = word as Word | null;
-      if (w && /^[0-9]+$/.test(w.text) && w.literal) word = null;
-      else endWord();
+      let fd = "";
+      if (w && /^[0-9]+$/.test(w.text) && w.literal) {
+        fd = w.text;
+        word = null;
+      } else endWord();
       if (c === "<" && next === "<" && command[i + 2] !== "<") {
         // a here-doc: its delimiter, then its body after the line
         let j = i + 2;
         const strip = command[j] === "-";
         if (strip) j++;
+        const spaced = command[j] === " " || command[j] === "\t";
         while (command[j] === " " || command[j] === "\t") j++;
         const m = /^(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(command.slice(j));
         if (!m) throw new Opaque("a here-doc with no delimiter");
         // a quoted delimiter (`'EOF'`, `"EOF"`, `\EOF`) keeps the body as data; an unquoted one expands it
-        pendingHeredocs.push({ delimiter: m[1] ?? m[2] ?? m[3]!, strip, quoted: m[1] !== undefined || m[2] !== undefined || m[0].startsWith("\\") });
+        const delimiter = m[1] ?? m[2] ?? m[3]!;
+        pendingHeredocs.push({ delimiter, strip, quoted: m[1] !== undefined || m[2] !== undefined || m[0].startsWith("\\") });
+        written({ operator: `${fd}${strip ? "<<-" : "<<"}`, target: delimiter, literal: true }, spaced);
         heredoc = true;
         i = j + m[0].length - 1;
         continue;
@@ -290,16 +365,24 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       // target word, which is not an argument.
       let j = i;
       while (j + 1 < command.length && "<>&|".includes(command[j + 1]!)) j++;
+      const operator = fd + command.slice(i, j + 1);
       if (command[j] === "&" && j > i && /[0-9-]/.test(command[j + 1] ?? "")) {
+        const at = j + 1;
         while (j + 1 < command.length && /[0-9-]/.test(command[j + 1]!)) j++;
-      } else skipNext = true;
+        written({ operator, target: command.slice(at, j + 1), literal: true }, false);
+      } else {
+        skipNext = true;
+        pending = { operator, spaced: command[j + 1] === " " || command[j + 1] === "\t" };
+      }
       i = j;
       continue;
     }
     if (c === "(") {
       if (word !== null || words.length > 0) throw new Opaque(clip(`${words.map((x) => x.text).join(" ")} ${(word as Word | null)?.text ?? ""}(`.trim()) + " (a function definition)");
       const end = close(i);
-      inner(command.slice(i + 1, end)); // a subshell
+      const from = out.length;
+      inner(command.slice(i + 1, end)); // a subshell: a redirection after it is its commands'
+      closed = from;
       i = end;
       continue;
     }
@@ -340,6 +423,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       continue;
     }
     const w = cur();
+    if (c === "~" && w.text === "") w.tilde = true;
     w.text += c;
     if ("*?[{}".includes(c)) w.glob = true;
   }
