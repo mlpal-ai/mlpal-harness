@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### D-27 round 3: no auto-approval after an environment change on the same line (2026-10-29)
+
+- On the allow side every command of a Bash line asks when anything on the line changes the environment a command
+  runs in: a `NAME=value` standing alone (`PATH=.:$PATH; git status`, `HOME=…`, `GIT_DIR=…`, `IFS=…`, also inside a
+  subshell or `bash -c '…'`), a `for` loop variable (any name: `for i in 1 2; do git status; done` asks too), a builtin
+  that assigns (`read`, `export`, `declare`, `local`, `let`, `alias`, `hash`, `printf -v`, …), an assignment in
+  `$((…))` (`=`, `+=`, `++`, …; `==`/`<=`/`>=`/`!=` are not) or `${NAME:=…}`, and a login or interactive shell
+  (`bash -lc`, `-l -c`, `--login -c`, `-i -c`, `zsh -o login -c`), which reads an rc file before its script. 22701ca
+  asked for all of these; round 2 auto-approved them under `Bash(git*)`.
+- The whole line, not only the commands after the change: in a loop the change reaches the commands before it too.
+- Deny and approval rules are unchanged (they still strip and check: `PATH=/tmp/x; git push` is caught).
+- `bash --norc -c …`, `bash -c -- …` and `bash --rcfile f -c …` (non-login, non-interactive) stay auto-approvable;
+  the 15 reviewed narrowings are unchanged; the differential corpus gains the 22 forms (108 commands).
+
 ### The builtin `coding` prompt no longer asks for a checkpoint id the model cannot know (W3 window defect D-31)
 
 - It told the model `event_id="ck:<session id>:<n>"`; a model has no session id, so it wrote the literal
