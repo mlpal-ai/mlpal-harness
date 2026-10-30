@@ -19,6 +19,11 @@
   allow rules are unchanged (no auto-approval widens).
 - `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null; its glob length
   counts code points (`u`), as Python does.
+- **An injected environment is never auto-approved (controller ruling).** On the allow side a command run with a
+  leading `VAR=…` or under `env` with any `NAME=VALUE` or option (`-i`, `-u`, `-S`) asks (`LD_PRELOAD=… git status`,
+  `GIT_SSH_COMMAND=… git fetch`, `BASH_ENV=… bash -c …`: the matcher cannot judge which variable runs code); plain
+  `env git status` stays auto-approvable. Deny and approval rules still strip the assignments and check the command
+  (`FOO=1 git push` is caught). `FOO=1 git status` left the differential's reviewed narrowings; the corpus gains the two.
 - **D-27 round 2: the allow side is never wider than 22701ca.** Command substitutions are decomposed wherever bash runs
   them: inside `${…}` parameter operators, inside `$((…))`, and in an unquoted here-doc's body (a quoted `<<'EOF'` body
   stays data). Undecomposable (fail closed, never auto-approved): `$'…'`/`$"…"` and an unquoted glob or brace character

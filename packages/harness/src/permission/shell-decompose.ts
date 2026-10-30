@@ -28,6 +28,10 @@ export interface DecomposedCommand {
   /** It runs with arguments the matcher cannot see (`xargs <cmd>`): a deny or approval still checks the command, but
    *  an allow rule never auto-approves it (its arguments could be anything). */
   argsUnknown?: boolean;
+  /** It runs with an environment the command line sets (`VAR=… cmd`, `env NAME=VALUE|-i|-u … cmd`): a deny or approval
+   *  still checks the command, but an allow rule never auto-approves it (LD_PRELOAD, GIT_SSH_COMMAND, BASH_ENV, PAGER …
+   *  run code, and the matcher cannot judge which variable is safe). */
+  envInjected?: boolean;
 }
 
 export interface Decomposed {
@@ -493,6 +497,8 @@ function afterPrefix(name: string, spec: PrefixSpec, words: Word[]): Word[] | nu
  *  recorded for the rules. */
 function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc: boolean): void {
   let words = input;
+  let envInjected = false;
+  const from = out.length;
   for (;;) {
     const head = words[0];
     if (!head) return;
@@ -504,17 +510,24 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
     if (head.literal && (UNSUPPORTED.has(head.text) || head.text === "case" || head.text === "esac")) throw new Opaque(clip(text(words)));
     if (ASSIGNMENT.test(head.text) && !head.text.slice(0, head.text.indexOf("=")).includes("$")) {
       words = words.slice(1);
+      // an assignment with a command after it is that command's environment
+      if (words.length) envInjected = true;
       continue;
     }
     const prefix = head.literal ? PREFIXES[basename(head.text)] : undefined;
     if (prefix && basename(head.text) !== "xargs") {
       const rest = afterPrefix(basename(head.text), prefix, words.slice(1));
       if (rest === null) return;
+      // `env` with any option or NAME=VALUE sets the command's environment
+      if (basename(head.text) === "env" && rest.length < words.length - 1) envInjected = true;
       words = rest;
       continue;
     }
     break;
   }
+  const mark = () => {
+    if (envInjected) for (const c of out.slice(from)) c.envInjected = true;
+  };
   const head = words[0]!;
   if (!head.literal || head.expanded) throw new Opaque(clip(`${text(words)} (an expansion as the command name)`));
   if (head.glob && head.text !== "[" && head.text !== "[[") throw new Opaque(clip(`${text(words)} (a glob or brace expansion as the command name)`));
@@ -529,11 +542,13 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
     if (rest && rest.length) simple(rest, depth, out, false);
     else out.push({ forms: ["echo"], argsUnknown: true }); // xargs's default command
     for (const c of out.slice(from)) c.argsUnknown = true;
+    mark();
     return;
   }
   if (SHELLS.has(name)) {
     if (heredoc) throw new Opaque(clip(`${text(words)} <<… (a here-doc into a shell)`));
     shell(name, words, depth, out);
+    mark(); // the environment reaches every command the shell runs (BASH_ENV, PATH, …)
     return;
   }
   let args = words.slice(1).map((w) => w.text);
@@ -542,6 +557,7 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
   const asWritten = [head.text, ...args].join(" ").replace(/\s+/g, " ").trim();
   const relative = head.text.includes("/") && !head.text.startsWith("/");
   out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}) });
+  mark();
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */

