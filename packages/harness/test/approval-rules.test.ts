@@ -186,6 +186,10 @@ describe("D-27, the reviewer's additions", () => {
     expect(await allowed("git status")).toBe(true);
     expect(await allowed("sh -c 'git status'")).toBe(true);
     expect(await allowed("git status && rm -rf x")).toBe(false);
+    // A literal script is auto-approved only when every decomposed sub-command is allowed.
+    expect(await allowed("sh -c 'git status; git status -s'")).toBe(true);
+    expect(await allowed("sh -c 'git status; curl x'")).toBe(false);
+    expect(await allowed("bash -lc 'git status && curl x'")).toBe(false);
     expect(await allowed("eval 'git status'")).toBe(false);
   });
 });
