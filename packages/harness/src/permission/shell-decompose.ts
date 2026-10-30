@@ -51,6 +51,15 @@ export interface Decomposed {
   opaque: string | null;
 }
 
+/**
+ * Whether no part of this line may be auto-approved, whatever runs on it: it could not be decomposed, or a command of
+ * it runs in a changed environment (`envInjected`). The one judgement both auto-approval paths refuse on — an allow
+ * rule (engine.ts) and cruise's read-only check (readonly-shell.ts) — so the two cannot drift (D-27 round 5).
+ */
+export function envChangedOrUndecomposable(d: Decomposed): boolean {
+  return d.opaque !== null || d.commands.some((c) => c.envInjected === true);
+}
+
 const MAX_DEPTH = 3;
 const OPAQUE_HEAD = new Set(["eval", "source", ".", "exec", "sudo", "doas", "su", "busybox", "parallel"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh"]);
