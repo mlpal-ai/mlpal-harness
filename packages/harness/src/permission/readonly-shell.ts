@@ -28,6 +28,11 @@ const VERSION_SUBCOMMAND = new Set(["npm", "go", "cargo", "gem", "pip", "pip3", 
 /** git subcommands that never write, with the argument checks that keep them so. */
 const GIT_READ = new Set(["status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "describe", "grep", "cat-file", "shortlog", "reflog", "rev-list", "name-rev", "count-objects", "var", "check-ignore", "merge-base", "for-each-ref", "symbolic-ref", "show-ref", "whatchanged", "diff-tree", "diff-index", "diff-files", "worktree"]);
 
+/** `--output=file` writes; `--ext-diff`, `--textconv`, `--filters` run configured programs; `git grep -O` runs a pager. */
+const GIT_WRITES_OR_RUNS = /^--(output|ext-diff|textconv|filters|open-files-in-pager)|^-O/;
+/** An unquoted brace expansion (`{a,b}`, `{a..c}`): it rewrites the arguments after this check has read them. */
+const BRACE_EXPANSION = /\{[^{}]*(?:,|\.\.)[^{}]*\}/;
+
 /** Redirections that cannot write into the workspace: output to /dev/null (`>`, `>>`, `2>`, `&>`) and
  *  fd duplication (`2>&1`, `1>&2`). A leading fd digit counts only as its own word, as in the shell. */
 const HARMLESS_REDIRECT = /(?:(?<=^|\s)\d)?(?:>>?|&>>?)\s*\/dev\/null(?=\s|$|[;|&])|(?:(?<=^|\s)\d)?>&\d(?=\s|$|[;|&])/g;
@@ -82,7 +87,7 @@ function argvIsReadOnly([prog, ...args]: [string, ...string[]], quotedSpace: boo
     if (!sub || !GIT_READ.has(sub)) {
       // branch / tag / stash / remote / config list only when given no operand that would write.
       if (sub === "branch" || sub === "tag") return args.every((a) => a === sub || a.startsWith("-")) && !args.some((a) => /^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force|set-upstream-to|unset-upstream|edit-description)/.test(a));
-      if (sub === "stash") return args[args.indexOf(sub) + 1] === "list" || args[args.indexOf(sub) + 1] === "show";
+      if (sub === "stash") return ["list", "show"].includes(args[args.indexOf(sub) + 1] ?? "") && !args.some((a) => GIT_WRITES_OR_RUNS.test(a));
       if (sub === "remote") return args.slice(args.indexOf(sub) + 1).every((a) => a === "-v" || a === "--verbose" || a === "show" || a === "get-url");
       if (sub === "config") return args.some((a) => a === "--get" || a === "--list" || a === "-l" || a === "--get-all" || a === "--get-regexp");
       return false;
@@ -92,8 +97,7 @@ function argvIsReadOnly([prog, ...args]: [string, ...string[]], quotedSpace: boo
     // `git symbolic-ref HEAD <ref>` sets, `-d` deletes; `git reflog expire|delete|drop` deletes entries.
     if (sub === "symbolic-ref") return !rest.some((a) => a === "-d" || a === "--delete" || a === "-m") && rest.filter((a) => !a.startsWith("-")).length <= 1;
     if (sub === "reflog" && ["expire", "delete", "drop"].includes(rest[0] ?? "")) return false;
-    // `--output=file` writes; `--ext-diff`, `--textconv`, `--filters` run configured programs; `git grep -O` runs a pager.
-    return !args.some((a) => /^--(output|ext-diff|textconv|filters|open-files-in-pager)|^-O/.test(a));
+    return !args.some((a) => GIT_WRITES_OR_RUNS.test(a));
   }
   if (base === "arch") return args.length === 0; // `arch -x86_64 <cmd>` runs a command
   if (base === "find") return !args.some((a) => /^-(delete|exec|execdir|ok|okdir|fls)$|^-fprint/.test(a));
@@ -213,8 +217,9 @@ function sedScriptIsReadOnly(script: string): boolean {
 }
 
 /** True when every simple command of `command` is read-only: pipes and `&&`/`||`/`;` between
- *  read-only commands are fine; a redirection to anything but /dev/null or an fd, a substitution, a background `&`, or any program
- *  outside the known set makes the whole command "not read-only", and so does a line `refusesAutoApproval`. */
+ *  read-only commands are fine; a redirection to anything but /dev/null or an fd, a substitution, a background `&`, an
+ *  unquoted brace expansion, a backslash, or any program outside the known set makes the whole command "not read-only",
+ *  and so does a line `refusesAutoApproval`. */
 export function isReadOnlyShell(command: string): boolean {
   const trimmed = stripHarmlessRedirects(command.trim()).trim();
   if (!trimmed) return false;
@@ -223,6 +228,9 @@ export function isReadOnlyShell(command: string): boolean {
   // `&` is a background job we do not reason about. Check outside quotes.
   const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "");
   if (/[<>]|`|\$\(/.test(unquoted)) return false;
+  // A brace expansion or a backslash changes an argument after the checks below read it (`find . {-delete,}` and
+  // `find . -de\lete` both run `find . -delete`); a backslash anywhere, quoted or not, is refused (D-27 round 6).
+  if (trimmed.includes("\\") || BRACE_EXPANSION.test(unquoted)) return false;
   if (/&/.test(unquoted.replace(/&&/g, ""))) return false;
   const parts = splitShellCommands(trimmed);
   if (parts.length === 0) return false;
