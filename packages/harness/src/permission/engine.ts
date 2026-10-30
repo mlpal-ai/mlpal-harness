@@ -1,7 +1,9 @@
 import type { Author } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
-import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "./safety";
+import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
+import type { Logger } from "../obs/logger";
+import { type Decomposed, decomposeBash } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 
@@ -65,6 +67,8 @@ export interface PermissionConfig {
    * maps that to needs_approval headless); `deny` is a hard policy denial.
    */
   safety?: (req: PermissionRequest) => SafetyDisposition | null;
+  /** Where `bash.rule_opaque` is logged (a Bash command a rule could check only as named). */
+  logger?: Logger;
 }
 
 export type CanUseTool = (req: PermissionRequest) => Decision | Promise<Decision>;
@@ -90,7 +94,8 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     }
 
     for (const rule of deny) {
-      if (denyMatches(rule, req)) return { behavior: "deny", reason: `denied by rule "${rule}"`, source: "deny_rule" };
+      const hit = ruleMatch(rule, req, config.logger);
+      if (hit !== null) return { behavior: "deny", reason: `denied by rule "${rule}"${hit ? `: ${hit}` : ""}`, source: "deny_rule" };
     }
     // The safety envelope decides after the host/user denials (it can never widen them) and before
     // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
@@ -170,8 +175,9 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (tool !== req.toolName) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
-    const subs = splitShellCommands(String(req.input.command ?? ""));
-    return subs.length > 0 && subs.every((sub) => globMatch(pattern, sub));
+    // Every simple command it runs must match (one of its forms); one that cannot be decomposed is never auto-approved.
+    const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
+    return opaque === null && commands.length > 0 && commands.every((c) => c.forms.some((f) => globMatch(pattern, f)));
   }
   return globMatch(pattern, representativeArg(req));
 }
@@ -182,94 +188,37 @@ function toolMatches(tool: string, name: string): boolean {
   return tool.includes("*") ? globMatch(tool, name) : tool === name;
 }
 
-/** Deny matching is sub-command aware for Bash: a rule fires if ANY simple-command in a
- *  chain matches, so `Bash(rm*)` catches `git status && rm x`. (Allow stays whole-command,
- *  so a partial match can never auto-approve a compound command.) The tool part takes P7's characters and `*` (a
- *  publication's approvals are deny rules here): a rule that parsed before still means the same, and a deny or an
- *  approval can only ever name more tools, never fewer. */
-function denyMatches(rule: string, req: PermissionRequest): boolean {
+/**
+ * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
+ * null when it does not; `""` when it names the call outright (no argument pattern, or a tool other than Bash);
+ * for Bash, the simple command that matched, or `undecomposable: <form>` when the command could not be decomposed (it
+ * then fires every rule on Bash, whatever the pattern: fail closed). For Bash a rule fires if ANY simple command the
+ * shell would run matches (inside `sh -c '…'`, substitutions, groups, compound bodies, behind prefixes), so `Bash(rm*)`
+ * catches `git status && rm x`. The tool part takes P7's characters and `*`: a rule that parsed before still means the
+ * same, and a deny or an approval can only ever name more tools, never fewer. A command checked only as named (a
+ * script file run by a shell or by a relative path) is logged `bash.rule_opaque {command}` when `logger` is given.
+ */
+export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger): string | null {
   const m = rule.match(/^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/);
-  if (!m) return false;
-  if (!toolMatches(m[1]!, req.toolName)) return false;
+  if (!m) return null;
+  if (!toolMatches(m[1]!, req.toolName)) return null;
   const pattern = m[2];
-  if (pattern === undefined) return true;
-  if (req.toolName === "Bash") {
-    // Fail closed: a command the splitter cannot fully decompose into simple commands fires every deny rule and every
-    // approval on Bash, whatever its pattern; a governance control is never passed by an unparsed shape.
-    const { subs, opaque } = bashSubjects(String(req.input.command ?? ""));
-    return opaque || subs.some((sub) => globMatch(pattern, sub));
+  if (req.toolName !== "Bash") return pattern === undefined || globMatch(pattern, representativeArg(req)) ? "" : null;
+  const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
+  if (opaque !== null) return `undecomposable: ${opaque}`;
+  for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
+  if (pattern === undefined) return commands[0]?.forms[0] ?? "";
+  for (const c of commands) {
+    const hit = c.forms.find((f) => globMatch(pattern, f));
+    if (hit !== undefined) return hit;
   }
-  return globMatch(pattern, representativeArg(req));
+  return null;
 }
 
-/** Prefixes that run the command after them: stripped (with nothing but the command after them). */
-const RUNS_NEXT = new Set(["env", "command", "time", "nohup"]);
-/** A first word that runs something the matcher cannot see: a shell, `eval`, `xargs`, `exec`, a privilege wrapper. */
-const OPAQUE_HEAD = new Set(["xargs", "eval", "exec", "source", ".", "sudo", "doas", "su", "bash", "sh", "zsh", "dash", "ksh", "fish", "busybox"]);
-/** Shell syntax that wraps commands the splitter does not open (compound commands, groups, negation). */
-const KEYWORD = new Set(["if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "in", "!", "{", "}", "[[", "]]", "coproc"]);
-const basename = (w: string) => w.slice(w.lastIndexOf("/") + 1);
-
-/** One simple command as a rule sees it: whitespace collapsed, leading `VAR=…` and the `env`/`command`/`time`/`nohup`
- *  prefixes stripped, the command's path and a leading backslash reduced to its name; null when it is not a simple
- *  command the matcher understands (a group, a subshell, a compound, a shell or `eval` or `xargs` running more). */
-export function normaliseSimpleCommand(sub: string): string | null {
-  if (/^[({]/.test(sub)) return null;
-  const words = sub.split(/\s+/).filter(Boolean);
-  for (;;) {
-    const w = words[0];
-    if (w === undefined) return "";
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
-      words.shift();
-      continue;
-    }
-    if (RUNS_NEXT.has(basename(w))) {
-      if (words[1]?.startsWith("-")) return null;
-      words.shift();
-      continue;
-    }
-    break;
-  }
-  const head = basename(words[0]!.replace(/^\\+/, ""));
-  if (KEYWORD.has(head) || OPAQUE_HEAD.has(head)) return null;
-  return [head, ...words.slice(1)].join(" ");
-}
-
-/** A `$(` or a backtick inside double quotes: a command the splitter does not open. */
-function substitutionInQuotes(command: string): boolean {
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!;
-    if (c === "\\" && quote !== "'") {
-      i++;
-      continue;
-    }
-    if (quote === "'") {
-      if (c === "'") quote = null;
-      continue;
-    }
-    if (quote === '"') {
-      if (c === '"') quote = null;
-      else if (c === "`" || (c === "$" && command[i + 1] === "(")) return true;
-      continue;
-    }
-    if (c === '"' || c === "'") quote = c;
-  }
-  return false;
-}
-
-/** The simple commands a Bash command runs, normalised, and whether any part of it could not be decomposed. */
-export function bashSubjects(command: string): { subs: string[]; opaque: boolean } {
-  // Arithmetic expansion (`$((6 * 7))`) runs no command: a literal, so the splitter does not read it as a subshell.
-  command = command.replace(/\$\(\([^()]*\)\)/g, "0");
-  if (substitutionInQuotes(command)) return { subs: [], opaque: true };
-  const subs: string[] = [];
-  for (const raw of splitShellCommands(command)) {
-    const sub = normaliseSimpleCommand(raw);
-    if (sub === null) return { subs: [], opaque: true };
-    if (sub) subs.push(sub);
-  }
-  return { subs, opaque: false };
+/** The simple commands a Bash command runs, decomposed recursively (`sh -c '…'`, `$(…)`, backticks, groups,
+ *  compound bodies, prefixes), and whether any part could not be decomposed (see shell-decompose.ts). */
+export function bashSubjects(command: string): Decomposed {
+  return decomposeBash(command);
 }
 
 // `u`: the glob's 1-256 counts code points, as Python does (an astral character is one, not two UTF-16 units).

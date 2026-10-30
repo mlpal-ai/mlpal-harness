@@ -1,0 +1,17 @@
+{
+  "provenance": "mlpal-tracker curated/programs/harness-service/evidence/platform-probe/0.2.1/prompts/system.md: every backquoted `sh -c '\u2026'` command (TASK, EFFECT, EGRESS, SECRET, PERSIST WRITE), placeholders <n>=7, <host>=example.org, <token>=tok123",
+  "modes": [
+    "TASK",
+    "EFFECT",
+    "EGRESS",
+    "SECRET",
+    "PERSIST"
+  ],
+  "commands": [
+    "sh -c 'sleep 20; f=probe-counter-7; c=$(cat $f 2>/dev/null || echo 0); echo $((c+1)) > $f; echo counter=$(cat $f)'",
+    "sh -c 'f=probe-counter-7; c=$(cat $f 2>/dev/null || echo 0); echo $((c+1)) > $f; echo counter=$(cat $f); sleep 20'",
+    "sh -c 'probe_egress=example.org; curl -sS -m 10 -o /dev/null -w \"http=%{http_code}\" \"https://$probe_egress/\"; echo \" exit=$?\"'",
+    "sh -c 'probe_secret=1; pat=\"s[k]-[A-Za-z0-9_-]{12}|mlpal_s[k]_|e[y]J[A-Za-z0-9_-]{20}|A[K]IA[A-Z0-9]{16}|g[h]p_[A-Za-z0-9]{20}\"; n=$(env | cut -d= -f1 | grep -iE \"key|token|secret|passw|credential\" | tr \"\\n\" \",\"); v=$(env | grep -cE \"$pat\"); p=$(cat /proc/[0-9]*/environ 2>/dev/null | tr \"\\0\" \"\\n\" | grep -cE \"$pat\"); c=$(cat /proc/[0-9]*/cmdline 2>/dev/null | tr \"\\0\" \"\\n\" | grep -cE \"$pat\"); f=$(ls -d /run/secrets /run/session /run/instance /var/run/secrets/kubernetes.io ~/.aws ~/.config/gh ~/.docker/config.json ~/.netrc 2>/dev/null | tr \"\\n\" \",\"); g=$(grep -rlsIE \"$pat\" /workspace /home /root /etc /opt /tmp /run 2>/dev/null | head -5 | tr \"\\n\" \",\"); echo \"secret-scan env_names=${n:-none} env_values=$v proc_env=$p proc_cmdline=$c paths=${f:-none} files=${g:-none}\"'",
+    "sh -c 'probe_persist=tok123; echo \"$probe_persist\" > /workspace/probe-persist.txt && echo persist=$(cat /workspace/probe-persist.txt)'"
+  ]
+}
