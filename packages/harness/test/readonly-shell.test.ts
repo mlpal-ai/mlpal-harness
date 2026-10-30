@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createPolicy } from "../src/permission/engine";
 import { isReadOnlyShell } from "../src/permission/readonly-shell";
 
-const yes = ["pwd", "ls -la", "git status", "git log --oneline -5", "git diff HEAD~1 -- src", "ps aux | grep node", "readlink -f .", "cat package.json | head -20", "which bun && bun --version", "node --version", "find . -name '*.ts' | wc -l", "grep -rn TODO src", "rg --files", "sed -n '1,5p' README.md", "git branch -a", "git stash list", "git remote -v", "git config --get user.name", "env | sort", "env git status", "du -sh .; df -h", "git worktree list", "echo 'a > b'",
+const yes = ["pwd", "ls -la", "git status", "git log --oneline -5", "git diff HEAD~1 -- src", "ps aux | grep node", "readlink -f .", "cat package.json | head -20", "which bun && bun --version", "node --version", "find . -name '*.ts' | wc -l", "grep -rn TODO src", "rg --files", "sed -n '1,5p' README.md", "git branch -a", "git stash list", "git remote -v", "git config --get user.name", "env | sort", "env git status", "env", "command -v git", "command git status", "command -p ls", "du -sh .; df -h", "git worktree list", "echo 'a > b'",
   // Port and process inspection (B2 field report: `ss -ltnp` prompted; the image may only have netstat/lsof).
   "ss -ltnp", "netstat -an | grep 8010", "lsof -i :8010", "lsof -nP -iTCP -sTCP:LISTEN",
   // Redirects that never touch the workspace: /dev/null and fd duplication.
@@ -12,7 +12,9 @@ const no = ["rm -rf dist", "git status && rm x", "cat a > b", "ls | tee out.txt"
   "ss -K dst 1.2.3.4", "ss -ltnpK", "ss --kill", "ls > /dev/nul", "ls >/dev/null/x", "ls 2>/tmp/err", "ls >/dev/null; rm x", "cat </etc/passwd", "ls >&/tmp/x", "ls2>/dev/null", "echo hi > out 2>&1",
   // D-27 round 5: an environment change on the line, a git global option, an rc-reading shell or an undecomposable line
   // is not read-only, even before a read-only program (the decomposer's judgement, as for an allow rule).
-  "FOO=1 ls", "PATH=. git status", "PATH=/tmp/x; git status", "env -i git status", "git --no-pager log", "git --exec-path=/tmp/x status", "git --git-dir=/tmp/x status", "git --config-env=core.fsmonitor=EVIL status", "git -C /tmp/x status", "zsh -c 'ls'", "ls 'unbalanced"];
+  "FOO=1 ls", "PATH=. git status", "PATH=/tmp/x; git status", "env -i git status", "git --no-pager log", "git --exec-path=/tmp/x status", "git --git-dir=/tmp/x status", "git --config-env=core.fsmonitor=EVIL status", "git -C /tmp/x status", "zsh -c 'ls'", "ls 'unbalanced",
+  // `env` and `command` run their arguments as a command: that command must be read-only itself.
+  "env rm -rf dist", "env touch x", "command rm x", "command -p touch x", "env npm test"];
 
 describe("isReadOnlyShell", () => {
   test.each(yes)("read-only: %s", (c) => expect(isReadOnlyShell(c)).toBe(true));
@@ -27,6 +29,8 @@ describe("cruise mode", () => {
     expect((await cruise(req("ps aux | grep serve"))).behavior).toBe("allow");
     expect((await cruise(req("npm test"))).behavior).toBe("ask");
     expect((await cruise(req("git status && rm -rf build"))).behavior).toBe("ask");
+    expect((await cruise(req("env touch x"))).behavior).toBe("ask");
+    expect((await cruise(req("command rm x"))).behavior).toBe("ask");
     const manual = createPolicy({ mode: "manual" });
     expect((await manual(req("git status"))).behavior).toBe("ask");
     const recon = createPolicy({ mode: "recon" });

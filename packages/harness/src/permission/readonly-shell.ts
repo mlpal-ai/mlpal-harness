@@ -57,9 +57,19 @@ function tokens(cmd: string): string[] | null {
 function simpleIsReadOnly(cmd: string): boolean {
   const argv = tokens(cmd.trim());
   if (!argv || argv.length === 0) return false;
-  // A leading VAR=value never reaches here (isReadOnlyShell refuses an environment change first).
-  const [prog, ...args] = argv as [string, ...string[]];
+  return argvIsReadOnly(argv as [string, ...string[]]);
+}
+
+/** A leading VAR=value never reaches here (isReadOnlyShell refuses an environment change first). */
+function argvIsReadOnly([prog, ...args]: [string, ...string[]]): boolean {
   const base = prog.includes("/") ? prog.slice(prog.lastIndexOf("/") + 1) : prog;
+  // `env` and `command` run their arguments as a command, which must be read-only itself; alone they only print.
+  if (base === "env") return args.length === 0 || (!args[0]!.startsWith("-") && argvIsReadOnly(args as [string, ...string[]]));
+  if (base === "command") {
+    if (args[0] === "-v" || args[0] === "-V") return true;
+    const rest = args[0] === "-p" ? args.slice(1) : args;
+    return rest.length === 0 || (!rest[0]!.startsWith("-") && argvIsReadOnly(rest as [string, ...string[]]));
+  }
   if (base === "sudo" || base === "doas" || base === "su" || base === "xargs" || base === "eval" || base === "exec" || base === "source" || base === ".") return false;
   if (base === "git") {
     const sub = args.find((a) => !a.startsWith("-"));
