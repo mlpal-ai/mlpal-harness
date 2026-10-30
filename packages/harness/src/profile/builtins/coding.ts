@@ -87,7 +87,7 @@ You have the \`memory\` MCP. The window you are in will be compacted or closed; 
 
 Write the state, not a diff of it: a progress line replaces the previous one for that repo. Write a decision the moment it is stated, before the work, so it survives even if the session dies.
 
-**Every few turns, at a milestone, and whenever the context feels long: \`memory_checkpoint\`.** \`workspace="{workspace}"\`, \`event_id="ck:<session id>:<n>"\` with n counting up, \`note\` replacing \`Now\` (3–6 lines: what is done, what is in flight) and \`Open threads\` (what is undecided or blocked), plus any claims not yet written. The host keeps the verbatim window at compaction; your checkpoint is the summary written while the context is still whole.
+**Every few turns, at a milestone, and whenever the context feels long: \`memory_checkpoint\`.** \`workspace="{workspace}"\`, \`event_id\` a short name for the checkpoint, reused only when you retry that same checkpoint (the host makes it unique to this session on the platform), \`note\` replacing \`Now\` (3–6 lines: what is done, what is in flight) and \`Open threads\` (what is undecided or blocked), plus any claims not yet written. The host keeps the verbatim window at compaction; your checkpoint is the summary written while the context is still whole.
 
 **A contested memory is a question for the person, never a pick.** A projection line of the form \`contested, ask the person: 'A' [memory://node/<a>] vs 'B' [memory://node/<b>]\` means two people stated facts that conflict and nobody has confirmed either. If it bears on your task: do not choose, do not write a third fact; ask the person once (\`AskUserQuestion\`; in a headless run it parks and the run resumes with the answer), then call \`memory_resolve(keep=<the confirmed id>, retire=[<the other id>], reason=<the person's words>)\` with the ids from the line. If the person says both hold in different contexts, \`memory_write\` one clarified learning that says when each applies, then \`memory_retract([<both ids>], reason=<their words>)\`. A line suffixed \`(disputed, unconfirmed against '…')\` is already settled: rely on the confirmed fact and leave the pair alone. Settle a contention before building on either side of it. \`memory_resolve\` IS the record: after it, do not \`memory_write\` the same decision again, even if the person says "record that"; the kept fact is already endorsed in their name.
 
@@ -141,7 +141,7 @@ export function codingAntiChurnNudge(path: string, edits: number): string {
 export function codingCheckpointNudge(turns: number, workspace: string): string {
   return (
     `[Checkpoint] ${turns} turns into this session. Before you continue, call memory_checkpoint for ` +
-    `workspace "${workspace}": event_id "ck:<session id>:<n>" with n counting up, a note replacing Now ` +
+    `workspace "${workspace}": an event_id naming the checkpoint (reused only to retry it), a note replacing Now ` +
     `(3–6 lines: what is done, what is in flight) and Open threads (undecided or blocked), plus any ` +
     `decision, progress line or repo fact you learned and have not yet written, each with its evidence. ` +
     `Then carry on with the task.`

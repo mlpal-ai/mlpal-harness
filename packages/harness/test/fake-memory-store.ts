@@ -236,7 +236,9 @@ export function startFakeMemoryStore(): FakeMemoryStore {
     if (b.note && Object.keys(b.note).length > 0) return refuse(422, "note_not_staged", "a run's checkpoint stages claims and the window; note sections are not staged in this cut");
     if (promoteAnswers.has(`${claims.store}\0${claims.runId}`)) return refuse(409, "sealed", `run ${claims.runId} has already promoted or proposed; a new run is a new staging area`);
     const items = (b.claims ?? []).map((c) => ({ kind: String(c.kind), topic: String(c.topic), key: String(c.key), value: String(c.value), expected_version: c.expected_version }));
-    const done = checkpoints.get(`${claims.runId}\0${b.event_id}`);
+    // memory-graph dedups each claim as the episode `<event_id>:claim:<i>`, a global key (8a4f44b api/v1/checkpoint.py):
+    // the same event_id from any run or session is a duplicate.
+    const done = checkpoints.get(b.event_id);
     if (done) return Response.json(checkpointAnswer(b.event_id, 0, done.accepted, done.window));
     const st = storeOf(claims.store);
     for (const c of items) {
@@ -261,7 +263,7 @@ export function startFakeMemoryStore(): FakeMemoryStore {
       });
     });
     const window = b.window !== undefined && b.window !== null;
-    checkpoints.set(`${claims.runId}\0${b.event_id}`, { accepted: items.length, window });
+    checkpoints.set(b.event_id, { accepted: items.length, window });
     return Response.json(checkpointAnswer(b.event_id, items.length, 0, window));
   }
 

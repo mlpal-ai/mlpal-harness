@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### The builtin `coding` prompt no longer asks for a checkpoint id the model cannot know (W3 window defect D-31)
+
+- It told the model `event_id="ck:<session id>:<n>"`; a model has no session id, so it wrote the literal
+  `ck:session:1`, which the memory store (it dedups event ids globally) dropped as a duplicate for every session after
+  the first. The prompt now asks for a short name for the checkpoint, reused only to retry it; the engine scopes it.
+- The fake memory store dedups a checkpoint on its `event_id` alone, as memory-graph does (its episode key
+  `<event_id>:claim:<i>` is global), not per run.
+
 ### Approval entries and deny rules: the tool part is a glob over P7 1.7's grammar (2026-10-29)
 
 - A deny rule's tool part (and so a publication's `approvals_required` entry, which the engine matches as one) takes
