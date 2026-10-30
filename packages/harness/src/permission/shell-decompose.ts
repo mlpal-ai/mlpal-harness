@@ -25,6 +25,9 @@ export interface DecomposedCommand {
   forms: string[];
   /** Checked as named; what it runs (a script file's contents) is not inspected. */
   bestEffort?: boolean;
+  /** It runs with arguments the matcher cannot see (`xargs <cmd>`): a deny or approval still checks the command, but
+   *  an allow rule never auto-approves it (its arguments could be anything). */
+  argsUnknown?: boolean;
 }
 
 export interface Decomposed {
@@ -72,6 +75,8 @@ const PREFIXES: Record<string, PrefixSpec> = {
     attached: /^-[nILPsdEa].+$/,
   },
 };
+const SHELL_LONG_FLAGS = new Set(["--norc", "--noprofile", "--login", "--posix", "--noediting", "--restricted", "--verbose", "--debugger"]);
+const SHELL_LONG_WITH_VALUE = new Set(["--rcfile", "--init-file"]);
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env", "--list-cmds"]);
 
 interface Word {
@@ -81,6 +86,8 @@ interface Word {
   expanded: boolean;
   /** Entirely literal: its text is exactly what runs. */
   literal: boolean;
+  /** An unquoted glob or brace character (`*?[{}`): as a command name, bash would expand it. */
+  glob?: boolean;
 }
 
 class Opaque extends Error {
@@ -108,7 +115,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
   let word: Word | null = null;
   let skipNext = false;
   let heredoc = false;
-  const pendingHeredocs: Array<{ delimiter: string; strip: boolean }> = [];
+  const pendingHeredocs: Array<{ delimiter: string; strip: boolean; quoted: boolean }> = [];
   /** Open `case` statements: reading an arm's pattern, or its commands. */
   const cases: Array<"pattern" | "body"> = [];
   const endWord = () => {
@@ -174,8 +181,9 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
     if (c === "\n") {
       endCommand();
       for (const h of pendingHeredocs.splice(0)) {
-        // the body: data, up to the delimiter's line
+        // the body, up to the delimiter's line: data, but an unquoted delimiter's body is expanded (its substitutions run)
         let found = false;
+        const body: string[] = [];
         while (i < command.length) {
           const eol = command.indexOf("\n", i + 1);
           const line = command.slice(i + 1, eol < 0 ? command.length : eol);
@@ -184,9 +192,11 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
             found = true;
             break;
           }
+          body.push(line);
           if (eol < 0) break;
         }
         if (!found) throw new Opaque("an unterminated here-doc");
+        if (!h.quoted) substitutions(body.join("\n"), inner, close, false);
       }
       continue;
     }
@@ -230,7 +240,8 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
         while (command[j] === " " || command[j] === "\t") j++;
         const m = /^(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(command.slice(j));
         if (!m) throw new Opaque("a here-doc with no delimiter");
-        pendingHeredocs.push({ delimiter: m[1] ?? m[2] ?? m[3]!, strip });
+        // a quoted delimiter (`'EOF'`, `"EOF"`, `\EOF`) keeps the body as data; an unquoted one expands it
+        pendingHeredocs.push({ delimiter: m[1] ?? m[2] ?? m[3]!, strip, quoted: m[1] !== undefined || m[2] !== undefined || m[0].startsWith("\\") });
         heredoc = true;
         i = j + m[0].length - 1;
         continue;
@@ -288,7 +299,9 @@ function decompose(command: string, depth: number, out: DecomposedCommand[]): vo
       i = expansion(command, i, cur(), inner, close);
       continue;
     }
-    cur().text += c;
+    const w = cur();
+    w.text += c;
+    if ("*?[{}".includes(c)) w.glob = true;
   }
   endCommand();
   if (pendingHeredocs.length) throw new Opaque("an unterminated here-doc");
@@ -308,8 +321,17 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
     return end;
   }
   const next = s[i + 1];
+  if (next === "'" || next === '"') {
+    // ANSI-C (`$'…'`) or locale (`$"…"`) quoting: what it yields is not what is written
+    w.text += "$";
+    w.expanded = true;
+    w.literal = false;
+    return i;
+  }
   if (next === "(" && s[i + 2] === "(") {
-    const end = close(i + 1); // arithmetic: no command runs (kept as written, so a refusal shows what was asked)
+    // arithmetic: no command runs itself, but substitutions inside it do (kept as written, so a refusal shows it)
+    const end = close(i + 1);
+    substitutions(s.slice(i + 3, end - 1), inner, close, true);
     w.text += s.slice(i, end + 1);
     w.expanded = true;
     w.literal = false;
@@ -324,8 +346,10 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
     return end;
   }
   if (next === "{") {
-    const end = s.indexOf("}", i + 2);
+    // a parameter expansion: its operators (`${x:-…}`, `${x/…/…}`) may hold substitutions, which run
+    const end = matchBrace(s, i + 1);
     if (end < 0) throw new Opaque("an unterminated ${…}");
+    substitutions(s.slice(i + 2, end), inner, close, true);
     w.text += s.slice(i, end + 1);
     w.expanded = true;
     w.literal = false;
@@ -340,6 +364,78 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
   w.expanded = true;
   w.literal = false;
   return i + m[0].length - 1;
+}
+
+/** Every command substitution in `text` (`$(…)`, backticks, and those inside `${…}` and `$((…))`), decomposed. With
+ *  `quotes`, single-quoted spans are data (a word); without (a here-doc body), quotes are literal characters. */
+function substitutions(text: string, inner: (cmd: string) => void, close: (open: number) => number, quotes: boolean): void {
+  const local = (open: number) => {
+    const end = matchParen(text, open);
+    if (end < 0) throw new Opaque("unbalanced parentheses");
+    return end;
+  };
+  void close;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (quotes && c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) throw new Opaque("unbalanced quotes");
+      i = end;
+      continue;
+    }
+    if (c === "`") {
+      const end = text.indexOf("`", i + 1);
+      if (end < 0) throw new Opaque("unbalanced backticks");
+      inner(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    if (c !== "$") continue;
+    if (text[i + 1] === "(" && text[i + 2] === "(") {
+      const end = local(i + 1);
+      substitutions(text.slice(i + 3, end - 1), inner, close, quotes);
+      i = end;
+    } else if (text[i + 1] === "(") {
+      const end = local(i + 1);
+      inner(text.slice(i + 2, end));
+      i = end;
+    } else if (text[i + 1] === "{") {
+      const end = matchBrace(text, i + 1);
+      if (end < 0) throw new Opaque("an unterminated ${…}");
+      substitutions(text.slice(i + 2, end), inner, close, quotes);
+      i = end;
+    }
+  }
+}
+
+/** The `}` closing the `{` at `open`, past nested braces, substitutions and quotes. */
+function matchBrace(s: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < s.length; i++) {
+    const c = s[i]!;
+    if (quote) {
+      if (c === "\\" && quote === '"') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "$" && s[i + 1] === "(") {
+      const end = matchParen(s, i + 1);
+      if (end < 0) return -1;
+      i = end;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
 }
 
 function matchParen(s: string, open: number): number {
@@ -421,12 +517,18 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], heredoc:
   }
   const head = words[0]!;
   if (!head.literal || head.expanded) throw new Opaque(clip(`${text(words)} (an expansion as the command name)`));
+  if (head.glob && head.text !== "[" && head.text !== "[[") throw new Opaque(clip(`${text(words)} (a glob or brace expansion as the command name)`));
   const name = basename(head.text);
   if (OPAQUE_HEAD.has(name)) throw new Opaque(clip(text(words)));
+  // `trap '<command>' SIG` runs a string later, as eval would; `trap - SIG`, `trap '' SIG`, `trap -l|-p` run nothing
+  if (name === "trap" && words[1] && !["-", "", "-l", "-p", "--"].includes(words[1].text)) throw new Opaque(clip(`${text(words)} (trap runs a command string)`));
   if (name === "xargs") {
     // its command runs with arguments the matcher cannot know: the command itself is checked
     const rest = afterPrefix("xargs", PREFIXES.xargs!, words.slice(1));
+    const from = out.length;
     if (rest && rest.length) simple(rest, depth, out, false);
+    else out.push({ forms: ["echo"], argsUnknown: true }); // xargs's default command
+    for (const c of out.slice(from)) c.argsUnknown = true;
     return;
   }
   if (SHELLS.has(name)) {
@@ -453,22 +555,42 @@ function withoutGitGlobalOptions(args: string[]): string[] {
  *  non-literal script, stdin) is opaque. */
 function shell(name: string, words: Word[], depth: number, out: DecomposedCommand[]): void {
   const args = words.slice(1);
+  let command = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a.literal && /^[-+][A-Za-z]+$/.test(a.text)) {
-      if (a.text.endsWith("c")) {
-        const script = args[i + 1];
-        if (!script || !script.literal) throw new Opaque(clip(`${text(words)} (a shell with a non-literal script)`));
-        decompose(script.text, depth + 1, out);
-        return;
+    const t = a.text;
+    if (a.literal && t === "--") {
+      // the end of the options: the script (with -c) or the script file follows
+      const rest = args.slice(i + 1);
+      if (command) return script(rest[0], words, depth, out);
+      if (!rest.length) break;
+      out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
+      return;
+    }
+    if (a.literal && t.startsWith("--")) {
+      if (SHELL_LONG_FLAGS.has(t)) continue;
+      if (SHELL_LONG_WITH_VALUE.has(t)) {
+        i++;
+        continue;
       }
-      if (a.text.endsWith("o")) i++;
+      throw new Opaque(clip(`${text(words)} (a shell option the matcher does not know)`));
+    }
+    if (a.literal && /^[-+][A-Za-z]+$/.test(t)) {
+      if (t.includes("s")) break; // read the script from stdin
+      if (t.includes("c")) command = true;
+      if (/[oO]$/.test(t)) i++; // `-o pipefail`, `-O extglob`: the option's argument
       continue;
     }
-    if (a.text === "-s" || a.text === "-") break;
+    if (command) return script(a, words, depth, out);
     // a script file: checked as named, its contents not inspected
     out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
     return;
   }
   throw new Opaque(clip(`${text(words)} (a shell reading its script from stdin)`));
+}
+
+/** `-c`'s script: decomposed when it is literal, opaque otherwise. */
+function script(w: Word | undefined, words: Word[], depth: number, out: DecomposedCommand[]): void {
+  if (!w || !w.literal) throw new Opaque(clip(`${text(words)} (a shell with a non-literal script)`));
+  decompose(w.text, depth + 1, out);
 }

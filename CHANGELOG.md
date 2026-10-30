@@ -19,6 +19,15 @@
   allow rules are unchanged (no auto-approval widens).
 - `parseApprovalEntry(entry)`: P7 1.7's grammar, strictly (hop-service's `_approval`), or null; its glob length
   counts code points (`u`), as Python does.
+- **D-27 round 2: the allow side is never wider than 22701ca.** Command substitutions are decomposed wherever bash runs
+  them: inside `${…}` parameter operators, inside `$((…))`, and in an unquoted here-doc's body (a quoted `<<'EOF'` body
+  stays data). Undecomposable (fail closed, never auto-approved): `$'…'`/`$"…"` and an unquoted glob or brace character
+  in a command name (`[`/`[[` excepted), `trap` with a command string. `bash/sh [--norc|--noprofile|-e|-o opt|…] -c
+  [--] '<literal>'` is decomposed (an unknown long option is opaque). An `xargs` command still fires a deny or approval
+  but an allow rule never auto-approves it (its arguments are unseen). A permanent differential
+  (`test/bash-decompose-r2.test.ts`) runs 85 commands under 4 allow rule sets against 22701ca's matcher
+  (`test/fixtures/oracle-22701ca/engine.ts`) and fails on anything newly auto-approved outside a reviewed list of
+  decomposition narrowings.
 - **Bash rules see what the shell runs, failing closed only on what cannot be decomposed (W3 window defect D-27).**
   `decomposeBash` (permission/shell-decompose.ts) decomposes recursively, depth ≤ 3: `sh|bash -c '<literal>'` (option
   bundles ending in `c`), `$(…)`, backticks, `<(…)`, subshells, groups, `if`/`for`/`while`/`until`/`case` bodies; it
