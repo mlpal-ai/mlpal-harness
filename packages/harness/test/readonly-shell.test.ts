@@ -41,3 +41,65 @@ describe("cruise mode", () => {
     expect((await cruise(req("ls && rm -rf /"))).behavior).toBe("deny");
   });
 });
+
+/**
+ * D-27 round 5, the read-only list swept (controller ruling): an entry that runs, writes or deletes something named in
+ * its arguments is read-only only when that part is absent (or, for a wrapper, the command it runs is read-only).
+ * Per family: what must ask, the plain form that stays read-only, and (`offList`) forms that asked before and still
+ * ask because the program is not on the list (the sweep adds no entries).
+ */
+const SWEEP: Record<string, { ask: string[]; readOnly: string[]; offList?: string[] }> = {
+  wrappers: {
+    ask: ["env rm x", "command rm x", "command -p touch x", "arch -x86_64 rm x", "arch -arch arm64 sh", "arch -e PATH=. ls", "nice rm x", "nohup rm x", "timeout 5 rm x", "time rm x", "stdbuf -oL rm x", "xargs rm", "exec rm x", "eval ls", "sudo ls", "doas ls"],
+    readOnly: ["env git status", "env", "command -v git", "command git status", "arch"],
+    offList: ["nice -n 5 git status", "timeout 5 git status", "xargs -0 cat", "builtin echo x"],
+  },
+  find: {
+    ask: ["find . -exec rm {} ;", "find . -execdir rm {} +", "find . -ok rm {} ;", "find . -okdir rm {} ;", "find . -delete", "find . -fprint out", "find . -fprint0 out", "find . -fprintf out %p", "find . -fls out"],
+    readOnly: ["find . -name '*.ts'", "find . -type f -newer x", "find src -maxdepth 2 -print0"],
+  },
+  "sort, tee and the other entries that write a named file": {
+    ask: ["sort -o out f", "sort -ro out f", "sort -oout f", "sort --output=out f", "sort --output out f", "sort --out=x f", "sort --compress-program=sh f", "sort --co=sh f", "tee out", "tee -a out", "tee", "uniq f out", "uniq -c f out", "xxd f out", "xxd -r f out", "file -C -m magic"],
+    readOnly: ["sort f", "sort -rn f", "sort -u -k2 f", "sort -t , -k2 f", "uniq f", "uniq -c f", "uniq -f 1 f", "xxd f", "xxd -l 16 f", "file f"],
+  },
+  "pagers and man": {
+    ask: ["less -o log f", "less -Olog f", "less --log-file=x f", "less '+!rm x' f", "less +F f", "less -R f", "more +/x f", "more -d f"],
+    readOnly: ["less f", "more f", "less a b"],
+    offList: ["man git"],
+  },
+  awk: {
+    ask: ["awk 'BEGIN{system(\"rm x\")}'", "awk 'BEGIN{print 1 > \"x\"}'", "awk 'BEGIN{print 1 >> \"x\"}'", "awk 'BEGIN{print 1 | \"sh\"}'", "awk 'BEGIN{while (getline l < \"f\") n++}'", "awk -f prog.awk f", "awk --file=prog.awk f", "gawk -l ext 'NR==1' f", "gawk -i inc 'NR==1' f", "gawk -E prog.awk f", "gawk '@load \"x\"' f", "awk -v x=1 'NR==1' f", "awk 'NR>1' f", "awk 'NR==1||NR==2' f", "awk 'BEGIN { print 1 > \"x\" }'", "awk 'NR==1 { print | \"sh\" }' f"],
+    readOnly: ["awk 'NR==1' f", "awk 'NR==1 { print }' f", "awk -F, 'NR==1' f", "awk -F : 'NR<3' f", "gawk 'NR==1' f", "awk -vn=1 'NR==n' f"],
+    offList: ["awk '{print $1}' f"],
+  },
+  sed: {
+    ask: ["sed -n '1e rm x' f", "sed 'e rm x' f", "sed 's/a/b/e' f", "sed 's/a/b/w out' f", "sed -n '1w out' f", "sed -n '1W out' f", "sed -n '/x/w out' f", "sed 'bs/x/;e rm x;/' f", "sed -f s.sed f", "sed --file=s.sed f", "sed -i 's/a/b/' f", "sed -ni p f", "sed -i.bak p f", "sed -Ei p f", "sed -I p f", "sed --in-place p f", "sed --in=p f", "sed '1i hello' f", "sed '/x/r f' f", "sed ':a;N;ba' f", "sed -e p -e 'w out' f",
+      // the splitter drops quotes, so a quoted script with a space reaches the check as several words
+      "sed 'p; w out' f", "sed -n '1 e rm x' f", "sed 's/a b/c/' f"],
+    readOnly: ["sed -n 1p f", "sed -n '1,5p' f", "sed 's/a/b/' f", "sed 's/a/b/g' f", "sed -E 's/a+/b/2' f", "sed -n '/x/,/y/p' f", "sed -e p -e 's/x/y/g' f", "sed '1d' f", "sed -n -e '2{p;q}' f", "sed 's#a#b#gI' f", "sed --expression=p f"],
+  },
+  "git output and external diff": {
+    ask: ["git diff --ext-diff", "git diff --textconv", "git diff --output=x", "git log --output=x", "git log -p --ext-diff", "git show --textconv", "git show --ext-diff HEAD", "git diff-tree --ext-diff HEAD", "git grep -O x", "git grep -Ocat x", "git grep --open-files-in-pager x", "git cat-file --filters HEAD:f", "git cat-file --textconv HEAD:f", "git symbolic-ref HEAD refs/heads/x", "git symbolic-ref -d HEAD", "git symbolic-ref --delete HEAD", "git reflog expire --expire=now --all", "git reflog delete HEAD@{1}", "git branch --edit-description", "git branch --unset-upstream"],
+    readOnly: ["git diff HEAD~1", "git log --oneline", "git diff --no-ext-diff", "git log --no-textconv -p", "git show HEAD", "git symbolic-ref HEAD", "git symbolic-ref --short HEAD", "git reflog", "git reflog show", "git grep -n x", "git cat-file -p HEAD", "git branch -a"],
+  },
+  "version and help that run a file, a target or a script": {
+    ask: ["python3 help", "python version", "node version", "node help", "ruby help", "php help", "java help", "make help", "make version", "cmake help", "bun version", "bun help", "yarn version", "deno version", "gcc help", "tsc help", "rustc help", "pnpm version"],
+    readOnly: ["python3 --version", "node -v", "make --version", "bun --version", "npm version", "npm help", "go version", "go help", "docker version", "gh help", "cargo help", "kubectl version", "terraform version", "aws help", "pip help", "gcloud version", "az version"],
+  },
+  "search tools that run a command": {
+    ask: ["rg --pre sh x", "rg --pre=sh x", "rg --hostname-bin=sh x", "rg --hostname-bin sh x", "ag --pager sh x", "ag --pager=sh x"],
+    readOnly: ["rg x", "rg -n x src", "rg --pre-glob '*.gz' x", "ag x"],
+  },
+};
+
+describe("D-27 round 5: the read-only list swept", () => {
+  for (const [family, { ask, readOnly, offList = [] }] of Object.entries(SWEEP)) {
+    test(family, () => {
+      const got = (cs: string[]) => Object.fromEntries(cs.map((c) => [c, isReadOnlyShell(c)]));
+      const want = (cs: string[], v: boolean) => Object.fromEntries(cs.map((c) => [c, v]));
+      expect(got(ask)).toEqual(want(ask, false));
+      expect(got(readOnly)).toEqual(want(readOnly, true));
+      expect(got(offList)).toEqual(want(offList, false));
+    });
+  }
+});
