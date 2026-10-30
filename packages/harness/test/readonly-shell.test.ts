@@ -114,6 +114,11 @@ const ROUND6: Record<string, { ask: string[]; readOnly: string[] }> = {
     ask: ["find . {-delete,}", "sort {-o,/tmp/x} f", "git log {--output=/tmp/x,}", "rg {--pre=sh,x} .", "less {+!id,f}", "ls {a..c}", "cat {a,b}", "cat x{'a',b}", "find . -de\\lete", "find . -name x\\*", "echo a\\ b", "grep -r 'x' \\-n ."],
     readOnly: ["echo '{a,b}'", "echo \"{a,b}\"", "git log HEAD@{1}", "git stash show -p stash@{0}", "ls a,b", "awk 'NR==1 { print }' f", "sed -n -e '2{p;q}' f"],
   },
+  // a backslash inside single quotes is literal: the program receives it as written; elsewhere bash consumes it
+  "a backslash is refused outside single quotes only": {
+    ask: ["find . -de\\lete", "find . \"-de\\lete\"", "grep \"a\\.b\" f", "echo \\'x' f", "find . -de\"'\"\\l\"'\"ete", "grep 'a' -de\\lete"],
+    readOnly: ["grep 'a\\.b' f", "rg '\\bfoo\\b' src", "sed 's/\\./x/' f", "grep 'a\\' f"],
+  },
   "git stash list|show take the read subcommands' flag checks": {
     ask: ["git stash show --output=/tmp/x", "git stash show --ext-diff", "git stash show -p --textconv", "git stash list --output=x", "git stash list -p --ext-diff", "git stash show --textconv stash@{0}"],
     readOnly: ["git stash list", "git stash show", "git stash show -p", "git stash list --oneline", "git stash show --stat stash@{0}"],

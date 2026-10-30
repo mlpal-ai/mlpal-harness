@@ -33,6 +33,18 @@ const GIT_WRITES_OR_RUNS = /^--(output|ext-diff|textconv|filters|open-files-in-p
 /** An unquoted brace expansion (`{a,b}`, `{a..c}`): it rewrites the arguments after this check has read them. */
 const BRACE_EXPANSION = /\{[^{}]*(?:,|\.\.)[^{}]*\}/;
 
+/** Whether `cmd` holds a backslash bash would consume: unquoted or inside double quotes. Inside single quotes it is
+ *  literal, and the program receives it as written (`grep 'a\.b' f`). */
+function consumedBackslash(cmd: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (const c of cmd) {
+    if (c === "\\" && quote !== "'") return true;
+    if (quote === null && (c === "'" || c === '"')) quote = c;
+    else if (c === quote) quote = null;
+  }
+  return false;
+}
+
 /** Redirections that cannot write into the workspace: output to /dev/null (`>`, `>>`, `2>`, `&>`) and
  *  fd duplication (`2>&1`, `1>&2`). A leading fd digit counts only as its own word, as in the shell. */
 const HARMLESS_REDIRECT = /(?:(?<=^|\s)\d)?(?:>>?|&>>?)\s*\/dev\/null(?=\s|$|[;|&])|(?:(?<=^|\s)\d)?>&\d(?=\s|$|[;|&])/g;
@@ -218,8 +230,8 @@ function sedScriptIsReadOnly(script: string): boolean {
 
 /** True when every simple command of `command` is read-only: pipes and `&&`/`||`/`;` between
  *  read-only commands are fine; a redirection to anything but /dev/null or an fd, a substitution, a background `&`, an
- *  unquoted brace expansion, a backslash, or any program outside the known set makes the whole command "not read-only",
- *  and so does a line `refusesAutoApproval`. */
+ *  unquoted brace expansion, a backslash outside single quotes, or any program outside the known set makes the whole
+ *  command "not read-only", and so does a line `refusesAutoApproval`. */
 export function isReadOnlyShell(command: string): boolean {
   const trimmed = stripHarmlessRedirects(command.trim()).trim();
   if (!trimmed) return false;
@@ -229,8 +241,8 @@ export function isReadOnlyShell(command: string): boolean {
   const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "");
   if (/[<>]|`|\$\(/.test(unquoted)) return false;
   // A brace expansion or a backslash changes an argument after the checks below read it (`find . {-delete,}` and
-  // `find . -de\lete` both run `find . -delete`); a backslash anywhere, quoted or not, is refused (D-27 round 6).
-  if (trimmed.includes("\\") || BRACE_EXPANSION.test(unquoted)) return false;
+  // `find . -de\lete` both run `find . -delete`); only one inside single quotes reaches the program as written.
+  if (consumedBackslash(trimmed) || BRACE_EXPANSION.test(unquoted)) return false;
   if (/&/.test(unquoted.replace(/&&/g, ""))) return false;
   const parts = splitShellCommands(trimmed);
   if (parts.length === 0) return false;
