@@ -3,7 +3,7 @@ import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
-import { type Decomposed, decomposeBash } from "./shell-decompose";
+import { type Decomposed, decomposeBash, envChangedOrUndecomposable } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 
@@ -175,9 +175,11 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (tool !== req.toolName) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
-    // Every simple command it runs must match (one of its forms); one that cannot be decomposed is never auto-approved.
-    const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
-    return opaque === null && commands.length > 0 && commands.every((c) => !c.argsUnknown && !c.envInjected && c.forms.some((f) => globMatch(pattern, f)));
+    // Every simple command it runs must match (one of its forms); a line that cannot be decomposed or changes the
+    // environment is never auto-approved.
+    const subjects = bashSubjects(String(req.input.command ?? ""));
+    if (envChangedOrUndecomposable(subjects)) return false;
+    return subjects.commands.length > 0 && subjects.commands.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
   }
   return globMatch(pattern, representativeArg(req));
 }

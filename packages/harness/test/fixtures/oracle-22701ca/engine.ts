@@ -1,9 +1,10 @@
 // Test-only oracle (W3 D-27 round 2): mlpal-harness @ 22701ca, packages/harness/src/permission/engine.ts, verbatim but for
-// its relative imports, which point at src/ (readonly-shell, containment, safety, safety-envelope are unchanged since
-// 22701ca: `git diff --stat 22701ca -- packages/harness/src/permission/` touches only engine.ts and adds
-// shell-decompose.ts). The differential asserts the live matcher never auto-approves what this one asked about.
+// its relative imports, which point at src/ (containment, safety, safety-envelope are unchanged since 22701ca:
+// `git diff --stat 22701ca -- packages/harness/src/permission/` touches only engine.ts and readonly-shell.ts and adds
+// shell-decompose.ts), and readonly-shell, which is 22701ca's frozen beside it (round 5). The differential asserts the
+// live matcher never auto-approves what this one asked about.
 import type { Author } from "@mlpal/harness-protocol";
-import { isReadOnlyShell } from "../../../src/permission/readonly-shell";
+import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "../../../src/permission/containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets, splitShellCommands } from "../../../src/permission/safety";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.

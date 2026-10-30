@@ -1,9 +1,12 @@
 import { splitShellCommands } from "./safety";
+import { decomposeBash, envChangedOrUndecomposable } from "./shell-decompose";
 
 /**
  * Deterministic read-only classification of a shell command, for cruise mode: a command whose
  * every simple command is a known read-only program, with no redirection (other than to /dev/null
  * or another fd), substitution or escalation, runs without a prompt. Anything unrecognised is NOT read-only; the mode then asks.
+ * A line the decomposer refuses to auto-approve (an environment change anywhere on it, a git global option, an rc-reading
+ * shell, an undecomposable form: shell-decompose.ts) is not read-only either, whatever program it runs (D-27 round 5).
  * The deny-list safety guard runs before any mode decision and is untouched by this.
  */
 
@@ -54,12 +57,8 @@ function tokens(cmd: string): string[] | null {
 function simpleIsReadOnly(cmd: string): boolean {
   const argv = tokens(cmd.trim());
   if (!argv || argv.length === 0) return false;
-  // Leading VAR=value assignments are fine; a bare assignment is not a read.
-  let i = 0;
-  while (i < argv.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]!)) i++;
-  const prog = argv[i];
-  if (!prog) return false;
-  const args = argv.slice(i + 1);
+  // A leading VAR=value never reaches here (isReadOnlyShell refuses an environment change first).
+  const [prog, ...args] = argv as [string, ...string[]];
   const base = prog.includes("/") ? prog.slice(prog.lastIndexOf("/") + 1) : prog;
   if (base === "sudo" || base === "doas" || base === "su" || base === "xargs" || base === "eval" || base === "exec" || base === "source" || base === ".") return false;
   if (base === "git") {
@@ -89,10 +88,11 @@ function simpleIsReadOnly(cmd: string): boolean {
 
 /** True when every simple command of `command` is read-only: pipes and `&&`/`||`/`;` between
  *  read-only commands are fine; a redirection to anything but /dev/null or an fd, a substitution, a background `&`, or any program
- *  outside the known set makes the whole command "not read-only". */
+ *  outside the known set makes the whole command "not read-only", and so does a line `envChangedOrUndecomposable`. */
 export function isReadOnlyShell(command: string): boolean {
   const trimmed = stripHarmlessRedirects(command.trim()).trim();
   if (!trimmed) return false;
+  if (envChangedOrUndecomposable(decomposeBash(command))) return false;
   // Remaining redirections and `tee` write; command substitution runs arbitrary code; a trailing
   // `&` is a background job we do not reason about. Check outside quotes.
   const unquoted = trimmed.replace(/'[^']*'|"[^"]*"/g, "");

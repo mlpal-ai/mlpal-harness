@@ -9,6 +9,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createPolicy } from "../src/permission/engine";
+import { isReadOnlyShell } from "../src/permission/readonly-shell";
+import { decomposeBash, envChangedOrUndecomposable } from "../src/permission/shell-decompose";
 import { createPolicy as oracle } from "./fixtures/oracle-22701ca/engine";
 
 const allowedBy = (policy: typeof createPolicy, allow: string[]) => async (command: string) =>
@@ -257,5 +259,52 @@ describe("the differential against 22701ca (permanent)", () => {
       for (const command of MUST_ASK) if (await now(command)) approved.push({ allow, command });
     }
     expect(approved).toEqual([]);
+  });
+});
+
+/** Round 5 (controller ruling): cruise's read-only check takes the decomposer's judgement. Any command on a line that
+ *  changes the environment, a git with a stripped global option, an rc-reading shell, or an undecomposable line is not
+ *  read-only: cruise asks. These ran with no prompt before. */
+const CRUISE_HOLES = ["git --exec-path=/tmp/x status", "git --git-dir=/tmp/x status", "git --config-env=core.fsmonitor=EVIL status", "git --no-pager log", "PATH=. git status"];
+const INJECTED_ENV = ["LD_PRELOAD=x git status", "GIT_SSH_COMMAND=x git fetch", "env -i git status", "env FOO=1 git status", "FOO=1 git status", "BASH_ENV=x bash -c 'git status'", "env -u HOME git status"];
+const CRUISE_STILL_READ_ONLY = ["git status", "git log --oneline", "git diff HEAD~1", "ls", "cat f", "grep -r x .", "env git status"];
+
+describe("round 5: cruise never auto-approves an environment change, a git global option or an rc-reading shell", () => {
+  const cruiseAllows = async (command: string) =>
+    (await createPolicy({ mode: "cruise" })({ toolName: "Bash", input: { command }, readOnly: false, isEdit: false } as never)).behavior === "allow";
+  for (const command of CRUISE_HOLES) test(`asks for ${JSON.stringify(command)} with no rules`, async () => expect(await cruiseAllows(command)).toBe(false));
+  test("the round-3/4 corpus: no env-changing line, git global option or rc-reading shell is read-only", async () => {
+    const readOnly: string[] = [];
+    for (const command of [...ENV_CHANGING, ...INJECTED_ENV, ...GIT_GLOBAL.map((g) => g.command), ...RC_READING_SHELLS]) {
+      if (isReadOnlyShell(command) || (await cruiseAllows(command))) readOnly.push(command);
+    }
+    expect(readOnly).toEqual([]);
+  });
+  test("plain read-only commands stay auto-approved", async () => {
+    for (const command of CRUISE_STILL_READ_ONLY) expect({ command, allowed: await cruiseAllows(command) }).toEqual({ command, allowed: true });
+  });
+});
+
+describe("round 5: one predicate refuses for both auto-approval paths", () => {
+  const corpus = [...new Set([...CORPUS, ...CRUISE_HOLES, ...INJECTED_ENV, ...CRUISE_STILL_READ_ONLY])];
+  test(`over ${corpus.length} commands: a line envChangedOrUndecomposable refuses is neither read-only nor allowed by Bash(*)`, async () => {
+    const allowAll = allowedBy(createPolicy, ["Bash(*)"]);
+    const leaks: Array<{ command: string; readOnly: boolean; allowed: boolean }> = [];
+    let refused = 0;
+    for (const command of corpus) {
+      if (!envChangedOrUndecomposable(decomposeBash(command))) continue;
+      refused++;
+      const readOnly = isReadOnlyShell(command);
+      const allowed = await allowAll(command);
+      if (readOnly || allowed) leaks.push({ command, readOnly, allowed });
+    }
+    expect(leaks).toEqual([]);
+    expect(refused).toBeGreaterThan(50);
+  });
+  test("what it does not refuse, Bash(*) allows, and the read-only programs stay read-only", async () => {
+    const allowAll = allowedBy(createPolicy, ["Bash(*)"]);
+    for (const command of CRUISE_STILL_READ_ONLY) {
+      expect({ command, refused: envChangedOrUndecomposable(decomposeBash(command)), readOnly: isReadOnlyShell(command), allowed: await allowAll(command) }).toEqual({ command, refused: false, readOnly: true, allowed: true });
+    }
   });
 });
