@@ -13,7 +13,7 @@ import { type EngineEvent, HUMAN, type SDKMessage } from "@mlpal/harness-protoco
 import { z } from "zod";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { FunctionHook, HookEngine } from "../src/hooks/engine";
-import { AgentSession, type AgentConfig, DUPLICATE_TOOL_USE_ID, INTERRUPTED_TOOL_RESULT, NoHeldCallError, heldCall, inFlightTurn } from "../src/loop/agent";
+import { AgentSession, type AgentConfig, DUPLICATE_TOOL_USE_ID, INTERRUPTED_TOOL_RESULT, NoHeldCallError, heldCall, inFlightTurn, settleableHeldCall } from "../src/loop/agent";
 import { effectiveEntries, loadMessages } from "../src/loop/messages";
 import { LocalStore } from "../src/store/local";
 import { SessionStoreClient } from "../src/store/remote/client";
@@ -180,6 +180,16 @@ for (const [name, make] of [
       expect(await parked(b.store, registry)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { command: "echo destroy-probe", reason: "approval_required", toolUseId: "tu1", index: 0 } });
       expect(runs).toEqual([]);
       expect(heldCall(effectiveEntries(await b.store.conversation.read("s1")))?.toolUse).toEqual({ type: "tool_use", id: "tu1", name: "Probe", input: PROBE });
+    });
+
+    test("I-1: settleableHeldCall is the held call while nothing moved the turn on, and nothing once its result is on record", async () => {
+      const b = await make();
+      const { registry } = tools();
+      await parked(b.store, registry);
+      const entries = async () => effectiveEntries(await b.store.conversation.read("s1"));
+      expect(settleableHeldCall(await entries())?.toolUse.id).toBe("tu1");
+      await drain(session(b.store, new ScriptedModel([textDone("done")]), registry).approve({ decision: "deny", parkId: await park(b.store) }));
+      expect(settleableHeldCall(await entries())).toBeUndefined();
     });
 
     test("allow in the same process: the held call runs once with its own id and input, its real result is on record before the model is called, and the turn ends", async () => {

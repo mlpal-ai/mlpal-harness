@@ -15,7 +15,7 @@ import { AgentSession, type AgentConfig } from "../src/loop/agent";
 import { SessionEventBus } from "../src/events/session-bus";
 import { createPolicy } from "../src/permission/engine";
 import { AppendBatcher } from "../src/store/remote/batcher";
-import { type EncodedEvent, InboxItemNotPendingError, type InboxConsume, SessionStoreClient, type StoredEvent } from "../src/store/remote/client";
+import { type EncodedEvent, InboxFullError, InboxItemNotPendingError, type InboxConsume, SessionStoreClient, StoreHttpError, type StoredEvent } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
 import { RemoteStore } from "../src/store/remote/remote-store";
 import type { MemoryStore } from "../src/store/types";
@@ -221,5 +221,72 @@ describe("a store-closed turn (P1 1.2 closing entry)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("SessionStoreClient.acceptTurn (P1 1.2 accept, the instance writer's turn)", () => {
+  const sha = (t: string) => new Bun.CryptoHasher("sha256").update(t).digest("hex");
+  function client(answer: (body: Record<string, unknown>) => Response) {
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+    const c = new SessionStoreClient({
+      baseUrl: "http://store/v1",
+      tokenProvider: () => "W",
+      fetch: async (url, init) => {
+        calls.push({ url, method: String(init.method), body: String(init.body) });
+        return answer(JSON.parse(String(init.body)));
+      },
+    });
+    return { c, calls };
+  }
+
+  test("sends a turn item, never pumpable, with the shas of the exact bytes it sends", async () => {
+    const { c, calls } = client(() => Response.json({ request_id: "rq-ui", kind: "turn", state: "pending", inbox_seq: 4, replayed: false, pending: 2, position: 2, lease: { holder: "engine:sp:1" } }));
+    const message = '{"type":"run","sessionId":"s1","prompt":"go"}';
+    const context = '{"publication":"p","unit":"u"}';
+    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message, context });
+    expect(a).toEqual({ requestId: "rq-ui", state: "pending", inboxSeq: 4, replayed: false, pending: 2, position: 2, holder: "engine:sp:1" });
+    expect(calls[0]!.url).toBe("http://store/v1/sessions/s1/inbox");
+    const body = JSON.parse(calls[0]!.body);
+    expect(body).toEqual({ request_id: "rq-ui", kind: "turn", pumpable: false, message: JSON.parse(message), message_sha256: sha(message), context: JSON.parse(context), context_sha256: sha(context) });
+    expect(calls[0]!.body).toContain(`"message":${message}`);
+  });
+
+  test("a replay of an item no longer pending has a null position and its code", async () => {
+    const { c } = client(() => Response.json({ request_id: "rq-ui", kind: "turn", state: "rejected", inbox_seq: 4, replayed: true, pending: 0, position: null, lease: null, code: "session_stopped" }));
+    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" });
+    expect(a).toEqual({ requestId: "rq-ui", state: "rejected", inboxSeq: 4, replayed: true, pending: 0, position: null, code: "session_stopped" });
+  });
+
+  test("a full inbox is InboxFullError with its counts and Retry-After, sent once", async () => {
+    const { c, calls } = client(() => new Response(JSON.stringify({ code: "inbox_full", pending: 32, limit: 32 }), { status: 429, headers: { "retry-after": "5" } }));
+    const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" }).catch((e) => e);
+    expect(err).toBeInstanceOf(InboxFullError);
+    expect([err.code, err.pending, err.limit, err.retryAfterS]).toEqual(["inbox_full", 32, 32, 5]);
+    expect(calls.length).toBe(1);
+  });
+
+  test("the same request id with another message is a typed 409, and a 403 stays a StoreHttpError", async () => {
+    for (const [status, code] of [[409, "request_id_conflict"], [403, "forbidden"]] as const) {
+      const { c } = client(() => new Response(JSON.stringify({ code }), { status }));
+      const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" }).catch((e) => e);
+      expect(err).toBeInstanceOf(StoreHttpError);
+      expect([err.status, err.code]).toEqual([status, code]);
+    }
+  });
+});
+
+describe("RemoteStore.consume with opening events (I-1)", () => {
+  test("the opening events and the user entry go as one consuming batch, opening first", async () => {
+    const s = stub();
+    const b = new AppendBatcher({ client: s.client, sid: "s1", leaseId: () => "L", afterSeq: 0 });
+    const seqs = await b.consume(
+      [
+        { kind: "question_answered", json: '{"id":"p1","outcome":"answered"}', bytes: 33, ts_ms: 1 },
+        { kind: "user", json: '{"uuid":"u1"}', bytes: 13, ts_ms: 1 },
+      ],
+      { requestId: "rq-q", outcome: "answer" },
+    );
+    expect(seqs).toEqual([1, 2]);
+    expect(s.sent).toEqual([{ afterSeq: 0, kinds: ["question_answered", "user"], consumes: { requestId: "rq-q", outcome: "answer" } }]);
   });
 });

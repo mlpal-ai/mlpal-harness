@@ -72,7 +72,8 @@ export type ServerCapability =
   | "workspace_stats" // workspace_stats: the workspace's usage, runs, tools and outcomes aggregated by the engine (0.20.0)
   | "model_policy" // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
   | "principal" // 0.21.0: the signed X-Harness-Principal is verified on /ws; sessions carry `owner`; listings and session-addressed messages are filtered by it
-  | "schedules"; // 0.22.0: list/add/update/remove/run_schedule_now/schedule_runs and the schedule_fired side frame (SCHEDULES-WIRE.md)
+  | "schedules" // 0.22.0: list/add/update/remove/run_schedule_now/schedule_runs and the schedule_fired side frame (SCHEDULES-WIRE.md)
+  | "queue"; // P2 1.1: a run on a session another holder leases is queued (`queued`, typed refusals) and followed (`inbox_rejected`)
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -462,7 +463,10 @@ export type ClientMessage =
   | { type: "workspace_stats"; requestId?: string; range: StatsRange; tz: string; hop?: string; project?: string; sessions?: { offset: number; limit: number } }
   /** yodex/2: receive a session's idle events (a background child's end, a rewind) on this
    *  connection without loading its history. A run or load_session watches implicitly. */
-  | { type: "watch"; sessionId: string }
+  /** `noticesAfter` (capability "queue"): replay the session's `inbox_rejected` notices after this store seq (a
+   *  reconnecting client's last seen `seq`) before anything else for it. */
+  | { type: "watch"; sessionId: string; noticesAfter?: number }
+  | WithdrawMessage
   /** Internal to a front serve and its per-HOP children: a peer message for an idle session,
    *  delivered by the process that owns the session's inbox. Not for clients. */
   | { type: "deliver_mail"; sessionId: string; message: PeerMessage };
@@ -569,7 +573,68 @@ export type ServerMessage =
   /** 0.20.0 (capability "workspace_stats"). */
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
   /** 0.20.5: `refusal` when the message is a model refusal (typed; see ModelRefusal). */
-  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal; /** D-48: a typed approval refusal; nothing was written, re-read the pending ask. */ code?: "approval_id_required" | "approval_stale"; /** D-48: with `code`, the session whose approval was refused. */ sessionId?: string };
+  | QueuedFrame
+  | InboxRejectedFrame
+  | WithdrawnFrame
+  | {
+      type: "error";
+      message: string;
+      requestId?: string;
+      refusal?: ModelRefusal;
+      /** D-48: a typed approval refusal; nothing was written, re-read the pending ask. P2 1.1 (capability "queue"): a
+       *  run that could not be queued; nothing was queued. */
+      code?: ErrorCode;
+      /** With `code`, the session the refusal is about. */
+      sessionId?: string;
+      /** `withdraw_refused`: the item's state in P1 (`consumed`: it is running or ran; `rejected`). */
+      state?: string;
+      /** `inbox_full`: the session's pending items and its limit; retry after `retryAfterS` when given. */
+      pending?: number;
+      limit?: number;
+      retryAfterS?: number;
+    };
+
+/** The typed `error.code`s. `withdraw_refused` carries P1's `state` of the item. */
+export type ErrorCode = "approval_id_required" | "approval_stale" | "inbox_full" | "request_id_conflict" | "queue_unavailable" | "withdraw_refused";
+
+/** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
+ *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one
+ *  already run or rejected). Re-sent, without `replayed`, whenever the position changes. The client now watches the
+ *  session: the turn's frames follow, ending in a `done` carrying this `requestId`, or an `inbox_rejected` for it. */
+export interface QueuedFrame {
+  type: "queued";
+  requestId: string;
+  sessionId: string;
+  position: number | null;
+  inboxSeq: number;
+  replayed?: true;
+}
+
+/** P2 1.1 (capability "queue"): the store rejected a queued item (P1's rejection `code`: session_stopped, withdrawn,
+ *  delivery_timeout, engine_config, ...), sent to every client watching the session. `seq` is the notice's store seq
+ *  (`watch.noticesAfter` on reconnect). Unknown codes render generically. */
+export interface InboxRejectedFrame {
+  type: "inbox_rejected";
+  sessionId: string;
+  requestId: string;
+  code: string;
+  seq?: number;
+}
+
+/** P2 1.1 (capability "queue"): stop while queued. The client's queued run is withdrawn through P1 (`withdrawn`); one
+ *  no longer pending is `error {code: "withdraw_refused", state}`. */
+export interface WithdrawMessage {
+  type: "withdraw";
+  requestId: string;
+  sessionId: string;
+}
+
+/** The answer to `withdraw`: the item is rejected `withdrawn` and will not run. */
+export interface WithdrawnFrame {
+  type: "withdrawn";
+  requestId: string;
+  sessionId: string;
+}
 
 export const PROTOCOL_VERSION = "yodex/2";
 

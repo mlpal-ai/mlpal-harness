@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Queue frames and the writer's accept (INBOX T2 addition, 2026-10-31)
+
+- `SessionStoreClient.acceptTurn` (P1 1.2 accept of a turn under the instance writer token, `pumpable: false`, shas
+  of the exact bytes sent); `InboxFullError` (`429 inbox_full`, with `pending`, `limit` and the Retry-After).
+- Protocol (capability `queue`): `queued {requestId, sessionId, position, inboxSeq, replayed?}`, `inbox_rejected
+  {sessionId, requestId, code}`, and `error.code` `inbox_full` (with `pending`, `limit`, `retryAfterS`) /
+  `request_id_conflict` / `queue_unavailable` / `withdraw_refused` (`ErrorCode`); `withdraw` / `withdrawn`;
+  `watch.noticesAfter` and `inbox_rejected.seq`. The frames are exported types (`QueuedFrame`, `InboxRejectedFrame`,
+  `WithdrawnFrame`, `WithdrawMessage`).
+- `SessionStoreClient.withdrawTurn` and `inboxStatus` (state, position).
+- T2 review: `TurnInput.opening` (a parked question's answer and its `user` entry in one consuming batch, I-1);
+  `settleableHeldCall` (a host resumes a held call whose park has a recorded decision and no marker, I-1).
+
+### Queue frames and the writer's accept (INBOX T2 addition, 2026-10-31)
+
+- `SessionStoreClient.acceptTurn` (P1 1.2 accept of a turn under the instance writer token, `pumpable: false`, shas
+  of the exact bytes sent); `InboxFullError` (`429 inbox_full`, with `pending`, `limit` and the Retry-After).
+- Protocol (capability `queue`): `queued {requestId, sessionId, position, inboxSeq, replayed?}`, `inbox_rejected
+  {sessionId, requestId, code}`, and `error.code` `inbox_full` (with `pending`, `limit`, `retryAfterS`) /
+  `request_id_conflict` / `queue_unavailable` (`ErrorCode`).
+
 ### Inbox consume and head (INBOX T2, P1 1.2, 2026-10-31)
 
 - `SessionStoreClient.inboxHead`; `appendEncoded({consumes})`; `InboxItemNotPendingError` for `409

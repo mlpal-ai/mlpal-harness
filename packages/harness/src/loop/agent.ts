@@ -264,6 +264,9 @@ export interface TurnInput {
    *  isolated and acknowledged before anything else of the turn; a withdrawn item rejects the run with
    *  InboxItemNotPendingError, the turn unwritten. */
   consumes?: InboxConsume;
+  /** With `consumes`: events that go first in the same consuming batch, before the `user` entry. A parked question's
+   *  answer opens with `question_answered`, so the answer and its turn land atomically (P1 checks the first event). */
+  opening?: Array<{ kind: string; data: unknown }>;
   /** The request this turn opens for: carried on its `user` entry (P3 2.6: a message's turn is matched by it). */
   requestId?: string;
   /** Attachments (image/document blocks) sent alongside the text — drag-dropped or
@@ -447,6 +450,14 @@ export function heldCall(entries: ConversationEntry[]): HeldCall | undefined {
   if (!held || !asst) return undefined;
   if (duplicateIds(asst.content.filter((b): b is ToolUseBlock => b.type === "tool_use")).has(held.tu.id)) return undefined;
   return { toolUse: held.tu, at: held.at, command: want.command, parkId: entries[at]!.uuid, turn, resultAt: at };
+}
+
+/** The held call an approval can still settle: the park's call, with nothing after the park that moved the turn on
+ *  (`approve` refuses otherwise). P2 1.1 (I-1): a host resumes such a call when its park has a recorded decision but
+ *  the call has no side-effect marker (the engine that consumed the answer died before running it). */
+export function settleableHeldCall(entries: ConversationEntry[]): HeldCall | undefined {
+  const held = heldCall(entries);
+  return held && !movesTurn(entries.slice(held.resultAt + 1)) ? held : undefined;
 }
 
 /** The entries of the turn in flight: from its first user entry since the last `result` or `error`; empty when
@@ -733,7 +744,7 @@ export class AgentSession {
     };
     let userUuid: string;
     try {
-      userUuid = input.consumes ? await this.consumeOpening(userEvt, parent, input.consumes) : (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
+      userUuid = input.consumes ? await this.consumeOpening(userEvt, parent, input.consumes, input.opening ?? []) : (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
     } catch (e) {
       // No turn opened (a withdrawn inbox item, a refused write): the run leaves the session as it found it, its bus
       // subscription included, or the session would read as running forever.
@@ -747,12 +758,12 @@ export class AgentSession {
     yield* this.turn({ author, task: input.text ?? "", parent, runId, ref: userUuid, unsubscribe });
   }
 
-  /** The consuming append that opens an inbox turn (P1 1.2): the user entry alone, acknowledged before the turn goes
-   *  on. Returns the entry's uuid. */
-  private async consumeOpening(userEvt: UserEvent, parent: string | null, consumes: InboxConsume): Promise<string> {
+  /** The consuming append that opens an inbox turn (P1 1.2): `opening` then the user entry, alone in their batch and
+   *  acknowledged before the turn goes on. Returns the entry's uuid. */
+  private async consumeOpening(userEvt: UserEvent, parent: string | null, consumes: InboxConsume, opening: Array<{ kind: string; data: unknown }>): Promise<string> {
     if (!this.store.consume) throw new Error("this session store takes no consuming append (P1 1.2)");
     const entry: ConversationEntry = { uuid: crypto.randomUUID(), parentUuid: parent, ts: now(), payload: userEvt };
-    await this.store.consume(this.cfg.sessionId, consumes, [{ kind: userEvt.type, data: entry }]);
+    await this.store.consume(this.cfg.sessionId, consumes, [...opening, { kind: userEvt.type, data: entry }]);
     return entry.uuid;
   }
 
