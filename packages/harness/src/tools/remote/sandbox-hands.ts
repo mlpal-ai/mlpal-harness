@@ -25,7 +25,13 @@ export interface HandsExecResult {
   state: "running" | "exited" | "killed" | "failed" | "refused";
 }
 
-export interface HandsExecOptions {
+/** What every call carries: the turn's abort signal. A client that waits (a sandbox mid-pause) must not start the
+ *  call once it fired: the loop has already answered the tool as interrupted and moved on. */
+export interface HandsCallOptions {
+  signal?: AbortSignal;
+}
+
+export interface HandsExecOptions extends HandsCallOptions {
   cwd?: string;
   timeoutMs?: number;
   detach?: boolean;
@@ -38,12 +44,12 @@ export interface HandsClient {
   /** Run `argv`; a string runs under `sh -c`. */
   exec(argv: string[] | string, opts?: HandsExecOptions): Promise<HandsExecResult>;
   /** Everything an exec wrote so far, by id; `wait` blocks until it finishes. */
-  readOutput(execId: string, opts?: { wait?: boolean }): Promise<HandsExecResult>;
+  readOutput(execId: string, opts?: { wait?: boolean } & HandsCallOptions): Promise<HandsExecResult>;
   /** Stop a detached exec. Absent when the service has no kill route yet. */
-  killExec?(execId: string): Promise<void>;
-  readFile(path: string): Promise<Uint8Array>;
-  writeFile(path: string, data: Uint8Array | string): Promise<void>;
-  listDir(path: string): Promise<{ name: string; type?: string; is_dir?: boolean }[]>;
+  killExec?(execId: string, opts?: HandsCallOptions): Promise<void>;
+  readFile(path: string, opts?: HandsCallOptions): Promise<Uint8Array>;
+  writeFile(path: string, data: Uint8Array | string, opts?: HandsCallOptions): Promise<void>;
+  listDir(path: string, opts?: HandsCallOptions): Promise<{ name: string; type?: string; is_dir?: boolean }[]>;
 }
 
 export interface SandboxHandsOptions {
@@ -137,13 +143,14 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
       timeout: z.number().int().positive().max(MAX_TIMEOUT).optional().describe(`timeout in ms (default ${DEFAULT_TIMEOUT})`),
       run_in_background: z.boolean().optional().describe("start the command as a background task and return its id immediately"),
     }),
-    async call(input) {
+    async call(input, ctx) {
+      const signal = ctx.signal;
       try {
         if (input.run_in_background) {
-          const r = await client.exec(input.command, { cwd, timeoutMs: MAX_TIMEOUT, detach: true });
+          const r = await client.exec(input.command, { cwd, timeoutMs: MAX_TIMEOUT, detach: true, signal });
           return ok(`Started background task ${r.execId}. Read its output with BashOutput, stop it with Kill.`);
         }
-        const r = await client.exec(input.command, { cwd, timeoutMs: input.timeout ?? DEFAULT_TIMEOUT });
+        const r = await client.exec(input.command, { cwd, timeoutMs: input.timeout ?? DEFAULT_TIMEOUT, signal });
         return renderExec(r, maxOutput);
       } catch (e) {
         return failed("sandbox exec failed", e);
@@ -157,9 +164,9 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     description: "Read the output so far of a background task started with Bash (run_in_background), by its id.",
     readOnly: true,
     schema: z.object({ id: z.string().describe("exec id from Bash") }),
-    async call(input) {
+    async call(input, ctx) {
       try {
-        return renderExec(await client.readOutput(input.id, { wait: false }), maxOutput);
+        return renderExec(await client.readOutput(input.id, { wait: false, signal: ctx.signal }), maxOutput);
       } catch (e) {
         return failed(`cannot read ${input.id}`, e);
       }
@@ -173,10 +180,10 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     readOnly: false,
     executes: true,
     schema: z.object({ id: z.string() }),
-    async call(input) {
+    async call(input, ctx) {
       if (!client.killExec) return err("the sandbox service has no exec kill route yet; the task runs to its timeout");
       try {
-        await client.killExec(input.id);
+        await client.killExec(input.id, { signal: ctx.signal });
         return ok(`Killed ${input.id}`);
       } catch (e) {
         return failed(`cannot kill ${input.id}`, e);
@@ -194,10 +201,10 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
       offset: z.number().int().min(1).optional().describe("1-based start line"),
       limit: z.number().int().min(1).optional().describe("max lines to read"),
     }),
-    async call(input) {
+    async call(input, ctx) {
       let text: string;
       try {
-        text = decode(await client.readFile(guestPath(input.path, cwd)));
+        text = decode(await client.readFile(guestPath(input.path, cwd), { signal: ctx.signal }));
       } catch (e) {
         return failed(`cannot read ${input.path}`, e);
       }
@@ -217,16 +224,16 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     readOnly: false,
     edits: true,
     schema: z.object({ path: z.string(), content: z.string() }),
-    async call(input) {
+    async call(input, ctx) {
       const path = guestPath(input.path, cwd);
       let before = "";
       try {
-        before = decode(await client.readFile(path));
+        before = decode(await client.readFile(path, { signal: ctx.signal }));
       } catch {
         before = "";
       }
       try {
-        await client.writeFile(path, input.content);
+        await client.writeFile(path, input.content, { signal: ctx.signal });
       } catch (e) {
         return failed(`cannot write ${input.path}`, e);
       }
@@ -242,11 +249,11 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     readOnly: false,
     edits: true,
     schema: z.object({ path: z.string(), old_string: z.string(), new_string: z.string(), replace_all: z.boolean().optional() }),
-    async call(input) {
+    async call(input, ctx) {
       const path = guestPath(input.path, cwd);
       let text: string;
       try {
-        text = decode(await client.readFile(path));
+        text = decode(await client.readFile(path, { signal: ctx.signal }));
       } catch (e) {
         return failed(`cannot read ${input.path}`, e);
       }
@@ -255,7 +262,7 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
       if (count > 1 && !input.replace_all) return err(`old_string is not unique (${count} matches); set replace_all or add context`);
       const next = input.replace_all ? text.split(input.old_string).join(input.new_string) : text.replace(input.old_string, () => input.new_string);
       try {
-        await client.writeFile(path, next);
+        await client.writeFile(path, next, { signal: ctx.signal });
       } catch (e) {
         return failed(`cannot write ${input.path}`, e);
       }
@@ -264,8 +271,8 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     },
   });
 
-  const rg = async (args: string[], base: string): Promise<HandsExecResult> =>
-    client.exec(`cd ${shellQuote(base)} && rg ${args.map(shellQuote).join(" ")}`, { cwd, timeoutMs: 20_000 });
+  const rg = async (args: string[], base: string, signal: AbortSignal | undefined): Promise<HandsExecResult> =>
+    client.exec(`cd ${shellQuote(base)} && rg ${args.map(shellQuote).join(" ")}`, { cwd, timeoutMs: 20_000, signal });
 
   const globTool = defineTool({
     name: "Glob",
@@ -273,9 +280,9 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     description: "Find files in the sandbox matching a glob pattern (e.g. '**/*.ts'). Respects .gitignore. Returns matching paths.",
     readOnly: true,
     schema: z.object({ pattern: z.string(), path: z.string().optional().describe("base dir (default the working directory)") }),
-    async call(input) {
+    async call(input, ctx) {
       try {
-        const r = await rg(["--files", "-g", input.pattern], guestPath(input.path, cwd));
+        const r = await rg(["--files", "-g", input.pattern], guestPath(input.path, cwd), ctx.signal);
         if (r.exitCode === 1) return ok("No files matched");
         if (r.exitCode !== 0) return err(`glob failed: ${r.stderr.trim() || `exit ${r.exitCode}`}`);
         const files = r.stdout.split("\n").filter(Boolean).sort();
@@ -296,12 +303,12 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
       path: z.string().optional().describe("base dir (default the working directory)"),
       glob: z.string().optional().describe("file glob to scope the search"),
     }),
-    async call(input) {
+    async call(input, ctx) {
       const args = ["--line-number", "--max-columns", "500"];
       if (input.glob) args.push("-g", input.glob);
       args.push("--regexp", input.pattern);
       try {
-        const r = await rg(args, guestPath(input.path, cwd));
+        const r = await rg(args, guestPath(input.path, cwd), ctx.signal);
         if (r.exitCode === 1) return ok("No matches");
         if (r.exitCode !== 0) return err(`grep failed: ${r.stderr.trim() || `exit ${r.exitCode}`}`);
         const lines = r.stdout.split("\n").filter(Boolean);
@@ -319,9 +326,9 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     description: "List the entries of a sandbox directory. Directories are suffixed with '/'.",
     readOnly: true,
     schema: z.object({ path: z.string().optional().describe("directory (default the working directory)") }),
-    async call(input) {
+    async call(input, ctx) {
       try {
-        const entries = await client.listDir(guestPath(input.path, cwd));
+        const entries = await client.listDir(guestPath(input.path, cwd), { signal: ctx.signal });
         const rows = entries
           .filter((e) => e.name !== "node_modules" && e.name !== ".git")
           .sort((a, b) => a.name.localeCompare(b.name))

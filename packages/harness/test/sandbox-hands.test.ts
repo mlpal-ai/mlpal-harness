@@ -249,3 +249,39 @@ describe("sandbox hands at capacity (0.22.4)", () => {
     }
   });
 });
+
+describe("sandbox hands carry the turn's abort signal to every call (W3 fix round 1, item 2)", () => {
+  /** Every client call with the signal it carried. */
+  function recording(): { client: HandsClient; seen: Array<{ op: string; signal: unknown }> } {
+    const seen: Array<{ op: string; signal: unknown }> = [];
+    const g = new FakeGuest({ "/workspace/a.txt": "alpha\n" });
+    const client: HandsClient = {
+      exec: (argv, o) => (seen.push({ op: "exec", signal: o?.signal }), g.exec(argv, o)),
+      readOutput: (id, o) => (seen.push({ op: "readOutput", signal: o?.signal }), g.readOutput(id)),
+      killExec: (id, o) => (seen.push({ op: "killExec", signal: o?.signal }), g.killExec(id)),
+      readFile: (p, o) => (seen.push({ op: "readFile", signal: o?.signal }), g.readFile(p)),
+      writeFile: (p, d, o) => (seen.push({ op: "writeFile", signal: o?.signal }), g.writeFile(p, d)),
+      listDir: (p, o) => (seen.push({ op: "listDir", signal: o?.signal }), g.listDir(p)),
+    };
+    return { client, seen };
+  }
+
+  test("each of the nine tools passes ctx.signal on each call it makes", async () => {
+    const { client, seen } = recording();
+    const tools = Object.fromEntries(createSandboxHands({ client }).map((x) => [x.name, x]));
+    const signal = new AbortController().signal;
+    const ctx = { cwd: "/host", signal };
+    await tools.Bash!.call({ command: "echo hi" }, ctx);
+    await tools.Bash!.call({ command: "sleep 9", run_in_background: true }, ctx);
+    await tools.BashOutput!.call({ id: "ex_1" }, ctx);
+    await tools.Kill!.call({ id: "ex_2" }, ctx);
+    await tools.Read!.call({ path: "a.txt" }, ctx);
+    await tools.Write!.call({ path: "b.txt", content: "b" }, ctx);
+    await tools.Edit!.call({ path: "b.txt", old_string: "b", new_string: "c" }, ctx);
+    await tools.Glob!.call({ pattern: "**/*.txt" }, ctx);
+    await tools.Grep!.call({ pattern: "alpha" }, ctx);
+    await tools.List!.call({}, ctx);
+    expect(new Set(seen.map((s) => s.op))).toEqual(new Set(["exec", "readOutput", "killExec", "readFile", "writeFile", "listDir"]));
+    expect(seen.filter((s) => s.signal !== signal)).toEqual([]);
+  });
+});
