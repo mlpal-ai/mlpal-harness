@@ -357,6 +357,8 @@ export interface WorkspaceStats {
 export interface PendingApproval {
   command: string;
   reason: string;
+  /** D-48: the held call; an approval_response naming it is refused if another call is held by then. */
+  toolUseId?: string;
 }
 
 /** 0.22.5: the session store credential for this message's session (phase 1 token delivery, seam P2); never
@@ -421,7 +423,7 @@ export type ClientMessage =
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
   | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
-  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant }
+  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** D-48: the held call this answers (`pendingApproval.toolUseId`); refused when another one is held. */ toolUseId?: string }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
   | { type: "stop_subagent"; childSessionId: string }

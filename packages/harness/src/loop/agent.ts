@@ -191,6 +191,10 @@ export interface AgentConfig {
    *  answerer (reason `approval_required`): a turn resumed with nobody attached waits for the person
    *  instead of losing the ask. */
   parkHeadless?: boolean | "every_ask";
+  /** Awaited before each step the loop starts: a model call, and a tool call (a read-only batch is one step). A host
+   *  that is stopping (SIGTERM) never resolves it, so the turn halts at a step boundary with nothing more written: the
+   *  step in flight finishes and its result is appended, and the turn stays open for the next engine to resume. */
+  stepGate?: () => Promise<void>;
   /**
    * Completion self-check: nudge once to verify-or-admit when a run made >= selfCheckMinEdits
    * successful edits but never ran a test/build/typecheck. Default on (undefined => on); set
@@ -281,6 +285,8 @@ class SafetyParkSignal extends Error {
   constructor(
     readonly command: string,
     readonly reason: SafetyReason | "approval_required",
+    /** The held call: an approval settles exactly this one (D-48). */
+    readonly toolUseId: string,
   ) {
     super("safety approval edge (headless park)");
     this.name = "SafetyParkSignal";
@@ -320,9 +326,64 @@ function unansweredToolUses(turn: ConversationEntry[]): ToolUseBlock[] {
   return (asst.message.content as ContentBlock[]).filter((b): b is ToolUseBlock => b.type === "tool_use" && !answered.has(b.id));
 }
 
+/** What a needs_approval result records of the held call. */
+type PendingApprovalRecord = NonNullable<Extract<EngineEvent, { type: "result" }>["pendingApproval"]>;
+
+/** An approval with no call to settle: nothing is held, the held call was settled or overtaken by a later turn, or the
+ *  client named another call than the held one. Nothing was written. */
+export class NoHeldCallError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly named?: string,
+  ) {
+    super(named === undefined ? `session ${sessionId.slice(0, 8)} has no action waiting for approval` : `session ${sessionId.slice(0, 8)} is not waiting for approval of ${named}`);
+    this.name = "NoHeldCallError";
+  }
+}
+
+/** Whether any of `entries` moves a turn on (a sub-agent's lifecycle entry does not). */
+function movesTurn(entries: ConversationEntry[]): boolean {
+  return entries.some((e) => e.payload.type === "user" || e.payload.type === "assistant" || e.payload.type === "tool_result");
+}
+
+/** What a park names a call by: its command, or the path it touches. */
+function parkCommand(input: Record<string, unknown>): string {
+  return String(input.command ?? input.path ?? "");
+}
+
+/** The tool call a `needs_approval` park holds (D-48), read from the log so that it binds in any engine process. */
+export interface HeldCall {
+  toolUse: ToolUseBlock;
+  /** The turn that parked: its entries up to the park's result, which is excluded. */
+  turn: ConversationEntry[];
+  /** The park's result: its index in the entries given. */
+  at: number;
+}
+
+/** The call held by the park the last turn ended at: the one its result names (`pendingApproval.toolUseId`; a park
+ *  recorded before D-48 names only the command, matched among the turn's unanswered calls). Undefined when the last
+ *  turn did not end parked, or its call is not on record. */
+export function heldCall(entries: ConversationEntry[]): HeldCall | undefined {
+  let at = entries.length - 1;
+  while (at >= 0 && entries[at]!.payload.type !== "result" && entries[at]!.payload.type !== "error") at--;
+  const end = entries[at]?.payload;
+  if (end?.type !== "result" || end.subtype !== "needs_approval" || !end.pendingApproval) return undefined;
+  const turn = inFlightTurn(entries.slice(0, at));
+  const calls = unansweredToolUses(turn);
+  const want = end.pendingApproval;
+  const toolUse = want.toolUseId ? calls.find((c) => c.id === want.toolUseId) : calls.find((c) => parkCommand(c.input) === want.command);
+  return toolUse ? { toolUse, turn, at } : undefined;
+}
+
 /** The entries of the turn in flight: from its first user entry since the last `result` or `error`; empty when
- *  no turn is in flight. */
+ *  no turn is in flight. A turn whose held call was settled after its park (D-48: the call's result follows the
+ *  park's) is in flight again, as the parked turn's entries and what followed the park. */
 export function inFlightTurn(entries: ConversationEntry[]): ConversationEntry[] {
+  const held = heldCall(entries);
+  if (held) {
+    const after = entries.slice(held.at + 1);
+    if (after.some((e) => e.payload.type === "tool_result" && e.payload.toolUseId === held.toolUse.id)) return [...held.turn, ...after];
+  }
   let start = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     const type = entries[i]!.payload.type;
@@ -330,6 +391,16 @@ export function inFlightTurn(entries: ConversationEntry[]): ConversationEntry[] 
     if (type === "user") start = i;
   }
   return start < 0 ? [] : entries.slice(start);
+}
+
+/** The turn a resume continues: the turn in flight, or (D-48) the parked turn whose held call's approved run began (its
+ *  `tool_started` marker is in `started`) and whose result was lost with its engine. Empty when there is none. */
+export function turnToResume(entries: ConversationEntry[], started: ReadonlySet<unknown>): ConversationEntry[] {
+  const turn = inFlightTurn(entries);
+  if (turn.length) return turn;
+  const held = heldCall(entries);
+  if (!held || movesTurn(entries.slice(held.at + 1)) || !started.has(held.toolUse.id)) return [];
+  return [...held.turn, ...entries.slice(held.at + 1)];
 }
 
 /** The end-of-turn signals a live turn counts as it goes, rebuilt from a turn's entries: its model calls, its
@@ -364,12 +435,6 @@ function countTurn(turn: ConversationEntry[], tools: ToolRegistry, loop: LoopPol
     }
   }
   return counts;
-}
-
-async function serial<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = [];
-  for (const item of items) out.push(await fn(item));
-  return out;
 }
 
 /** Resolve with the tool result, or immediately with an interrupt result on abort. */
@@ -635,8 +700,18 @@ export class AgentSession {
     // work to it instead of spawning a concurrent editor. Reset to "idle" at the finish.
     await this.store.registry.patchSession(cfg.sessionId, { status: "active" });
 
-    // A resumed turn first records what the dead engine left in flight (plan §5).
-    if (t.prelude) parent = yield* t.prelude(log, parent);
+    // A resumed turn first records what the dead engine left in flight (plan §5). A call the prelude runs may park
+    // (an ask nobody answers): the turn then ends there, as needs_approval, below.
+    let preludePark: SafetyParkSignal | undefined;
+    if (t.prelude) {
+      try {
+        parent = yield* t.prelude(log, parent);
+      } catch (e) {
+        if (!(e instanceof SafetyParkSignal)) throw e;
+        preludePark = e;
+        parent = await this.store.conversation.head(cfg.sessionId);
+      }
+    }
 
     let messages = await loadMessages(this.store, cfg.sessionId);
     let totalUsage: Usage = t.usage ?? emptyUsage();
@@ -692,7 +767,7 @@ export class AgentSession {
 
     // Proactive routing: a cheap classifier picks the rung to START on. Fail-safe to 0.
     // A resumed answer is already on record: the rung that would have made it is not asked for again.
-    if (cfg.classifyStart && ladder.length > 1 && !t.answered) {
+    if (cfg.classifyStart && ladder.length > 1 && !t.answered && !preludePark) {
       const classifyModel = cfg.router?.resolve("classify") ?? ladder[0]!;
       const rung = await classifyStartRung({
         model_client: cfg.model_client,
@@ -712,7 +787,9 @@ export class AgentSession {
     log.info("run start", { model: activeModel, ladder: ladder.length, authorType: author.type });
 
     try {
+    if (preludePark) throw preludePark;
     for (;;) {
+      if (cfg.stepGate) await cfg.stepGate();
       if (cfg.signal?.aborted) {
         log.warn("run cancelled");
         outcome = "cancelled";
@@ -1127,14 +1204,31 @@ export class AgentSession {
         if (!tool) return false;
         return tool.isCallReadOnly?.(tu.input) ?? tool.readOnly;
       });
-      const work: Promise<ToolResultEvent[]> =
-        allReadOnly && toolUses.length > 1
-          ? Promise.all(toolUses.map((tu) => this.executeTool(tu, author, log)))
-          : serial(toolUses, (tu) => this.executeTool(tu, author, log));
-      // A sub-agent's lifecycle and its forwarded events arrive while the Agent tool blocks;
-      // they go out as they happen, not when the tool returns.
-      for await (const side of this.side.until(work)) parent = yield* this.flushSide([side], parent);
-      const trEvts = await work;
+      // Each step's results are persisted as soon as it ends, so a park (D-48) or a stop at the gate (D-49) at the
+      // next call keeps what already ran.
+      const steps = allReadOnly && toolUses.length > 1 ? [toolUses] : toolUses.map((tu) => [tu]);
+      const trEvts: ToolResultEvent[] = [];
+      const toolResults: ToolResultBlock[] = [];
+      for (const step of steps) {
+        if (cfg.stepGate) await cfg.stepGate();
+        const work = Promise.all(step.map((tu) => this.executeTool(tu, author, log)));
+        // A sub-agent's lifecycle and its forwarded events arrive while the Agent tool blocks;
+        // they go out as they happen, not when the tool returns.
+        for await (const side of this.side.until(work)) parent = yield* this.flushSide([side], parent);
+        for (const raw of await work) {
+          trEvts.push(raw);
+          const persisted = await this.appendToolResult(raw, parent);
+          const trEvt = persisted.event;
+          parent = persisted.uuid;
+          yield { ...trEvt, uuid: parent };
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: trEvt.toolUseId,
+            content: trEvt.blocks ?? trEvt.content,
+            is_error: trEvt.isError,
+          });
+        }
+      }
 
       // Verification signals for the completion self-check and the anti-churn breaker: count
       // successful edits (total and per-file) and note whether a real check command ran.
@@ -1178,19 +1272,6 @@ export class AgentSession {
         }
       }
 
-      const toolResults: ToolResultBlock[] = [];
-      for (const raw of trEvts) {
-        const persisted = await this.appendToolResult(raw, parent);
-        const trEvt = persisted.event;
-        parent = persisted.uuid;
-        yield { ...trEvt, uuid: parent };
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: trEvt.toolUseId,
-          content: trEvt.blocks ?? trEvt.content,
-          is_error: trEvt.isError,
-        });
-      }
       // Condense oversized tool outputs (a cheap side-call) before they enter the model's context.
       // The full result was already persisted + yielded above; only the copy the model sees shrinks,
       // saving cost and keeping the main context (and its cache) small. Errors are left intact.
@@ -1261,7 +1342,7 @@ export class AgentSession {
         outcome = "needs_approval";
         log.info("run parked for approval", { reason: e.reason });
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
-        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason });
+        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.toolUseId });
       } else {
         throw e;
       }
@@ -1576,13 +1657,47 @@ export class AgentSession {
    * `result` or `error`): returns `{resumed: false}` without a write. Otherwise the head's tool calls
    * without a result are settled first: one with a `tool_started` marker is never run again and gets
    * an `INTERRUPTED_TOOL_RESULT` error result; one without runs now, through the normal path. Then the
-   * turn continues from the head (no new user entry) to its result, as `run()` does.
+   * turn continues from the head (no new user entry) to its result, as `run()` does. A held call whose
+   * approved run began (its marker) but whose result was lost with the engine (D-48) is such a turn too.
    */
   async *resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
-    const { cfg } = this;
-    const turnEntries = inFlightTurn(effectiveEntries(await this.store.conversation.read(cfg.sessionId)));
+    const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
+    const turnEntries = turnToResume(all, await this.startedCalls());
     if (turnEntries.length === 0) return { resumed: false };
+    const held = heldCall(all);
+    // The turn's model calls so far, so the resumed run's result counts the whole turn; past a park, only those
+    // after it (the park's result counted the rest).
+    const spent = held && turnEntries[0] === held.turn[0] ? all.slice(held.at + 1) : turnEntries;
+    const usage = spent.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage());
+    yield* this.continueTurn(turnEntries, usage);
+    return { resumed: true };
+  }
 
+  /**
+   * D-48: settle the call a `needs_approval` park holds with the person's decision, then continue the turn. The call
+   * is read from the log (`heldCall`), so the approval binds to exactly that call (its name, input and id) in any
+   * engine process, and the model cannot put another call in its place: `allow` runs it here, through the normal tool
+   * path without asking again (hooks, the side-effect marker and the sandbox apply); `deny` records the denial as its
+   * result, and it never runs. A call whose run already began (an engine died between its run and its result) is
+   * never run again: it gets the interrupted result. The model is called only once the call's result is on record.
+   * `toolUseId`, when the client names the call it approved, must be the held one; otherwise, or when nothing is held,
+   * NoHeldCallError and nothing is written.
+   */
+  async *approve(d: { decision: "allow" | "deny"; reason?: string; toolUseId?: string }): AsyncGenerator<EngineEvent, void, void> {
+    const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
+    const held = heldCall(all);
+    if (!held || movesTurn(all.slice(held.at + 1))) throw new NoHeldCallError(this.cfg.sessionId);
+    if (d.toolUseId !== undefined && d.toolUseId !== held.toolUse.id) throw new NoHeldCallError(this.cfg.sessionId, d.toolUseId);
+    const decided: Decision = d.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: d.reason ?? "declined by the user" };
+    (this.cfg.logger ?? silentLogger).info("approval settles the held call", { sessionId: this.cfg.sessionId, toolUseId: held.toolUse.id, tool: held.toolUse.name, decision: d.decision });
+    (this.cfg.metrics ?? noopMetrics).increment("agent.approvals", 1, { decision: d.decision });
+    yield* this.continueTurn([...held.turn, ...all.slice(held.at + 1)], emptyUsage(), { toolUseId: held.toolUse.id, decision: decided });
+  }
+
+  /** The turn after a resume or an approval: its unanswered calls settled first (`decided` is the person's answer to
+   *  the held one), then on to its result from the head, with no new user entry. */
+  private async *continueTurn(turnEntries: ConversationEntry[], usage: Usage, decided?: { toolUseId: string; decision: Decision }): AsyncGenerator<EngineEvent, void, void> {
+    const { cfg } = this;
     await this.init();
     // The person's turn, not a system-seeded one ahead of it, names the run's author and its task.
     const asked = (turnEntries.find((e) => e.payload.type === "user" && e.payload.author?.type !== "system") ?? turnEntries[0]!).payload as UserEvent;
@@ -1595,8 +1710,6 @@ export class AgentSession {
       head.type === "assistant" && !(head.message.content as ContentBlock[]).some((b) => b.type === "tool_use")
         ? { model: head.model, message: head.message, usage: head.usage, stopReason: head.stopReason }
         : undefined;
-    // The turn's model calls so far, so the resumed run's result counts the whole turn.
-    const usage = turnEntries.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage());
     const unsubscribe = cfg.events?.subscribe(cfg.sessionId, (e) => this.side.push(e));
     const parent = await this.store.conversation.head(cfg.sessionId);
     const runId = crypto.randomUUID();
@@ -1612,23 +1725,29 @@ export class AgentSession {
       resumed: true,
       usage,
       ...(answered ? { answered } : {}),
-      ...(pending.length ? { prelude: (log: Logger, at: string | null) => this.settleInterrupted(pending, author, log, at) } : {}),
+      ...(pending.length ? { prelude: (log: Logger, at: string | null) => this.settlePending(pending, author, log, at, decided) } : {}),
     });
-    return { resumed: true };
   }
 
-  /** The prelude of a resumed turn: a result for each tool call the dead engine left unanswered,
-   *  persisted in the call order (one user turn, as after a batch). */
-  private async *settleInterrupted(pending: ToolUseBlock[], author: Author, log: Logger, parent: string | null): AsyncGenerator<EngineEvent, string | null, void> {
+  /** The `toolUseId`s whose run began (their `tool_started` markers). */
+  private async startedCalls(): Promise<Set<unknown>> {
     const markers = (await this.store.readEvents?.(this.cfg.sessionId, "tool_started")) ?? [];
-    const started = new Set(markers.map((m) => m.toolUseId));
+    return new Set(markers.map((m) => m.toolUseId));
+  }
+
+  /** The prelude of a continued turn: a result for each unanswered tool call, persisted in the call order (one user
+   *  turn, as after a batch). A started call gets the interrupted result; the held one, the person's decision; any
+   *  other runs now, through the normal path. */
+  private async *settlePending(pending: ToolUseBlock[], author: Author, log: Logger, parent: string | null, decided?: { toolUseId: string; decision: Decision }): AsyncGenerator<EngineEvent, string | null, void> {
+    const started = await this.startedCalls();
     for (const tu of pending) {
       let result: ToolResultEvent;
       if (started.has(tu.id)) {
         log.warn("resume: a started tool is not run again", { tool: tu.name, toolUseId: tu.id });
         result = { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: INTERRUPTED_TOOL_RESULT, isError: true, ts: now() };
       } else {
-        result = await this.executeTool(tu, author, log);
+        if (this.cfg.stepGate) await this.cfg.stepGate();
+        result = await this.executeTool(tu, author, log, tu.id === decided?.toolUseId ? decided.decision : undefined);
       }
       const persisted = await this.appendToolResult(result, parent);
       parent = persisted.uuid;
@@ -1637,10 +1756,13 @@ export class AgentSession {
     return parent;
   }
 
+  /** Runs one tool call. `decided` is the person's answer to this exact call (an approval, D-48): it answers the
+   *  call's ask, so nobody is asked again; a policy denial still wins. */
   private async executeTool(
     tu: ToolUseBlock,
     principal: Author,
     log: Logger,
+    decided?: Decision,
   ): Promise<ToolResultEvent> {
     const { cfg } = this;
     const make = (
@@ -1698,7 +1820,7 @@ export class AgentSession {
       isMemory: tool?.memory ?? false,
       principal,
     };
-    const { decision, via } = await this.resolve(permReq);
+    const { decision, via } = decided ? await this.resolveDecided(permReq, decided) : await this.resolve(permReq, tu.id);
     const toolStartMs = Date.now();
 
     let raw: string | ToolResultBlocks;
@@ -1772,9 +1894,17 @@ export class AgentSession {
     return make(display, isError, blocks, diff, decision, refusal, sandboxRefusal);
   }
 
+  /** D-48: the person's answer to this exact call stands in for its ask, never for a policy denial: a rule that denies
+   *  the call now (tightened since the park) still wins. */
+  private async resolveDecided(req: PermissionRequest, decided: Decision): Promise<{ decision: Decision; via: DecisionVia }> {
+    const d = await this.cfg.canUseTool(req);
+    if (d.behavior === "deny") return { decision: this.observed(req, d, "policy"), via: "policy" };
+    return { decision: decided.behavior === "deny" ? this.observed(req, decided, "interactive") : decided, via: "interactive" };
+  }
+
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
    *  the caller after the tool ran, so a tool-boundary refusal can turn it into the effective deny. */
-  private async resolve(req: PermissionRequest): Promise<{ decision: Decision; via: DecisionVia }> {
+  private async resolve(req: PermissionRequest, toolUseId: string): Promise<{ decision: Decision; via: DecisionVia }> {
     const d = await this.cfg.canUseTool(req);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
     // PermissionRequest: a hook may answer in the person's place (the first answer wins);
@@ -1800,7 +1930,7 @@ export class AgentSession {
     // proceed past the edge.
     if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
-      throw new SafetyParkSignal(String(req.input.command ?? req.input.path ?? ""), d.safetyReason ?? "approval_required");
+      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", toolUseId);
     }
     return {
       decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),
@@ -1824,7 +1954,7 @@ export class AgentSession {
     numTurns: number,
     usage: Usage,
     parent: string | null,
-    pendingApproval?: { command: string; reason: string },
+    pendingApproval?: PendingApprovalRecord,
     refusal?: ModelRefusal,
     sandboxRefusal?: SandboxRefusal,
   ): AsyncGenerator<EngineEvent, string | null, void> {
@@ -1845,7 +1975,7 @@ export class AgentSession {
     subtype: "success" | "error" | "max_turns" | "cancelled" | "needs_approval",
     numTurns: number,
     usage: Usage,
-    pendingApproval?: { command: string; reason: string },
+    pendingApproval?: PendingApprovalRecord,
   ): EngineEvent {
     void this.event("run.end", { subtype, turns: numTurns, usage, ...(pendingApproval ? { pending: pendingApproval.reason } : {}) });
     if (subtype !== "success" && this.cfg.hooks?.has("Notification")) {

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### An approval settles the call its park holds; a step gate for a graceful stop (W3 window defects D-48, D-49, 2026-10-31)
+
+- D-48: a `needs_approval` result names its held call (`pendingApproval.toolUseId`, protocol: additive optional field,
+  also on `PendingApproval` and `approval_response`). `AgentSession.approve({decision, reason?, toolUseId?})` reads
+  the held call from the log (`heldCall`), so it binds in any process: `allow` runs exactly that call (name, input,
+  id) through the normal tool path without asking again (hooks, the `tool_started` marker, the sandbox), `deny`
+  records a denial as its result, and only then is the model called. A call already started is never run again
+  (`INTERRUPTED_TOOL_RESULT`). `NoHeldCallError` when nothing is held or the client named another call; nothing is
+  written. `inFlightTurn` treats a settled park as a turn in flight; `turnToResume` adds a held call whose approved
+  run began and whose result was lost.
+- A serial tool batch persists each result as its call ends (was: after the whole batch), so a park at the second
+  call keeps the first call's result; a park inside a resumed turn's prelude ends the turn `needs_approval` instead
+  of throwing.
+- D-49: `AgentConfig.stepGate`, awaited before each model call and each tool step; a host that is stopping never
+  resolves it, so the turn halts at a step boundary with the step in flight finished and nothing more written.
+
 ### D-27 round 3: no auto-approval after an environment change on the same line (2026-10-29)
 
 - On the allow side every command of a Bash line asks when anything on the line changes the environment a command
