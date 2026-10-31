@@ -1524,7 +1524,7 @@ export class AgentSession {
   private compactions = 0;
 
   private hookCtx(): HookContext {
-    return { sessionId: this.cfg.sessionId, agentId: this.cfg.agentId, cwd: this.cfg.cwd, ...(this.currentRun ? { runId: this.currentRun } : {}) };
+    return { sessionId: this.cfg.sessionId, agentId: this.cfg.agentId, cwd: this.cfg.cwd, ...(this.currentRun ? { runId: this.currentRun } : {}), ...(this.cfg.signal ? { signal: this.cfg.signal } : {}) };
   }
 
   /**

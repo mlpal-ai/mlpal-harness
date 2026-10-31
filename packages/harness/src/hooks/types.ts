@@ -49,6 +49,8 @@ export interface HookContext {
   cwd: string;
   /** telemetry v1: the run (turn) in progress, when a hook fires inside one. */
   runId?: string;
+  /** The session's abort signal (interrupt, max_turn_s): a hook that waits must not start its work once it fired. */
+  signal?: AbortSignal;
 }
 
 export interface UserPromptSubmitInput {

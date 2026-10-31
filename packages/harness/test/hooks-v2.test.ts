@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EngineEvent } from "@mlpal/harness-protocol";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
-import { clipHookResult, FilteredHook, FunctionHook, HOOK_OUTPUT_CAP, HookEngine, HttpHook, matchesWhen, PromptHook, registerPluginHooks } from "../src/hooks/engine";
+import { clipHookResult, CommandHook, FilteredHook, FunctionHook, HOOK_OUTPUT_CAP, HookEngine, HttpHook, matchesWhen, PromptHook, registerPluginHooks } from "../src/hooks/engine";
 import type { HookInput } from "../src/hooks/types";
 import { AgentSession } from "../src/loop/agent";
 import { createPolicy } from "../src/permission/engine";
@@ -223,5 +223,28 @@ describe("hooks v2: the new events fire at their seams", () => {
     const r = await tool.call({ description: "find the bug", prompt: "p" } as never, { cwd: "/w", sessionId: "s", runId: "r1" } as never);
     expect(String(r.content)).toContain("child done");
     expect(fired.find((f) => f.event === "SubagentStart")).toMatchObject({ event: "SubagentStart", description: "find the bug", background: false });
+  });
+});
+
+describe("hooks carry the turn's abort signal (W3 fix round 2, item 3)", () => {
+  test("every hook's context has the session's signal, and a command hook hands it to its runner", async () => {
+    const ac = new AbortController();
+    const seen: Array<{ event: string; signal: unknown }> = [];
+    const runnerSignals: unknown[] = [];
+    const hooks = new HookEngine();
+    hooks.register(new FunctionHook("ctx", ["UserPromptSubmit", "PreToolUse"], async (input, c) => (seen.push({ event: input.event, signal: c.signal }), {})));
+    hooks.register(new CommandHook("remote", ["PreToolUse"], "true", { runner: async (_cmd, o) => (runnerSignals.push(o.signal), { exitCode: 0, stdout: "", stderr: "" }) }));
+    let turn = 0;
+    const model: ModelClient = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        turn += 1;
+        return turn === 1 ? toolUse("Bash", { command: "echo run" }) : textDone("ok");
+      },
+    };
+    const sess = new AgentSession({ agentId: "ag", sessionId: "s-hooks2-signal", workspace: "w", cwd, model: "m", systemPrompt: "t", tools: defaultRegistry(), store: new LocalStore(root), model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), maxTokens: 100, hooks, signal: ac.signal });
+    await drain(sess.run({ text: "go" }));
+    expect(seen.map((s) => s.event)).toEqual(["UserPromptSubmit", "PreToolUse"]);
+    expect(seen.every((s) => s.signal === ac.signal)).toBe(true);
+    expect(runnerSignals).toEqual([ac.signal]);
   });
 });
