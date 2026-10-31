@@ -569,7 +569,7 @@ export type ServerMessage =
   /** 0.20.0 (capability "workspace_stats"). */
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
   /** 0.20.5: `refusal` when the message is a model refusal (typed; see ModelRefusal). */
-  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal; /** D-48: a typed approval refusal; nothing was written, re-read the pending ask. */ code?: "approval_id_required" | "approval_stale" };
+  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal; /** D-48: a typed approval refusal; nothing was written, re-read the pending ask. */ code?: "approval_id_required" | "approval_stale"; /** D-48: with `code`, the session whose approval was refused. */ sessionId?: string };
 
 export const PROTOCOL_VERSION = "yodex/2";
 

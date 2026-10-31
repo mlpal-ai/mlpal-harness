@@ -191,10 +191,11 @@ export interface AgentConfig {
    *  answerer (reason `approval_required`): a turn resumed with nobody attached waits for the person
    *  instead of losing the ask. */
   parkHeadless?: boolean | "every_ask";
-  /** Awaited before each step the loop starts, naming it: a model call, or a tool call (a read-only batch is one
-   *  step). A host that is stopping (SIGTERM) never resolves it, so the turn halts at a step boundary with nothing more
-   *  written: the step in flight finishes and its result is appended, and the turn stays open for the next engine. */
-  stepGate?: (next: "model" | "tool") => Promise<void>;
+  /** Awaited before each step the loop starts, naming it: a model call, a tool call (a read-only batch is one step),
+   *  or the turn's end after a tool-less answer (`finish`: its nudges, Stop hooks and result). A host that is stopping
+   *  (SIGTERM) never resolves it, so the turn halts at a step boundary with nothing more written: the step in flight
+   *  finishes and its result is appended, and the turn stays open for the next engine. */
+  stepGate?: (next: "model" | "tool" | "finish") => Promise<void>;
   /**
    * Completion self-check: nudge once to verify-or-admit when a run made >= selfCheckMinEdits
    * successful edits but never ran a test/build/typecheck. Default on (undefined => on); set
@@ -1062,6 +1063,9 @@ export class AgentSession {
         .join("");
       if (asstText.trim()) lastAssistantText = asstText.trim();
       if (toolUses.length === 0) {
+        // D-49 (N3): the turn's end is a step too: a stop that began during the model call writes no nudge, Stop hook,
+        // result or done after it; the next engine resumes from the answered head.
+        if (cfg.stepGate) await cfg.stepGate("finish");
         // Output hit the per-request token cap: the answer was truncated mid-thought. Resume it
         // (splitting large outputs) instead of accepting the cut — up to a bounded number of times.
         if (result.stopReason === "max_tokens" && maxTokensRecoveries < maxTokensRecoveryLimit) {

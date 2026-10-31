@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### D-48/D-49 fix round 2 (2026-10-31)
+
+- `stepGate("finish")`: the turn's end after a tool-less answer is a gated step (N3).
+- Protocol: a typed approval refusal's `error` frame may carry `sessionId` (N4).
+
 ### D-48/D-49 fix round 1: a park binds one call by position; duplicate ids refused (2026-10-31)
 
 - The held call is named by position: `pendingApproval.index` beside `toolUseId`, and `HeldCall.at`

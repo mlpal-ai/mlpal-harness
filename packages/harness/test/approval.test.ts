@@ -399,6 +399,31 @@ for (const [name, make] of [
 }
 
 describe("D-49: the step gate", () => {
+  test("N3: a stop that begins during the model call: a tool-less answer writes no result after it (the finish is gated)", async () => {
+    const store = new LocalStore(join(root, "store"));
+    const { registry } = tools();
+    let closed = false;
+    const reached = Promise.withResolvers<string>();
+    const gate = async (next: string) => {
+      if (!closed) return;
+      reached.resolve(next);
+      await new Promise<never>(() => {});
+    };
+    const model: ModelClient = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        closed = true; // the stop begins while the call is in flight
+        return textDone("the answer");
+      },
+    };
+    void drain(session(store, model, registry, { stepGate: gate }).run({ text: "hi" }));
+    expect(await reached.promise).toBe("finish");
+    await Bun.sleep(30);
+    // The answer is on record (an answered head the next engine resumes from); no result follows it.
+    expect(await kinds(store)).toEqual(["system", "user", "assistant"]);
+    expect(inFlightTurn(effectiveEntries(await store.conversation.read("s1"))).length).toBe(2);
+  });
+
+
   test("an approval that arrives during a stop halts before the held call runs; nothing is written", async () => {
     const store = new LocalStore(join(root, "store"));
     const { registry, runs } = tools();
