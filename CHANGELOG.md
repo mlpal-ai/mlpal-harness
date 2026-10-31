@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Inbox consume and head (INBOX T2, P1 1.2, 2026-10-31)
+
+- `SessionStoreClient.inboxHead`; `appendEncoded({consumes})`; `InboxItemNotPendingError` for `409
+  inbox_item_not_pending`. `AppendBatcher.consume`: an isolated, acknowledged batch with `consumes`, non-fatal on
+  that 409. `Store.consume` / `Store.inboxHead` (`RemoteStore`; its memory views take a consumed batch only once
+  acknowledged).
+- `TurnInput.consumes` (the user entry opens an inbox turn) and `TurnInput.requestId` (on the `user` entry,
+  `UserEvent.requestId`). A run that opens no turn now drops its bus subscription (a withdrawn item, a rejected prompt).
+- `AskContext.toolUseId` and `.sessionId`; `stepGate("hook")` before the Stop hooks and `"finish"` after them (N6).
+- Protocol: `permission_response` / `question_response` take `sessionId`; `approval_response` takes `id`.
+
 ### D-48/D-49 fix round 2 (2026-10-31)
 
 - `stepGate("finish")`: the turn's end after a tool-less answer is a gated step (N3).

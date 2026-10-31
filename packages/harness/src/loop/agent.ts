@@ -36,7 +36,7 @@ import { type Metrics, noopMetrics } from "../obs/metrics";
 import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
-import type { Store } from "../store/types";
+import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import type { ExecPolicy, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
@@ -192,10 +192,11 @@ export interface AgentConfig {
    *  instead of losing the ask. */
   parkHeadless?: boolean | "every_ask";
   /** Awaited before each step the loop starts, naming it: a model call, a tool call (a read-only batch is one step),
-   *  or the turn's end after a tool-less answer (`finish`: its nudges, Stop hooks and result). A host that is stopping
+   *  the Stop hooks (`hook`: a step, waited for like a tool), or the turn's end after a tool-less answer (`finish`: its
+   *  nudges and result; gated again after the Stop hooks). A host that is stopping
    *  (SIGTERM) never resolves it, so the turn halts at a step boundary with nothing more written: the step in flight
    *  finishes and its result is appended, and the turn stays open for the next engine. */
-  stepGate?: (next: "model" | "tool" | "finish") => Promise<void>;
+  stepGate?: (next: "model" | "tool" | "hook" | "finish") => Promise<void>;
   /**
    * Completion self-check: nudge once to verify-or-admit when a run made >= selfCheckMinEdits
    * successful edits but never ran a test/build/typecheck. Default on (undefined => on); set
@@ -259,6 +260,12 @@ export interface AgentConfig {
 
 export interface TurnInput {
   text: string;
+  /** P1 1.2 inbox mode: the inbox item this turn runs. Its `user` entry is the consuming append's opening event,
+   *  isolated and acknowledged before anything else of the turn; a withdrawn item rejects the run with
+   *  InboxItemNotPendingError, the turn unwritten. */
+  consumes?: InboxConsume;
+  /** The request this turn opens for: carried on its `user` entry (P3 2.6: a message's turn is matched by it). */
+  requestId?: string;
   /** Attachments (image/document blocks) sent alongside the text — drag-dropped or
    *  @-mentioned media files. Prepended to the user message content. */
   blocks?: ContentBlock[];
@@ -278,6 +285,10 @@ export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless
 export interface AskContext {
   reason?: string;
   safetyReason?: SafetyReason;
+  /** The call the ask guards: a host derives a stable ask id from it (P2 1.1, `ask:<toolUseId>`). */
+  toolUseId?: string;
+  /** The session whose loop asks (a sub-agent's own, when its asks go to its parent's route). */
+  sessionId?: string;
 }
 
 /** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
@@ -700,6 +711,7 @@ export class AgentSession {
       const blocker = results.find((r) => r.block);
       if (blocker) {
         this.currentRun = previousRun; // a rejected prompt leaves no turn and no run
+        unsubscribe?.();
         yield { type: "result", subtype: "error", numTurns: 0, usage: emptyUsage(), ts: now(), reason: `prompt rejected by hook: ${blocker.reason ?? "no reason given"}` };
         return;
       }
@@ -717,12 +729,31 @@ export class AgentSession {
       message: { role: "user", content: userContent },
       author,
       ts: now(),
+      ...(input.requestId ? { requestId: input.requestId } : {}),
     };
-    const userUuid = (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
+    let userUuid: string;
+    try {
+      userUuid = input.consumes ? await this.consumeOpening(userEvt, parent, input.consumes) : (await this.store.conversation.append(cfg.sessionId, userEvt, parent)).uuid;
+    } catch (e) {
+      // No turn opened (a withdrawn inbox item, a refused write): the run leaves the session as it found it, its bus
+      // subscription included, or the session would read as running forever.
+      unsubscribe?.();
+      this.currentRun = previousRun;
+      throw e;
+    }
     parent = userUuid;
     yield { ...userEvt, uuid: parent };
 
     yield* this.turn({ author, task: input.text ?? "", parent, runId, ref: userUuid, unsubscribe });
+  }
+
+  /** The consuming append that opens an inbox turn (P1 1.2): the user entry alone, acknowledged before the turn goes
+   *  on. Returns the entry's uuid. */
+  private async consumeOpening(userEvt: UserEvent, parent: string | null, consumes: InboxConsume): Promise<string> {
+    if (!this.store.consume) throw new Error("this session store takes no consuming append (P1 1.2)");
+    const entry: ConversationEntry = { uuid: crypto.randomUUID(), parentUuid: parent, ts: now(), payload: userEvt };
+    await this.store.consume(this.cfg.sessionId, consumes, [{ kind: userEvt.type, data: entry }]);
+    return entry.uuid;
   }
 
   /** The turn after its user entry: the model-and-tools loop to the run's result. `run()` enters it
@@ -1174,7 +1205,11 @@ export class AgentSession {
 
         // Stop hooks (verifier loop): a hook may block "done" and force a correction.
         if (cfg.hooks?.has("Stop") && stopContinuations < maxStopContinuations) {
+          // D-49 (N6): the hooks are a step (a command hook runs in the sandbox, the verifier is a child); a stop that
+          // began while they ran writes nothing after them.
+          if (cfg.stepGate) await cfg.stepGate("hook");
           const results = await cfg.hooks.run({ event: "Stop", numTurns: turns }, this.hookCtx());
+          if (cfg.stepGate) await cfg.stepGate("finish");
           // Stamp the agent-verifier verdict for telemetry even when it passes (allows without
           // blocking). The last verdict seen is the finishing one — a FAIL that blocks is later
           // overwritten by the PASS the loop eventually reaches.
@@ -2011,7 +2046,7 @@ export class AgentSession {
     if (this.cfg.onAsk) {
       // null = "no answer from this answerer" (a policy file with no matching rule): fall through
       // to the headless handling below, exactly as if no answerer were installed.
-      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason });
+      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason, toolUseId: call.toolUseId, sessionId: this.cfg.sessionId });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
       }

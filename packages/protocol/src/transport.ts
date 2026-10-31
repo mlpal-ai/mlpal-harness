@@ -422,13 +422,13 @@ export type ClientMessage =
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
    *  given); `session_history.hasMore` says whether older entries exist. */
   | { type: "load_session"; requestId?: string; sessionId: string; before?: string; limit?: number }
-  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant }
+  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** P3 2.6: the session the answered ask belongs to (the scheduler sets it). */ sessionId?: string }
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
-  | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant }
+  | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant; /** P3 2.6: the session the answered park or ask belongs to; with it, `id` may be the projection's park id. */ sessionId?: string }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
   | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** D-48: the park this answers (`pendingApproval.parkId`). Without it an answer is refused
    *  `approval_id_required` unless this engine showed that park and nothing has run since; another park held by now is
-   *  refused `approval_stale`. Either refusal writes nothing. */ parkId?: string }
+   *  refused `approval_stale`. Either refusal writes nothing. */ parkId?: string; /** P3 2.6: the park id as P1's inbox names the ask (`answers`); equal to `parkId`. */ id?: string }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
   | { type: "stop_subagent"; childSessionId: string }

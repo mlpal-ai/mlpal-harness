@@ -114,6 +114,25 @@ export interface Mailbox {
   peek(sessionId: string): Promise<PeerMessage[]>;
 }
 
+/** What a consuming append consumes (P1 1.2): the inbox item, and how the batch opens. */
+export interface InboxConsume {
+  requestId: string;
+  outcome: "turn" | "answer" | "rejected";
+}
+
+/** One inbox item as the head read answers it (P1 1.2). */
+export interface InboxItem {
+  requestId: string;
+  kind: "turn" | "answer";
+  /** For an answer: the ask (park) id it answers. */
+  answers?: string;
+  inboxSeq: number;
+  message: Record<string, unknown>;
+  contextSha256: string;
+  acceptedAtMs: number;
+  attempts: number;
+}
+
 export interface Store {
   readonly root: string;
   readonly conversation: ConversationStore;
@@ -135,4 +154,10 @@ export interface Store {
   appendEvent?(sessionId: string, kind: string, data: Record<string, unknown>): Promise<unknown>;
   /** The data of the session's events of `kind`, in the order they were appended. */
   readEvents?(sessionId: string, kind: string): Promise<Record<string, unknown>[]>;
+  /** P1 1.2 (remote backend, an inbox engine): a consuming append. `events` go out as one batch of their own with
+   *  `consumes`, after everything queued before them, and resolve with their seqs once acknowledged. A stop or a
+   *  supersession that took the item meanwhile rejects with InboxItemNotPendingError, nothing written. */
+  consume?(sessionId: string, consumes: InboxConsume, events: Array<{ kind: string; data: unknown }>): Promise<number[]>;
+  /** P1 1.2: the next inbox item (or, with `answers`, the pending answer to that ask); null when there is none. */
+  inboxHead?(sessionId: string, answers?: string): Promise<InboxItem | null>;
 }

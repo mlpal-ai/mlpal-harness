@@ -398,7 +398,49 @@ for (const [name, make] of [
   });
 }
 
+describe("the ask context (P2 1.1 stable ask ids; N7)", () => {
+  test("an ask names the call it guards and the session whose loop asks", async () => {
+    const store = new LocalStore(join(root, "store"));
+    const { registry } = tools();
+    const seen: unknown[] = [];
+    await drain(
+      session(store, new ScriptedModel([call(["tu9", "Probe", PROBE]), textDone("ok")]), registry, {
+        onAsk: async (_req, ask) => {
+          seen.push(ask);
+          return { behavior: "allow" };
+        },
+      }).run({ text: "probe" }),
+    );
+    expect(seen).toEqual([{ reason: "needs a person", toolUseId: "tu9", sessionId: "s1" }]);
+  });
+});
+
 describe("D-49: the step gate", () => {
+  test("N6: the Stop hooks are a step: a stop that begins while they run is waited for, and nothing is written after them", async () => {
+    const store = new LocalStore(join(root, "store"));
+    const { registry } = tools();
+    const seen: string[] = [];
+    let stopping = false;
+    const halted = Promise.withResolvers<string>();
+    const gate = async (next: string) => {
+      seen.push(next);
+      if (!stopping) return;
+      halted.resolve(next);
+      await new Promise<never>(() => {});
+    };
+    const hooks = new HookEngine();
+    hooks.register(new FunctionHook("verifier", ["Stop"], async () => {
+      stopping = true; // SIGTERM lands while the hook runs
+      return {};
+    }));
+    void drain(session(store, new ScriptedModel([textDone("done")]), registry, { stepGate: gate, hooks }).run({ text: "hi" }));
+    expect(await halted.promise).toBe("finish");
+    await Bun.sleep(30);
+    expect(seen).toEqual(["model", "finish", "hook", "finish"]);
+    expect(await kinds(store)).toEqual(["system", "user", "assistant"]);
+  });
+
+
   test("N3: a stop that begins during the model call: a tool-less answer writes no result after it (the finish is gated)", async () => {
     const store = new LocalStore(join(root, "store"));
     const { registry } = tools();

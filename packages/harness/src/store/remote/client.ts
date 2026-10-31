@@ -6,6 +6,9 @@
  */
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
+import type { InboxConsume, InboxItem } from "../types";
+
+export type { InboxConsume, InboxItem };
 
 /** An event as the engine appends it: `kind` is the protocol frame's `type`, `data` the frame. */
 export interface StoreEvent {
@@ -152,6 +155,20 @@ export class SessionDeletedError extends StoreHttpError {
   }
 }
 
+/** 409 `inbox_item_not_pending` (P1 1.2): a consuming append whose item a stop or a supersession took meanwhile.
+ *  Nothing was written, and the writer goes on: the engine drops that turn and drains the next item. */
+export class InboxItemNotPendingError extends StoreHttpError {
+  override name = "InboxItemNotPendingError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    readonly state: string | null,
+  ) {
+    super(message, status, code);
+  }
+}
+
 /** 413: `batch_too_large` (over the per-batch limits) or `event_too_large` (one event over the
  *  store's `max_event_bytes`). */
 export class BatchTooLargeError extends StoreHttpError {
@@ -209,7 +226,7 @@ export interface CreateSessionBody {
   origin: string;
 }
 
-type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream";
+type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream" | "head";
 
 /** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
  *  first): an append retries any network failure or 5xx (the store answers a replay with its original
@@ -231,6 +248,7 @@ function httpError(op: Op, sid: string | null, status: number, body: Record<stri
   if (status === 409 && code === "session_leased") return new LeaseHeldError(message, status, code, num(body.expires_at));
   if (status === 409 && code === "lease_lost") return new LeaseLostError(message, status, code);
   if (status === 409 && code === "seq_conflict") return new SeqConflictError(message, status, code, num(body.last_seq));
+  if (status === 409 && code === "inbox_item_not_pending") return new InboxItemNotPendingError(message, status, code, typeof body.state === "string" ? body.state : null);
   return new StoreHttpError(message, status, code);
 }
 
@@ -290,13 +308,32 @@ export class SessionStoreClient {
   }
 
   /** `append` for events serialized at append time: the body is assembled once, before any attempt. */
-  async appendEncoded(sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[] }): Promise<{ firstSeq: number; lastSeq: number }> {
+  async appendEncoded(sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[]; consumes?: InboxConsume }): Promise<{ firstSeq: number; lastSeq: number }> {
     const t0 = this.now();
     const events = opts.events.map((e) => `{"kind":${JSON.stringify(e.kind)},"data":${e.json},"ts_ms":${e.ts_ms}}`);
-    const body = `{"lease_id":${JSON.stringify(opts.leaseId)},"after_seq":${opts.afterSeq},"events":[${events.join(",")}]}`;
+    const consumes = opts.consumes ? `,"consumes":${JSON.stringify({ request_id: opts.consumes.requestId, outcome: opts.consumes.outcome })}` : "";
+    const body = `{"lease_id":${JSON.stringify(opts.leaseId)},"after_seq":${opts.afterSeq},"events":[${events.join(",")}]${consumes}}`;
     const b = await this.call<{ first_seq: number; last_seq: number }>("append", sid, "POST", "/events", body, "append");
     this.log.debug("store.append", { sid, events: opts.events.length, firstSeq: b.first_seq, lastSeq: b.last_seq, ms: this.now() - t0 });
     return { firstSeq: b.first_seq, lastSeq: b.last_seq };
+  }
+
+  /** P1 1.2 head (the session's engine, under its live lease): the next inbox item to run, or, with `answers`, the
+   *  pending answer to that ask; null when there is none. A read counts a delivery attempt of the item (P1 rejects it
+   *  `delivery_failed` past the store's maximum). */
+  async inboxHead(sid: string, answers?: string): Promise<InboxItem | null> {
+    const b = await this.call<WireInboxItem | null>("head", sid, "POST", "/inbox/head", JSON.stringify(answers === undefined ? {} : { answers }));
+    if (!b) return null;
+    return {
+      requestId: b.request_id,
+      kind: b.kind,
+      ...(b.answers !== undefined ? { answers: b.answers } : {}),
+      inboxSeq: b.inbox_seq,
+      message: b.message,
+      contextSha256: b.context_sha256,
+      acceptedAtMs: b.accepted_at_ms,
+      attempts: b.attempts,
+    };
   }
 
   /** `after` past the store's last seq is `400 invalid_cursor`. */
@@ -466,6 +503,17 @@ function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promis
 /** Never lets the bearer reach a message; an empty token has nothing to hide. */
 function redact(s: string, token: string): string {
   return token ? s.split(token).join("[redacted]") : s;
+}
+
+interface WireInboxItem {
+  request_id: string;
+  kind: "turn" | "answer";
+  answers?: string;
+  inbox_seq: number;
+  message: Record<string, unknown>;
+  context_sha256: string;
+  accepted_at_ms: number;
+  attempts: number;
 }
 
 /** What a caller may impose on one call. */

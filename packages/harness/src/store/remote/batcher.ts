@@ -12,7 +12,7 @@
  * in the durable log would contradict what the engine already holds in memory.
  */
 import { EventTooLargeError } from "../errors";
-import { BatchTooLargeError, type EncodedEvent, encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
+import { BatchTooLargeError, type EncodedEvent, encodeEvent, InboxItemNotPendingError, type InboxConsume, type SessionStoreClient, type StoredEvent } from "./client";
 
 export { EventTooLargeError };
 
@@ -40,6 +40,8 @@ interface Queued {
   event: EncodedEvent;
   resolve: (seq: number) => void;
   reject: (err: Error) => void;
+  /** The first event of a consuming batch (P1 1.2) and how many events that batch holds: it goes out alone. */
+  consume?: { consumes: InboxConsume; size: number };
 }
 
 export class AppendBatcher {
@@ -98,6 +100,25 @@ export class AppendBatcher {
     });
   }
 
+  /**
+   * A consuming append (P1 1.2 §4.5): `events` go out as one batch of their own with `consumes`, after everything
+   * queued before them (isolated), and the promise resolves with each event's seq once the store acknowledged it
+   * (awaited). A `409 inbox_item_not_pending` (a stop or a supersession took the item) rejects with
+   * InboxItemNotPendingError and leaves the writer running: nothing was written.
+   */
+  consume(events: EncodedEvent[], consumes: InboxConsume): Promise<number[]> {
+    if (this.fatalError) return Promise.reject(this.fatalError);
+    if (events.length === 0) throw new RangeError("a consuming batch needs its opening event");
+    const seqs = events.map(
+      (event, i) =>
+        new Promise<number>((resolve, reject) => {
+          this.queue.push({ event, resolve, reject, ...(i === 0 ? { consume: { consumes, size: events.length } } : {}) });
+        }),
+    );
+    queueMicrotask(() => this.kick());
+    return Promise.all(seqs);
+  }
+
   /** Resolves when everything queued so far is acknowledged; rejects with the fatal error. */
   async flush(): Promise<void> {
     this.kick();
@@ -116,11 +137,17 @@ export class AppendBatcher {
 
   private async drain(): Promise<void> {
     while (this.queue.length > 0 && !this.fatalError) {
-      let bytes = 0;
+      const consume = this.queue[0]!.consume;
       let n = 0;
-      while (n < this.queue.length && n < this.maxEvents && (n === 0 || bytes + this.queue[n]!.event.bytes <= this.maxBytes)) {
-        bytes += this.queue[n]!.event.bytes;
-        n++;
+      if (consume) {
+        n = consume.size;
+      } else {
+        let bytes = 0;
+        // A consuming batch goes alone: a plain batch stops before its first event.
+        while (n < this.queue.length && n < this.maxEvents && !this.queue[n]!.consume && (n === 0 || bytes + this.queue[n]!.event.bytes <= this.maxBytes)) {
+          bytes += this.queue[n]!.event.bytes;
+          n++;
+        }
       }
       this.inFlight = this.queue.splice(0, n);
       try {
@@ -128,6 +155,7 @@ export class AppendBatcher {
           leaseId: this.opts.leaseId(),
           afterSeq: this.acked,
           events: this.inFlight.map((q) => q.event),
+          ...(consume ? { consumes: consume.consumes } : {}),
         });
         this.acked = lastSeq;
         const batch = this.inFlight;
@@ -136,6 +164,12 @@ export class AppendBatcher {
         this.opts.onAck?.(batch.map((q, i) => ({ seq: firstSeq + i, kind: q.event.kind, data: JSON.parse(q.event.json), ts_ms: q.event.ts_ms })));
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
+        if (consume && err instanceof InboxItemNotPendingError) {
+          // Non-fatal (P1 1.2): the item is gone, nothing was written; the writer goes on with what follows.
+          for (const q of this.inFlight) q.reject(err);
+          this.inFlight = [];
+          continue;
+        }
         const [only] = this.inFlight;
         if (err instanceof BatchTooLargeError && err.code === "event_too_large" && this.inFlight.length === 1 && only) {
           // Nothing was written: drop this one event, keep its limit, and go on with the next batch.

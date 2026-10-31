@@ -29,6 +29,9 @@ export interface UserEvent {
   message: Message;
   author: Author;
   ts: string;
+  /** P3 2.6 / P2 1.1: the request this turn opened for (the message's `requestId`, an inbox item's `request_id`), on a
+   *  person's turn the host names one for: a message's turn is the one whose `user` and `done` carry its id. */
+  requestId?: string;
 }
 
 export interface AssistantEvent {

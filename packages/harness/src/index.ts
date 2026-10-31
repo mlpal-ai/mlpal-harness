@@ -16,6 +16,7 @@ export {
   StoreHttpError,
   StoreUnreachableError,
   StreamBusyError,
+  InboxItemNotPendingError,
   encodeEvent,
   type CreateSessionBody,
   type EncodedEvent,
