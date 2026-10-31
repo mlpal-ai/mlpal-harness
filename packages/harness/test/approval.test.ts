@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { type EngineEvent, HUMAN, type SDKMessage } from "@mlpal/harness-protocol";
 import { z } from "zod";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
-import { AgentSession, type AgentConfig, INTERRUPTED_TOOL_RESULT, NoHeldCallError, heldCall, inFlightTurn } from "../src/loop/agent";
+import { FunctionHook, HookEngine } from "../src/hooks/engine";
+import { AgentSession, type AgentConfig, DUPLICATE_TOOL_USE_ID, INTERRUPTED_TOOL_RESULT, NoHeldCallError, heldCall, inFlightTurn } from "../src/loop/agent";
 import { effectiveEntries, loadMessages } from "../src/loop/messages";
 import { LocalStore } from "../src/store/local";
 import { SessionStoreClient } from "../src/store/remote/client";
@@ -151,6 +152,8 @@ async function drain<R>(gen: AsyncGenerator<EngineEvent, R, void>): Promise<{ ev
   }
 }
 
+/** The park the session waits on: what an approval names. */
+const park = async (store: Store) => heldCall(effectiveEntries(await store.conversation.read("s1")))!.parkId;
 const kinds = async (store: Store) => effectiveEntries(await store.conversation.read("s1")).map((e) => e.payload.type);
 const started = async (store: Store) => ((await store.readEvents?.("s1", "tool_started")) ?? []).map((m) => m.toolUseId);
 /** What the model was sent for the held call in its last request: the tool_result block for `id`. */
@@ -174,7 +177,7 @@ for (const [name, make] of [
     test("the park names its held call by id", async () => {
       const b = await make();
       const { registry, runs } = tools();
-      expect(await parked(b.store, registry)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { command: "echo destroy-probe", reason: "approval_required", toolUseId: "tu1" } });
+      expect(await parked(b.store, registry)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { command: "echo destroy-probe", reason: "approval_required", toolUseId: "tu1", index: 0 } });
       expect(runs).toEqual([]);
       expect(heldCall(effectiveEntries(await b.store.conversation.read("s1")))?.toolUse).toEqual({ type: "tool_use", id: "tu1", name: "Probe", input: PROBE });
     });
@@ -184,7 +187,8 @@ for (const [name, make] of [
       const { registry, runs } = tools();
       await parked(b.store, registry);
       const model = new ScriptedModel([textDone("the probe ran")]);
-      const { events } = await drain(session(b.store, model, registry).approve({ decision: "allow" }));
+      const id = await park(b.store);
+      const { events } = await drain(session(b.store, model, registry).approve({ decision: "allow", parkId: id }));
       expect(runs).toEqual([{ tool: "Probe", input: PROBE }]);
       expect(events.find((e) => e.type === "tool_result")).toMatchObject({ toolUseId: "tu1", toolName: "Probe", isError: false, content: "ran Probe: echo destroy-probe" });
       expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success" });
@@ -195,7 +199,7 @@ for (const [name, make] of [
       expect(await kinds(b.store)).toEqual(["system", "user", "assistant", "result", "tool_result", "assistant", "result"]);
       // Settled: nothing is held any more, and a second answer finds nothing.
       expect(heldCall(effectiveEntries(await b.store.conversation.read("s1")))).toBeUndefined();
-      await expect(drain(session(b.store, new ScriptedModel([]), registry).approve({ decision: "allow" }))).rejects.toBeInstanceOf(NoHeldCallError);
+      await expect(drain(session(b.store, new ScriptedModel([]), registry).approve({ decision: "allow", parkId: id }))).rejects.toBeInstanceOf(NoHeldCallError);
       expect(runs).toHaveLength(1);
     });
 
@@ -206,7 +210,7 @@ for (const [name, make] of [
       const store = await b.reopen();
       const { registry, runs } = tools();
       const model = new ScriptedModel([textDone("the probe ran")]);
-      const { events } = await drain(session(store, model, registry).approve({ decision: "allow", toolUseId: "tu1" }));
+      const { events } = await drain(session(store, model, registry).approve({ decision: "allow", parkId: await park(store) }));
       expect(first.runs).toEqual([]);
       expect(runs).toEqual([{ tool: "Probe", input: PROBE }]);
       expect(events.find((e) => e.type === "tool_result")).toMatchObject({ toolUseId: "tu1", content: "ran Probe: echo destroy-probe" });
@@ -219,7 +223,8 @@ for (const [name, make] of [
       const { registry, runs } = tools();
       await parked(b.store, registry);
       const model = new ScriptedModel([textDone("understood")]);
-      const { events } = await drain(session(await b.reopen(), model, registry).approve({ decision: "deny", reason: "not today" }));
+      const store = await b.reopen();
+      const { events } = await drain(session(store, model, registry).approve({ decision: "deny", reason: "not today", parkId: await park(store) }));
       expect(runs).toEqual([]);
       expect(events.find((e) => e.type === "tool_result")).toMatchObject({ toolUseId: "tu1", isError: true, content: "Permission denied: not today" });
       expect(sentResult(model, "tu1")).toMatchObject({ content: "Permission denied: not today", is_error: true });
@@ -231,8 +236,9 @@ for (const [name, make] of [
       const { registry, runs } = tools();
       await parked(b.store, registry);
       const model = new ScriptedModel([textDone("blocked")]);
-      const tightened = session(await b.reopen(), model, registry, { canUseTool: (req) => (req.toolName === "Probe" ? { behavior: "deny", reason: "rule tightened" } : { behavior: "allow" }) });
-      const { events } = await drain(tightened.approve({ decision: "allow" }));
+      const store = await b.reopen();
+      const tightened = session(store, model, registry, { canUseTool: (req) => (req.toolName === "Probe" ? { behavior: "deny", reason: "rule tightened" } : { behavior: "allow" }) });
+      const { events } = await drain(tightened.approve({ decision: "allow", parkId: await park(store) }));
       expect(runs).toEqual([]);
       expect(events.find((e) => e.type === "tool_result")).toMatchObject({ toolUseId: "tu1", isError: true, content: "Permission denied: rule tightened" });
     });
@@ -242,7 +248,7 @@ for (const [name, make] of [
       const { registry, runs } = tools();
       await parked(b.store, registry);
       const before = await kinds(b.store);
-      await expect(drain(session(b.store, new ScriptedModel([textDone("x")]), registry).approve({ decision: "allow", toolUseId: "tu-other" }))).rejects.toThrow("is not waiting for approval of tu-other");
+      await expect(drain(session(b.store, new ScriptedModel([textDone("x")]), registry).approve({ decision: "allow", parkId: "park-other" }))).rejects.toThrow("is not waiting on park park-other");
       expect(runs).toEqual([]);
       expect(await kinds(b.store)).toEqual(before);
     });
@@ -258,7 +264,7 @@ for (const [name, make] of [
         const store = await b.reopen();
         const model = new ScriptedModel([textDone("checked")]);
         const s = session(store, model, registry);
-        const { events } = settle === "resume" ? await drain(s.resume()) : await drain(s.approve({ decision: "allow" }));
+        const { events } = settle === "resume" ? await drain(s.resume()) : await drain(s.approve({ decision: "allow", parkId: await park(store) }));
         expect(runs).toEqual([]);
         expect(events.filter((e) => e.type === "tool_result")).toEqual([expect.objectContaining({ toolUseId: "tu1", isError: true, content: INTERRUPTED_TOOL_RESULT })]);
         expect(sentResult(model, "tu1")).toMatchObject({ content: INTERRUPTED_TOOL_RESULT });
@@ -293,13 +299,88 @@ for (const [name, make] of [
       expect(first.events.filter((e) => e.type === "tool_result").map((e) => (e as { toolUseId: string }).toolUseId)).toEqual(["tu1"]);
       await b.store.flush?.();
       const model = new ScriptedModel([textDone("both ran")]);
-      await drain(session(await b.reopen(), model, registry).approve({ decision: "allow" }));
+      const store = await b.reopen();
+      await drain(session(store, model, registry).approve({ decision: "allow", parkId: await park(store) }));
       expect(runs).toEqual([
         { tool: "Count", input: { command: "one" } },
         { tool: "Probe", input: PROBE },
       ]);
       expect(sentResult(model, "tu1")).toMatchObject({ content: "ran Count: one" });
       expect(sentResult(model, "tu2")).toMatchObject({ content: "ran Probe: echo destroy-probe" });
+    });
+
+    test("I2: two calls with one id in a message are refused at ingest: approving 'echo destroy-probe' can never run the sibling 'rm -rf /important'", async () => {
+      const b = await make();
+      const { registry, runs } = tools();
+      const model = new ScriptedModel([call(["dup", "Probe", PROBE], ["dup", "Probe", { command: "rm -rf /important" }]), textDone("refused")]);
+      const { events } = await drain(session(b.store, model, registry).run({ text: "two calls, one id" }));
+      expect(runs).toEqual([]);
+      expect(events.filter((e) => e.type === "tool_result").map((e) => (e as { content: string }).content)).toEqual([DUPLICATE_TOOL_USE_ID, DUPLICATE_TOOL_USE_ID]);
+      expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success" });
+      expect(heldCall(effectiveEntries(await b.store.conversation.read("s1")))).toBeUndefined();
+      await expect(drain(session(b.store, new ScriptedModel([]), registry).approve({ decision: "allow", parkId: "any" }))).rejects.toBeInstanceOf(NoHeldCallError);
+      expect(runs).toEqual([]);
+    });
+
+    test("I2: a park recorded with a duplicated id (before the ingest check) holds nothing: the approval runs neither call", async () => {
+      const b = await make();
+      const { registry, runs } = tools();
+      const sys = await b.store.conversation.append("s1", { type: "system", subtype: "init", sessionId: "s1", agentId: "ag1", model: "test", cwd, ts: "t0" } as SDKMessage, null);
+      const user = await b.store.conversation.append("s1", { type: "user", message: { role: "user", content: "probe" }, author: HUMAN, ts: "t1" } as SDKMessage, sys.uuid);
+      const asst = await b.store.conversation.append("s1", { type: "assistant", message: call(["dup", "Probe", PROBE], ["dup", "Probe", { command: "rm -rf /important" }]).message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use", model: "test", ts: "t2" } as SDKMessage, user.uuid);
+      const res = await b.store.conversation.append("s1", { type: "result", subtype: "needs_approval", numTurns: 1, usage: { input_tokens: 1, output_tokens: 1 }, ts: "t3", pendingApproval: { command: "echo destroy-probe", reason: "approval_required", toolUseId: "dup" } } as SDKMessage, asst.uuid);
+      await b.store.flush?.();
+      const store = await b.reopen();
+      await expect(drain(session(store, new ScriptedModel([textDone("x")]), registry).approve({ decision: "allow", parkId: res.uuid }))).rejects.toBeInstanceOf(NoHeldCallError);
+      expect(runs).toEqual([]);
+    });
+
+    test("I1: a provider that reuses an id across messages: the first park's id never approves the second park's call", async () => {
+      const b = await make();
+      const { registry, runs } = tools();
+      await drain(session(b.store, new ScriptedModel([call(["call_0", "Probe", { command: "echo a" }])]), registry).run({ text: "a then b" }));
+      const first = await park(b.store);
+      await drain(session(b.store, new ScriptedModel([call(["call_0", "Probe", { command: "echo b" }])]), registry).approve({ decision: "allow", parkId: first }));
+      expect(runs).toEqual([{ tool: "Probe", input: { command: "echo a" } }]);
+      const second = await park(b.store);
+      expect(second).not.toBe(first);
+      // A repeated answer to the first park (a double click, a retry) is refused: B was never shown under it.
+      await expect(drain(session(b.store, new ScriptedModel([textDone("x")]), registry).approve({ decision: "allow", parkId: first }))).rejects.toThrow(`is not waiting on park ${first}`);
+      expect(runs).toHaveLength(1);
+      await drain(session(b.store, new ScriptedModel([textDone("both ran")]), registry).approve({ decision: "allow", parkId: second }));
+      expect(runs).toEqual([
+        { tool: "Probe", input: { command: "echo a" } },
+        { tool: "Probe", input: { command: "echo b" } },
+      ]);
+    });
+
+    test("M9: the next call of the held call's message parks inside the approval's prelude; its own approval runs it", async () => {
+      const b = await make();
+      const { registry, runs } = tools();
+      await drain(session(b.store, new ScriptedModel([call(["tu1", "Probe", { command: "echo a" }], ["tu2", "Probe", { command: "echo b" }])]), registry).run({ text: "a and b" }));
+      const { events } = await drain(session(b.store, new ScriptedModel([]), registry).approve({ decision: "allow", parkId: await park(b.store) }));
+      expect(runs).toEqual([{ tool: "Probe", input: { command: "echo a" } }]);
+      expect(events.at(-1)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { toolUseId: "tu2", index: 1, command: "echo b" } });
+      const model = new ScriptedModel([textDone("both ran")]);
+      await drain(session(b.store, model, registry).approve({ decision: "allow", parkId: await park(b.store) }));
+      expect(runs).toEqual([
+        { tool: "Probe", input: { command: "echo a" } },
+        { tool: "Probe", input: { command: "echo b" } },
+      ]);
+      expect(sentResult(model, "tu1")).toMatchObject({ content: "ran Probe: echo a" });
+      expect(sentResult(model, "tu2")).toMatchObject({ content: "ran Probe: echo b" });
+    });
+
+    test("M4: a hook that rewrites the held call by the time of the answer: the rewritten call is asked again, never run under the approval", async () => {
+      const b = await make();
+      const { registry, runs } = tools();
+      await parked(b.store, registry);
+      const hooks = new HookEngine();
+      hooks.register(new FunctionHook("rewrite", ["PreToolUse"], () => ({ updatedInput: { command: "echo rewritten" } })));
+      const store = await b.reopen();
+      const { events } = await drain(session(store, new ScriptedModel([]), registry, { hooks }).approve({ decision: "allow", parkId: await park(store) }));
+      expect(runs).toEqual([]);
+      expect(events.at(-1)).toMatchObject({ type: "result", subtype: "needs_approval", pendingApproval: { command: "echo rewritten", toolUseId: "tu1" } });
     });
 
     test("a park recorded before D-48 (command only) is matched to its call by the command", async () => {
@@ -310,13 +391,32 @@ for (const [name, make] of [
       const asst = await b.store.conversation.append("s1", { type: "assistant", message: call(["tu1", "Probe", PROBE]).message, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use", model: "test", ts: "t2" } as SDKMessage, user.uuid);
       await b.store.conversation.append("s1", { type: "result", subtype: "needs_approval", numTurns: 1, usage: { input_tokens: 1, output_tokens: 1 }, ts: "t3", pendingApproval: { command: "echo destroy-probe", reason: "approval_required" } } as SDKMessage, asst.uuid);
       await b.store.flush?.();
-      await drain(session(await b.reopen(), new ScriptedModel([textDone("ok")]), registry).approve({ decision: "allow" }));
+      const store = await b.reopen();
+      await drain(session(store, new ScriptedModel([textDone("ok")]), registry).approve({ decision: "allow", parkId: await park(store) }));
       expect(runs).toEqual([{ tool: "Probe", input: PROBE }]);
     });
   });
 }
 
 describe("D-49: the step gate", () => {
+  test("an approval that arrives during a stop halts before the held call runs; nothing is written", async () => {
+    const store = new LocalStore(join(root, "store"));
+    const { registry, runs } = tools();
+    await parked(store, registry);
+    const before = await kinds(store);
+    const reached = Promise.withResolvers<void>();
+    const gate = async () => {
+      reached.resolve();
+      await new Promise<never>(() => {});
+    };
+    void drain(session(store, new ScriptedModel([]), registry, { stepGate: gate }).approve({ decision: "allow", parkId: await park(store) }));
+    await reached.promise;
+    await Bun.sleep(30);
+    expect(runs).toEqual([]);
+    expect(await kinds(store)).toEqual(before);
+  });
+
+
   test("a gate that closes mid-step: the step finishes and its result is on record; no model call or step follows, and no result is written", async () => {
     const store = new LocalStore(join(root, "store"));
     const { registry, runs } = tools();

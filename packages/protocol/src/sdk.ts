@@ -85,8 +85,9 @@ export interface ResultEvent {
   usage: Usage;
   ts: string;
   /** Present on subtype `needs_approval`: the pending action + its safety reason code, for the
-   *  host's hop-run-result-v1 artifact. `toolUseId` (D-48) is the held call an approval settles. */
-  pendingApproval?: { command: string; reason: string; toolUseId?: string };
+   *  host's hop-run-result-v1 artifact. D-48: the held call an approval settles, by its id and its `index` in its
+   *  assistant message's content (a provider id alone may not be unique). */
+  pendingApproval?: { command: string; reason: string; toolUseId?: string; index?: number };
 }
 
 /**

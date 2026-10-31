@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### D-48/D-49 fix round 1: a park binds one call by position; duplicate ids refused (2026-10-31)
+
+- The held call is named by position: `pendingApproval.index` beside `toolUseId`, and `HeldCall.at`
+  (`{toolUseId, entry, index}`) plus `parkId` (the result entry's uuid). `AgentSession.approve` now requires
+  `parkId` and settles only the call at that position; a park recorded by id alone binds only when exactly one call
+  matches. Protocol: `PendingApproval.parkId`, `approval_response.parkId` (replacing the unreleased `toolUseId`),
+  `error.code` (`approval_id_required` | `approval_stale`).
+- A message that gives two tool calls one id is refused whole at ingest: every call gets
+  `DUPLICATE_TOOL_USE_ID` and none runs; on resume too.
+- `tool_started` markers carry `entry` and `index`; `startedFrom(markers)` matches by position, by id for older
+  markers, so a provider that reuses ids across messages never makes a new call look started.
+- `stepGate(next)` names the step (`"model"` | `"tool"`), so a host need not wait out a model call.
+- An approved call a PreToolUse hook now rewrites (its command no longer what the park showed) is asked again.
+
 ### An approval settles the call its park holds; a step gate for a graceful stop (W3 window defects D-48, D-49, 2026-10-31)
 
 - D-48: a `needs_approval` result names its held call (`pendingApproval.toolUseId`, protocol: additive optional field,

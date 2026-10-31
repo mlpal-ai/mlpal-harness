@@ -357,8 +357,11 @@ export interface WorkspaceStats {
 export interface PendingApproval {
   command: string;
   reason: string;
-  /** D-48: the held call; an approval_response naming it is refused if another call is held by then. */
+  /** D-48: the held call's id (informational: a provider id may repeat across messages). */
   toolUseId?: string;
+  /** D-48: the park (its needs_approval result entry's uuid; the store's approval park id). An approval_response
+   *  echoes it: it binds the answer to the ask the client was shown. */
+  parkId?: string;
 }
 
 /** 0.22.5: the session store credential for this message's session (phase 1 token delivery, seam P2); never
@@ -423,7 +426,9 @@ export type ClientMessage =
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
   | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
-  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** D-48: the held call this answers (`pendingApproval.toolUseId`); refused when another one is held. */ toolUseId?: string }
+  | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** D-48: the park this answers (`pendingApproval.parkId`). Without it an answer is refused
+   *  `approval_id_required` unless this engine showed that park and nothing has run since; another park held by now is
+   *  refused `approval_stale`. Either refusal writes nothing. */ parkId?: string }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
   | { type: "stop_subagent"; childSessionId: string }
@@ -564,7 +569,7 @@ export type ServerMessage =
   /** 0.20.0 (capability "workspace_stats"). */
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
   /** 0.20.5: `refusal` when the message is a model refusal (typed; see ModelRefusal). */
-  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal };
+  | { type: "error"; message: string; requestId?: string; refusal?: ModelRefusal; /** D-48: a typed approval refusal; nothing was written, re-read the pending ask. */ code?: "approval_id_required" | "approval_stale" };
 
 export const PROTOCOL_VERSION = "yodex/2";
 
