@@ -239,27 +239,26 @@ describe("SessionStoreClient.acceptTurn (P1 1.2 accept, the instance writer's tu
     return { c, calls };
   }
 
-  test("sends a turn item, never pumpable, with the shas of the exact bytes it sends", async () => {
+  test("sends a turn item, never pumpable, with the sha of the exact message bytes, and no context (W-1)", async () => {
     const { c, calls } = client(() => Response.json({ request_id: "rq-ui", kind: "turn", state: "pending", inbox_seq: 4, replayed: false, pending: 2, position: 2, lease: { holder: "engine:sp:1" } }));
     const message = '{"type":"run","sessionId":"s1","prompt":"go"}';
-    const context = '{"publication":"p","unit":"u"}';
-    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message, context });
+    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message });
     expect(a).toEqual({ requestId: "rq-ui", state: "pending", inboxSeq: 4, replayed: false, pending: 2, position: 2, holder: "engine:sp:1" });
     expect(calls[0]!.url).toBe("http://store/v1/sessions/s1/inbox");
     const body = JSON.parse(calls[0]!.body);
-    expect(body).toEqual({ request_id: "rq-ui", kind: "turn", pumpable: false, message: JSON.parse(message), message_sha256: sha(message), context: JSON.parse(context), context_sha256: sha(context) });
+    expect(body).toEqual({ request_id: "rq-ui", kind: "turn", pumpable: false, message: JSON.parse(message), message_sha256: sha(message) });
     expect(calls[0]!.body).toContain(`"message":${message}`);
   });
 
   test("a replay of an item no longer pending has a null position and its code", async () => {
     const { c } = client(() => Response.json({ request_id: "rq-ui", kind: "turn", state: "rejected", inbox_seq: 4, replayed: true, pending: 0, position: null, lease: null, code: "session_stopped" }));
-    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" });
+    const a = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}" });
     expect(a).toEqual({ requestId: "rq-ui", state: "rejected", inboxSeq: 4, replayed: true, pending: 0, position: null, code: "session_stopped" });
   });
 
   test("a full inbox is InboxFullError with its counts and Retry-After, sent once", async () => {
     const { c, calls } = client(() => new Response(JSON.stringify({ code: "inbox_full", pending: 32, limit: 32 }), { status: 429, headers: { "retry-after": "5" } }));
-    const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" }).catch((e) => e);
+    const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}" }).catch((e) => e);
     expect(err).toBeInstanceOf(InboxFullError);
     expect([err.code, err.pending, err.limit, err.retryAfterS]).toEqual(["inbox_full", 32, 32, 5]);
     expect(calls.length).toBe(1);
@@ -268,7 +267,7 @@ describe("SessionStoreClient.acceptTurn (P1 1.2 accept, the instance writer's tu
   test("the same request id with another message is a typed 409, and a 403 stays a StoreHttpError", async () => {
     for (const [status, code] of [[409, "request_id_conflict"], [403, "forbidden"]] as const) {
       const { c } = client(() => new Response(JSON.stringify({ code }), { status }));
-      const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}", context: "{}" }).catch((e) => e);
+      const err = await c.acceptTurn("s1", { requestId: "rq-ui", message: "{}" }).catch((e) => e);
       expect(err).toBeInstanceOf(StoreHttpError);
       expect([err.status, err.code]).toEqual([status, code]);
     }

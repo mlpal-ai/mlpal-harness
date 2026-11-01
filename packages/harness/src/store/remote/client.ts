@@ -186,11 +186,11 @@ export class InboxFullError extends StoreHttpError {
 }
 
 /** A turn item for P1's accept (`POST /sessions/{sid}/inbox`) under the instance writer token: the UI direction of
- *  QUEUE. `message` and `context` are sent as given; the shas are of those exact bytes. */
+ *  QUEUE. `message` is sent as given and its sha is of those exact bytes. It carries no context: P1 runs a writer's item
+ *  with the context the scheduler recorded for the session's scope (W-1), never one an engine names. */
 export interface InboxTurnAccept {
   requestId: string;
   message: string;
-  context: string;
 }
 
 /** P1's accept answer. `position` is null when the item is no longer pending (a replay of one already run or
@@ -380,7 +380,7 @@ export class SessionStoreClient {
    *  The body is assembled from the given JSON texts so the shas are of exactly the bytes sent. */
   async acceptTurn(sid: string, item: InboxTurnAccept): Promise<InboxAccepted> {
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    const body = `{"request_id":${JSON.stringify(item.requestId)},"kind":"turn","pumpable":false,"message":${item.message},"message_sha256":"${sha(item.message)}","context":${item.context},"context_sha256":"${sha(item.context)}"}`;
+    const body = `{"request_id":${JSON.stringify(item.requestId)},"kind":"turn","pumpable":false,"message":${item.message},"message_sha256":"${sha(item.message)}"}`;
     const b = await this.call<WireAccepted>("accept", sid, "POST", "/inbox", body);
     return {
       requestId: b.request_id,
@@ -395,9 +395,9 @@ export class SessionStoreClient {
   }
 
   /** An inbox item's status (any reader of the session): its state, and its queue position while pending. */
-  async inboxStatus(sid: string, requestId: string): Promise<{ state: string; position: number | null; code?: string }> {
-    const b = await this.call<{ state: string; position?: number | null; code?: string }>("status", sid, "GET", `/inbox/${encodeURIComponent(requestId)}`);
-    return { state: b.state, position: b.position ?? null, ...(b.code ? { code: b.code } : {}) };
+  async inboxStatus(sid: string, requestId: string): Promise<{ state: string; position: number | null; code?: string; consumedSeq?: number }> {
+    const b = await this.call<{ state: string; position?: number | null; code?: string; consumed_seq?: number }>("status", sid, "GET", `/inbox/${encodeURIComponent(requestId)}`);
+    return { state: b.state, position: b.position ?? null, ...(b.code ? { code: b.code } : {}), ...(typeof b.consumed_seq === "number" ? { consumedSeq: b.consumed_seq } : {}) };
   }
 
   /** Withdraws a queued turn (P1 reject, code `withdrawn`, under the instance writer token); an item no longer pending
