@@ -12,7 +12,14 @@
  * production, a `terraform destroy` on stale state, a deleted production volume) each applied
  * something nobody had reviewed in that form. The gate binds the apply to the plan the person
  * saw, not to "approve deploy".
+ *
+ * D-57: a Bash line is read whole (`planLine`), never by its leading command alone: every plan and apply it runs is
+ * found (through `;`, `&&`, `||`, `|`, `&`, subshells, groups, substitutions and `X=1` prefixes), each apply must match
+ * a plan, an apply the gate cannot see the context of (a nested shell, an undecomposable line, a `cd` or assignment it
+ * cannot read) fails closed, and a dry run is recorded only when its exit status is the line's.
  */
+import { decomposeBash } from "./shell-decompose";
+import { splitShellCommands } from "./safety";
 
 export type PlanKind = "plan" | "apply";
 
@@ -30,15 +37,28 @@ export interface PlanCommand {
 
 const TERRAFORM = new Set(["terraform", "tofu"]);
 
+/** A redirection word (`2>&1`, `>out`, `2>/dev/null`, `&>log`, `<in`), or an operator whose target is the next word. */
+const REDIRECT = /^(?:\d*(?:>>?|<|>&|<&|>\|)|&>>?)/;
+const BARE_REDIRECT = /^(?:\d*(?:>>?|<|>\|)|&>>?)$/;
+
 function words(command: string): string[] {
-  // Enough shell to split a typical infra command: quotes kept together, env assignments and
-  // wrappers skipped. Pipelines and `&&` chains are cut at the first operator: the gate reads
-  // only the leading command.
+  // One simple command (planLine splits a line into them): quotes kept together, env assignments and wrappers skipped,
+  // redirections dropped (D-56c: `2>&1` is not part of what an apply targets). Anything after an operator is cut, so a
+  // caller handing a whole line reads only its first command; planLine never does.
   const head = command.split(/\s*(?:\|\||&&|\||;)\s*/)[0] ?? command;
-  const out: string[] = [];
+  const raw: string[] = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(head))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  while ((m = re.exec(head))) raw.push(m[1] ?? m[2] ?? m[3] ?? "");
+  const out: string[] = [];
+  for (let k = 0; k < raw.length; k++) {
+    const w = raw[k]!;
+    if (REDIRECT.test(w)) {
+      if (BARE_REDIRECT.test(w)) k++; // `> file`: the target is the next word
+      continue;
+    }
+    out.push(w);
+  }
   let i = 0;
   while (i < out.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(out[i]!) || ["sudo", "env", "time", "nohup"].includes(out[i]!))) i++;
   return out.slice(i);
@@ -73,7 +93,9 @@ function positionals(ws: string[], from: number): string[] {
     const w = ws[i]!;
     if (w.startsWith("-")) {
       // a flag with a separate value: skip the value when it does not look like a flag
-      if (!w.includes("=") && ws[i + 1] && !ws[i + 1]!.startsWith("-") && /^-(?:f|n|o|out|var-file|chdir|namespace|values|file|g|l|p)$/.test(w)) i++;
+      if (!w.includes("=") && ws[i + 1] && !ws[i + 1]!.startsWith("-") && /^-(?:f|n|o|out|var-file|chdir|namespace|values|file|g|l|p|-context|-kube-context|-kubeconfig|-cluster|-server|-user|-output|-field-manager|-filename|-kustomize|-selector)$/.test(w)) i++;
+      // `--dry-run server` (spaced): its mode is not a target (D-56c)
+      else if (w === "--dry-run" && ["server", "client", "none"].includes(ws[i + 1] ?? "")) i++;
       continue;
     }
     out.push(w);
@@ -81,7 +103,22 @@ function positionals(ws: string[], from: number): string[] {
   return out;
 }
 
-/** Recognise a plan (dry run) or an apply; null for anything else. */
+/** kubectl verbs that change the cluster; each takes `--dry-run`. */
+const KUBECTL_MUTATING = new Set(["apply", "create", "delete", "patch", "replace", "scale", "rollout", "set", "label", "annotate", "taint", "drain", "cordon", "uncordon", "expose", "autoscale", "run", "edit"]);
+
+/** The cluster a kubectl or helm command talks to when it names one: part of what it targets, so a plan against one
+ *  context never admits an apply against another. */
+function kubeContext(ws: string[]): string[] {
+  const out: string[] = [];
+  for (const [flag, key] of [["--context", "ctx"], ["--kube-context", "ctx"], ["--kubeconfig", "kubeconfig"], ["--cluster", "cluster"], ["--server", "server"], ["--user", "user"]] as const) {
+    const v = flagValue(ws, [flag]);
+    if (v) out.push(`${key}=${v}`);
+  }
+  return out;
+}
+
+/** Recognise a plan (dry run) or an apply in ONE simple command; null for anything else. A whole Bash line is read by
+ *  `planLine`. */
 export function classifyPlanCommand(command: string): PlanCommand | null {
   const ws = words(command);
   if (ws.length === 0) return null;
@@ -105,23 +142,25 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     return null;
   }
   if (tool === "kubectl" || tool === "oc") {
-    const verb = rest.find((w) => !w.startsWith("-"));
-    if (!verb || !["apply", "create", "delete", "patch", "replace", "scale", "rollout", "set"].includes(verb)) return null;
+    const verb = positionals(rest, 0)[0];
+    // D-57: every verb that changes the cluster is an apply (each takes --dry-run, so each can be planned); `diff` is a
+    // plan, keyed like the apply of the same files (D-56).
+    if (!verb || !KUBECTL_MUTATING.has(verb) && verb !== "diff") return null;
     const files = flagValues(rest, ["-f", "--filename", "-k", "--kustomize"]);
     const ns = flagValue(rest, ["-n", "--namespace"]) ?? "";
     const pos = positionals(rest, rest.indexOf(verb) + 1);
-    const target = [ns && `ns=${ns}`, ...files, ...pos].filter(Boolean).join(" ");
-    return { kind: has("--dry-run") ? "plan" : "apply", tool, target, inputs: files };
+    const target = [ns && `ns=${ns}`, ...kubeContext(rest), ...files, ...pos].filter(Boolean).join(" ");
+    return { kind: verb === "diff" || has("--dry-run") ? "plan" : "apply", tool, target, inputs: files };
   }
   if (tool === "helm") {
     const verb = rest.find((w) => !w.startsWith("-"));
     if (!verb) return null;
     const values = flagValues(rest, ["-f", "--values"]);
-    const ns = flagValue(rest, ["-n", "--namespace"]) ?? "";
+    const ns = [flagValue(rest, ["-n", "--namespace"]) ? `ns=${flagValue(rest, ["-n", "--namespace"])}` : "", ...kubeContext(rest)].filter(Boolean).join(" ");
     const pos = positionals(rest, rest.indexOf(verb) + 1);
-    if (verb === "diff") return { kind: "plan", tool, target: [ns && `ns=${ns}`, ...pos.slice(1, 3)].filter(Boolean).join(" "), inputs: values };
+    if (verb === "diff") return { kind: "plan", tool, target: [ns, ...pos.slice(1, 3)].filter(Boolean).join(" "), inputs: values };
     if (["install", "upgrade", "uninstall", "rollback"].includes(verb)) {
-      return { kind: has("--dry-run") ? "plan" : "apply", tool, target: [ns && `ns=${ns}`, ...pos.slice(0, 2)].filter(Boolean).join(" "), inputs: values };
+      return { kind: has("--dry-run") ? "plan" : "apply", tool, target: [ns, ...pos.slice(0, 2)].filter(Boolean).join(" "), inputs: values };
     }
     return null;
   }
@@ -201,4 +240,129 @@ export function matchPlan(artifacts: PlanArtifact[], apply: { tool: string; targ
     if (want !== got) return { approved: false, detail: `"${f}" changed since the plan at ${newest.at}: the apply does not match the reviewed plan`, matched: newest };
   }
   return { approved: true, detail: `matches the plan recorded at ${newest.at} on ${hashFields.join(", ")}`, matched: newest };
+}
+
+// ── D-57: the whole line ───────────────────────────────────────────────────────────────────────
+
+/** Tools whose commands the gate reads: a line naming one that the gate cannot read fails closed. */
+const GATED_TOOLS = /(?:^|[\s;&|(`$"'/])(?:terraform|tofu|kubectl|oc|helm|pulumi|cdk|az|gcloud|aws)(?=$|[\s;&|)`"'])/;
+/** Commands that only set the line's context (its directory, its environment) and run nothing else. */
+const CONTEXT_ONLY = new Set(["cd", "pushd", "export", "unset", "true", ":", "set"]);
+/** Builtins that change the environment in ways the gate cannot read off the words. */
+const ENV_OPAQUE = new Set(["read", "declare", "typeset", "local", "readonly", "let", "alias", "unalias", "hash", "enable", "mapfile", "readarray", "getopts", "for", "popd", "source", ".", "eval"]);
+const NOT_LITERAL = /[$`*?~[{]/;
+const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+
+/** One plan or apply of a line, with the context it runs in. */
+export interface PlanStep {
+  pc: PlanCommand;
+  /** The directory it runs in: the session's, moved by any `cd`/`pushd` before it on the line. */
+  cwd: string;
+  /** `NAME=value` assignments in force on the line (`export`, `X=1 cmd`, `env X=1 cmd`), sorted: part of the match key,
+   *  so a plan under one KUBECONFIG never admits an apply under another. */
+  env: string[];
+}
+
+export interface PlanLine {
+  steps: PlanStep[];
+  /** Why the gate cannot read this line, when it cannot: it could not be decomposed, a plan or apply runs where the
+   *  gate cannot see its context (a nested shell, a substitution), or a `cd` or assignment is not literal. Null when it
+   *  can. Set only for a line that names a gated tool, or that could not be decomposed at all. */
+  unreadable: string | null;
+  /** The line's one dry run, when its exit status is the line's: the last command of the line, with nothing but
+   *  context-only commands (`cd`, `export`, …) before it. Only such a plan is recorded. */
+  recordable: PlanStep | null;
+}
+
+/** Strips a part's subshell and group punctuation (`(cd x`, `kubectl apply …)`, `{ cmd; }`). */
+function bare(part: string): string {
+  return part.replace(/^[\s(!{]+/, "").replace(/[\s)}]+$/, "").trim();
+}
+
+/** Reads every plan and apply a Bash line runs, in order, with the directory and environment each runs in. */
+export function planLine(command: string, cwd: string): PlanLine {
+  const d = decomposeBash(command);
+  const gated = GATED_TOOLS.test(command);
+  if (d.opaque !== null) return { steps: [], unreadable: `the line cannot be read (${d.opaque})`, recordable: null };
+  // What the decomposer sees run, at any depth: the authority on how many plans and applies there are.
+  const seen = d.commands.flatMap((c) => (c.forms[0] ? [classifyPlanCommand(c.forms[0])] : [])).filter((pc): pc is PlanCommand => pc !== null);
+  const steps: PlanStep[] = [];
+  const env = new Map<string, string>();
+  let dir = cwd;
+  let unreadable: string | null = null;
+  const fail = (why: string) => (unreadable ??= why);
+  if (/\$\(\([^)]*[^=!<>]=[^=]/.test(command) || /\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(command)) fail("an assignment inside an expansion");
+  for (const part of splitShellCommands(command).map(bare).filter(Boolean)) {
+    const ws = part.split(/\s+/);
+    let i = 0;
+    for (; i < ws.length; i++) {
+      const a = ASSIGN.exec(ws[i]!);
+      if (!a) break;
+      if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+      env.set(a[1]!, a[2]!);
+    }
+    let head = ws[i];
+    if (head === "env") {
+      for (i++; i < ws.length; i++) {
+        const a = ASSIGN.exec(ws[i]!);
+        if (a) {
+          if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+          env.set(a[1]!, a[2]!);
+        } else if (ws[i]!.startsWith("-")) fail("env with options");
+        else break;
+      }
+      head = ws[i];
+    }
+    if (head === undefined) continue;
+    const args = ws.slice(i + 1);
+    if (head === "cd" || head === "pushd") {
+      const to = args.filter((w) => !w.startsWith("-"));
+      if (to.length !== 1 || NOT_LITERAL.test(to[0]!) || to[0] === "-") fail(`a ${head} the gate cannot follow (${part})`);
+      else dir = to[0]!.startsWith("/") ? to[0]! : `${dir.replace(/\/+$/, "")}/${to[0]}`.replace(/\/\.\//g, "/");
+      continue;
+    }
+    if (head === "export") {
+      for (const w of args) {
+        const a = ASSIGN.exec(w);
+        if (w.startsWith("-")) fail("export with options");
+        else if (a) {
+          if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+          env.set(a[1]!, a[2]!);
+        }
+      }
+      continue;
+    }
+    if (head === "unset") {
+      for (const w of args) env.delete(w);
+      continue;
+    }
+    if (ENV_OPAQUE.has(head)) {
+      fail(`${head} changes the line in a way the gate cannot read`);
+      continue;
+    }
+    const pc = classifyPlanCommand(ws.slice(i).join(" "));
+    if (pc) steps.push({ pc, cwd: dir, env: [...env].map(([k, v]) => `${k}=${v}`).sort() });
+  }
+  // A plan or apply the decomposer sees that the top-level reading did not (inside `sh -c '…'`, `$(…)`, `xargs`): its
+  // context is not readable here.
+  const count = (pcs: PlanCommand[], kind: PlanKind) => pcs.filter((p) => p.kind === kind).length;
+  if (count(seen, "apply") > count(steps.map((s) => s.pc), "apply")) fail("an apply inside a nested shell or substitution");
+  if (count(seen, "plan") > count(steps.map((s) => s.pc), "plan")) fail("a dry run inside a nested shell or substitution");
+  const last = d.commands[d.commands.length - 1];
+  const lastPc = last?.forms[0] ? classifyPlanCommand(last.forms[0]) : null;
+  const others = d.commands.slice(0, -1).every((c) => c.forms.length === 0 || CONTEXT_ONLY.has(c.forms[0]!.split(" ")[0]!));
+  const plans = steps.filter((s) => s.pc.kind === "plan");
+  const recordable = !unreadable && lastPc?.kind === "plan" && others && plans.length === 1 && count(seen, "apply") === 0 ? plans[0]! : null;
+  return { steps, unreadable: unreadable && (gated || steps.length > 0 || seen.length > 0) ? unreadable : null, recordable };
+}
+
+/** Whether a dry run's exit status means it ran: 0, or the status a plan uses to say "there are changes" (`kubectl
+ *  diff` 1, `terraform plan -detailed-exitcode` 2, `helm diff --detailed-exitcode` 2). D-56a. */
+export function planExitOk(pc: PlanCommand, command: string, code: number): boolean {
+  if (code === 0) return true;
+  const verb = (re: RegExp) => re.test(command);
+  if ((pc.tool === "kubectl" || pc.tool === "oc") && code === 1 && verb(/\bdiff\b/)) return true;
+  if (pc.tool === "terraform" && code === 2 && verb(/-detailed-exitcode\b/)) return true;
+  if (pc.tool === "helm" && code === 2 && verb(/\bdiff\b/) && verb(/--detailed-exitcode\b/)) return true;
+  return false;
 }

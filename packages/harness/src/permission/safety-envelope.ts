@@ -12,6 +12,7 @@
 import type { SafetyPolicy } from "../profile/types";
 import { globMatch } from "./engine";
 import { splitShellCommands } from "./safety";
+import { decomposeBash } from "./shell-decompose";
 
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
@@ -88,15 +89,57 @@ function anyMatch(patterns: string[], action: SafetyAction): boolean {
  *  readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
  *  `destructive` — that must be explicit), everything else to `readOnly`. A `memory`-tagged tool
  *  (a working-memory write, not an estate change) is `memory` unless the HOP lists it
- *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes. */
+ *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes.
+ *
+ *  D-57: a Bash line is classified by its most dangerous command. Each simple command it runs (shell-decompose.ts:
+ *  through `;`, `&&`, `||`, `|`, `&`, subshells, groups, substitutions, `sh -c '…'`, `X=1`/`env`/`timeout`
+ *  prefixes) is classified on its own and the worst class wins, so a read beside a write never masks the write; a
+ *  command that only sets the line's context (`cd`, `export`, …) adds nothing. A line that cannot be decomposed is
+ *  `destructive`: what it runs is unknown, so it stops at the edge (and, with preApply, is refused). */
 export function classifyAction(safety: SafetyPolicy, action: SafetyAction): SafetyClass {
   const tc = safety.toolClasses;
   if (anyMatch(tc.destructive, action)) return "destructive";
+  if (action.toolName === "Bash" && action.command.trim()) {
+    const d = decomposeBash(action.command);
+    if (d.opaque !== null) return "destructive";
+    let worst: SafetyClass | null = null;
+    for (const c of d.commands) {
+      const forms = [...c.forms, ...(c.redirected ?? [])];
+      if (forms.length === 0 || (c.forms[0] && CONTEXT_ONLY.has(c.forms[0].split(" ")[0]!))) continue;
+      const cls = classifyForms(tc, action, forms);
+      if (worst === null || RANK[cls] > RANK[worst]) worst = cls;
+    }
+    if (worst !== null) return worst;
+  }
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
+  return defaultClass(action);
+}
+
+/** How dangerous a class is, for "the worst command of the line wins". */
+const RANK: Record<SafetyClass, number> = { memory: 0, readOnly: 1, unknown: 2, mutative: 3, destructive: 4 };
+/** Commands that only set the line's context and run nothing on the estate. */
+const CONTEXT_ONLY = new Set(["cd", "pushd", "popd", "export", "unset", "true", "false", ":", "set"]);
+
+function defaultClass(action: SafetyAction): SafetyClass {
   if (action.tags.memory) return "memory";
   if (action.tags.applies) return "mutative";
   return action.tags.readOnly ? "readOnly" : "unknown";
+}
+
+/** One simple command's class: the first list (destructive, mutative, readOnly) with an entry matching any of its forms,
+ *  else the tool's default. */
+function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[]): SafetyClass {
+  const hit = (patterns: string[]) =>
+    patterns.some((entry) => {
+      const m = entry.match(/^([A-Za-z_]+)\((.*)\)$/);
+      if (m) return m[1] === action.toolName && forms.some((f) => globMatch(m[2]!, f));
+      return entry === action.toolName || forms.some((f) => globMatch(entry, f));
+    });
+  if (hit(tc.destructive)) return "destructive";
+  if (hit(tc.mutative)) return "mutative";
+  if (hit(tc.readOnly)) return "readOnly";
+  return defaultClass(action);
 }
 
 /** Evaluate one action against the envelope. Pure; the host maps `park` to ask/needs_approval. */

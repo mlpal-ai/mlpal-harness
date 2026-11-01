@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
+
+- **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export
+  KUBECONFIG=…; kubectl set image …` (and any apply after a read, in a subshell, behind `X=1`, in `$(…)`, in `sh -c`)
+  ran as an unchecked mutation; the envelope's own splitter also missed `X=1`/`env`/`sh -c`/`eval` forms, so even a
+  destructive `X=1 kubectl delete …` was ungated.
+- `classifyAction`: a Bash line is classified per simple command (`decomposeBash`), the worst class wins; context-only
+  commands (`cd`, `export`, …) add nothing; a line that cannot be decomposed is `destructive` (fail closed).
+- `planLine(command, cwd)`: every plan and apply a line runs, with the directory (`cd`) and environment
+  (`export`/`X=1`/`env`) each runs in; an apply the gate cannot see the context of (nested shell, quoted substitution,
+  non-literal `cd` or assignment, an undecomposable line) makes the line `unreadable` (the host refuses it). A dry run is
+  `recordable` only when its exit status is the line's.
+- `classifyPlanCommand`: one simple command; redirections and `--dry-run`'s mode are not targets (D-56c); `--context`
+  / `--kubeconfig` / `--kube-context` are; `kubectl diff` is a plan (D-56); every mutating kubectl verb (`label`,
+  `annotate`, `taint`, `drain`, `cordon`, `uncordon`, `expose`, `autoscale`, `run`, `edit`) is an apply.
+- `planExitOk`: `kubectl diff` exit 1, `terraform plan -detailed-exitcode` 2 and `helm diff --detailed-exitcode` 2 mean
+  "changes found", not failure (D-56a).
+
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 
 - `HARNESS_PROTOCOL_VERSION` and `@mlpal/harness-protocol` are 0.23.0. Additive minor: capability `queue`;

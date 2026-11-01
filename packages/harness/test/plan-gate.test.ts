@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, matchPlan, type PlanArtifact } from "../src/permission/plan-gate";
+import { classifyPlanCommand, matchPlan, type PlanArtifact, planExitOk, planLine } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -34,7 +34,7 @@ describe("plan gate: recognising plans and applies", () => {
     expect(classifyPlanCommand("aws ec2 describe-instances")).toBeNull();
     expect(classifyPlanCommand("pulumi preview -s prod")).toMatchObject({ kind: "plan", target: "prod" });
     expect(classifyPlanCommand("pulumi up -s prod --yes | tee up.log")).toMatchObject({ kind: "apply", target: "prod" });
-    expect(classifyPlanCommand("ls -la && terraform apply")).toBeNull(); // only the leading command is read
+    expect(classifyPlanCommand("ls -la && terraform apply")).toBeNull(); // one simple command; a whole line is planLine's
     expect(classifyPlanCommand("")).toBeNull();
   });
 });
@@ -83,5 +83,60 @@ describe("plan gate: through the envelope", () => {
     expect((denied as { detail?: string }).detail).toBe('no reviewed plan artifact for this apply (preApply): no dry run of kubectl for "deploy.yaml" was recorded in this run; run the plan first');
     expect(evaluateSafety(safety, action, { planApproved: true }).outcome).toBe("allow");
     expect(evaluateSafety(safety, action, {}).outcome).toBe("allow"); // no host signal: the envelope does not guess
+  });
+});
+
+describe("D-57: planLine reads every plan and apply on a line, with its context", () => {
+  const applies = (line: string, cwd = "/w") => planLine(line, cwd).steps.filter((s) => s.pc.kind === "apply").map((s) => [s.pc.tool, s.pc.target, s.cwd, s.env.join(" ")]);
+
+  test("every separator, group and prefix; the directory and environment each command runs in", () => {
+    for (const sep of ["; ", " && ", " || ", " | ", " & ", "\n"]) expect(applies(`kubectl get pods${sep}kubectl apply -f a.yaml`)).toEqual([["kubectl", "a.yaml", "/w", ""]]);
+    expect(applies("cd /tmp/demo; export KUBECONFIG=/tmp/demo/kc; kubectl set image deploy/web nginx=x -n web")).toEqual([["kubectl", "ns=web image deploy/web nginx=x", "/tmp/demo", "KUBECONFIG=/tmp/demo/kc"]]);
+    expect(applies("(cd infra && terraform apply tf.plan)")).toEqual([["terraform", ".", "/w/infra", ""]]);
+    expect(applies("{ kubectl apply -f a.yaml; }")).toEqual([["kubectl", "a.yaml", "/w", ""]]);
+    expect(applies("X=1 kubectl apply -f a.yaml")).toEqual([["kubectl", "a.yaml", "/w", "X=1"]]);
+    expect(applies("env KUBECONFIG=/k kubectl apply -f a.yaml")).toEqual([["kubectl", "a.yaml", "/w", "KUBECONFIG=/k"]]);
+    expect(applies("kubectl apply -f a.yaml 2>&1 > /tmp/out")).toEqual([["kubectl", "a.yaml", "/w", ""]]);
+    expect(applies("kubectl apply -f a.yaml && helm upgrade api ./chart -n x")).toEqual([["kubectl", "a.yaml", "/w", ""], ["helm", "ns=x api ./chart", "/w", ""]]);
+    expect(planLine("kubectl get pods | grep web", "/w")).toEqual({ steps: [], unreadable: null, recordable: null });
+  });
+
+  test("fail closed: an apply the gate cannot see the context of, or a line it cannot decompose", () => {
+    const why = (line: string) => planLine(line, "/w").unreadable;
+    expect(why("sh -c 'kubectl apply -f a.yaml'")).toContain("nested");
+    expect(why("echo $(kubectl apply -f a.yaml)")).toBeNull(); // an unquoted substitution is read in place
+    expect(why('echo "$(kubectl apply -f a.yaml)"')).toContain("nested"); // inside quotes: refused, never missed
+    expect(why("xargs -n1 kubectl apply -f < files")).toContain("nested");
+    expect(why('kubectl apply -f "a.yaml')).toContain("cannot be read");
+    expect(why('eval "kubectl apply -f a.yaml"')).toContain("cannot be read");
+    expect(why("cd $DIR && kubectl apply -f a.yaml")).toContain("cannot follow");
+    expect(why("KUBECONFIG=$HOME/kc kubectl apply -f a.yaml")).toContain("non-literal");
+    expect(why("read KUBECONFIG; kubectl apply -f a.yaml")).toContain("read");
+    // nothing gated on the line: nothing to refuse
+    expect(why("cd $DIR && ls")).toBeNull();
+  });
+
+  test("a dry run is recordable only when its exit status is the line's", () => {
+    expect(planLine("cd k8s && export KUBECONFIG=/a && kubectl diff -f a.yaml", "/w").recordable).toMatchObject({ cwd: "/w/k8s", env: ["KUBECONFIG=/a"], pc: { kind: "plan", target: "a.yaml" } });
+    for (const line of ["kubectl diff -f a.yaml | head", "kubectl diff -f a.yaml; echo ok", "kubectl diff -f a.yaml && kubectl apply -f a.yaml", "kubectl diff -f a.yaml && kubectl diff -f b.yaml"]) expect([line, planLine(line, "/w").recordable]).toEqual([line, null]);
+  });
+
+  test("D-56a: the statuses a dry run uses to say it found changes", () => {
+    const kd = classifyPlanCommand("kubectl diff -f a.yaml")!;
+    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "a.yaml", inputs: ["a.yaml"] });
+    expect([planExitOk(kd, "kubectl diff -f a.yaml", 0), planExitOk(kd, "kubectl diff -f a.yaml", 1), planExitOk(kd, "kubectl diff -f a.yaml", 2)]).toEqual([true, true, false]);
+    const ka = classifyPlanCommand("kubectl apply -f a.yaml --dry-run=server")!;
+    expect(planExitOk(ka, "kubectl apply -f a.yaml --dry-run=server", 1)).toBe(false);
+    const tf = classifyPlanCommand("terraform plan -detailed-exitcode -out=p")!;
+    expect([planExitOk(tf, "terraform plan -detailed-exitcode -out=p", 2), planExitOk(tf, "terraform plan -out=p", 2)]).toEqual([true, false]);
+  });
+
+  test("D-56c and D-57: kubectl's mutating verbs are applies; redirections, --dry-run's mode and value flags are not targets", () => {
+    for (const verb of ["label", "annotate", "taint", "drain", "cordon", "expose", "autoscale", "run", "edit"]) expect([verb, classifyPlanCommand(`kubectl ${verb} x`)?.kind]).toEqual([verb, "apply"]);
+    const plan = classifyPlanCommand("kubectl set image deploy/web nginx=x -n web --dry-run server -o yaml")!;
+    const apply = classifyPlanCommand("kubectl set image deploy/web nginx=x -n web --record=false 2>&1")!;
+    expect([plan.kind, apply.kind, plan.target]).toEqual(["plan", "apply", apply.target]);
+    expect(classifyPlanCommand("kubectl --context prod apply -f a.yaml")!.target).toBe("ctx=prod a.yaml");
+    expect(classifyPlanCommand("helm upgrade api ./c -n x --kube-context prod")!.target).toBe("ns=x ctx=prod api ./c");
   });
 });
