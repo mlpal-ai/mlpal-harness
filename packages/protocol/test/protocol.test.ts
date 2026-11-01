@@ -4,7 +4,13 @@ import {
   CLOSE_PRINCIPAL_REFUSED,
   HARNESS_PROTOCOL_VERSION,
   type ClientMessage,
+  type ErrorCode,
   type ErrorEvent,
+  type InboxRejectedFrame,
+  type QueuedFrame,
+  type ServerCapability,
+  type WithdrawMessage,
+  type WithdrawnFrame,
   type HopView,
   type ModelRefusal,
   type ResultEvent,
@@ -199,11 +205,34 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.22.5 (SessionStoreGrant: the session store credential on the messages that write)", () => {
+describe("0.23.0 (queue in connection mode, P2 1.1: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.22.5");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.22.5");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.23.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.23.0");
   });
+
+  test("the queue frames are server messages, withdraw and watch.noticesAfter are client messages, and the codes are typed", () => {
+    const queued: QueuedFrame = { type: "queued", requestId: "r1", sessionId: "s1", position: 2, inboxSeq: 7 };
+    const replay: QueuedFrame = { type: "queued", requestId: "r1", sessionId: "s1", position: null, inboxSeq: 7, replayed: true };
+    const rejected: InboxRejectedFrame = { type: "inbox_rejected", sessionId: "s1", requestId: "r1", code: "withdrawn", seq: 12 };
+    const withdrawn: WithdrawnFrame = { type: "withdrawn", requestId: "r1", sessionId: "s1" };
+    const codes: ErrorCode[] = ["inbox_full", "request_id_conflict", "queue_unavailable", "withdraw_refused", "approval_id_required", "approval_stale"];
+    const full = { type: "error", requestId: "r1", sessionId: "s1", code: "inbox_full", message: "m", pending: 32, limit: 32, retryAfterS: 5 } satisfies ServerMessage;
+    const refused = { type: "error", requestId: "r1", sessionId: "s1", code: "withdraw_refused", state: "consumed", message: "m" } satisfies ServerMessage;
+    const server: ServerMessage[] = [queued, replay, rejected, withdrawn, full, refused];
+    const withdraw: WithdrawMessage = { type: "withdraw", requestId: "r1", sessionId: "s1" };
+    const client: ClientMessage[] = [withdraw, { type: "watch", sessionId: "s1", noticesAfter: 11 }, { type: "watch", sessionId: "s1" }];
+    const capability: ServerCapability = "queue";
+    expect([server.map((m) => m.type), client.map((m) => m.type), codes.length, capability]).toEqual([
+      ["queued", "queued", "inbox_rejected", "withdrawn", "error", "error"],
+      ["withdraw", "watch", "watch"],
+      6,
+      "queue",
+    ]);
+  });
+});
+
+describe("0.22.5 (SessionStoreGrant: the session store credential on the messages that write)", () => {
 
   test("a grant rides run, permission_response, question_response and approval_response", () => {
     const store: SessionStoreGrant = { leaseId: "lease_1", token: "test-token", url: "http://store:7100/v1" };

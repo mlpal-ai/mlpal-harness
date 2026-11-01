@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
+
+- `HARNESS_PROTOCOL_VERSION` and `@mlpal/harness-protocol` are 0.23.0. Additive minor: capability `queue`;
+  `QueuedFrame`, `InboxRejectedFrame`, `WithdrawnFrame` (server) and `WithdrawMessage`, `watch.noticesAfter`
+  (client); `ErrorCode` adds `inbox_full`, `request_id_conflict`, `queue_unavailable`, `withdraw_refused`, with the
+  error frame's `pending`, `limit`, `retryAfterS`, `state`. A 0.22.x client ignores them; a 0.22.x server never sends
+  them (it does not advertise `queue`).
+
 ### Queue frames and the writer's accept (INBOX T2 addition, 2026-10-31)
 
 - `SessionStoreClient.acceptTurn` (P1 1.2 accept of a turn under the instance writer token, `pumpable: false`, the sha
