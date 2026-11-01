@@ -634,6 +634,13 @@ describe("profile loading", () => {
     expect(load("hash-off", "{ requirePlanArtifact: false, hash: [] }").safety?.preApply.hash).toEqual([]);
   });
 
+  test("D-53: model.fallback deny|allow loads and composes; another value is refused", () => {
+    const load = (name: string, model: string) => loadProfile(writeProfile(`p/${name}`, ["spec: mlpal/hop-v1", `name: ${name}`, "version: 1.0.0", "extends: coding", `model: ${model}`].join("\n")), opts());
+    expect(load("fb-deny", "{ main: claude-opus-5-5, fallback: deny }").model?.fallback).toBe("deny");
+    expect(load("fb-none", "{ main: claude-opus-5-5 }").model?.fallback).toBeUndefined();
+    expect(() => load("fb-bad", "{ main: claude-opus-5-5, fallback: sometimes }")).toThrow();
+  });
+
   test("safety + defaultMode autopilot is a load error (review 22)", () => {
     const pdir = writeProfile("p/safauto", [
       "spec: mlpal/hop-v1", "name: safauto", "version: 1.0.0", "extends: coding",

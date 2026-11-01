@@ -204,6 +204,22 @@ export interface CompactEvent {
   ts: string;
 }
 
+/** D-53: the main model failed before any content and the call was served by a fallback model. Persisted before the
+ *  assistant message it produced, so the transcript, the status and telemetry name the model actually used. */
+export interface ModelFallbackEvent {
+  type: "model_fallback";
+  uuid?: string;
+  /** The model the call asked for. */
+  from: string;
+  /** The model that answered. */
+  to: string;
+  /** Why `from` was left, in words (the gateway's status and message, never a credential). */
+  reason: string;
+  /** The same, as a low-cardinality code: `http_401`, `http_5xx`, `timeout`, `network`, `stream`, `refused`. */
+  code: string;
+  ts: string;
+}
+
 /** Persisted + rendered. */
 export type SDKMessage =
   | SystemInitEvent
@@ -214,7 +230,8 @@ export type SDKMessage =
   | ResultEvent
   | ErrorEvent
   | CompactEvent
-  | SubagentEvent;
+  | SubagentEvent
+  | ModelFallbackEvent;
 
 export interface TextDelta {
   type: "text_delta";
@@ -256,6 +273,7 @@ const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "subagent",
   "result",
   "error",
+  "model_fallback",
 ]);
 
 /** Runtime category: should this event be written to the conversation store? Since protocol

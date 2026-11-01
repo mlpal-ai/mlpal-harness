@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### D-53: a model fallback is never silent; protocol 0.24.0 (additive, 2026-11-01)
+
+- When the main model fails before any content and a fallback answers, `ModelResult.fallback` says so (`{from,
+  reason, code}`; `code` is low-cardinality: `http_5xx`, `http_<status>`, `timeout`, `network`, `stream`,
+  `refused`), and the loop persists and yields a typed **`model_fallback`** event (`{from, to, reason, code}`, protocol
+  0.24.0, additive) before the answer it produced. It also writes a `model.fallback` record to the events channel,
+  counts `agent.model_fallbacks{from,to,code}` and logs a warning. Replay (`loadMessages`) ignores the event.
+- HOP `model.fallback: allow | deny` (loader, schema, composition; default allow). Under `deny` a host sends no
+  fallbacks, so a failing main model fails the call.
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export

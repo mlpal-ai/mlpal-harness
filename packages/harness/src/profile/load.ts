@@ -165,6 +165,8 @@ const modelSchema = z
       .record(z.object({ primary: z.string().min(1), fallbacks: z.array(z.string().min(1)).default([]) }).strict())
       .optional(),
     subscribe: z.string().regex(/^[a-z0-9-]+@[\w.-]+$/, "subscribe must be <profile>@<version>").optional(),
+    // D-53: whether a failing main model may fail over to its fallbacks (visibly) or the call fails closed
+    fallback: z.enum(["allow", "deny"]).optional(),
   })
   .strict();
 
@@ -606,12 +608,14 @@ function composeModel(
   }
   const tiers = parent?.tiers || child?.tiers ? { ...(parent?.tiers ?? {}), ...(child?.tiers ?? {}) } : undefined;
   const subscribe = child?.subscribe ?? parent?.subscribe;
+  const fallback = child?.fallback ?? parent?.fallback;
   return {
     main,
     subagents: { ...(parent?.subagents ?? {}), ...(child?.subagents ?? {}) },
     allowInvokeAny: child?.allowInvokeAny ?? parent?.allowInvokeAny ?? true,
     ...(tiers ? { tiers } : {}),
     ...(subscribe ? { subscribe } : {}),
+    ...(fallback ? { fallback } : {}),
   };
 }
 

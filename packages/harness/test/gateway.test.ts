@@ -610,6 +610,15 @@ describe("GatewayClient model failover", () => {
     expect(result.stopReason).toBe("tool_use"); // succeeded on the fallback
     expect(seen.at(-1)).toBe("fallback");
     expect(seen.filter((m) => m === "fallback").length).toBe(1);
+    // D-53: the result says it: which model was asked for, and why it was left
+    expect(result.fallback).toEqual({ from: "primary", reason: "gateway 500: boom", code: "http_5xx" });
+  });
+
+  test("D-53: a call the requested model answers carries no fallback", async () => {
+    globalThis.fetch = (async () => new Response(SSE, { status: 200 })) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+    const { result } = await drain(client.stream({ model: "primary", fallbackModels: ["fallback"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(result.fallback).toBeUndefined();
   });
 
   test("a failover rung the policy refuses is skipped, never reported as the run's refusal; the primary's error stands when no rung is left", async () => {

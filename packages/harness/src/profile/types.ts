@@ -178,6 +178,9 @@ export interface ModelPolicy {
   /** Optional pinned gateway-profile baseline "<profile>@<version>" (pin+notify, never live). The
    *  baseline's tiers are resolved by the host at runtime (offline the loader only sees inline tiers). */
   subscribe?: string;
+  /** D-53: `allow` (the default) lets a main model that fails before any content fail over to its fallbacks, which the
+   *  run reports (a `model_fallback` event, the status, a metric); `deny` makes that failure fail the call instead. */
+  fallback?: "allow" | "deny";
 }
 
 /** v1.1 — external prerequisites the host checks at preflight (not registered tools — those are

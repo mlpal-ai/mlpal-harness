@@ -2,6 +2,7 @@ import {
   addUsage,
   type AssistantEvent,
   type Author,
+  type ModelFallbackEvent,
   type ContentBlock,
   type ConversationEntry,
   emptyUsage,
@@ -1052,6 +1053,16 @@ export class AgentSession {
           (result.usage.input_tokens ?? 0) +
           (result.usage.cache_read_input_tokens ?? 0) +
           (result.usage.cache_creation_input_tokens ?? 0);
+        // D-53: a call a fallback served is said, before its answer: in the transcript (persisted), the run log, the
+        // telemetry channel and a metric. The status a frontend shows reads the event.
+        if (result.fallback) {
+          const fb: ModelFallbackEvent = { type: "model_fallback", from: result.fallback.from, to: result.model, reason: result.fallback.reason, code: result.fallback.code, ts: now() };
+          parent = (await this.store.conversation.append(cfg.sessionId, fb, parent)).uuid;
+          log.warn("model fallback: the call was served by another model", { from: fb.from, to: fb.to, code: fb.code, reason: fb.reason });
+          metrics.increment("agent.model_fallbacks", 1, { from: fb.from, to: fb.to, code: fb.code });
+          await this.event("model.fallback", { callId, from: fb.from, to: fb.to, code: fb.code, reason: fb.reason });
+          yield { ...fb, uuid: parent };
+        }
         const asstEvt: AssistantEvent = {
           type: "assistant",
           message: result.message,

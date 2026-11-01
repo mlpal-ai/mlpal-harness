@@ -112,6 +112,8 @@ export interface ModelResult {
   message: Message; // assistant message (text + tool_use + thinking blocks)
   usage: Usage;
   stopReason: StopReason | null;
+  /** D-53: set when the requested model failed before any content and a fallback answered (`model` is the fallback). */
+  fallback?: { from: string; reason: string; code: string };
   /** Pass-through cost from the X-MLPal-Compute-Units response header (1 CU = $10, no markup).
    *  Non-streaming responses only — streaming carries no cost header by design (headers precede
    *  the body), so on yodex's streamed turns this is absent; derive from `usage` if a per-turn
@@ -182,6 +184,15 @@ function errorFields(body: unknown): { message?: string; type?: string; code?: s
   if (typeof e !== "object" || e === null) return {};
   const f = e as Record<string, unknown>;
   return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at) };
+}
+
+/** Why a call left its requested model, in words and as a low-cardinality code (D-53). The message is the gateway's
+ *  (status and text), bounded; no request detail. */
+function fallbackOf(from: string, err: GatewayError | undefined): { from: string; reason: string; code: string } {
+  if (!err) return { from, reason: "the requested model was refused by policy", code: "refused" };
+  const code = err.kind === "http" ? (err.status >= 500 ? "http_5xx" : `http_${err.status}`) : err.kind;
+  // the message already names an HTTP status ("gateway 500: …"); other kinds are prefixed with theirs
+  return { from, reason: (err.kind === "http" ? err.message : `${err.kind}: ${err.message}`).slice(0, 200), code };
 }
 
 export class GatewayError extends Error {
@@ -423,6 +434,8 @@ export class GatewayClient implements ModelClient {
           ...step.value, // the trailer's compute units win over a header (streams carry none)
           ...(effortApplied ? { effort: effortApplied } : {}),
           attempts: sent.requests,
+          // D-53: served by a fallback; the caller reports it (never a silent model switch)
+          ...(modelIdx > 0 ? { fallback: fallbackOf(models[0]!, primaryError) } : {}),
         };
       } catch (e) {
         const err = this.normalizeError(e, userSignal);
