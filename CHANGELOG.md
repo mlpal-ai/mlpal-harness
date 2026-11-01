@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### D-54: the agent verifier judges each turn against that turn's own request (2026-11-01)
+
+- `agentVerifier` hands the framing `{task}` = **this turn's request** (`turnRequest`): the messages a person or a peer
+  sent since the last run boundary (a persisted `result`), in order; a run that resumes a parked approval keeps the
+  request that parked; the loop's own system-authored notes (`[Verification] …`) are not requests. The session's
+  opening message follows, marked "context only; not the request this turn answers". Before, `{task}` was always the
+  session's first user message, so a correct change asked for in a later turn failed fail-closed verifiers as "a
+  mutation nobody asked for" (the infra HOP, demo v2).
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export

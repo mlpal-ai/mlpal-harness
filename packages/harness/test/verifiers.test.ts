@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { HookContext } from "../src/hooks/types";
 import { LocalStore } from "../src/store/local";
-import { agentVerifier, commandVerifier } from "../src/verifiers";
+import { HUMAN, SYSTEM, emptyUsage } from "@mlpal/harness-protocol";
+import { agentVerifier, commandVerifier, turnRequest } from "../src/verifiers";
 
 let dir: string;
 let ctx: HookContext;
@@ -89,5 +90,45 @@ describe("agentVerifier (adversarial)", () => {
     });
     expect(await h.run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
     expect(spawned).toBe(0);
+  });
+});
+
+describe("D-54: the verifier judges each turn against that turn's own request", () => {
+  const user = (text: string, author = HUMAN) => ({ type: "user" as const, message: { role: "user" as const, content: text }, author, ts: "t" });
+  const result = { type: "result" as const, subtype: "success" as const, numTurns: 1, usage: emptyUsage(), ts: "t" };
+  async function session(store: LocalStore, payloads: unknown[]): Promise<void> {
+    let parent: string | null = null;
+    for (const p of payloads) parent = (await store.conversation.append("s", p as never, parent)).uuid;
+  }
+
+  test("a later turn's request is the task, the opening message only context; the loop's own notes are not requests", async () => {
+    const store = new LocalStore(dir);
+    await session(store, [
+      user("what's running in hop-sandbox?"),
+      result,
+      user("web is on the wrong image: set it to nginx:1.27-alpine and confirm it rolled out"),
+      user("[Verification] Not done yet — keep going.", SYSTEM),
+    ]);
+    const t = await turnRequest(store, "s");
+    expect(t.request).toBe("web is on the wrong image: set it to nginx:1.27-alpine and confirm it rolled out");
+    expect(t.context).toBe("what's running in hop-sandbox?");
+    // what the verifier is handed: the turn's request first, the opening message marked as context
+    let prompt = "";
+    const h = agentVerifier({ store, runVerifier: async (p) => ((prompt = p), "VERDICT: PASS"), taskFraming: (task) => `Task: ${task}` });
+    await h.run({ event: "Stop", numTurns: 1 }, ctx);
+    expect(prompt).toStartWith("Task: web is on the wrong image");
+    expect(prompt).toContain("Context only, from earlier in this session; not the request this turn answers: what's running in hop-sandbox?");
+  });
+
+  test("a steer within the turn joins its request; a run resuming a parked approval keeps the request that parked", async () => {
+    const store = new LocalStore(dir);
+    await session(store, [user("status?"), result, user("scale web to 3"), user("and to 4 instead"), { ...result, subtype: "needs_approval" }]);
+    expect((await turnRequest(store, "s")).request).toBe("scale web to 3\n\nand to 4 instead");
+  });
+
+  test("a single-turn session: the opening message is the request, with no separate context", async () => {
+    const store = new LocalStore(dir);
+    await session(store, [user("fix the crashloop in web")]);
+    expect(await turnRequest(store, "s")).toEqual({ request: "fix the crashloop in web", context: "" });
   });
 });
