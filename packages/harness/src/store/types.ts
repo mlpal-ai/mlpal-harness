@@ -154,6 +154,9 @@ export interface Store {
   appendEvent?(sessionId: string, kind: string, data: Record<string, unknown>): Promise<unknown>;
   /** The data of the session's events of `kind`, in the order they were appended. */
   readEvents?(sessionId: string, kind: string): Promise<Record<string, unknown>[]>;
+  /** The session's events of any of `kinds`, each with its seq, in seq order: what binds an answer to the park the log
+   *  raised most recently with its id (a decision recorded before that raise answered an earlier ask). */
+  readEventsAt?(sessionId: string, kinds: readonly string[]): Promise<Array<{ seq: number; kind: string; data: Record<string, unknown> }>>;
   /** P1 1.2 (remote backend, an inbox engine): a consuming append. `events` go out as one batch of their own with
    *  `consumes`, after everything queued before them, and resolve with their seqs once acknowledged. A stop or a
    *  supersession that took the item meanwhile rejects with InboxItemNotPendingError, nothing written. */

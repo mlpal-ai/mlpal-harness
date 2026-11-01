@@ -289,3 +289,29 @@ describe("RemoteStore.consume with opening events (I-1)", () => {
     expect(s.sent).toEqual([{ afterSeq: 0, kinds: ["question_answered", "user"], consumes: { requestId: "rq-q", outcome: "answer" } }]);
   });
 });
+
+describe("RemoteStore.readEventsAt (store review r3)", () => {
+  test("the events of the kinds asked, with their seqs, in seq order, read at open and acknowledged since", async () => {
+    const root = join(tmpdir(), `harness-readat-${crypto.randomUUID().slice(0, 8)}`);
+    mkdirSync(root, { recursive: true });
+    try {
+      const s = stub({
+        events: [
+          { seq: 1, kind: "result", data: { uuid: "P" }, ts_ms: 1 },
+          { seq: 2, kind: "log", data: { channel: "events", record: {} }, ts_ms: 1 },
+          { seq: 3, kind: "ask_answered", data: { id: "P", decision: "allow" }, ts_ms: 1 },
+        ],
+      });
+      const store = await remoteStore(s, root);
+      await store.appendEvent("s1", "result", { uuid: "P" });
+      await store.flush();
+      expect(await store.readEventsAt("s1", ["result", "ask_answered"])).toEqual([
+        { seq: 1, kind: "result", data: { uuid: "P" } },
+        { seq: 3, kind: "ask_answered", data: { id: "P", decision: "allow" } },
+        { seq: 4, kind: "result", data: { uuid: "P" } },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

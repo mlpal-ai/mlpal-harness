@@ -12,6 +12,8 @@
   `watch.noticesAfter` and `inbox_rejected.seq`. The frames are exported types (`QueuedFrame`, `InboxRejectedFrame`,
   `WithdrawnFrame`, `WithdrawMessage`).
 - `SessionStoreClient.withdrawTurn` and `inboxStatus` (state, position).
+- `Store.readEventsAt` (`RemoteStore`): events of the kinds asked with their seqs, so a host binds an answer to the
+  park the log raised last with its id (store security review r3).
 - T2 review: `TurnInput.opening` (a parked question's answer and its `user` entry in one consuming batch, I-1);
   `settleableHeldCall` (a host resumes a held call whose park has a recorded decision and no marker, I-1).
 

@@ -222,6 +222,13 @@ export class RemoteStore implements Store {
     return this.stored.filter((e) => e.kind === kind).map((e) => structuredClone(e.data) as Record<string, unknown>);
   }
 
+  /** The events of any of `kinds` the store holds for this session, with their seqs, in seq order. */
+  async readEventsAt(sessionId: string, kinds: readonly string[]): Promise<Array<{ seq: number; kind: string; data: Record<string, unknown> }>> {
+    this.check(sessionId);
+    const want = new Set(kinds);
+    return this.stored.filter((e) => want.has(e.kind)).map((e) => ({ seq: e.seq, kind: e.kind, data: structuredClone(e.data) as Record<string, unknown> }));
+  }
+
   /** P1 1.2: a consuming append (Store.consume). The memory views take the events only once the store acknowledged
    *  them, so a withdrawn item (InboxItemNotPendingError) leaves nothing behind. */
   async consume(sessionId: string, consumes: InboxConsume, events: Array<{ kind: string; data: unknown }>): Promise<number[]> {
