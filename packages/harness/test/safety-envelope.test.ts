@@ -100,6 +100,10 @@ describe("classifyAction, re-review: global flags before the verb", () => {
     }
     expect(classifyAction(K, act("kubectl -shttps://prod delete ns prod"))).toBe("destructive");
   });
+
+  test("R4-1: a kubectl line naming --kuberc is unreadable (destructive), even a read", () => {
+    for (const line of ["kubectl get pods --kuberc ./krc", "kubectl --kuberc=./krc get pods", "kubectl apply -f a --kuberc ./krc"]) expect([line, classifyAction(K, act(line))]).toEqual([line, "destructive"]);
+  });
 });
 
 describe("evaluateSafety", () => {

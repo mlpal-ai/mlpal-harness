@@ -693,6 +693,17 @@ function composeRequires(
   };
 }
 
+/** D-57 re-review r4, locked minimum: with `requirePlanArtifact`, `plan` is always in `preApply.hash`, whatever the
+ *  profile lists. Every content and target binding lives in that field (the inputs and file-flag trees, the chart, the
+ *  state, where a kubeconfig lands the apply); `identity` and `backend` are advisory (host probes that cannot see a
+ *  line's own flags or environment) and `toolVersion` binds nothing about the change. A profile that leaves `plan` out
+ *  gets it added, with a warning. */
+function lockPlanHash(safety: SafetyPolicy | undefined, warnings: string[]): SafetyPolicy | undefined {
+  if (!safety?.preApply.requirePlanArtifact || safety.preApply.hash.includes("plan")) return safety;
+  warnings.push(`safety.preApply.hash omits "plan"; the engine adds it (a locked minimum: identity and backend are advisory and bind no content)`);
+  return { ...safety, preApply: { ...safety.preApply, hash: ["plan", ...safety.preApply.hash] } };
+}
+
 /** Safety is LOCKED whenever present, so a child overriding a parent's safety is already a lock
  *  violation. This therefore only INTRODUCES safety where the parent had none, or inherits it. */
 function composeSafety(
@@ -778,7 +789,7 @@ export function composeProfile(
   const model = composeModel(parent.model, y.model, y.name);
   const modelWarnings = model ? validateModel(model, y.name) : [];
   const requires = composeRequires(parent.requires, y.requires);
-  const safety = composeSafety(parent.safety, y.safety);
+  const safety = lockPlanHash(composeSafety(parent.safety, y.safety), modelWarnings);
   const memoryWorkspace = y.memory.workspace ?? parent.memory?.workspace;
   // §9.2: a child's policy replaces the parent's whole block (a closed set does not merge).
   const memoryPolicy = y.memory.policy ?? parent.memory?.policy;

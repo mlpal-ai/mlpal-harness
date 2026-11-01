@@ -154,7 +154,7 @@ interface FlagSpec {
   goStyle?: boolean;
 }
 
-const KUBE_GLOBAL_VALUE = ["server", "context", "kubeconfig", "cluster", "user", "token", "as", "as-group", "as-uid", "namespace", "request-timeout", "v", "tls-server-name", "certificate-authority", "client-certificate", "client-key", "username", "password", "cache-dir", "profile", "profile-output", "log-file", "log-dir", "vmodule", "stderrthreshold", "log-file-max-size", "log-flush-frequency", "kuberc"];
+const KUBE_GLOBAL_VALUE = ["server", "context", "kubeconfig", "cluster", "user", "token", "as", "as-group", "as-uid", "namespace", "request-timeout", "v", "tls-server-name", "certificate-authority", "client-certificate", "client-key", "username", "password", "cache-dir", "profile", "profile-output", "log-file", "log-dir", "vmodule", "stderrthreshold", "log-file-max-size", "log-flush-frequency"];
 const KUBE_GLOBAL_BOOL = ["insecure-skip-tls-verify", "match-server-version", "warnings-as-errors", "disable-compression", "alsologtostderr", "logtostderr", "skip-headers", "skip-log-headers", "one-output", "add-dir-header", "help"];
 /** The local flags of kubectl's mutating verbs and `diff`. A flag missing here is read only as `--flag=value`; bare, its
  *  arity is unknown and the line is refused (canonicalize or refuse). */
@@ -403,6 +403,18 @@ function helmSources(verb: string, cf: CanonicalFlags, args: string[]): { inputs
   return { inputs, mustExist };
 }
 
+/** kubectl's `--kuberc` preferences file sets flag defaults per command (`apply` → `--prune --all`) without a word of
+ *  the command changing (D-57 re-review R4-1). It is refused on every kubectl line, read or apply; the host also runs
+ *  every command with `KUBECTL_KUBERC=false` (PLAN_GATE_ENV) so the default `~/.kube/kuberc` is never read. */
+export function namesKuberc(tool: string, ws: string[]): boolean {
+  return ["kubectl", "oc"].includes(tool.replace(/^.*\//, "")) && ws.some((w) => w === "--kuberc" || w.startsWith("--kuberc="));
+}
+
+/** The environment a host runs every command in under a preApply gate, and the variables a line may not set or unset:
+ *  each changes what a kubectl command does without changing its words. */
+export const PLAN_GATE_ENV: Readonly<Record<string, string>> = { KUBECTL_KUBERC: "false" };
+const LOCKED_ENV = new Set(["KUBECTL_KUBERC", "KUBERC"]);
+
 /** A command's words after its tool split into the global flags before its verb and the rest (from the verb on).
  *  `unknown` names a flag before the verb that is not a known global: what the command does then is not readable, so
  *  callers fail closed (the envelope classes it destructive; the plan gate keys it to nothing). Booleans may be spelled
@@ -472,6 +484,7 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     return null;
   }
   if (tool === "kubectl" || tool === "oc") {
+    if (namesKuberc(tool, rest)) return { kind: "apply", tool, target: `unreadable (--kuberc sets flag defaults the gate cannot see) ${rest.join(" ")}`, inputs: [] };
     const g = splitGlobals(tool, rest)!;
     // An unknown flag before the verb: not readable, so it is an apply no plan can match (fail closed).
     if (g.unknown) return { kind: "apply", tool, target: `unreadable ${rest.join(" ")}`, inputs: [] };
@@ -676,6 +689,8 @@ export function planLine(command: string, cwd: string): PlanLine {
   let dir = cwd;
   let unreadable: string | null = null;
   const fail = (why: string) => (unreadable ??= why);
+  // R4-1: the host locks these for every command; a line that sets or unsets one changes what kubectl does unseen
+  const lockedEnv = (name: string) => LOCKED_ENV.has(name) && fail(`the line sets ${name}, which the plan gate locks`);
   if (/\$\(\([^)]*[^=!<>]=[^=]/.test(command) || /\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(command)) fail("an assignment inside an expansion");
   let negatedPlan = false;
   for (const raw of splitShellCommands(command)) {
@@ -688,6 +703,7 @@ export function planLine(command: string, cwd: string): PlanLine {
       const a = ASSIGN.exec(ws[i]!);
       if (!a) break;
       if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+      lockedEnv(a[1]!);
       env.set(a[1]!, a[2]!);
     }
     let head = ws[i];
@@ -696,6 +712,7 @@ export function planLine(command: string, cwd: string): PlanLine {
         const a = ASSIGN.exec(ws[i]!);
         if (a) {
           if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+          lockedEnv(a[1]!);
           env.set(a[1]!, a[2]!);
         } else if (ws[i]!.startsWith("-")) fail("env with options");
         else break;
@@ -716,13 +733,17 @@ export function planLine(command: string, cwd: string): PlanLine {
         if (w.startsWith("-")) fail("export with options");
         else if (a) {
           if (NOT_LITERAL.test(a[2]!)) fail(`a non-literal assignment (${a[1]}=…)`);
+          lockedEnv(a[1]!);
           env.set(a[1]!, a[2]!);
         }
       }
       continue;
     }
     if (head === "unset") {
-      for (const w of args) env.delete(w);
+      for (const w of args) {
+        lockedEnv(w);
+        env.delete(w);
+      }
       continue;
     }
     if (ENV_OPAQUE.has(head)) {

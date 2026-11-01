@@ -620,6 +620,20 @@ describe("profile loading", () => {
     expect(() => loadProfile(child, opts())).toThrow(/overrides "safety.*which is locked by its parent "base-saf"/s);
   });
 
+  test("D-57 r4: with requirePlanArtifact, `plan` is a locked minimum of preApply.hash; leaving it out warns", () => {
+    const load = (name: string, preApply: string) =>
+      loadProfile(writeProfile(`p/${name}`, ["spec: mlpal/hop-v1", `name: ${name}`, "version: 1.0.0", "extends: coding", "permissions: { defaultMode: cruise }", `safety: { preApply: ${preApply} }`].join("\n")), opts());
+    const empty = load("hash-empty", "{ requirePlanArtifact: true, hash: [] }");
+    expect(empty.safety?.preApply.hash).toEqual(["plan"]);
+    expect(empty.warnings?.some((w) => w.includes('omits "plan"'))).toBe(true);
+    expect(load("hash-advisory", "{ requirePlanArtifact: true, hash: [identity, backend] }").safety?.preApply.hash).toEqual(["plan", "identity", "backend"]);
+    const listed = load("hash-listed", "{ requirePlanArtifact: true, hash: [plan, identity] }");
+    expect(listed.safety?.preApply.hash).toEqual(["plan", "identity"]);
+    expect(listed.warnings?.some((w) => w.includes('omits "plan"')) ?? false).toBe(false);
+    // no plan artifact required: nothing to lock
+    expect(load("hash-off", "{ requirePlanArtifact: false, hash: [] }").safety?.preApply.hash).toEqual([]);
+  });
+
   test("safety + defaultMode autopilot is a load error (review 22)", () => {
     const pdir = writeProfile("p/safauto", [
       "spec: mlpal/hop-v1", "name: safauto", "version: 1.0.0", "extends: coding",

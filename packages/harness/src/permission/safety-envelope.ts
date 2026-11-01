@@ -13,7 +13,7 @@ import type { SafetyPolicy } from "../profile/types";
 import { globMatch } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
-import { splitGlobals } from "./plan-gate";
+import { namesKuberc, splitGlobals } from "./plan-gate";
 
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
@@ -127,10 +127,12 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
 }
 
 /** A command with its global flags moved after its words (`kubectl -n x --context p apply -f a` → `kubectl apply -f a
- *  -n x --context p`); "unreadable" when a flag before the verb is not a known global; null when nothing moves. */
+ *  -n x --context p`); "unreadable" when a flag before the verb is not a known global, or the command names a kubectl
+ *  `--kuberc` (R4-1: its defaults change the command unseen); null when nothing moves. */
 function verbLed(form: string): string | null | "unreadable" {
   const ws = form.split(" ");
   const tool = ws[0] ?? "";
+  if (namesKuberc(tool, ws.slice(1))) return "unreadable";
   const g = splitGlobals(tool, ws.slice(1));
   if (!g) return null;
   if (g.unknown) return "unreadable";

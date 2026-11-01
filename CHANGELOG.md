@@ -56,6 +56,13 @@
   version: its pulled contents (and the repo-name mapping in `repositories.yaml`) are not hashed, so a repository
   that republishes the same version is not detected. Follow-up: accept OCI digest pins (`oci://…@sha256:…`) and hash
   the pulled chart into the plan.
+- Re-review round 4, R4-1 (kuberc): `--kuberc` on any kubectl/oc line, read or apply, before or after the verb, is
+  unreadable (destructive in the envelope, an apply no plan matches; `kuberc` left the known globals). A line that
+  sets or unsets `KUBECTL_KUBERC` or `KUBERC` (`X=…`, `export`, `env`, `unset`) is unreadable. `PLAN_GATE_ENV`
+  (`KUBECTL_KUBERC=false`) is the environment a host runs every command in under a preApply gate.
+- Locked minimum: with `requirePlanArtifact`, the profile loader always puts `plan` in `safety.preApply.hash` and warns
+  when the HOP left it out. `identity` and `backend` are advisory: host probes that cannot see a line's own flags or
+  environment; every content and target binding lives in `plan`.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 

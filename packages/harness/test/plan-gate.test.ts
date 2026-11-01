@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, dryRun, matchPlan, type PlanArtifact, planExitOk, planLine, splitGlobals } from "../src/permission/plan-gate";
+import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, splitGlobals } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -312,5 +312,23 @@ describe("kubeconfig binding: the selection flags reach the host", () => {
     expect(classifyPlanCommand("kubectl apply -f a.yaml --cluster c --user u")?.kube).toEqual({ cluster: "c", user: "u" });
     expect(classifyPlanCommand("helm upgrade web ./chart --kube-context prod --kubeconfig=/k")?.kube).toEqual({ kubeconfig: "/k", context: "prod" });
     expect(classifyPlanCommand("kubectl apply -f a.yaml")?.kube).toEqual({});
+  });
+});
+
+describe("re-review r4: kuberc is refused, and the variables that switch it are locked", () => {
+  test("R4-1: --kuberc on any kubectl line, read or apply, before or after the verb, is an apply no plan matches", () => {
+    for (const line of ["kubectl --kuberc ./krc apply -f k8s/web.yaml --dry-run=server", "kubectl --kuberc ./krc apply -f k8s/web.yaml", "kubectl apply -f k8s/web.yaml --kuberc=./krc", "kubectl get pods --kuberc ./krc", "/usr/local/bin/kubectl --kuberc=./krc get pods"]) {
+      const pc = classifyPlanCommand(line)!;
+      expect([line, pc.kind, pc.target.startsWith("unreadable (--kuberc")]).toEqual([line, "apply", true]);
+    }
+    expect(planLine("kubectl --kuberc ./krc apply -f k8s/web.yaml --dry-run=server", "/w").recordable).toBeNull();
+  });
+
+  test("R4-1: a line that sets or unsets KUBECTL_KUBERC (or KUBERC) is unreadable, and its dry run is not recorded", () => {
+    for (const line of ["KUBECTL_KUBERC=true kubectl apply -f a.yaml", "export KUBECTL_KUBERC=true; kubectl apply -f a.yaml", "unset KUBECTL_KUBERC && kubectl apply -f a.yaml", "env KUBERC=./krc kubectl apply -f a.yaml", "export KUBECTL_KUBERC=true; kubectl diff -f a.yaml"]) {
+      const l = planLine(line, "/w");
+      expect([line, l.unreadable?.includes("which the plan gate locks"), l.recordable]).toEqual([line, true, null]);
+    }
+    expect(PLAN_GATE_ENV).toEqual({ KUBECTL_KUBERC: "false" });
   });
 });
