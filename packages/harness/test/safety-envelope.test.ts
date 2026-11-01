@@ -101,6 +101,11 @@ describe("classifyAction, re-review: global flags before the verb", () => {
     expect(classifyAction(K, act("kubectl -shttps://prod delete ns prod"))).toBe("destructive");
   });
 
+  test("R5-1: a gated tool run by a path is unreadable (destructive), even a read", () => {
+    for (const line of ["./kubectl get pods", "/tmp/x/kubectl apply -f a", "cd k8s && ../bin/helm upgrade web ./c", "./terraform apply"]) expect([line, classifyAction(K, act(line))]).toEqual([line, "destructive"]);
+    expect(classifyAction(K, act("kubectl get pods"))).toBe("readOnly");
+  });
+
   test("R4-1: a kubectl line naming --kuberc is unreadable (destructive), even a read", () => {
     for (const line of ["kubectl get pods --kuberc ./krc", "kubectl --kuberc=./krc get pods", "kubectl apply -f a --kuberc ./krc"]) expect([line, classifyAction(K, act(line))]).toEqual([line, "destructive"]);
   });

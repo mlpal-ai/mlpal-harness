@@ -13,7 +13,7 @@ import type { SafetyPolicy } from "../profile/types";
 import { globMatch } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
-import { namesKuberc, splitGlobals } from "./plan-gate";
+import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
 
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
@@ -107,6 +107,12 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
     for (const c of d.commands) {
       const forms = [...c.forms, ...(c.redirected ?? [])];
       if (forms.length === 0 || (c.forms[0] && CONTEXT_ONLY.has(c.forms[0].split(" ")[0]!))) continue;
+      // R5-1: a gated tool run by a path is whatever that file is: unreadable (the decomposer's first form is the
+      // basename; a later form keeps the path as written)
+      if (c.forms.some((f) => invokedByPath(f.split(" ")[0]!))) {
+        worst = "destructive";
+        continue;
+      }
       // Global flags before the verb (`kubectl -s URL --as admin delete ns x`, `helm --kube-context p uninstall`,
       // `terraform -chdir=x apply`): the verb-led form is matched too, so the HOP's verb-anchored lists see the verb; an
       // unknown flag before the verb makes the command unreadable, so it is destructive (fail closed).

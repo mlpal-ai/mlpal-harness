@@ -4,11 +4,11 @@ import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifac
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
     // a saved plan binds itself; an unsaved plan binds the config directory and var files (review M-3)
-    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -out=tf.plan")).toEqual({ kind: "plan", tool: "terraform", target: ". planfile", inputs: ["tf.plan"], planFile: "tf.plan" });
-    expect(classifyPlanCommand("terraform -chdir=infra/eks apply tf.plan")).toEqual({ kind: "apply", tool: "terraform", target: "infra/eks planfile", inputs: ["tf.plan"], planFile: "tf.plan" });
-    expect(classifyPlanCommand("terraform destroy -auto-approve")).toEqual({ kind: "apply", tool: "terraform", target: ". -destroy", inputs: ["."] });
-    expect(classifyPlanCommand("terraform plan -destroy")).toEqual({ kind: "plan", tool: "terraform", target: ". -destroy", inputs: ["."] });
-    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -target=module.db")).toEqual({ kind: "plan", tool: "terraform", target: ". -var-file=prod.tfvars -target=module.db", inputs: [".", "prod.tfvars"] });
+    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -out=tf.plan")).toEqual({ kind: "plan", tool: "terraform", bin: "terraform", target: ". planfile", inputs: ["tf.plan"], planFile: "tf.plan" });
+    expect(classifyPlanCommand("terraform -chdir=infra/eks apply tf.plan")).toEqual({ kind: "apply", tool: "terraform", bin: "terraform", target: "infra/eks planfile", inputs: ["tf.plan"], planFile: "tf.plan" });
+    expect(classifyPlanCommand("terraform destroy -auto-approve")).toEqual({ kind: "apply", tool: "terraform", bin: "terraform", target: ". -destroy", inputs: ["."] });
+    expect(classifyPlanCommand("terraform plan -destroy")).toEqual({ kind: "plan", tool: "terraform", bin: "terraform", target: ". -destroy", inputs: ["."] });
+    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -target=module.db")).toEqual({ kind: "plan", tool: "terraform", bin: "terraform", target: ". -var-file=prod.tfvars -target=module.db", inputs: [".", "prod.tfvars"] });
     expect(classifyPlanCommand("terraform validate")).toBeNull();
     expect(classifyPlanCommand("TF_LOG=debug tofu plan")).toMatchObject({ kind: "plan", tool: "terraform" });
   });
@@ -16,8 +16,8 @@ describe("plan gate: recognising plans and applies", () => {
   test("kubectl and helm: server-side dry run is the plan; the same command without it is the apply", () => {
     const dry = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml --dry-run=server");
     const real = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml");
-    expect(dry).toEqual({ kind: "plan", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
-    expect(real).toEqual({ kind: "apply", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
+    expect(dry).toEqual({ kind: "plan", tool: "kubectl", bin: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
+    expect(real).toEqual({ kind: "apply", tool: "kubectl", bin: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
     expect(classifyPlanCommand("kubectl get pods -n mlpal")).toBeNull();
     expect(classifyPlanCommand("kubectl delete deployment api -n mlpal")).toMatchObject({ kind: "apply", target: "ns=mlpal delete deployment api" });
     expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml --dry-run")).toMatchObject({ kind: "plan", tool: "helm", target: "ns=mlpal upgrade --install api ./chart --values=values.yaml", inputs: ["values.yaml", "./chart"], mustExist: ["./chart"] });
@@ -127,7 +127,7 @@ describe("D-57: planLine reads every plan and apply on a line, with its context"
 
   test("D-56a: the statuses a dry run uses to say it found changes", () => {
     const kd = classifyPlanCommand("kubectl diff -f a.yaml")!;
-    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "apply --filename=a.yaml", inputs: ["a.yaml"], kube: {} });
+    expect(kd).toEqual({ kind: "plan", tool: "kubectl", bin: "kubectl", target: "apply --filename=a.yaml", inputs: ["a.yaml"], kube: {} });
     expect([planExitOk(kd, "kubectl diff -f a.yaml", 0), planExitOk(kd, "kubectl diff -f a.yaml", 1), planExitOk(kd, "kubectl diff -f a.yaml", 2)]).toEqual([true, true, false]);
     const ka = classifyPlanCommand("kubectl apply -f a.yaml --dry-run=server")!;
     expect(planExitOk(ka, "kubectl apply -f a.yaml --dry-run=server", 1)).toBe(false);
@@ -247,7 +247,7 @@ describe("re-review r2: canonicalize or refuse", () => {
     unreadable("terraform -chdir=dev -chdir=prod apply -auto-approve");
     unreadable("terraform plan -out a.plan -out=b.plan");
     unreadable("terraform apply -auto-approve -bogus");
-    expect(classifyPlanCommand("tofu plan -var env=dev")).toEqual(classifyPlanCommand("terraform plan -var env=dev"));
+    expect(classifyPlanCommand("tofu plan -var env=dev")).toEqual({ ...classifyPlanCommand("terraform plan -var env=dev")!, bin: "tofu" });
   });
 });
 
@@ -317,7 +317,7 @@ describe("kubeconfig binding: the selection flags reach the host", () => {
 
 describe("re-review r4: kuberc is refused, and the variables that switch it are locked", () => {
   test("R4-1: --kuberc on any kubectl line, read or apply, before or after the verb, is an apply no plan matches", () => {
-    for (const line of ["kubectl --kuberc ./krc apply -f k8s/web.yaml --dry-run=server", "kubectl --kuberc ./krc apply -f k8s/web.yaml", "kubectl apply -f k8s/web.yaml --kuberc=./krc", "kubectl get pods --kuberc ./krc", "/usr/local/bin/kubectl --kuberc=./krc get pods"]) {
+    for (const line of ["kubectl --kuberc ./krc apply -f k8s/web.yaml --dry-run=server", "kubectl --kuberc ./krc apply -f k8s/web.yaml", "kubectl apply -f k8s/web.yaml --kuberc=./krc", "kubectl get pods --kuberc ./krc", "oc --kuberc=./krc get pods"]) {
       const pc = classifyPlanCommand(line)!;
       expect([line, pc.kind, pc.target.startsWith("unreadable (--kuberc")]).toEqual([line, "apply", true]);
     }
@@ -330,5 +330,24 @@ describe("re-review r4: kuberc is refused, and the variables that switch it are 
       expect([line, l.unreadable?.includes("which the plan gate locks"), l.recordable]).toEqual([line, true, null]);
     }
     expect(PLAN_GATE_ENV).toEqual({ KUBECTL_KUBERC: "false" });
+  });
+});
+
+describe("re-review r5: which binary runs", () => {
+  test("R5-1 layer 1: a gated tool run by a path is unreadable, read or apply; a bare name is read and carried as bin", () => {
+    for (const line of ["./kubectl apply -f k8s/web.yaml", "/tmp/x/kubectl apply -f k8s/web.yaml", "./kubectl diff -f k8s/web.yaml", "bin/helm upgrade web ./chart", "./terraform apply -auto-approve", "/opt/tofu plan", "./oc get pods"]) {
+      const pc = classifyPlanCommand(line)!;
+      expect([line, pc.kind, pc.target.includes("is run by a path")]).toEqual([line, "apply", true]);
+    }
+    expect(planLine("./kubectl diff -f k8s/web.yaml", "/w").recordable).toBeNull();
+    expect(classifyPlanCommand("kubectl apply -f a.yaml")?.bin).toBe("kubectl");
+    expect(classifyPlanCommand("tofu apply -auto-approve")).toMatchObject({ tool: "terraform", bin: "tofu" });
+  });
+
+  test("R5-1 layer 2: a line that sets, prepends or unsets PATH is unreadable, and its dry run is not recorded", () => {
+    for (const line of ["PATH=bin:/usr/bin kubectl diff -f k8s/web.yaml", "export PATH=bin:$PATH; kubectl apply -f a.yaml", "env PATH=bin:/usr/bin kubectl apply -f a.yaml", "unset PATH; kubectl apply -f a.yaml", "export PATH=/opt/bin && helm upgrade web ./chart"]) {
+      const l = planLine(line, "/w");
+      expect([line, l.unreadable !== null, l.recordable]).toEqual([line, true, null]);
+    }
   });
 });

@@ -33,6 +33,9 @@ export interface PlanCommand {
   kind: PlanKind;
   /** terraform | kubectl | helm | pulumi | cdk | az | gcloud | aws */
   tool: string;
+  /** The executable as invoked: a bare name (`tofu` for the terraform tool), which the host resolves on the command's
+   *  PATH and binds by realpath and content (re-review R5-1). */
+  bin: string;
   /** What the command acts on: the words that are not flags, after the tool and verb, joined. */
   target: string;
   /** Files the command reads (manifests, var files, a saved plan), relative or absolute. */
@@ -411,9 +414,18 @@ export function namesKuberc(tool: string, ws: string[]): boolean {
 }
 
 /** The environment a host runs every command in under a preApply gate, and the variables a line may not set or unset:
- *  each changes what a kubectl command does without changing its words. */
+ *  each changes what a kubectl command does, or which binary runs, without changing its words (the host also sets
+ *  PATH to its trusted one, R5-1). */
 export const PLAN_GATE_ENV: Readonly<Record<string, string>> = { KUBECTL_KUBERC: "false" };
-const LOCKED_ENV = new Set(["KUBECTL_KUBERC", "KUBERC"]);
+const LOCKED_ENV = new Set(["KUBECTL_KUBERC", "KUBERC", "PATH"]);
+
+/** The gated tools that run only by their bare name (re-review R5-1). */
+const BARE_ONLY = new Set(["kubectl", "oc", "helm", "terraform", "tofu"]);
+
+/** Whether a command word runs a gated tool by a path (any `/`): what runs is that file, not the tool on PATH. */
+export function invokedByPath(word: string): boolean {
+  return word.includes("/") && BARE_ONLY.has(word.replace(/^.*\//, ""));
+}
 
 /** A command's words after its tool split into the global flags before its verb and the rest (from the verb on).
  *  `unknown` names a flag before the verb that is not a known global: what the command does then is not readable, so
@@ -442,7 +454,17 @@ export function splitGlobals(tool: string, ws: string[]): { globals: string[]; r
 export function classifyPlanCommand(command: string): PlanCommand | null {
   const ws = words(command);
   if (ws.length === 0) return null;
+  const pc = classifyWords(ws);
+  // The executable as invoked (a bare name: a path is refused), for the host to resolve on the command's PATH and bind
+  // (re-review R5-1).
+  return pc && { ...pc, bin: ws[0]! };
+}
+
+function classifyWords(ws: string[]): Omit<PlanCommand, "bin"> | null {
   const tool = (ws[0] ?? "").replace(/^.*\//, "");
+  // R5-1: a gated tool run by a path (`./kubectl`, `/tmp/x/kubectl`) is whatever that file is, not the tool the plan
+  // ran: refused. Only a bare name, resolved on the host's locked PATH, is read.
+  if (invokedByPath(ws[0]!)) return { kind: "apply", tool, target: `unreadable (${ws[0]} is run by a path; run the tool by its name)`, inputs: [] };
   const rest = ws.slice(1);
   const has = (f: string) => rest.some((w) => w === f || w.startsWith(`${f}=`));
 

@@ -63,6 +63,10 @@
 - Locked minimum: with `requirePlanArtifact`, the profile loader always puts `plan` in `safety.preApply.hash` and warns
   when the HOP left it out. `identity` and `backend` are advisory: host probes that cannot see a line's own flags or
   environment; every content and target binding lives in `plan`.
+- Re-review round 5, R5-1 (which binary runs): a gated tool (kubectl, oc, helm, terraform, tofu) run by a path
+  (`./kubectl`, `/tmp/x/kubectl`, `bin/helm`) is unreadable in the plan gate and destructive in the envelope, read or
+  apply; `PATH` joins the locked variables (a line may not set, prepend or unset it); `PlanCommand.bin` carries the
+  executable as invoked (a bare name) for the host to resolve and bind.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 
