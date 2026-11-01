@@ -19,6 +19,12 @@
   `annotate`, `taint`, `drain`, `cordon`, `uncordon`, `expose`, `autoscale`, `run`, `edit`) is an apply.
 - `planExitOk`: `kubectl diff` exit 1, `terraform plan -detailed-exitcode` 2 and `helm diff --detailed-exitcode` 2 mean
   "changes found", not failure (D-56a).
+- Security review round 1 (evidence/D57-security-review.md): only a bare `--dry-run` or `=client|server|true` is a
+  dry run, `=none`/`=false`/anything else is the change (C-1, `dryRun`); the plan key is the change itself (verb, every
+  argument and mutating flag: `--replicas`, `-p` bodies, `--prune --all`, `--set`; I-1); terraform binds the config
+  directory without `-out` and the plan file with it (M-3); `kubectl rollout status|history` are reads (I-4); a negated
+  (`! …`) or backgrounded dry run is not recordable (I-3, M-1); `timeout`/`nice`/`stdbuf`/`ionice`/`command`/`builtin`/
+  `time`/`nohup` are read through (M-2).
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 

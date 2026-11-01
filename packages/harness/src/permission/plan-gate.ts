@@ -103,6 +103,45 @@ function positionals(ws: string[], from: number): string[] {
   return out;
 }
 
+/** Whether a command's `--dry-run` makes it a dry run (review C-1). Only the bare flag (kubectl's and helm's default
+ *  is `client`; aws's and gcloud's is a boolean) and `=client`, `=server`, `=true` are; `--dry-run=none`, `=false` or
+ *  any other value runs the change for real, so it is an apply (fail closed). Absent: an apply. */
+export function dryRun(ws: string[]): "plan" | "apply" {
+  let mode: "plan" | "apply" = "apply";
+  for (const w of ws) {
+    if (w === "--dry-run") mode = mode === "apply" ? "plan" : mode;
+    else if (w.startsWith("--dry-run=")) {
+      if (!["client", "server", "true"].includes(w.slice("--dry-run=".length))) return "apply";
+      mode = "plan";
+    }
+  }
+  return mode;
+}
+
+/** kubectl and helm flags left out of a change's key, with their value word; and those without one. */
+const KUBE_DROP_WITH_VALUE = new Set(["-o", "--output", "-n", "--namespace", "--context", "--kube-context", "--kubeconfig", "--cluster", "--server", "-s", "--user", "-v", "--v", "--template"]);
+const KUBE_DROP = /^(?:--dry-run(?:=.*)?|--record(?:=.*)?|-o.+|--output=.*|-n.+|--namespace=.*|--context=.*|--kube-context=.*|--kubeconfig=.*|--cluster=.*|--server=.*|--user=.*|-v=?\d+|--v=.*|--template=.*|--show-managed-fields(?:=.*)?)$/;
+
+/** The words of a change, in order, without the flags that do not change what is applied (and their values). A bare
+ *  `--dry-run`'s mode word (`--dry-run server`) is dropped with it (D-56c). */
+function changeWords(ws: string[], dropWithValue: Set<string>, drop: RegExp): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i]!;
+    if (dropWithValue.has(w)) {
+      i++;
+      continue;
+    }
+    if (w === "--dry-run" && ["server", "client", "none"].includes(ws[i + 1] ?? "")) {
+      i++;
+      continue;
+    }
+    if (drop.test(w)) continue;
+    out.push(w);
+  }
+  return out;
+}
+
 /** kubectl verbs that change the cluster; each takes `--dry-run`. */
 const KUBECTL_MUTATING = new Set(["apply", "create", "delete", "patch", "replace", "scale", "rollout", "set", "label", "annotate", "taint", "drain", "cordon", "uncordon", "expose", "autoscale", "run", "edit"]);
 
@@ -130,27 +169,41 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const chdir = flagValue(rest, ["-chdir"]) ?? "";
     const verb = rest.find((w) => !w.startsWith("-"));
     const varFiles = flagValues(rest, ["-var-file"]);
+    const dir = chdir || ".";
+    // What changes the plan besides the config and var files (review I-1): these flags, sorted. `destroy` is `plan
+    // -destroy`'s apply.
+    const flags = (destroy: boolean) => [...new Set([...rest.filter((w) => /^-(?:var|target|replace|refresh-only|destroy)(?:=|$)/.test(w)), ...(destroy ? ["-destroy"] : [])])].sort();
     if (verb === "plan") {
       const out = flagValue(rest, ["-out"]);
-      return { kind: "plan", tool: "terraform", target: chdir || ".", inputs: varFiles, ...(out ? { planFile: out } : {}) };
+      // A saved plan binds itself (its bytes are the plan); an unsaved one binds the config directory and var files
+      // (review M-3: editing a .tf between `plan` and `apply -auto-approve` no longer matches).
+      if (out) return { kind: "plan", tool: "terraform", target: `${dir} planfile`, inputs: [out], planFile: out };
+      return { kind: "plan", tool: "terraform", target: [dir, ...flags(false)].join(" "), inputs: [dir, ...varFiles] };
     }
     if (verb === "apply" || verb === "destroy") {
       const pos = positionals(rest, rest.indexOf(verb) + 1);
       const planFile = verb === "apply" ? pos[0] : undefined;
-      return { kind: "apply", tool: "terraform", target: chdir || ".", inputs: planFile ? [planFile] : varFiles, ...(planFile ? { planFile } : {}) };
+      if (planFile) return { kind: "apply", tool: "terraform", target: `${dir} planfile`, inputs: [planFile], planFile };
+      return { kind: "apply", tool: "terraform", target: [dir, ...flags(verb === "destroy")].join(" "), inputs: [dir, ...varFiles] };
     }
     return null;
   }
   if (tool === "kubectl" || tool === "oc") {
     const verb = positionals(rest, 0)[0];
+    const sub = positionals(rest, 0)[1];
     // D-57: every verb that changes the cluster is an apply (each takes --dry-run, so each can be planned); `diff` is a
-    // plan, keyed like the apply of the same files (D-56).
-    if (!verb || !KUBECTL_MUTATING.has(verb) && verb !== "diff") return null;
+    // plan, keyed like the apply of the same files (D-56). `rollout status|history` are reads (review I-4).
+    if (!verb || (!KUBECTL_MUTATING.has(verb) && verb !== "diff")) return null;
+    if (verb === "rollout" && !["undo", "restart", "pause", "resume"].includes(sub ?? "")) return null;
     const files = flagValues(rest, ["-f", "--filename", "-k", "--kustomize"]);
     const ns = flagValue(rest, ["-n", "--namespace"]) ?? "";
-    const pos = positionals(rest, rest.indexOf(verb) + 1);
-    const target = [ns && `ns=${ns}`, ...kubeContext(rest), ...files, ...pos].filter(Boolean).join(" ");
-    return { kind: verb === "diff" || has("--dry-run") ? "plan" : "apply", tool, target, inputs: files };
+    // The change itself is the key (review I-1): the verb (`diff` is `apply`'s plan), every argument and every flag
+    // with its value (`--replicas`, `-p`'s body, `--prune --all`, `--server-side`), in order; only the dry-run, output,
+    // verbosity, namespace and cluster flags are left out (the last two lead the key).
+    const change = changeWords(rest, KUBE_DROP_WITH_VALUE, KUBE_DROP).map((w) => (w === "diff" ? "apply" : w));
+    const target = [ns && `ns=${ns}`, ...kubeContext(rest), ...change].filter(Boolean).join(" ");
+    const kind = verb === "diff" || dryRun(rest) === "plan" ? "plan" : "apply";
+    return { kind, tool, target, inputs: files };
   }
   if (tool === "helm") {
     const verb = rest.find((w) => !w.startsWith("-"));
@@ -158,11 +211,13 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const values = flagValues(rest, ["-f", "--values"]);
     const ns = [flagValue(rest, ["-n", "--namespace"]) ? `ns=${flagValue(rest, ["-n", "--namespace"])}` : "", ...kubeContext(rest)].filter(Boolean).join(" ");
     const pos = positionals(rest, rest.indexOf(verb) + 1);
-    if (verb === "diff") return { kind: "plan", tool, target: [ns, ...pos.slice(1, 3)].filter(Boolean).join(" "), inputs: values };
-    if (["install", "upgrade", "uninstall", "rollback"].includes(verb)) {
-      return { kind: has("--dry-run") ? "plan" : "apply", tool, target: [ns, ...pos.slice(0, 2)].filter(Boolean).join(" "), inputs: values };
-    }
-    return null;
+    const isDiff = verb === "diff" && ["upgrade", "install", "rollback"].includes(pos[0] ?? "");
+    if (!isDiff && !["install", "upgrade", "uninstall", "rollback"].includes(verb)) return null;
+    // The release, chart and every flag (`--set`, `--version`, `--install`, `-f` values) are the change (review I-1);
+    // `helm diff upgrade …` is the plan of `helm upgrade …`.
+    const change = changeWords(rest, KUBE_DROP_WITH_VALUE, KUBE_DROP).filter((w, k) => !(isDiff && k === 0 && w === "diff"));
+    const target = [ns, ...change].filter(Boolean).join(" ");
+    return { kind: isDiff || dryRun(rest) === "plan" ? "plan" : "apply", tool, target, inputs: values };
   }
   if (tool === "pulumi") {
     const verb = rest.find((w) => !w.startsWith("-"));
@@ -184,13 +239,13 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     if (pos.includes("what-if")) return { kind: "plan", tool, target: pos.filter((w) => w !== "what-if").join(" "), inputs: flagValues(rest, ["--template-file", "-f", "--parameters", "-p"]) };
     if (verbIdx < 0) return null;
     const target = [...pos.slice(0, verbIdx), ...flagValues(rest, ["-n", "--name", "-g", "--resource-group"])].join(" ");
-    return { kind: has("--dry-run") || has("--what-if") ? "plan" : "apply", tool, target, inputs: flagValues(rest, ["--template-file", "-f"]) };
+    return { kind: dryRun(rest) === "plan" || has("--what-if") ? "plan" : "apply", tool, target, inputs: flagValues(rest, ["--template-file", "-f"]) };
   }
   if (tool === "gcloud") {
     const pos = positionals(rest, 0);
     const verbIdx = pos.findIndex((w) => ["create", "delete", "update", "deploy", "destroy", "start", "stop", "resize", "set-iam-policy", "add-iam-policy-binding", "remove-iam-policy-binding"].includes(w));
     if (verbIdx < 0) return null;
-    return { kind: has("--dry-run") ? "plan" : "apply", tool, target: pos.join(" "), inputs: flagValues(rest, ["--source", "--config", "--template"]) };
+    return { kind: dryRun(rest) === "plan" ? "plan" : "apply", tool, target: pos.join(" "), inputs: flagValues(rest, ["--source", "--config", "--template"]) };
   }
   if (tool === "aws") {
     const pos = positionals(rest, 0);
@@ -199,7 +254,7 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     if (verbIdx < 0) return null;
     if (pos.includes("create-change-set")) return { kind: "plan", tool, target: [pos[0], flagValue(rest, ["--stack-name"]) ?? ""].filter(Boolean).join(" "), inputs: flagValues(rest, ["--template-body", "--template-url"]) };
     if (pos.includes("execute-change-set")) return { kind: "apply", tool, target: [pos[0], flagValue(rest, ["--stack-name"]) ?? ""].filter(Boolean).join(" "), inputs: [] };
-    return { kind: has("--dry-run") ? "plan" : "apply", tool, target: pos.join(" "), inputs: [] };
+    return { kind: dryRun(rest) === "plan" ? "plan" : "apply", tool, target: pos.join(" "), inputs: [] };
   }
   return null;
 }
@@ -279,6 +334,39 @@ function bare(part: string): string {
   return part.replace(/^[\s(!{]+/, "").replace(/[\s)}]+$/, "").trim();
 }
 
+/** A pipeline negated with `!`: bash inverts its exit status (review I-3). */
+function negated(part: string): boolean {
+  return /^[\s({]*!(?:\s|$)/.test(part);
+}
+
+/** Prefix commands that run the command after them (review M-2), with the options that take a separate value; a
+ *  prefix after which no command runs (`command -v`) ends the part. `timeout` also takes a duration. */
+const PREFIX_VALUE_FLAGS: Record<string, Set<string>> = {
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  nice: new Set(["-n", "--adjustment"]),
+  stdbuf: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
+  ionice: new Set(["-c", "-n", "--class", "--classdata"]),
+  command: new Set(),
+  builtin: new Set(),
+  time: new Set(),
+  nohup: new Set(),
+};
+
+/** The words after any run-prefixes (`timeout 300 …`, `nice -n 5 …`, `command …`); null when the prefix runs nothing. */
+function afterPrefixes(ws: string[]): string[] | null {
+  let i = 0;
+  while (i < ws.length && PREFIX_VALUE_FLAGS[ws[i]!]) {
+    const name = ws[i]!;
+    const valued = PREFIX_VALUE_FLAGS[name]!;
+    i++;
+    if (name === "command" && /^-[vV]$/.test(ws[i] ?? "")) return null;
+    while (i < ws.length && ws[i]!.startsWith("-") && ws[i] !== "--") i += valued.has(ws[i]!) ? 2 : 1;
+    if (ws[i] === "--") i++;
+    if (name === "timeout" && i < ws.length) i++; // the duration
+  }
+  return ws.slice(i);
+}
+
 /** Reads every plan and apply a Bash line runs, in order, with the directory and environment each runs in. */
 export function planLine(command: string, cwd: string): PlanLine {
   const d = decomposeBash(command);
@@ -292,7 +380,11 @@ export function planLine(command: string, cwd: string): PlanLine {
   let unreadable: string | null = null;
   const fail = (why: string) => (unreadable ??= why);
   if (/\$\(\([^)]*[^=!<>]=[^=]/.test(command) || /\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(command)) fail("an assignment inside an expansion");
-  for (const part of splitShellCommands(command).map(bare).filter(Boolean)) {
+  let negatedPlan = false;
+  for (const raw of splitShellCommands(command)) {
+    const part = bare(raw);
+    if (!part) continue;
+    const isNegated = negated(raw);
     const ws = part.split(/\s+/);
     let i = 0;
     for (; i < ws.length; i++) {
@@ -340,8 +432,13 @@ export function planLine(command: string, cwd: string): PlanLine {
       fail(`${head} changes the line in a way the gate cannot read`);
       continue;
     }
-    const pc = classifyPlanCommand(ws.slice(i).join(" "));
-    if (pc) steps.push({ pc, cwd: dir, env: [...env].map(([k, v]) => `${k}=${v}`).sort() });
+    const run = afterPrefixes(ws.slice(i));
+    if (run === null || run.length === 0) continue;
+    const pc = classifyPlanCommand(run.join(" "));
+    if (pc) {
+      steps.push({ pc, cwd: dir, env: [...env].map(([k, v]) => `${k}=${v}`).sort() });
+      if (isNegated && pc.kind === "plan") negatedPlan = true;
+    }
   }
   // A plan or apply the decomposer sees that the top-level reading did not (inside `sh -c '…'`, `$(…)`, `xargs`): its
   // context is not readable here.
@@ -352,7 +449,10 @@ export function planLine(command: string, cwd: string): PlanLine {
   const lastPc = last?.forms[0] ? classifyPlanCommand(last.forms[0]) : null;
   const others = d.commands.slice(0, -1).every((c) => c.forms.length === 0 || CONTEXT_ONLY.has(c.forms[0]!.split(" ")[0]!));
   const plans = steps.filter((s) => s.pc.kind === "plan");
-  const recordable = !unreadable && lastPc?.kind === "plan" && others && plans.length === 1 && count(seen, "apply") === 0 ? plans[0]! : null;
+  // A negated dry run reports a failure as success (review I-3); a backgrounded one has not run yet when the line
+  // returns (review M-1): neither is recorded.
+  const background = /(?:^|[^&])&\s*$/.test(command.trim());
+  const recordable = !unreadable && !negatedPlan && !background && lastPc?.kind === "plan" && others && plans.length === 1 && count(seen, "apply") === 0 ? plans[0]! : null;
   return { steps, unreadable: unreadable && (gated || steps.length > 0 || seen.length > 0) ? unreadable : null, recordable };
 }
 
