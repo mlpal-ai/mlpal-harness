@@ -43,6 +43,16 @@ export interface PlanCommand {
    *  repository chart resolved at apply time) and a `--post-renderer` script. Missing, the host cannot bind the inputs:
    *  no plan is recorded and no apply matches. */
   mustExist?: string[];
+  /** kubectl, oc and helm: the kubeconfig and context flags the command gives, for the host to resolve where it lands
+   *  (the context's cluster server and CA, its user and namespace) from the kubeconfig the command reads. */
+  kube?: KubeSelection;
+}
+
+export interface KubeSelection {
+  kubeconfig?: string;
+  context?: string;
+  cluster?: string;
+  user?: string;
 }
 
 const TERRAFORM = new Set(["terraform", "tofu"]);
@@ -356,6 +366,16 @@ function identityKey(flags: CanonicalFlags, kind: "kube" | "helm"): string[] {
   return out;
 }
 
+/** The kubeconfig selection flags a command gives, by the tool's flag names; only those present. */
+function kubeSelection(cf: CanonicalFlags, names: { [K in keyof KubeSelection]?: string }): KubeSelection {
+  const out: KubeSelection = {};
+  for (const [k, flag] of Object.entries(names) as Array<[keyof KubeSelection, string]>) {
+    const v = cf.values.get(flag)?.[0];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
 /** An exact chart version: anything else (a range, none) resolves to whatever the repository holds at apply time. */
 const EXACT_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
@@ -475,7 +495,7 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const change = cf.keep.map(({ w, i }) => (i === verbAt && w === "diff" ? "apply" : w));
     const target = [...identityKey(cf, "kube"), ...change].join(" ");
     const kind = verb === "diff" || dryRun(rest) === "plan" ? "plan" : "apply";
-    return { kind, tool, target, inputs: files };
+    return { kind, tool, target, inputs: files, kube: kubeSelection(cf, { kubeconfig: "kubeconfig", context: "context", cluster: "cluster", user: "user" }) };
   }
   if (tool === "helm") {
     const g = splitGlobals(tool, rest)!;
@@ -494,7 +514,7 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const target = [...identityKey(cf, "helm"), ...change].join(" ");
     const sources = helmSources(isDiff ? pos[0]! : verb, cf, cf.keep.flatMap(({ i }) => (i !== null && i > verbAt + (isDiff ? 1 : 0) ? [rest[i]!] : [])));
     if ("why" in sources) return { kind: "apply", tool, target: `unreadable (${sources.why}) ${rest.join(" ")}`, inputs: [] };
-    return { kind: isDiff || dryRun(rest) === "plan" ? "plan" : "apply", tool, target, inputs: [...flagInputs(cf.values, HELM_INPUTS), ...sources.inputs], ...(sources.mustExist.length > 0 ? { mustExist: sources.mustExist } : {}) };
+    return { kind: isDiff || dryRun(rest) === "plan" ? "plan" : "apply", tool, target, inputs: [...flagInputs(cf.values, HELM_INPUTS), ...sources.inputs], ...(sources.mustExist.length > 0 ? { mustExist: sources.mustExist } : {}), kube: kubeSelection(cf, { kubeconfig: "kubeconfig", context: "kube-context" }) };
   }
   if (tool === "pulumi") {
     const verb = rest.find((w) => !w.startsWith("-"));

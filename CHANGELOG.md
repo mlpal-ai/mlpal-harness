@@ -50,6 +50,12 @@
   file; a saved plan's apply keys the flags left on the command. Minor: kubectl and helm flags key as `--name=value` by
   long name (`--replicas 3` = `--replicas=3`, `-f a` = `--filename=a`, combined shorthands canonicalized instead of
   refused); a key word with whitespace or a quote is JSON-quoted.
+- Kubeconfig ruling: `PlanCommand.kube` carries the kubeconfig selection flags a kubectl/oc/helm command gives
+  (`--kubeconfig`, `--context`/`--kube-context`, `--cluster`, `--user`) so the host can bind where the apply lands.
+- **Known limit (accepted residual):** a repository or OCI chart pinned by an exact `--version` is trusted by that
+  version: its pulled contents (and the repo-name mapping in `repositories.yaml`) are not hashed, so a repository
+  that republishes the same version is not detected. Follow-up: accept OCI digest pins (`oci://…@sha256:…`) and hash
+  the pulled chart into the plan.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 

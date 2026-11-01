@@ -16,8 +16,8 @@ describe("plan gate: recognising plans and applies", () => {
   test("kubectl and helm: server-side dry run is the plan; the same command without it is the apply", () => {
     const dry = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml --dry-run=server");
     const real = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml");
-    expect(dry).toEqual({ kind: "plan", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
-    expect(real).toEqual({ kind: "apply", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
+    expect(dry).toEqual({ kind: "plan", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
+    expect(real).toEqual({ kind: "apply", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"], kube: {} });
     expect(classifyPlanCommand("kubectl get pods -n mlpal")).toBeNull();
     expect(classifyPlanCommand("kubectl delete deployment api -n mlpal")).toMatchObject({ kind: "apply", target: "ns=mlpal delete deployment api" });
     expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml --dry-run")).toMatchObject({ kind: "plan", tool: "helm", target: "ns=mlpal upgrade --install api ./chart --values=values.yaml", inputs: ["values.yaml", "./chart"], mustExist: ["./chart"] });
@@ -127,7 +127,7 @@ describe("D-57: planLine reads every plan and apply on a line, with its context"
 
   test("D-56a: the statuses a dry run uses to say it found changes", () => {
     const kd = classifyPlanCommand("kubectl diff -f a.yaml")!;
-    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "apply --filename=a.yaml", inputs: ["a.yaml"] });
+    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "apply --filename=a.yaml", inputs: ["a.yaml"], kube: {} });
     expect([planExitOk(kd, "kubectl diff -f a.yaml", 0), planExitOk(kd, "kubectl diff -f a.yaml", 1), planExitOk(kd, "kubectl diff -f a.yaml", 2)]).toEqual([true, true, false]);
     const ka = classifyPlanCommand("kubectl apply -f a.yaml --dry-run=server")!;
     expect(planExitOk(ka, "kubectl apply -f a.yaml --dry-run=server", 1)).toBe(false);
@@ -303,5 +303,14 @@ describe("re-review r3: bind every file input or refuse", () => {
     expect(k("kubectl scale deploy web --replicas 3 --dry-run=server")).toBe(k("kubectl scale deploy web --replicas=3"));
     expect(k("helm diff upgrade web ./chart --set a=1 -f v.yaml")).toBe(k("helm upgrade web ./chart --set=a=1 --values=v.yaml"));
     expect(k("kubectl patch deploy web -p 'x --replicas=3'")).not.toBe(k("kubectl patch deploy web -p x --replicas=3"));
+  });
+});
+
+describe("kubeconfig binding: the selection flags reach the host", () => {
+  test("kubectl gives --kubeconfig, --context, --cluster, --user; helm gives --kubeconfig and --kube-context", () => {
+    expect(classifyPlanCommand("kubectl --kubeconfig /k --context dev apply -f a.yaml")?.kube).toEqual({ kubeconfig: "/k", context: "dev" });
+    expect(classifyPlanCommand("kubectl apply -f a.yaml --cluster c --user u")?.kube).toEqual({ cluster: "c", user: "u" });
+    expect(classifyPlanCommand("helm upgrade web ./chart --kube-context prod --kubeconfig=/k")?.kube).toEqual({ kubeconfig: "/k", context: "prod" });
+    expect(classifyPlanCommand("kubectl apply -f a.yaml")?.kube).toEqual({});
   });
 });
