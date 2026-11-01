@@ -39,6 +39,10 @@ export interface PlanCommand {
   inputs: string[];
   /** terraform `plan -out=<f>` / `apply <f>`: the saved plan file, when one is named. */
   planFile?: string;
+  /** Inputs that must be on disk for the plan to bind (re-review R3-1): an unpinned helm chart argument (absent, it is a
+   *  repository chart resolved at apply time) and a `--post-renderer` script. Missing, the host cannot bind the inputs:
+   *  no plan is recorded and no apply matches. */
+  mustExist?: string[];
 }
 
 const TERRAFORM = new Set(["terraform", "tofu"]);
@@ -181,6 +185,10 @@ const TF: FlagSpec = {
   goStyle: true,
 };
 
+/** terraform flags that change only how a run is shown or confirmed, or that the key carries otherwise (`-chdir` leads
+ *  it, `-out` names the saved plan). */
+const TF_UNKEYED = new Set(["auto-approve", "input", "no-color", "json", "compact-warnings", "detailed-exitcode", "out", "chdir", "lock-timeout", "generate-config-out", "help", "version"]);
+
 /** A terraform command's words with every flag rewritten `-name=value`, and each flag's values; or why it cannot be. */
 function terraformFlags(ws: string[]): { words: string[]; values: Map<string, string[]>; why: string | null } {
   const words: string[] = [];
@@ -253,15 +261,21 @@ function readFlag(spec: FlagSpec, ws: string[], i: number): FlagRead {
 
 const isFlag = (w: string) => w.startsWith("-") && w !== "-";
 
-/** One mutating line's flags in canonical form (D-57 re-review r2): every flag by its long name with the value the tool
- *  uses, the words of the change without the `drop`ped flags, and why the line cannot be canonicalized when it cannot.
- *  A flag that does not accumulate but appears twice (`--context dev --context prod`, `-n a -n b`, `-n a --namespace
- *  b`) is refused rather than resolved: the person reviewing the plan reads the first, the tool uses the last. */
+/** A word as the key writes it: one with whitespace or a quote is JSON-quoted, so no two different word lists join to
+ *  the same key (`--patch='x --replicas=3'` is not `--patch=x --replicas=3`). */
+const keyWord = (w: string) => (/[\s"]/.test(w) ? JSON.stringify(w) : w);
+
+/** One mutating line's flags in canonical form (D-57 re-review r2, r3): every flag by its long name with the value the
+ *  tool uses, the words of the change with each kept flag spelled `--name=value` (a true boolean `--name`; re-review r3
+ *  minor: `--replicas 3`, `--replicas=3` and a shorthand key alike) and the `drop`ped flags left out, and why the line
+ *  cannot be canonicalized when it cannot. A flag that does not accumulate but appears twice (`--context dev --context
+ *  prod`, `-n a -n b`, `-n a --namespace b`) is refused rather than resolved: the person reviewing the plan reads the
+ *  first, the tool uses the last. */
 interface CanonicalFlags {
   /** Every value of each flag, in order; a non-repeatable flag has at most one. */
   values: Map<string, string[]>;
-  /** The words that are not dropped flags, each with its index in the input. */
-  keep: Array<{ w: string; i: number }>;
+  /** The change's words in order (canonical flags and positionals), each positional with its index in the input. */
+  keep: Array<{ w: string; i: number | null }>;
   why: string | null;
 }
 
@@ -273,7 +287,7 @@ function canonicalFlags(spec: FlagSpec, ws: string[], drop: Set<string>): Canoni
   for (let i = 0; i < ws.length; ) {
     const w = ws[i]!;
     if (positionalOnly || !isFlag(w)) {
-      keep.push({ w, i });
+      keep.push({ w: keyWord(w), i });
       i++;
       continue;
     }
@@ -289,16 +303,30 @@ function canonicalFlags(spec: FlagSpec, ws: string[], drop: Set<string>): Canoni
       const seen = values.get(f.name) ?? [];
       if (seen.length > 0 && !spec.repeatable.has(f.name)) return refuse(`--${f.name} given more than once`);
       values.set(f.name, [...seen, f.value]);
+      if (!drop.has(f.name)) keep.push({ w: keyWord(spec.bool.has(f.name) && f.value === "true" ? `--${f.name}` : `--${f.name}=${f.value}`), i: null });
     }
-    const dropped = r.flags.filter((f) => drop.has(f.name)).length;
-    if (dropped > 0 && dropped < r.flags.length) return refuse(`${w} combines flags the key reads with flags it keeps`);
     // `--dry-run server` (spaced): pflag reads a bare `--dry-run`; its mode word is not a target (D-56c)
-    let next = r.next;
-    if (w === "--dry-run" && ["server", "client", "none"].includes(ws[next] ?? "")) next++;
-    if (dropped === 0) for (let k = i; k < next; k++) keep.push({ w: ws[k]!, i: k });
-    i = next;
+    i = w === "--dry-run" && ["server", "client", "none"].includes(ws[r.next] ?? "") ? r.next + 1 : r.next;
   }
   return { values, keep, why: null };
+}
+
+/** How a flag names files the command reads (re-review R3-1: every file input is bound into the plan's content hash):
+ *  one path; a comma-separated list (pflag string slices); a list of `key=path` or `path`. */
+type InputForm = "path" | "list" | "keyed";
+const KUBE_INPUTS: Record<string, InputForm> = { filename: "list", kustomize: "path", "patch-file": "path", "from-file": "keyed", "from-env-file": "list", cert: "path", key: "path", kubeconfig: "path", "certificate-authority": "path", "client-certificate": "path", "client-key": "path" };
+const HELM_INPUTS: Record<string, InputForm> = { values: "list", "set-file": "keyed", kubeconfig: "path", "kube-ca-file": "path", "ca-file": "path", "cert-file": "path", "key-file": "path", keyring: "path" };
+
+/** The files a command's flags name, in the table's order, each flag's values in order. */
+function flagInputs(values: Map<string, string[]>, table: Record<string, InputForm>): string[] {
+  const out: string[] = [];
+  for (const [flag, form] of Object.entries(table)) {
+    for (const v of values.get(flag) ?? []) {
+      const items = form === "path" ? [v] : v.split(",");
+      out.push(...items.filter(Boolean).map((x) => (form === "keyed" ? x.slice(x.indexOf("=") + 1) : x)));
+    }
+  }
+  return out;
 }
 
 /** The flags that do not change what is applied, or that the key carries in canonical form instead of as words. */
@@ -326,6 +354,33 @@ function identityKey(flags: CanonicalFlags, kind: "kube" | "helm"): string[] {
   const token = one(kind === "kube" ? "token" : "kube-token");
   if (token) out.push(`token=${createHash("sha256").update(token).digest("hex").slice(0, 12)}`);
   return out;
+}
+
+/** An exact chart version: anything else (a range, none) resolves to whatever the repository holds at apply time. */
+const EXACT_VERSION = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** What a helm install or upgrade builds from, bound or refused (re-review R3-1). The chart argument is a local
+ *  directory or `.tgz` (hashed, and it must exist unless an exact `--version` pins a repository chart of that name), a
+ *  repository or OCI chart (bound only by an exact `--version`, else refused), or a URL (refused: nothing pins it). A
+ *  `--post-renderer` must be a local script by path (hashed); one found on PATH is refused. */
+function helmSources(verb: string, cf: CanonicalFlags, args: string[]): { inputs: string[]; mustExist: string[] } | { why: string } {
+  const inputs: string[] = [];
+  const mustExist: string[] = [];
+  const renderer = cf.values.get("post-renderer")?.[0];
+  if (renderer !== undefined) {
+    if (!renderer.includes("/")) return { why: "a --post-renderer found on PATH cannot be bound" };
+    inputs.push(renderer);
+    mustExist.push(renderer);
+  }
+  if (verb !== "install" && verb !== "upgrade") return { inputs, mustExist };
+  const chart = verb === "install" && cf.values.has("generate-name") ? args[0] : args[1];
+  if (chart === undefined) return { inputs, mustExist };
+  const pinned = EXACT_VERSION.test(cf.values.get("version")?.[0] ?? "");
+  if (chart.startsWith("oci://") || cf.values.has("repo")) return pinned ? { inputs, mustExist } : { why: "a remote chart without an exact --version cannot be bound" };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(chart)) return { why: "a chart fetched from a URL cannot be bound" };
+  inputs.push(chart);
+  if (!pinned) mustExist.push(chart);
+  return { inputs, mustExist };
 }
 
 /** A command's words after its tool split into the global flags before its verb and the rest (from the verb on).
@@ -368,25 +423,31 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const ws = tf.words;
     const one = (name: string) => tf.values.get(name)?.[0];
     const verb = ws.find((w) => !w.startsWith("-"));
-    const varFiles = tf.values.get("var-file") ?? [];
     const dir = one("chdir") || ".";
-    // What changes the plan besides the config and var files (review I-1): the mode flags (sorted: `destroy` is `plan
-    // -destroy`'s apply) and the value flags in order (a later `-var` or `-var-file` overrides an earlier one).
+    // Every file the plan reads is hashed (re-review R3-1): the config directory, var files, and a `-state` file.
+    const inputs = [dir, ...(tf.values.get("var-file") ?? []), ...(tf.values.get("state") ?? [])];
+    // What changes the plan besides the config and var files (review I-1, re-review R3-1): the mode flags (sorted:
+    // `destroy` is `plan -destroy`'s apply), then every other flag in order (a later `-var` or `-var-file` overrides an
+    // earlier one; `-state`, `-state-out`, `-backup`, `-refresh=false`, `-lock=false`, `-parallelism` change what is
+    // computed or written), except those that change only how it is shown or confirmed, and the defaults spelled out.
     const flags = (destroy: boolean) => [
       ...["-destroy", "-refresh-only"].filter((f) => ws.includes(f) || (destroy && f === "-destroy")),
-      ...ws.filter((w) => /^-(?:var|var-file|target|replace|exclude)=/.test(w)),
+      ...ws.filter((w) => w.startsWith("-") && !TF_UNKEYED.has(w.slice(1).split("=")[0]!) && !["-destroy", "-refresh-only", "-refresh", "-lock", "-refresh=true", "-lock=true"].includes(w)).map(keyWord),
     ];
+    // A saved plan carries its variables, targets and mode; what is left on the command (`-state`, `-state-out`,
+    // `-backup`, `-lock=false`, `-parallelism`) must be the same at plan and apply.
+    const planfileKey = () => [`${dir} planfile`, ...flags(false).filter((w) => !/^"?-(?:var|var-file|target|replace|exclude|destroy|refresh-only|refresh)(?:=|$)/.test(w))].join(" ");
     if (verb === "plan") {
       const out = one("out");
       // A saved plan binds itself (its bytes are the plan); an unsaved one binds the config directory and var files
       // (review M-3: editing a .tf between `plan` and `apply -auto-approve` no longer matches).
-      if (out) return { kind: "plan", tool: "terraform", target: `${dir} planfile`, inputs: [out], planFile: out };
-      return { kind: "plan", tool: "terraform", target: [dir, ...flags(false)].join(" "), inputs: [dir, ...varFiles] };
+      if (out) return { kind: "plan", tool: "terraform", target: planfileKey(), inputs: [out], planFile: out };
+      return { kind: "plan", tool: "terraform", target: [dir, ...flags(false)].join(" "), inputs };
     }
     if (verb === "apply" || verb === "destroy") {
       const planFile = verb === "apply" ? ws.slice(ws.indexOf(verb) + 1).find((w) => !w.startsWith("-")) : undefined;
-      if (planFile) return { kind: "apply", tool: "terraform", target: `${dir} planfile`, inputs: [planFile], planFile };
-      return { kind: "apply", tool: "terraform", target: [dir, ...flags(verb === "destroy")].join(" "), inputs: [dir, ...varFiles] };
+      if (planFile) return { kind: "apply", tool: "terraform", target: planfileKey(), inputs: [planFile], planFile };
+      return { kind: "apply", tool: "terraform", target: [dir, ...flags(verb === "destroy")].join(" "), inputs };
     }
     return null;
   }
@@ -404,7 +465,9 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     // repeats a flag, is an apply no plan can match.
     const cf = canonicalFlags(KUBE, rest, KUBE_DROP);
     if (cf.why) return { kind: "apply", tool, target: `unreadable (${cf.why}) ${rest.join(" ")}`, inputs: [] };
-    const files = [...(cf.values.get("filename") ?? []), ...(cf.values.get("kustomize") ?? [])];
+    // Every file a flag names is hashed into the plan (re-review R3-1): manifests, kustomizations, `--patch-file`,
+    // `--from-file`/`--from-env-file`, TLS files and an explicit kubeconfig.
+    const files = flagInputs(cf.values, KUBE_INPUTS);
     // The change itself is the key (review I-1): the verb (`diff` is `apply`'s plan), every argument and every flag
     // with its value (`--replicas`, `-p`'s body, `--prune --all`, `--server-side`), in order; only the dry-run, output,
     // verbosity, namespace and cluster flags are left out (the last two lead the key, in canonical form).
@@ -429,7 +492,9 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     const verbAt = rest.length - g.rest.length;
     const change = cf.keep.filter(({ w, i }) => !(isDiff && i === verbAt && w === "diff")).map(({ w }) => w);
     const target = [...identityKey(cf, "helm"), ...change].join(" ");
-    return { kind: isDiff || dryRun(rest) === "plan" ? "plan" : "apply", tool, target, inputs: cf.values.get("values") ?? [] };
+    const sources = helmSources(isDiff ? pos[0]! : verb, cf, cf.keep.flatMap(({ i }) => (i !== null && i > verbAt + (isDiff ? 1 : 0) ? [rest[i]!] : [])));
+    if ("why" in sources) return { kind: "apply", tool, target: `unreadable (${sources.why}) ${rest.join(" ")}`, inputs: [] };
+    return { kind: isDiff || dryRun(rest) === "plan" ? "plan" : "apply", tool, target, inputs: [...flagInputs(cf.values, HELM_INPUTS), ...sources.inputs], ...(sources.mustExist.length > 0 ? { mustExist: sources.mustExist } : {}) };
   }
   if (tool === "pulumi") {
     const verb = rest.find((w) => !w.startsWith("-"));

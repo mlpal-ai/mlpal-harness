@@ -16,12 +16,12 @@ describe("plan gate: recognising plans and applies", () => {
   test("kubectl and helm: server-side dry run is the plan; the same command without it is the apply", () => {
     const dry = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml --dry-run=server");
     const real = classifyPlanCommand("kubectl apply -n mlpal -f k8s/deployment.yaml");
-    expect(dry).toEqual({ kind: "plan", tool: "kubectl", target: "ns=mlpal apply -f k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
-    expect(real).toEqual({ kind: "apply", tool: "kubectl", target: "ns=mlpal apply -f k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
+    expect(dry).toEqual({ kind: "plan", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
+    expect(real).toEqual({ kind: "apply", tool: "kubectl", target: "ns=mlpal apply --filename=k8s/deployment.yaml", inputs: ["k8s/deployment.yaml"] });
     expect(classifyPlanCommand("kubectl get pods -n mlpal")).toBeNull();
     expect(classifyPlanCommand("kubectl delete deployment api -n mlpal")).toMatchObject({ kind: "apply", target: "ns=mlpal delete deployment api" });
-    expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml --dry-run")).toMatchObject({ kind: "plan", tool: "helm", target: "ns=mlpal upgrade --install api ./chart -f values.yaml", inputs: ["values.yaml"] });
-    expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml")).toMatchObject({ kind: "apply", target: "ns=mlpal upgrade --install api ./chart -f values.yaml" });
+    expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml --dry-run")).toMatchObject({ kind: "plan", tool: "helm", target: "ns=mlpal upgrade --install api ./chart --values=values.yaml", inputs: ["values.yaml", "./chart"], mustExist: ["./chart"] });
+    expect(classifyPlanCommand("helm upgrade --install api ./chart -n mlpal -f values.yaml")).toMatchObject({ kind: "apply", target: "ns=mlpal upgrade --install api ./chart --values=values.yaml" });
     expect(classifyPlanCommand("helm diff upgrade api ./chart -n mlpal")).toMatchObject({ kind: "plan", target: "ns=mlpal upgrade api ./chart" });
   });
 
@@ -93,7 +93,7 @@ describe("D-57: planLine reads every plan and apply on a line, with its context"
   const applies = (line: string, cwd = "/w") => planLine(line, cwd).steps.filter((s) => s.pc.kind === "apply").map((s) => [s.pc.tool, s.pc.target, s.cwd, s.env.join(" ")]);
 
   test("every separator, group and prefix; the directory and environment each command runs in", () => {
-    const A = "apply -f a.yaml";
+    const A = "apply --filename=a.yaml";
     for (const sep of ["; ", " && ", " || ", " | ", " & ", "\n"]) expect(applies(`kubectl get pods${sep}kubectl apply -f a.yaml`)).toEqual([["kubectl", A, "/w", ""]]);
     expect(applies("cd /tmp/demo; export KUBECONFIG=/tmp/demo/kc; kubectl set image deploy/web nginx=x -n web")).toEqual([["kubectl", "ns=web set image deploy/web nginx=x", "/tmp/demo", "KUBECONFIG=/tmp/demo/kc"]]);
     expect(applies("(cd infra && terraform apply tf.plan)")).toEqual([["terraform", ". planfile", "/w/infra", ""]]);
@@ -121,13 +121,13 @@ describe("D-57: planLine reads every plan and apply on a line, with its context"
   });
 
   test("a dry run is recordable only when its exit status is the line's", () => {
-    expect(planLine("cd k8s && export KUBECONFIG=/a && kubectl diff -f a.yaml", "/w").recordable).toMatchObject({ cwd: "/w/k8s", env: ["KUBECONFIG=/a"], pc: { kind: "plan", target: "apply -f a.yaml" } });
+    expect(planLine("cd k8s && export KUBECONFIG=/a && kubectl diff -f a.yaml", "/w").recordable).toMatchObject({ cwd: "/w/k8s", env: ["KUBECONFIG=/a"], pc: { kind: "plan", target: "apply --filename=a.yaml" } });
     for (const line of ["kubectl diff -f a.yaml | head", "kubectl diff -f a.yaml; echo ok", "kubectl diff -f a.yaml && kubectl apply -f a.yaml", "kubectl diff -f a.yaml && kubectl diff -f b.yaml"]) expect([line, planLine(line, "/w").recordable]).toEqual([line, null]);
   });
 
   test("D-56a: the statuses a dry run uses to say it found changes", () => {
     const kd = classifyPlanCommand("kubectl diff -f a.yaml")!;
-    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "apply -f a.yaml", inputs: ["a.yaml"] });
+    expect(kd).toEqual({ kind: "plan", tool: "kubectl", target: "apply --filename=a.yaml", inputs: ["a.yaml"] });
     expect([planExitOk(kd, "kubectl diff -f a.yaml", 0), planExitOk(kd, "kubectl diff -f a.yaml", 1), planExitOk(kd, "kubectl diff -f a.yaml", 2)]).toEqual([true, true, false]);
     const ka = classifyPlanCommand("kubectl apply -f a.yaml --dry-run=server")!;
     expect(planExitOk(ka, "kubectl apply -f a.yaml --dry-run=server", 1)).toBe(false);
@@ -140,7 +140,7 @@ describe("D-57: planLine reads every plan and apply on a line, with its context"
     const plan = classifyPlanCommand("kubectl set image deploy/web nginx=x -n web --dry-run server -o yaml")!;
     const apply = classifyPlanCommand("kubectl set image deploy/web nginx=x -n web --record=false 2>&1")!;
     expect([plan.kind, apply.kind, plan.target]).toEqual(["plan", "apply", apply.target]);
-    expect(classifyPlanCommand("kubectl --context prod apply -f a.yaml")!.target).toBe("ctx=prod apply -f a.yaml");
+    expect(classifyPlanCommand("kubectl --context prod apply -f a.yaml")!.target).toBe("ctx=prod apply --filename=a.yaml");
     expect(classifyPlanCommand("helm upgrade api ./c -n x --kube-context prod")!.target).toBe("ns=x ctx=prod upgrade api ./c");
   });
 });
@@ -199,7 +199,7 @@ describe("re-review r2: canonicalize or refuse", () => {
   const unreadable = (c: string) => expect([c, k(c).startsWith("unreadable ")]).toEqual([c, true]);
 
   test("R2-1: a repeated context flag is refused (kubectl and helm use the last, a reviewer reads the first)", () => {
-    expect(k("kubectl --context dev apply -f k8s/web.yaml --dry-run=server")).toBe("ctx=dev apply -f k8s/web.yaml");
+    expect(k("kubectl --context dev apply -f k8s/web.yaml --dry-run=server")).toBe("ctx=dev apply --filename=k8s/web.yaml");
     unreadable("kubectl --context dev --context prod apply -f k8s/web.yaml");
     unreadable("kubectl apply -f k8s/web.yaml --context dev --context=prod");
     unreadable("helm --kube-context dev --kube-context prod upgrade web ./c");
@@ -222,14 +222,14 @@ describe("re-review r2: canonicalize or refuse", () => {
     expect(k("kubectl -shttps://prod delete ns x")).toBe("server=https://prod delete ns x");
   });
 
-  test("shorthands as pflag reads them; a combined word mixing a keyed flag with a kept one is refused", () => {
-    expect(classifyPlanCommand("kubectl apply -fdeploy.yaml")).toMatchObject({ inputs: ["deploy.yaml"], target: "apply -fdeploy.yaml" });
-    expect(classifyPlanCommand("kubectl apply -Rf manifests/")).toMatchObject({ inputs: ["manifests/"], target: "apply -Rf manifests/" });
-    expect(k("kubectl run debug --rm -it --image=busybox")).toBe("run debug --rm -it --image=busybox");
-    unreadable("kubectl delete pods --all -Anprod");
+  test("shorthands as pflag reads them, keyed by long name (r3: a combined word is canonicalized, not refused)", () => {
+    expect(classifyPlanCommand("kubectl apply -fdeploy.yaml")).toMatchObject({ inputs: ["deploy.yaml"], target: "apply --filename=deploy.yaml" });
+    expect(classifyPlanCommand("kubectl apply -Rf manifests/")).toMatchObject({ inputs: ["manifests/"], target: "apply --recursive --filename=manifests/" });
+    expect(k("kubectl run debug --rm -it --image=busybox")).toBe("run debug --rm --stdin --tty --image=busybox");
+    expect(k("kubectl delete pods --all -Anprod")).toBe("ns=prod delete pods --all --all-namespaces");
     // an unknown bare flag has no known arity: refused; with `=value` its arity is in the word
     unreadable("kubectl apply -f a.yaml --bogus-local");
-    expect(k("kubectl apply -f a.yaml --bogus-local=1")).toBe("apply -f a.yaml --bogus-local=1");
+    expect(k("kubectl apply -f a.yaml --bogus-local=1")).toBe("apply --filename=a.yaml --bogus-local=1");
     // `-f a -f b` accumulates: allowed, in order
     expect(classifyPlanCommand("kubectl apply -f a.yaml -f b.yaml")?.inputs).toEqual(["a.yaml", "b.yaml"]);
   });
@@ -248,5 +248,60 @@ describe("re-review r2: canonicalize or refuse", () => {
     unreadable("terraform plan -out a.plan -out=b.plan");
     unreadable("terraform apply -auto-approve -bogus");
     expect(classifyPlanCommand("tofu plan -var env=dev")).toEqual(classifyPlanCommand("terraform plan -var env=dev"));
+  });
+});
+
+describe("re-review r3: bind every file input or refuse", () => {
+  const pc = (c: string) => classifyPlanCommand(c)!;
+  const k = (c: string) => pc(c).target;
+  const unreadable = (c: string) => expect([c, k(c).startsWith("unreadable ")]).toEqual([c, true]);
+
+  test("R3-1 kubectl: --patch-file, --from-file, --from-env-file, TLS files and a comma list are inputs", () => {
+    expect(pc("kubectl patch deploy web --patch-file p.yaml --dry-run=server").inputs).toEqual(["p.yaml"]);
+    expect(pc("kubectl create configmap c --from-file=cfg.txt --dry-run=server").inputs).toEqual(["cfg.txt"]);
+    expect(pc("kubectl create configmap c --from-file=key=conf/ --from-file=b.txt,c.txt --from-env-file=e.env").inputs).toEqual(["conf/", "b.txt", "c.txt", "e.env"]);
+    expect(pc("kubectl create secret tls t --cert c.pem --key k.pem").inputs).toEqual(["c.pem", "k.pem"]);
+    // pflag string slices split on commas: both manifests are bound, not one file named "a.yaml,b.yaml"
+    expect(pc("kubectl apply -f a.yaml,b.yaml").inputs).toEqual(["a.yaml", "b.yaml"]);
+    expect(pc("kubectl --kubeconfig /k apply -f a.yaml").inputs).toEqual(["a.yaml", "/k"]);
+  });
+
+  test("R3-1 helm: the local chart, --set-file and a --post-renderer script are inputs; unpinned remote sources are refused", () => {
+    expect(pc("helm diff upgrade web ./chart")).toMatchObject({ kind: "plan", inputs: ["./chart"], mustExist: ["./chart"] });
+    expect(pc("helm upgrade web ./chart")).toMatchObject({ kind: "apply", inputs: ["./chart"], mustExist: ["./chart"] });
+    expect(pc("helm install --generate-name ./web-1.2.3.tgz").inputs).toEqual(["./web-1.2.3.tgz"]);
+    expect(pc("helm diff upgrade web ./chart --set-file cfg=cfg.txt").inputs).toEqual(["cfg.txt", "./chart"]);
+    expect(pc("helm diff upgrade web ./chart --post-renderer ./pr.sh")).toMatchObject({ inputs: ["./pr.sh", "./chart"], mustExist: ["./pr.sh", "./chart"] });
+    unreadable("helm upgrade web ./chart --post-renderer kustomize");
+    unreadable("helm diff upgrade web bitnami/nginx --repo https://charts.bitnami.com/bitnami");
+    unreadable("helm upgrade web bitnami/nginx --repo https://charts.bitnami.com/bitnami");
+    unreadable("helm upgrade web oci://registry.example/charts/web");
+    unreadable("helm upgrade web oci://registry.example/charts/web --version ^1.2");
+    unreadable("helm upgrade web https://example.com/web-1.0.0.tgz --version 1.0.0");
+    // an exact version pins a repository chart; a name with no version must be a local chart on disk
+    expect(pc("helm upgrade web bitnami/nginx --repo https://charts.bitnami.com/bitnami --version 15.1.0")).toMatchObject({ kind: "apply", inputs: [] });
+    expect(pc("helm upgrade web bitnami/nginx")).toMatchObject({ inputs: ["bitnami/nginx"], mustExist: ["bitnami/nginx"] });
+    expect(pc("helm upgrade web bitnami/nginx --version 15.1.0").mustExist).toBeUndefined();
+    // uninstall and rollback read no chart
+    expect(pc("helm uninstall web").inputs).toEqual([]);
+  });
+
+  test("R3-1 terraform: -state, -state-out, -backup, -refresh=false, -lock=false, -parallelism are keyed; a -state file is an input", () => {
+    const plain = k("terraform plan");
+    for (const apply of ["terraform apply -auto-approve -state=prod.tfstate", "terraform apply -auto-approve -refresh=false", "terraform apply -auto-approve -state-out=o.tfstate", "terraform apply -auto-approve -backup=b", "terraform apply -auto-approve -lock=false", "terraform apply -auto-approve -parallelism=50"]) {
+      expect([apply, k(apply)]).not.toEqual([apply, plain]);
+    }
+    expect(k("terraform apply -auto-approve -refresh=true -lock -input=false -no-color")).toBe(plain);
+    expect(k("terraform plan -state=prod.tfstate")).toBe(k("terraform apply -auto-approve -state prod.tfstate"));
+    expect(pc("terraform plan -state=prod.tfstate").inputs).toEqual([".", "prod.tfstate"]);
+    // a saved plan carries its variables and mode; the flags left on the command must agree
+    expect(k("terraform plan -var a=1 -destroy -out=tf.plan")).toBe(k("terraform apply tf.plan"));
+    expect(k("terraform plan -out=tf.plan")).not.toBe(k("terraform apply -state-out=other.tfstate tf.plan"));
+  });
+
+  test("r3 minor: kubectl and helm flags key as --name=value, so spellings match; words with spaces are quoted", () => {
+    expect(k("kubectl scale deploy web --replicas 3 --dry-run=server")).toBe(k("kubectl scale deploy web --replicas=3"));
+    expect(k("helm diff upgrade web ./chart --set a=1 -f v.yaml")).toBe(k("helm upgrade web ./chart --set=a=1 --values=v.yaml"));
+    expect(k("kubectl patch deploy web -p 'x --replicas=3'")).not.toBe(k("kubectl patch deploy web -p x --replicas=3"));
   });
 });

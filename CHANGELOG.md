@@ -39,6 +39,17 @@
   `-replace` with their values in order (`-var env=dev` and `-var env=prod` no longer share a key). helm-diff's
   `--context` (lines) and display flags are dropped from the plan's key. Before the verb, `-A`, an attached `-v<N>` and
   `--bool=true|false` are read, so `kubectl -A get pods` stays a read.
+- Re-review round 3, bind every file input or refuse (R3-1): the flag tables mark the flags that name files
+  (`KUBE_INPUTS`: `-f` (comma list), `-k`, `--patch-file`, `--from-file`/`--from-env-file` (`key=path`, comma list),
+  `--cert`/`--key`, `--kubeconfig` and the client TLS files; `HELM_INPUTS`: `-f`, `--set-file`, `--kubeconfig`, the TLS
+  files), and every one is a plan input. helm's chart argument is an input (a local directory or `.tgz`); unpinned, it
+  must be on disk (`PlanCommand.mustExist`), so a repository chart resolved at apply time binds nothing and is refused.
+  Refused outright: a repo or OCI chart without an exact `--version`, a chart URL, a `--post-renderer` found on PATH (a
+  script by path is an input that must exist). terraform keys `-state`, `-state-out`, `-backup`, `-refresh=false`,
+  `-lock=false`, `-parallelism` (every flag but the display/confirmation ones, defaults dropped) and hashes a `-state`
+  file; a saved plan's apply keys the flags left on the command. Minor: kubectl and helm flags key as `--name=value` by
+  long name (`--replicas 3` = `--replicas=3`, `-f a` = `--filename=a`, combined shorthands canonicalized instead of
+  refused); a key word with whitespace or a quote is JSON-quoted.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 
