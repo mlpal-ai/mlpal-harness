@@ -25,6 +25,10 @@
   directory without `-out` and the plan file with it (M-3); `kubectl rollout status|history` are reads (I-4); a negated
   (`! …`) or backgrounded dry run is not recordable (I-3, M-1); `timeout`/`nice`/`stdbuf`/`ionice`/`command`/`builtin`/
   `time`/`nohup` are read through (M-2).
+- Re-review round 1: global flags before the verb (`kubectl -s URL --as admin delete …`, `helm --kube-context p
+  uninstall`, `terraform -chdir=x apply`, `aws --profile p …`) are parsed past (`splitGlobals`), so the envelope sees
+  the verb (its verb-led form is matched too) and the plan gate keys server, context, impersonation and a token's hash;
+  an unknown flag before the verb is unreadable: destructive in the envelope, an apply no plan matches in the gate.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 

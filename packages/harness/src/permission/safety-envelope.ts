@@ -13,6 +13,7 @@ import type { SafetyPolicy } from "../profile/types";
 import { globMatch } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
+import { splitGlobals } from "./plan-gate";
 
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
@@ -106,6 +107,15 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
     for (const c of d.commands) {
       const forms = [...c.forms, ...(c.redirected ?? [])];
       if (forms.length === 0 || (c.forms[0] && CONTEXT_ONLY.has(c.forms[0].split(" ")[0]!))) continue;
+      // Global flags before the verb (`kubectl -s URL --as admin delete ns x`, `helm --kube-context p uninstall`,
+      // `terraform -chdir=x apply`): the verb-led form is matched too, so the HOP's verb-anchored lists see the verb; an
+      // unknown flag before the verb makes the command unreadable, so it is destructive (fail closed).
+      const canon = verbLed(c.forms[0] ?? "");
+      if (canon === "unreadable") {
+        worst = "destructive";
+        continue;
+      }
+      if (canon) forms.push(canon);
       const cls = classifyForms(tc, action, forms);
       if (worst === null || RANK[cls] > RANK[worst]) worst = cls;
     }
@@ -114,6 +124,18 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
   return defaultClass(action);
+}
+
+/** A command with its global flags moved after its words (`kubectl -n x --context p apply -f a` → `kubectl apply -f a
+ *  -n x --context p`); "unreadable" when a flag before the verb is not a known global; null when nothing moves. */
+function verbLed(form: string): string | null | "unreadable" {
+  const ws = form.split(" ");
+  const tool = ws[0] ?? "";
+  const g = splitGlobals(tool, ws.slice(1));
+  if (!g) return null;
+  if (g.unknown) return "unreadable";
+  if (g.globals.length === 0) return null;
+  return [tool, ...g.rest, ...g.globals].join(" ");
 }
 
 /** How dangerous a class is, for "the worst command of the line wins". */

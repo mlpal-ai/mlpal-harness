@@ -18,6 +18,7 @@
  * a plan, an apply the gate cannot see the context of (a nested shell, an undecomposable line, a `cd` or assignment it
  * cannot read) fails closed, and a dry run is recorded only when its exit status is the line's.
  */
+import { createHash } from "node:crypto";
 import { decomposeBash } from "./shell-decompose";
 import { splitShellCommands } from "./safety";
 
@@ -119,8 +120,8 @@ export function dryRun(ws: string[]): "plan" | "apply" {
 }
 
 /** kubectl and helm flags left out of a change's key, with their value word; and those without one. */
-const KUBE_DROP_WITH_VALUE = new Set(["-o", "--output", "-n", "--namespace", "--context", "--kube-context", "--kubeconfig", "--cluster", "--server", "-s", "--user", "-v", "--v", "--template"]);
-const KUBE_DROP = /^(?:--dry-run(?:=.*)?|--record(?:=.*)?|-o.+|--output=.*|-n.+|--namespace=.*|--context=.*|--kube-context=.*|--kubeconfig=.*|--cluster=.*|--server=.*|--user=.*|-v=?\d+|--v=.*|--template=.*|--show-managed-fields(?:=.*)?)$/;
+const KUBE_DROP_WITH_VALUE = new Set(["-o", "--output", "-n", "--namespace", "--context", "--kube-context", "--kubeconfig", "--cluster", "--server", "-s", "--user", "-v", "--v", "--template", "--as", "--as-group", "--as-uid", "--token", "--kube-apiserver", "--kube-as-user", "--kube-as-group", "--kube-token", "--request-timeout"]);
+const KUBE_DROP = /^(?:--dry-run(?:=.*)?|--record(?:=.*)?|-o.+|--output=.*|-n.+|--namespace=.*|--context=.*|--kube-context=.*|--kubeconfig=.*|--cluster=.*|--server=.*|--user=.*|--as=.*|--as-group=.*|--as-uid=.*|--token=.*|--kube-apiserver=.*|--kube-as-user=.*|--kube-as-group=.*|--kube-token=.*|--request-timeout=.*|-v=?\d+|--v=.*|--template=.*|--show-managed-fields(?:=.*)?)$/;
 
 /** The words of a change, in order, without the flags that do not change what is applied (and their values). A bare
  *  `--dry-run`'s mode word (`--dry-run server`) is dropped with it (D-56c). */
@@ -149,11 +150,63 @@ const KUBECTL_MUTATING = new Set(["apply", "create", "delete", "patch", "replace
  *  context never admits an apply against another. */
 function kubeContext(ws: string[]): string[] {
   const out: string[] = [];
-  for (const [flag, key] of [["--context", "ctx"], ["--kube-context", "ctx"], ["--kubeconfig", "kubeconfig"], ["--cluster", "cluster"], ["--server", "server"], ["--user", "user"]] as const) {
-    const v = flagValue(ws, [flag]);
+  for (const [flags, key] of [[["--context", "--kube-context"], "ctx"], [["--kubeconfig"], "kubeconfig"], [["--cluster"], "cluster"], [["-s", "--server", "--kube-apiserver"], "server"], [["--user"], "user"], [["--as", "--kube-as-user"], "as"], [["--as-group", "--kube-as-group"], "asgroup"], [["--as-uid"], "asuid"]] as const) {
+    const v = flagValue(ws, [...flags]);
     if (v) out.push(`${key}=${v}`);
   }
+  // a bearer token is part of who acts, but never written down: its hash stands for it
+  const token = flagValue(ws, ["--token", "--kube-token"]);
+  if (token) out.push(`token=${createHash("sha256").update(token).digest("hex").slice(0, 12)}`);
   return out;
+}
+
+/** The global flags a tool takes before its verb (`kubectl -s URL --as admin delete …`, `helm --kube-context p
+ *  uninstall …`, `terraform -chdir=x apply`, `aws --profile p ec2 …`): those with a value word, and those without. */
+const GLOBALS: Record<string, { value: Set<string>; bool: Set<string>; attached?: RegExp }> = (() => {
+  const kube = {
+    value: new Set(["-s", "--server", "--context", "--kubeconfig", "--cluster", "--user", "--token", "--as", "--as-group", "--as-uid", "-n", "--namespace", "--request-timeout", "-v", "--v", "--tls-server-name", "--certificate-authority", "--client-certificate", "--client-key", "--username", "--password", "--cache-dir", "--profile", "--profile-output", "--log-file", "--log-dir", "--vmodule", "--stderrthreshold", "--log-file-max-size", "--log-flush-frequency"]),
+    bool: new Set(["--insecure-skip-tls-verify", "--match-server-version", "--warnings-as-errors", "--disable-compression", "--alsologtostderr", "--logtostderr", "--skip-headers", "--skip-log-headers", "--one-output", "--add-dir-header"]),
+  };
+  return {
+    kubectl: kube,
+    oc: kube,
+    helm: {
+      value: new Set(["--kube-context", "--kubeconfig", "-n", "--namespace", "--kube-apiserver", "--kube-as-user", "--kube-as-group", "--kube-token", "--kube-ca-file", "--kube-tls-server-name", "--registry-config", "--repository-cache", "--repository-config", "--burst-limit", "--qps", "--content-cache"]),
+      bool: new Set(["--debug", "--kube-insecure-skip-tls-verify"]),
+    },
+    terraform: { value: new Set(), bool: new Set(["-help", "-version"]), attached: /^-chdir=/ },
+    tofu: { value: new Set(), bool: new Set(["-help", "-version"]), attached: /^-chdir=/ },
+    aws: {
+      value: new Set(["--profile", "--region", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"]),
+      bool: new Set(["--no-verify-ssl", "--no-paginate", "--debug", "--no-sign-request", "--no-cli-pager", "--cli-auto-prompt", "--no-cli-auto-prompt"]),
+    },
+  };
+})();
+
+/** A command's words after its tool split into the global flags before its verb and the rest (from the verb on).
+ *  `unknown` names a flag before the verb that is not a known global: what the command does then is not readable, so
+ *  callers fail closed (the envelope classes it destructive; the plan gate keys it to nothing). Null for a tool
+ *  without a global-flag table. */
+export function splitGlobals(tool: string, ws: string[]): { globals: string[]; rest: string[]; unknown: string | null } | null {
+  const spec = GLOBALS[tool.replace(/^.*\//, "")];
+  if (!spec) return null;
+  const globals: string[] = [];
+  let i = 0;
+  while (i < ws.length && ws[i]!.startsWith("-")) {
+    const w = ws[i]!;
+    const name = w.includes("=") ? w.slice(0, w.indexOf("=")) : w;
+    if (spec.attached?.test(w) || spec.bool.has(w) || (w.includes("=") && spec.value.has(name))) {
+      globals.push(w);
+      i++;
+    } else if (spec.value.has(w) && i + 1 < ws.length) {
+      globals.push(w, ws[i + 1]!);
+      i += 2;
+    } else if (w === "--") {
+      i++;
+      break;
+    } else return { globals, rest: ws.slice(i), unknown: w };
+  }
+  return { globals, rest: ws.slice(i), unknown: null };
 }
 
 /** Recognise a plan (dry run) or an apply in ONE simple command; null for anything else. A whole Bash line is read by
@@ -189,8 +242,11 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     return null;
   }
   if (tool === "kubectl" || tool === "oc") {
-    const verb = positionals(rest, 0)[0];
-    const sub = positionals(rest, 0)[1];
+    const g = splitGlobals(tool, rest)!;
+    // An unknown flag before the verb: not readable, so it is an apply no plan can match (fail closed).
+    if (g.unknown) return { kind: "apply", tool, target: `unreadable ${rest.join(" ")}`, inputs: [] };
+    const verb = positionals(g.rest, 0)[0];
+    const sub = positionals(g.rest, 0)[1];
     // D-57: every verb that changes the cluster is an apply (each takes --dry-run, so each can be planned); `diff` is a
     // plan, keyed like the apply of the same files (D-56). `rollout status|history` are reads (review I-4).
     if (!verb || (!KUBECTL_MUTATING.has(verb) && verb !== "diff")) return null;
@@ -206,7 +262,9 @@ export function classifyPlanCommand(command: string): PlanCommand | null {
     return { kind, tool, target, inputs: files };
   }
   if (tool === "helm") {
-    const verb = rest.find((w) => !w.startsWith("-"));
+    const g = splitGlobals(tool, rest)!;
+    if (g.unknown) return { kind: "apply", tool, target: `unreadable ${rest.join(" ")}`, inputs: [] };
+    const verb = g.rest.find((w) => !w.startsWith("-"));
     if (!verb) return null;
     const values = flagValues(rest, ["-f", "--values"]);
     const ns = [flagValue(rest, ["-n", "--namespace"]) ? `ns=${flagValue(rest, ["-n", "--namespace"])}` : "", ...kubeContext(rest)].filter(Boolean).join(" ");

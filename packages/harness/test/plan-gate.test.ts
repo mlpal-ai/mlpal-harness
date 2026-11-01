@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, dryRun, matchPlan, type PlanArtifact, planExitOk, planLine } from "../src/permission/plan-gate";
+import { classifyPlanCommand, dryRun, matchPlan, type PlanArtifact, planExitOk, planLine, splitGlobals } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -173,5 +173,23 @@ describe("D-57 security review", () => {
       expect([line, l.unreadable, l.steps.length]).toEqual([line, null, 1]);
     }
     expect(planLine("timeout 300 kubectl diff -f a.yaml", "/w").recordable).not.toBeNull();
+  });
+});
+
+describe("re-review: global flags before the verb", () => {
+  test("splitGlobals finds the verb past known globals and names an unknown one", () => {
+    expect(splitGlobals("kubectl", ["-s", "https://p", "--as=admin", "--context", "c", "delete", "ns", "x"])).toEqual({ globals: ["-s", "https://p", "--as=admin", "--context", "c"], rest: ["delete", "ns", "x"], unknown: null });
+    expect(splitGlobals("terraform", ["-chdir=infra", "apply"])).toEqual({ globals: ["-chdir=infra"], rest: ["apply"], unknown: null });
+    expect(splitGlobals("helm", ["--kube-context", "p", "uninstall", "web"])?.rest).toEqual(["uninstall", "web"]);
+    expect(splitGlobals("kubectl", ["--dry-run=none", "apply", "-f", "a"])?.unknown).toBe("--dry-run=none");
+    expect(splitGlobals("jq", ["."])).toBeNull();
+  });
+
+  test("the plan gate classifies past the globals and keys server, context and impersonation (never a token's value)", () => {
+    expect(classifyPlanCommand("kubectl -s https://prod delete ns prod")).toMatchObject({ kind: "apply", target: "server=https://prod delete ns prod" });
+    expect(classifyPlanCommand("kubectl --as=admin --context p delete ns prod")).toMatchObject({ kind: "apply", target: "ctx=p as=admin delete ns prod" });
+    expect(classifyPlanCommand("helm --kube-context p uninstall web")).toMatchObject({ kind: "apply", target: "ctx=p uninstall web" });
+    expect(classifyPlanCommand("kubectl --token s3cret apply -f a")!.target).not.toContain("s3cret");
+    expect(classifyPlanCommand("kubectl --bogus apply -f a")).toMatchObject({ kind: "apply", target: "unreadable --bogus apply -f a" });
   });
 });

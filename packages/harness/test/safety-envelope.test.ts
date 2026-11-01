@@ -83,6 +83,18 @@ describe("classifyAction, D-57: a line is as dangerous as its most dangerous com
   });
 });
 
+describe("classifyAction, re-review: global flags before the verb", () => {
+  const K: SafetyPolicy = { ...SAFETY, toolClasses: { readOnly: ["Bash(kubectl get *)"], mutative: ["Bash(kubectl apply *)", "Bash(terraform apply*)"], destructive: ["Bash(kubectl delete ns *)", "Bash(helm uninstall *)"] } };
+  test("the verb-led form is classified; an unknown global is destructive", () => {
+    expect(classifyAction(K, act("kubectl -s https://prod delete ns prod"))).toBe("destructive");
+    expect(classifyAction(K, act("kubectl --as=admin --context p delete ns prod"))).toBe("destructive");
+    expect(classifyAction(K, act("terraform -chdir=infra apply"))).toBe("mutative");
+    expect(classifyAction(K, act("helm --kube-context p uninstall web"))).toBe("destructive");
+    expect(classifyAction(K, act("kubectl -n x --context p get pods"))).toBe("readOnly");
+    expect(classifyAction(K, act("kubectl --whatever get pods"))).toBe("destructive");
+  });
+});
+
 describe("evaluateSafety", () => {
   test("read-only actions are always free", () => {
     expect(evaluateSafety(SAFETY, act("aws s3 describe-bucket"))).toEqual({ outcome: "allow" });
