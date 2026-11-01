@@ -8,7 +8,7 @@ describe("plan gate: recognising plans and applies", () => {
     expect(classifyPlanCommand("terraform -chdir=infra/eks apply tf.plan")).toEqual({ kind: "apply", tool: "terraform", target: "infra/eks planfile", inputs: ["tf.plan"], planFile: "tf.plan" });
     expect(classifyPlanCommand("terraform destroy -auto-approve")).toEqual({ kind: "apply", tool: "terraform", target: ". -destroy", inputs: ["."] });
     expect(classifyPlanCommand("terraform plan -destroy")).toEqual({ kind: "plan", tool: "terraform", target: ". -destroy", inputs: ["."] });
-    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -target=module.db")).toEqual({ kind: "plan", tool: "terraform", target: ". -target=module.db", inputs: [".", "prod.tfvars"] });
+    expect(classifyPlanCommand("terraform plan -var-file=prod.tfvars -target=module.db")).toEqual({ kind: "plan", tool: "terraform", target: ". -var-file=prod.tfvars -target=module.db", inputs: [".", "prod.tfvars"] });
     expect(classifyPlanCommand("terraform validate")).toBeNull();
     expect(classifyPlanCommand("TF_LOG=debug tofu plan")).toMatchObject({ kind: "plan", tool: "terraform" });
   });
@@ -191,5 +191,62 @@ describe("re-review: global flags before the verb", () => {
     expect(classifyPlanCommand("helm --kube-context p uninstall web")).toMatchObject({ kind: "apply", target: "ctx=p uninstall web" });
     expect(classifyPlanCommand("kubectl --token s3cret apply -f a")!.target).not.toContain("s3cret");
     expect(classifyPlanCommand("kubectl --bogus apply -f a")).toMatchObject({ kind: "apply", target: "unreadable --bogus apply -f a" });
+  });
+});
+
+describe("re-review r2: canonicalize or refuse", () => {
+  const k = (c: string) => classifyPlanCommand(c)!.target;
+  const unreadable = (c: string) => expect([c, k(c).startsWith("unreadable ")]).toEqual([c, true]);
+
+  test("R2-1: a repeated context flag is refused (kubectl and helm use the last, a reviewer reads the first)", () => {
+    expect(k("kubectl --context dev apply -f k8s/web.yaml --dry-run=server")).toBe("ctx=dev apply -f k8s/web.yaml");
+    unreadable("kubectl --context dev --context prod apply -f k8s/web.yaml");
+    unreadable("kubectl apply -f k8s/web.yaml --context dev --context=prod");
+    unreadable("helm --kube-context dev --kube-context prod upgrade web ./c");
+    unreadable("kubectl --kubeconfig /a apply -f a --kubeconfig=/b");
+    unreadable("kubectl -s https://dev apply -f a --server https://prod");
+    unreadable("kubectl --as dev --as=admin apply -f a");
+    // a repeated flag on a dry run: nothing is recorded (it is no plan)
+    expect(classifyPlanCommand("kubectl --context dev --context prod apply -f a --dry-run=server")?.kind).toBe("apply");
+    expect(planLine("kubectl --context dev --context prod apply -f a --dry-run=server", "/w").recordable).toBeNull();
+  });
+
+  test("R2-2: the attached -n<ns> keys the namespace; a repeated namespace is refused", () => {
+    expect(k("kubectl scale deploy web --replicas=3 --dry-run=server")).toBe("scale deploy web --replicas=3");
+    expect(k("kubectl scale deploy web --replicas=3 -nprod")).toBe("ns=prod scale deploy web --replicas=3");
+    expect(k("kubectl scale deploy web --replicas=3 -n=prod")).toBe("ns=prod scale deploy web --replicas=3");
+    expect(k("kubectl scale deploy web --replicas=3 --namespace=prod")).toBe("ns=prod scale deploy web --replicas=3");
+    unreadable("kubectl scale deploy web --replicas=3 -n dev -n prod");
+    unreadable("kubectl scale deploy web --replicas=3 -n dev --namespace prod");
+    unreadable("helm upgrade web ./c -n dev --namespace=prod");
+    expect(k("kubectl -shttps://prod delete ns x")).toBe("server=https://prod delete ns x");
+  });
+
+  test("shorthands as pflag reads them; a combined word mixing a keyed flag with a kept one is refused", () => {
+    expect(classifyPlanCommand("kubectl apply -fdeploy.yaml")).toMatchObject({ inputs: ["deploy.yaml"], target: "apply -fdeploy.yaml" });
+    expect(classifyPlanCommand("kubectl apply -Rf manifests/")).toMatchObject({ inputs: ["manifests/"], target: "apply -Rf manifests/" });
+    expect(k("kubectl run debug --rm -it --image=busybox")).toBe("run debug --rm -it --image=busybox");
+    unreadable("kubectl delete pods --all -Anprod");
+    // an unknown bare flag has no known arity: refused; with `=value` its arity is in the word
+    unreadable("kubectl apply -f a.yaml --bogus-local");
+    expect(k("kubectl apply -f a.yaml --bogus-local=1")).toBe("apply -f a.yaml --bogus-local=1");
+    // `-f a -f b` accumulates: allowed, in order
+    expect(classifyPlanCommand("kubectl apply -f a.yaml -f b.yaml")?.inputs).toEqual(["a.yaml", "b.yaml"]);
+  });
+
+  test("helm: helm-diff's --context is lines of context (dropped on the plan), unknown on an upgrade", () => {
+    expect(k("helm diff upgrade web ./c --context 3 --detailed-exitcode")).toBe(k("helm upgrade web ./c"));
+    unreadable("helm upgrade web ./c --context prod");
+  });
+
+  test("terraform/tofu: -x and --x alike, a value flag takes the next word, a repeated scalar is refused", () => {
+    expect(k("terraform plan -var env=dev")).not.toBe(k("terraform apply -var env=prod -auto-approve"));
+    expect(k("terraform plan -var env=prod")).toBe(k("terraform apply --var=env=prod -auto-approve"));
+    expect(k("terraform plan -var a=1 -var a=2")).not.toBe(k("terraform apply -var a=2 -var a=1"));
+    expect(k("terraform plan --chdir=prod")).toBe("prod");
+    unreadable("terraform -chdir=dev -chdir=prod apply -auto-approve");
+    unreadable("terraform plan -out a.plan -out=b.plan");
+    unreadable("terraform apply -auto-approve -bogus");
+    expect(classifyPlanCommand("tofu plan -var env=dev")).toEqual(classifyPlanCommand("terraform plan -var env=dev"));
   });
 });

@@ -29,6 +29,16 @@
   uninstall`, `terraform -chdir=x apply`, `aws --profile p …`) are parsed past (`splitGlobals`), so the envelope sees
   the verb (its verb-led form is matched too) and the plan gate keys server, context, impersonation and a token's hash;
   an unknown flag before the verb is unreadable: destructive in the envelope, an apply no plan matches in the gate.
+- Re-review round 2, canonicalize or refuse (R2-1, R2-2): kubectl, oc, helm and terraform/tofu flags are parsed the
+  way the tool parses them (`canonicalFlags`, `terraformFlags`): attached shorthands (`-nprod`, `-shttps://…`, `-v6`,
+  `-fdeploy.yaml`), `--flag=value`, a value flag taking the next word, `-x` = `--x` for terraform. The effective
+  namespace, context, kubeconfig, cluster, server, user and impersonation lead the key. Refused (an apply no plan
+  matches, and no plan recorded): a non-accumulating flag given twice (`--context dev --context prod`, `-n a -n b`,
+  `-n a --namespace b`, `-chdir` twice), an unknown bare flag after the verb (its arity is unknown; `--x=v` is read), a
+  combined shorthand mixing a keyed flag with a kept one (`-Anprod`). terraform keys `-var`/`-var-file`/`-target`/
+  `-replace` with their values in order (`-var env=dev` and `-var env=prod` no longer share a key). helm-diff's
+  `--context` (lines) and display flags are dropped from the plan's key. Before the verb, `-A`, an attached `-v<N>` and
+  `--bool=true|false` are read, so `kubectl -A get pods` stays a read.
 
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 

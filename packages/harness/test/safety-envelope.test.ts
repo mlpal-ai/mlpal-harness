@@ -93,6 +93,13 @@ describe("classifyAction, re-review: global flags before the verb", () => {
     expect(classifyAction(K, act("kubectl -n x --context p get pods"))).toBe("readOnly");
     expect(classifyAction(K, act("kubectl --whatever get pods"))).toBe("destructive");
   });
+
+  test("re-review r2 minor: -A, an attached -v<N> and --bool=true|false before a read keep it a read", () => {
+    for (const line of ["kubectl -A get pods", "kubectl -v6 get pods", "kubectl --insecure-skip-tls-verify=true get pods", "kubectl -nprod get pods"]) {
+      expect([line, classifyAction(K, act(line))]).toEqual([line, "readOnly"]);
+    }
+    expect(classifyAction(K, act("kubectl -shttps://prod delete ns prod"))).toBe("destructive");
+  });
 });
 
 describe("evaluateSafety", () => {
