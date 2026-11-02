@@ -105,6 +105,9 @@ export interface ModelRequest {
    * from the catalog. Never used once content has been emitted (that would duplicate output).
    */
   fallbackModels?: string[];
+  /** D-53 `model.fallback: deny`: an answer from another model than the one named fails the call (with no
+   *  `fallbackModels` the client never fails over itself). */
+  noFallback?: boolean;
 }
 
 export interface ModelResult {
@@ -112,7 +115,8 @@ export interface ModelResult {
   message: Message; // assistant message (text + tool_use + thinking blocks)
   usage: Usage;
   stopReason: StopReason | null;
-  /** D-53: set when the requested model failed before any content and a fallback answered (`model` is the fallback). */
+  /** D-53: set when another model than the one requested answered (`model` is it); every switch was also announced
+   *  as a `model_switch` delta when it happened. */
   fallback?: { from: string; reason: string; code: string };
   /** Pass-through cost from the X-MLPal-Compute-Units response header (1 CU = $10, no markup).
    *  Non-streaming responses only — streaming carries no cost header by design (headers precede
@@ -158,7 +162,7 @@ export interface Feedback {
 }
 
 export interface ModelClient {
-  stream(req: ModelRequest): AsyncGenerator<StreamDelta, ModelResult, void>;
+  stream(req: ModelRequest): AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void>;
   /** Report a delegation outcome; fire-and-forget, must never throw or block the caller. */
   postFeedback?(fb: Feedback): void;
 }
@@ -186,13 +190,34 @@ function errorFields(body: unknown): { message?: string; type?: string; code?: s
   return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at) };
 }
 
-/** Why a call left its requested model, in words and as a low-cardinality code (D-53). The message is the gateway's
- *  (status and text), bounded; no request detail. */
-function fallbackOf(from: string, err: GatewayError | undefined): { from: string; reason: string; code: string } {
-  if (!err) return { from, reason: "the requested model was refused by policy", code: "refused" };
-  const code = err.kind === "http" ? (err.status >= 500 ? "http_5xx" : `http_${err.status}`) : err.kind;
-  // the message already names an HTTP status ("gateway 500: …"); other kinds are prefixed with theirs
-  return { from, reason: (err.kind === "http" ? err.message : `${err.kind}: ${err.message}`).slice(0, 200), code };
+/** Why a call left a model, as a low-cardinality code and a reason built only from the gateway's machine fields
+ *  (status, error type, error code), never from provider text (D-53 review I3: a provider message can echo a key or
+ *  an account id). */
+export function switchReason(err: GatewayError): { reason: string; code: string } {
+  if (err.kind !== "http") return { reason: err.kind, code: err.kind };
+  const code = err.status >= 500 ? "http_5xx" : `http_${err.status}`;
+  const machine = [err.errorType, err.code].filter((x): x is string => typeof x === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(x));
+  return { reason: `gateway ${err.status}${machine.length ? ` ${machine.join(" ")}` : ""}`, code };
+}
+
+/** A model the request names that the gateway resolves itself (the `mlpal` meta-models): a different model in the
+ *  answer is the routing it asked for, not a substitution. */
+const resolvedByGateway = (model: string) => /^mlpal(-|$)/.test(model);
+/** A dated or versioned spelling of the same model (`claude-opus-5-20261001`, `x@2`) is not another model. */
+const sameModel = (a: string, b: string) => {
+  const base = (m: string) => m.toLowerCase().replace(/@.*$/, "").replace(/-\d{8}$/, "");
+  return base(a) === base(b);
+};
+
+/** D-53: the call is about to be served by a model other than the one it named — announced when it happens, before
+ *  that model's first delta: a client failover to the next rung (`code` from the error that ended the rung, or
+ *  `model_refused` for a rung the policy refused), or the gateway answering with another model (`gateway_swap`). */
+export interface ModelSwitch {
+  type: "model_switch";
+  from: string;
+  to: string;
+  code: string;
+  reason: string;
 }
 
 export class GatewayError extends Error {
@@ -236,6 +261,7 @@ export class GatewayError extends Error {
   /** Transient failures worth retrying. Cancellation never is. */
   get retryable(): boolean {
     if (this.kind === "cancelled") return false;
+    if (this.code === "fallback_denied") return false; // model.fallback: deny refused an answer from another model
     if (this.kind === "timeout") return true;
     if (this.kind === "network") return true;
     return (
@@ -358,7 +384,7 @@ export class GatewayClient implements ModelClient {
     });
   }
 
-  async *stream(req: ModelRequest): AsyncGenerator<StreamDelta, ModelResult, void> {
+  async *stream(req: ModelRequest): AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void> {
     const started = Date.now();
     const userSignal = anySignal(this.externalSignal, req.signal);
     this.metrics.increment("gateway.calls", 1, { model: req.model });
@@ -385,6 +411,7 @@ export class GatewayClient implements ModelClient {
     const maxStreamResume = 2;
     const sent = { requests: 0 };
     let modelIdx = 0;
+    let lastSwitch: ModelSwitch | undefined;
     let attempt = 0;
     let resume = 0;
     let streamResume = 0;
@@ -421,10 +448,11 @@ export class GatewayClient implements ModelClient {
         }
         const computeUnits = parseComputeUnits(res.headers);
         const effortApplied = parseEffortHeader(res.headers);
-        const gen = this.consume(res.body, model, idle.reset);
+        const gen = this.consume(res.body, model, idle.reset, req.noFallback === true);
         let step = await gen.next();
         while (!step.done) {
-          emitted = true;
+          if (step.value.type === "model_switch") lastSwitch = step.value;
+          else emitted = true;
           yield step.value;
           step = await gen.next();
         }
@@ -434,8 +462,8 @@ export class GatewayClient implements ModelClient {
           ...step.value, // the trailer's compute units win over a header (streams carry none)
           ...(effortApplied ? { effort: effortApplied } : {}),
           attempts: sent.requests,
-          // D-53: served by a fallback; the caller reports it (never a silent model switch)
-          ...(modelIdx > 0 ? { fallback: fallbackOf(models[0]!, primaryError) } : {}),
+          // D-53: served by another model; each switch was announced as it happened (never a silent model switch)
+          ...(lastSwitch ? { fallback: { from: req.model, reason: lastSwitch.reason, code: lastSwitch.code } } : {}),
         };
       } catch (e) {
         const err = this.normalizeError(e, userSignal);
@@ -493,6 +521,8 @@ export class GatewayClient implements ModelClient {
           if (modelIdx < models.length - 1) {
             modelIdx++;
             attempt = 0;
+            lastSwitch = { type: "model_switch", from: model, to: models[modelIdx]!, code: "model_refused", reason: "the model was refused by policy" };
+            yield lastSwitch;
             continue;
           }
           throw primaryError ?? err;
@@ -510,6 +540,9 @@ export class GatewayClient implements ModelClient {
             attempt = 0;
             this.metrics.increment("gateway.failover", 1, { from: model, to: models[modelIdx]! });
             this.logger.warn("gateway model failover", { from: model, to: models[modelIdx] });
+            // announced now, before the next model's first delta (D-53 review I1)
+            lastSwitch = { type: "model_switch", from: model, to: models[modelIdx]!, ...switchReason(err) };
+            yield lastSwitch;
             continue;
           }
         }
@@ -703,7 +736,8 @@ export class GatewayClient implements ModelClient {
     stream: ReadableStream<Uint8Array>,
     fallbackModel: string,
     onEvent?: () => void,
-  ): AsyncGenerator<StreamDelta, ModelResult, void> {
+    noFallback = false,
+  ): AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void> {
     const blocks = new Map<number, AccBlock>();
     let model = fallbackModel;
     let usage: Usage = { input_tokens: 0, output_tokens: 0 };
@@ -718,6 +752,12 @@ export class GatewayClient implements ModelClient {
       switch (type) {
         case "message_start": {
           const msg = (ev.message ?? {}) as { model?: string; usage?: Partial<Usage> };
+          // D-53 review I2: the gateway answering with another model than the one named is a fallback too
+          if (msg.model && !resolvedByGateway(fallbackModel) && !sameModel(msg.model, fallbackModel)) {
+            if (noFallback) throw new GatewayError(`the gateway answered with ${msg.model} instead of ${fallbackModel}, and model.fallback is deny`, 409, "http", "fallback_denied", "fallback_denied", msg.model);
+            this.metrics.increment("gateway.swap", 1, { from: fallbackModel, to: msg.model });
+            yield { type: "model_switch", from: fallbackModel, to: msg.model, code: "gateway_swap", reason: "the gateway served another model" };
+          }
           if (msg.model) model = msg.model;
           if (msg.usage) usage = { ...usage, ...normalizeUsage(msg.usage) };
           break;

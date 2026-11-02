@@ -204,8 +204,9 @@ export interface CompactEvent {
   ts: string;
 }
 
-/** D-53: the main model failed before any content and the call was served by a fallback model. Persisted before the
- *  assistant message it produced, so the transcript, the status and telemetry name the model actually used. */
+/** D-53: the call is served by another model than the one it named: a client failover to the next fallback, or the
+ *  gateway answering with another model. Persisted and emitted when it happens, before that model's first delta, so
+ *  the transcript, the status and telemetry name the model actually used even if the answer is cancelled. */
 export interface ModelFallbackEvent {
   type: "model_fallback";
   uuid?: string;
@@ -213,9 +214,10 @@ export interface ModelFallbackEvent {
   from: string;
   /** The model that answered. */
   to: string;
-  /** Why `from` was left, in words (the gateway's status and message, never a credential). */
+  /** Why `from` was left, from machine fields only (status, error type and code; never provider text), bounded. */
   reason: string;
-  /** The same, as a low-cardinality code: `http_401`, `http_5xx`, `timeout`, `network`, `stream`, `refused`. */
+  /** Low-cardinality: `http_5xx`, `http_<status>`, `timeout`, `network`, `stream`, `model_refused` (a fallback rung
+   *  the policy refused), `gateway_swap` (the gateway answered with another model). */
   code: string;
   ts: string;
 }

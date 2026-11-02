@@ -11,6 +11,16 @@
   counts `agent.model_fallbacks{from,to,code}` and logs a warning. Replay (`loadMessages`) ignores the event.
 - HOP `model.fallback: allow | deny` (loader, schema, composition; default allow). Under `deny` a host sends no
   fallbacks, so a failing main model fails the call.
+- Review fixes: the client yields a `model_switch` delta **when** it fails over (and when a fallback rung is refused),
+  before the next model's first delta, and the loop persists and yields `model_fallback` at once, so a cancelled or
+  failed fallback stream still leaves the transcript record, the metric and the `model.fallback` events record (I1).
+  A `message_start` naming another model than requested (dated spellings and `mlpal` meta-models aside) is a
+  `gateway_swap` switch (I2). `reason` is built from the gateway's status, error type and code only, never provider
+  text, and redacted and bounded again in the loop (I3). `AgentConfig.modelFallback: deny` is enforced by the
+  session: no fallbacks are sent, and `noFallback` makes an answer from another model fail the call
+  (`fallback_denied`, never retried) (M1, I2). Gateway note: on `/v1/messages` the gateway does not substitute a
+  pinned model (backend failover keeps the model; the router's `get_adapter_with_fallback` has no caller at
+  mlpal-assistants-service 4157a56), so no gateway flag was added; the swap check guards it if that changes.
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
