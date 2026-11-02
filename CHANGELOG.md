@@ -20,6 +20,8 @@
   question stays a boundary, and its request (`<previous-request>`) and the agent's question (`<asked-back>`) are
   context, never the request, so "Anything else?" cannot chain old requests into a new one (R1-2). Message bodies are
   JSON-encoded with `<` escaped, so a message can neither close a block nor forge a `[person]` line (R1-4).
+- Hardening (approved round 2): a peer's display name is reduced to `[A-Za-z0-9._@-]` in its label (R2-2); U+2028,
+  U+2029 and fullwidth `＜` `＞` are escaped in fenced bodies like `<` (R2-3).
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 

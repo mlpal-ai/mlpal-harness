@@ -73,8 +73,11 @@ export interface TurnRequest {
 const REQUEST_BUDGET = 4000;
 const CONTEXT_BUDGET = 1500;
 
+/** A peer's name as a label: a safe character set only (R2-2), so no name can close the label or forge `[person]`. */
+const safeName = (name: string) => name.replace(/[^A-Za-z0-9._@-]/g, "_").slice(0, 64) || "agent";
+
 function authorOf(p: { author?: { type?: string; id?: string; displayName?: string } }): string {
-  return p.author?.type === "agent" ? `peer ${p.author.displayName ?? p.author.id ?? "agent"}` : "person";
+  return p.author?.type === "agent" ? `peer ${safeName(p.author.displayName ?? p.author.id ?? "agent")}` : "person";
 }
 
 /** A run that parked a question for the person (a structural signal the agent cannot fake in prose): its answer, in
@@ -146,7 +149,9 @@ function tail(text: string, budget: number): string {
 
 /** A message body as data that cannot close a block or forge a label (re-review R1-4): JSON-encoded (no raw newline)
  *  with `<` escaped. */
-const literal = (text: string) => JSON.stringify(text).replace(/</g, "\\u003c");
+const literal = (text: string) =>
+  // and the line separators and fullwidth angle brackets a reader might take for a newline or a tag (R2-3)
+  JSON.stringify(text).replace(/[<\u2028\u2029\uff1c\uff1e]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 function quoted(tag: string, msgs: RequestMessage[], budget: number): string {
   return `<${tag}>\n${tail(msgs.map((m) => `[${m.from}] ${literal(m.text)}`).join("\n"), budget)}\n</${tag}>`;
