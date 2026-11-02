@@ -10,6 +10,12 @@
   opening message follows, marked "context only; not the request this turn answers". Before, `{task}` was always the
   session's first user message, so a correct change asked for in a later turn failed fail-closed verifiers as "a
   mutation nobody asked for" (the infra HOP, demo v2).
+- Review fixes: only a turn that completed (`success`) and did not end asking the person something (a parked
+  AskUserQuestion, or last words ending in a question) is a boundary; a park for approval, a cancel, an
+  interruption, an error or a turn limit carries its request forward and the later steer or answer joins it (I4).
+  The verifier gets the request with each message labelled by who sent it (`[person]`, `[peer <name>]`), then the
+  previous turn's request and the opening message fenced as quoted context (M6); a long request keeps its end (M5).
+  `isParkedAskResult` marks a parked ask's tool result.
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 

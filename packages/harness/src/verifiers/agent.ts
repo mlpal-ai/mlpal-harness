@@ -2,7 +2,9 @@ import type { Message } from "@mlpal/harness-protocol";
 import type { HookContext } from "../hooks/types";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
+import type { ConversationEntry } from "@mlpal/harness-protocol";
 import { effectiveEntries, loadMessages } from "../loop/messages";
+import { isParkedAskResult } from "../tools/builtin/ask";
 import type { Store } from "../store/types";
 
 /**
@@ -49,35 +51,103 @@ function extractText(content: Message["content"]): string {
     : content.map((b) => (b.type === "text" ? b.text : "")).join("");
 }
 
-/**
- * The request the finishing run answers (D-54): the messages a person (or a peer agent) sent since the last run
- * boundary, in order, never the session's opening message alone. A session is many turns: judging a turn-3 fix against
- * the turn-1 question fails a correct run ("a mutation nobody asked for"). The loop's own notes (`[Verification] …`,
- * system-authored) are not requests. A run that resumes a parked approval has no new message: its request is the one
- * that led to the park, so the walk goes past boundaries until it finds one. Earlier messages are returned apart, as
- * context only.
- */
-export async function turnRequest(store: Store, sessionId: string): Promise<{ request: string; context: string }> {
-  const entries = effectiveEntries(await store.conversation.read(sessionId));
-  const request: string[] = [];
-  let i = entries.length - 1;
-  for (; i >= 0; i--) {
-    const p = entries[i]!.payload;
-    if (p.type === "result" && request.length > 0) break;
-    if (p.type === "user" && p.author?.type !== "system") {
-      const text = extractText(p.message.content).trim();
-      if (text) request.unshift(text);
-    }
-  }
-  const earlier = entries.slice(0, Math.max(0, i)).find((e) => e.payload.type === "user" && e.payload.author?.type !== "system");
-  const context = earlier && earlier.payload.type === "user" ? extractText(earlier.payload.message.content).trim() : "";
-  return { request: request.join("\n\n").slice(0, 4000) || "(task text unavailable)", context: request.length && context !== request[0] ? context.slice(0, 1500) : "" };
+/** One message of a request, with who sent it: a person, or a peer agent by name (review M6: a peer's message is not
+ *  the person's authorization, and a framing can weigh them apart). */
+export interface RequestMessage {
+  from: string;
+  text: string;
 }
 
-/** The `task` a verifier framing receives: this turn's request, with the session's opening message after it marked as
- *  context, so a framing that asks "did anyone ask for this mutation" reads the right turn. */
-function taskOfTurn(t: { request: string; context: string }): string {
-  return t.context ? `${t.request}\n\n(Context only, from earlier in this session; not the request this turn answers: ${t.context})` : t.request;
+export interface TurnRequest {
+  /** What this turn answers, in order. */
+  request: RequestMessage[];
+  /** The request of the turn before it (context only). */
+  previous: RequestMessage[];
+  /** The session's opening message, when neither of the above holds it (context only). */
+  opening: RequestMessage | null;
+}
+
+const REQUEST_BUDGET = 4000;
+const CONTEXT_BUDGET = 1500;
+
+function authorOf(p: { author?: { type?: string; id?: string; displayName?: string } }): string {
+  return p.author?.type === "agent" ? `peer ${p.author.displayName ?? p.author.id ?? "agent"}` : "person";
+}
+
+/** A run that ended asking the person something: it parked an AskUserQuestion, or its last words are a question.
+ *  Its answer, in the next run, continues the same request. */
+function endedAsking(run: ConversationEntry[]): boolean {
+  if (run.some((e) => e.payload.type === "tool_result" && e.payload.toolName === "AskUserQuestion" && isParkedAskResult(e.payload.content))) return true;
+  for (let k = run.length - 1; k >= 0; k--) {
+    const p = run[k]!.payload;
+    if (p.type === "assistant") {
+      const t = extractText(p.message.content).trim();
+      if (t) return t.endsWith("?");
+    }
+  }
+  return false;
+}
+
+/**
+ * The request the finishing run answers (D-54): the messages a person (or a peer) sent since the last turn that
+ * completed, in order, never the session's opening message alone (judging a turn-3 fix against the turn-1 question
+ * fails a correct run as "a mutation nobody asked for"). Review I4: only a turn that completed and did not end asking
+ * the person something is a boundary; a park for approval, a cancel, an interruption, an error, a turn limit, or a
+ * question carries its request forward, and the later steer or answer joins it. The loop's own system-authored notes
+ * (`[Verification] …`) are not requests. The previous turn's request and the opening message come apart, as context.
+ */
+export async function turnRequest(store: Store, sessionId: string): Promise<TurnRequest> {
+  const entries = effectiveEntries(await store.conversation.read(sessionId));
+  const messages = (from: number, to: number): RequestMessage[] =>
+    entries.slice(from, to).flatMap((e) => {
+      const p = e.payload;
+      if (p.type !== "user" || p.author?.type === "system") return [];
+      const text = extractText(p.message.content).trim();
+      return text ? [{ from: authorOf(p), text }] : [];
+    });
+  // the turns: the entries between completed results that are boundaries
+  const boundaries: number[] = [];
+  let runStart = 0;
+  entries.forEach((e, k) => {
+    if (e.payload.type !== "result") return;
+    if (e.payload.subtype === "success" && !endedAsking(entries.slice(runStart, k))) boundaries.push(k);
+    runStart = k + 1;
+  });
+  const lastBoundary = boundaries.at(-1) ?? -1;
+  let request = messages(lastBoundary + 1, entries.length);
+  let prevBoundary = boundaries.at(-2) ?? -1;
+  // a turn that so far holds no message (a resumed run) answers the request of the turn before it
+  if (request.length === 0 && lastBoundary >= 0) {
+    request = messages(prevBoundary + 1, lastBoundary);
+    prevBoundary = boundaries.at(-3) ?? -1;
+    boundaries.pop();
+  }
+  const previous = boundaries.length ? messages(prevBoundary + 1, boundaries.at(-1)!) : [];
+  const first = messages(0, entries.length)[0] ?? null;
+  const shown = [...request, ...previous];
+  const opening = first && !shown.some((m) => m.text === first.text) ? first : null;
+  return { request, previous, opening };
+}
+
+/** Keep the end of a long text (review M5: a later steer outranks the start of a long paste). */
+function tail(text: string, budget: number): string {
+  return text.length <= budget ? text : `[… earlier text omitted]\n${text.slice(-budget)}`;
+}
+
+function quoted(tag: string, msgs: RequestMessage[], budget: number): string {
+  return `<${tag}>\n${tail(msgs.map((m) => `[${m.from}] ${m.text}`).join("\n\n"), budget)}\n</${tag}>`;
+}
+
+/** The `task` a verifier framing receives: this turn's request, each message labelled with who sent it, then, fenced
+ *  as quoted data, the previous turn's request and the session's opening message as context only (review M6). */
+export function taskOfTurn(t: TurnRequest): string {
+  if (t.request.length === 0) return "(task text unavailable)";
+  const parts = [quoted("request", t.request, REQUEST_BUDGET)];
+  const context: string[] = [];
+  if (t.previous.length) context.push(quoted("previous-request", t.previous, CONTEXT_BUDGET));
+  if (t.opening) context.push(quoted("opening-message", [t.opening], CONTEXT_BUDGET));
+  if (context.length) parts.push(`Context only, quoted from earlier in this session (not the request this turn answers):\n${context.join("\n")}`);
+  return parts.join("\n\n");
 }
 
 /** Last assistant text = the run's deliverable at the finish gate. Profiles whose

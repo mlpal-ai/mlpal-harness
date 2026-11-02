@@ -81,10 +81,18 @@ export interface AskOutcome {
 export type PresentQuestions = (questions: AskQuestion[], ctx?: ToolContext) => Promise<AskOutcome | { parked: true }>;
 
 /** Render the outcome the model reads. Kept deterministic and compact — it lands in context. */
+/** The start of a parked ask's tool result: how a reader of the transcript (the verifier, D-54) knows the run ended
+ *  waiting on the person's answer. */
+const PARKED_PREFIX = "No user is attached to this session right now (headless/scheduled run).";
+
+export function isParkedAskResult(content: string): boolean {
+  return content.startsWith(PARKED_PREFIX);
+}
+
 export function formatOutcome(outcome: AskOutcome | { parked: true }): string {
   if ("parked" in outcome) {
     return (
-      "No user is attached to this session right now (headless/scheduled run). Your questions were " +
+      PARKED_PREFIX + " Your questions were " +
       "PARKED for the user — they get a notification and will see them the next time they open this " +
       "session. Do as much as you responsibly can without the answers, then end the run with a clear " +
       "summary of what is done and exactly which decision is blocked on which question. Do not guess " +
