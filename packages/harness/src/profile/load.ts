@@ -4,6 +4,7 @@ import { z } from "zod";
 import type {
   EvalSuite,
   HopCredential,
+  KubeCredential,
   HopMemoryLimits,
   HopProcesses,
   HopSandbox,
@@ -190,6 +191,8 @@ const requiresSchema = z
     agents: z.array(z.object({ name: z.string().min(1), optional: z.boolean().optional() }).strict()).default([]),
     skills: z.array(z.string().min(1)).default([]),
     memory: z.object({ read: z.boolean().default(true), write: z.boolean().default(false) }).strict().optional(),
+    // v1.3 (D-55): cluster credentials the run needs; preflight reaches each cluster through its proxy
+    kube: z.array(z.object({ credential: z.string().min(1) }).strict()).default([]),
   })
   .strict();
 
@@ -275,20 +278,32 @@ const sandboxSchema = z
   .strict();
 const workspaceSchema = z.object({ policy: z.enum(["ephemeral", "session", "persistent"]).optional() }).strict();
 // P6: by reference only; a `value` is refused with its own message, any other unknown key as usual.
+const REF = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/, "ref names a vault secret (an id or a name), never a value");
+const headerCredentialSchema = z
+  .object({
+    ref: REF,
+    tool: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "tool is the MCP server that uses it, or sandbox"),
+    host: z.string().refine((h) => validEgressEntry(h) && !h.includes(":"), "host is a bare host name"),
+    header: z.string().regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, "header is an HTTP field name"),
+  })
+  .strict();
+// v1.3 (D-55): a cluster credential the host serves through its kube credential proxy; the agent's commands see a
+// kubeconfig with a placeholder, never the credential. `source: local-context` names a context of the person's own
+// kubeconfig instead of a secret, and needs their confirmation in the session.
+const kubeCredentialSchema = z
+  .object({
+    ref: REF,
+    tool: z.literal("kube"),
+    name: z.string().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "name is the kube context the agent sees (a DNS label)").optional(),
+    source: z.enum(["secret", "local-context"]).default("secret"),
+    namespace: z.string().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "namespace is a DNS label").optional(),
+  })
+  .strict();
 const credentialSchema = z
   .object({})
   .passthrough()
   .refine((c) => !("value" in c), "a credential is a reference (ref); a value never appears in a HOP")
-  .pipe(
-    z
-      .object({
-        ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/, "ref names a vault secret (an id or a name), never a value"),
-        tool: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "tool is the MCP server that uses it, or sandbox"),
-        host: z.string().refine((h) => validEgressEntry(h) && !h.includes(":"), "host is a bare host name"),
-        header: z.string().regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, "header is an HTTP field name"),
-      })
-      .strict(),
-  );
+  .pipe(z.union([kubeCredentialSchema, headerCredentialSchema]));
 const processesSchema = z
   .object({
     mcp_stdio: z
@@ -683,6 +698,7 @@ function composeRequires(
   const agents = mergeByName(parent?.agents ?? [], child?.agents ?? []);
   const skills = [...new Set([...(parent?.skills ?? []), ...(child?.skills ?? [])])];
   const memory = child?.memory ?? parent?.memory;
+  const kube = [...new Map([...(parent?.kube ?? []), ...(child?.kube ?? [])].map((k) => [k.credential, k])).values()];
   return {
     binaries: mergeByName(parent?.binaries ?? [], child?.binaries ?? []),
     mcp: mergeByName(parent?.mcp ?? [], child?.mcp ?? []),
@@ -690,6 +706,7 @@ function composeRequires(
     ...(agents.length ? { agents } : {}),
     ...(skills.length ? { skills } : {}),
     ...(memory ? { memory } : {}),
+    ...(kube.length ? { kube } : {}),
   };
 }
 
@@ -729,12 +746,28 @@ function composeTools(include: string[] | undefined, modules: Profile["modules"]
   return { include: extra.length ? [...new Set([...include, ...extra])] : include };
 }
 
-function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes" | "credentials"> {
+function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes" | "credentials" | "kubeCredentials"> {
   const sandbox = composeBlock<HopSandbox>(parent.sandbox, y.sandbox);
   const workspace = composeBlock<HopWorkspace>(parent.workspace, y.workspace);
   const processes = composeBlock<HopProcesses>(parent.processes, y.processes);
-  const credentials: HopCredential[] | undefined = y.credentials ?? parent.credentials;
-  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials ? { credentials } : {}) };
+  // the list is inherited whole; header credentials (P6) and kube credentials (v1.3) are kept apart, so a consumer
+  // of the header kind never meets the other
+  const declared = y.credentials ? splitCredentials(y.credentials) : { credentials: parent.credentials, kubeCredentials: parent.kubeCredentials };
+  const { credentials, kubeCredentials } = declared;
+  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials?.length ? { credentials } : {}), ...(kubeCredentials?.length ? { kubeCredentials } : {}) };
+}
+
+function splitCredentials(list: NonNullable<ProfileYaml["credentials"]>): { credentials: HopCredential[]; kubeCredentials: KubeCredential[] } {
+  const credentials: HopCredential[] = [];
+  const kubeCredentials: KubeCredential[] = [];
+  for (const c of list) {
+    if (c.tool === "kube" && "source" in c) kubeCredentials.push({ ref: c.ref, name: c.name ?? c.ref.replace(/[^a-z0-9-]/g, "-").slice(0, 63), source: c.source, ...(c.namespace ? { namespace: c.namespace } : {}) });
+    else credentials.push(c as HopCredential);
+  }
+  const names = kubeCredentials.map((k) => k.name);
+  const dup = names.find((n, i) => names.indexOf(n) !== i);
+  if (dup) throw new Error(`credentials: two kube credentials are named "${dup}"`);
+  return { credentials, kubeCredentials };
 }
 
 /** Compose a parsed hop.yaml over its parent Profile. Pure; throws on lock violations. */
@@ -933,6 +966,9 @@ export function composeProfile(
     ...p4Blocks(parent, y),
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };
+  // v1.3: every kube credential preflight is asked to reach must be declared
+  const unknownKube = (composed.requires?.kube ?? []).filter((k) => !composed.kubeCredentials?.some((c) => c.name === k.credential));
+  if (unknownKube.length) throw new Error(`profile "${composed.name}" requires.kube names ${unknownKube.map((k) => `"${k.credential}"`).join(", ")}, which no kube credential declares`);
   // Rule 6: a HOP's own pins must fit its own policy (the publisher refuses the same with a 422).
   const outside = pinsOutsidePolicy(composed);
   if (outside.length) {
