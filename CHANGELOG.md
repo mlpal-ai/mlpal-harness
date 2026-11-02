@@ -16,6 +16,10 @@
   The verifier gets the request with each message labelled by who sent it (`[person]`, `[peer <name>]`), then the
   previous turn's request and the opening message fenced as quoted context (M6); a long request keeps its end (M5).
   `isParkedAskResult` marks a parked ask's tool result.
+- Re-review round 1: only a parked AskUserQuestion carries a request into the next turn; a turn whose prose ends in a
+  question stays a boundary, and its request (`<previous-request>`) and the agent's question (`<asked-back>`) are
+  context, never the request, so "Anything else?" cannot chain old requests into a new one (R1-2). Message bodies are
+  JSON-encoded with `<` escaped, so a message can neither close a block nor forge a `[person]` line (R1-4).
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 

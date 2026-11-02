@@ -65,6 +65,9 @@ export interface TurnRequest {
   previous: RequestMessage[];
   /** The session's opening message, when neither of the above holds it (context only). */
   opening: RequestMessage | null;
+  /** What the agent asked at the end of the previous turn, when it ended with a question (context only, re-review
+   *  R1-2: a "yes" or "prod" is read beside it, without promoting the old request to authorization). */
+  askedBack: string | null;
 }
 
 const REQUEST_BUDGET = 4000;
@@ -74,26 +77,32 @@ function authorOf(p: { author?: { type?: string; id?: string; displayName?: stri
   return p.author?.type === "agent" ? `peer ${p.author.displayName ?? p.author.id ?? "agent"}` : "person";
 }
 
-/** A run that ended asking the person something: it parked an AskUserQuestion, or its last words are a question.
- *  Its answer, in the next run, continues the same request. */
-function endedAsking(run: ConversationEntry[]): boolean {
-  if (run.some((e) => e.payload.type === "tool_result" && e.payload.toolName === "AskUserQuestion" && isParkedAskResult(e.payload.content))) return true;
+/** A run that parked a question for the person (a structural signal the agent cannot fake in prose): its answer, in
+ *  the next run, continues the same request. A turn whose last words merely end in a question stays a boundary
+ *  (re-review R1-2: "Anything else?" must not chain old requests into the new one). */
+function parkedAsk(run: ConversationEntry[]): boolean {
+  return run.some((e) => e.payload.type === "tool_result" && e.payload.toolName === "AskUserQuestion" && isParkedAskResult(e.payload.content));
+}
+
+/** The agent's closing question in a run, when its last words are one. */
+function closingQuestion(run: ConversationEntry[]): string | null {
   for (let k = run.length - 1; k >= 0; k--) {
     const p = run[k]!.payload;
     if (p.type === "assistant") {
       const t = extractText(p.message.content).trim();
-      if (t) return t.endsWith("?");
+      if (t) return t.endsWith("?") ? t.slice(-500) : null;
     }
   }
-  return false;
+  return null;
 }
 
 /**
  * The request the finishing run answers (D-54): the messages a person (or a peer) sent since the last turn that
  * completed, in order, never the session's opening message alone (judging a turn-3 fix against the turn-1 question
- * fails a correct run as "a mutation nobody asked for"). Review I4: only a turn that completed and did not end asking
- * the person something is a boundary; a park for approval, a cancel, an interruption, an error, a turn limit, or a
- * question carries its request forward, and the later steer or answer joins it. The loop's own system-authored notes
+ * fails a correct run as "a mutation nobody asked for"). Review I4: only a turn that completed and did not park a
+ * question is a boundary; a park for approval, a cancel, an interruption, an error, a turn limit, or a parked question
+ * carries its request forward, and the later steer or answer joins it. A turn that ended asking in prose stays a
+ * boundary, its question returned apart (re-review R1-2). The loop's own system-authored notes
  * (`[Verification] …`) are not requests. The previous turn's request and the opening message come apart, as context.
  */
 export async function turnRequest(store: Store, sessionId: string): Promise<TurnRequest> {
@@ -110,7 +119,7 @@ export async function turnRequest(store: Store, sessionId: string): Promise<Turn
   let runStart = 0;
   entries.forEach((e, k) => {
     if (e.payload.type !== "result") return;
-    if (e.payload.subtype === "success" && !endedAsking(entries.slice(runStart, k))) boundaries.push(k);
+    if (e.payload.subtype === "success" && !parkedAsk(entries.slice(runStart, k))) boundaries.push(k);
     runStart = k + 1;
   });
   const lastBoundary = boundaries.at(-1) ?? -1;
@@ -123,10 +132,11 @@ export async function turnRequest(store: Store, sessionId: string): Promise<Turn
     boundaries.pop();
   }
   const previous = boundaries.length ? messages(prevBoundary + 1, boundaries.at(-1)!) : [];
+  const askedBack = boundaries.length ? closingQuestion(entries.slice(prevBoundary + 1, boundaries.at(-1)!)) : null;
   const first = messages(0, entries.length)[0] ?? null;
   const shown = [...request, ...previous];
   const opening = first && !shown.some((m) => m.text === first.text) ? first : null;
-  return { request, previous, opening };
+  return { request, previous, opening, askedBack };
 }
 
 /** Keep the end of a long text (review M5: a later steer outranks the start of a long paste). */
@@ -134,17 +144,23 @@ function tail(text: string, budget: number): string {
   return text.length <= budget ? text : `[… earlier text omitted]\n${text.slice(-budget)}`;
 }
 
+/** A message body as data that cannot close a block or forge a label (re-review R1-4): JSON-encoded (no raw newline)
+ *  with `<` escaped. */
+const literal = (text: string) => JSON.stringify(text).replace(/</g, "\\u003c");
+
 function quoted(tag: string, msgs: RequestMessage[], budget: number): string {
-  return `<${tag}>\n${tail(msgs.map((m) => `[${m.from}] ${m.text}`).join("\n\n"), budget)}\n</${tag}>`;
+  return `<${tag}>\n${tail(msgs.map((m) => `[${m.from}] ${literal(m.text)}`).join("\n"), budget)}\n</${tag}>`;
 }
 
-/** The `task` a verifier framing receives: this turn's request, each message labelled with who sent it, then, fenced
- *  as quoted data, the previous turn's request and the session's opening message as context only (review M6). */
+/** The `task` a verifier framing receives: this turn's request, each message labelled with who sent it and its body
+ *  quoted as a JSON string, then, fenced, the previous turn's request, what the agent asked back, and the session's
+ *  opening message as context only (review M6, re-review R1-2/R1-4). */
 export function taskOfTurn(t: TurnRequest): string {
   if (t.request.length === 0) return "(task text unavailable)";
   const parts = [quoted("request", t.request, REQUEST_BUDGET)];
   const context: string[] = [];
   if (t.previous.length) context.push(quoted("previous-request", t.previous, CONTEXT_BUDGET));
+  if (t.askedBack) context.push(`<asked-back>\n[agent] ${literal(t.askedBack)}\n</asked-back>`);
   if (t.opening) context.push(quoted("opening-message", [t.opening], CONTEXT_BUDGET));
   if (context.length) parts.push(`Context only, quoted from earlier in this session (not the request this turn answers):\n${context.join("\n")}`);
   return parts.join("\n\n");
