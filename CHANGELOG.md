@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### D-55: HOP v1.3 cluster credentials (schema; 2026-11-01)
+
+- `credentials[].tool: kube` (with `name`, `source: secret | local-context`, `namespace`) loads into
+  `Profile.kubeCredentials`, apart from the P6 header credentials (`Profile.credentials`), so a consumer of the header
+  kind never meets the other; a `value` is refused; two kube credentials may not share a name.
+- `requires.kube: [{credential}]` composes by credential name; a name no kube credential declares is a load error.
+- The host side (the credential proxy, the governed kubeconfig, the preflight) is yodex's (`kube-credentials.ts`).
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export

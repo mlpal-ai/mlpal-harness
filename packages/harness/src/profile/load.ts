@@ -303,7 +303,13 @@ const credentialSchema = z
   .object({})
   .passthrough()
   .refine((c) => !("value" in c), "a credential is a reference (ref); a value never appears in a HOP")
-  .pipe(z.union([kubeCredentialSchema, headerCredentialSchema]));
+  // the kind is chosen by `tool` before validating, so an error names the exact field (`credentials.0.ref`)
+  .transform((c, ctx): z.infer<typeof kubeCredentialSchema> | z.infer<typeof headerCredentialSchema> => {
+    const r = ((c as { tool?: unknown }).tool === "kube" ? kubeCredentialSchema : headerCredentialSchema).safeParse(c);
+    if (r.success) return r.data;
+    for (const issue of r.error.issues) ctx.addIssue(issue as z.IssueData);
+    return z.NEVER;
+  });
 const processesSchema = z
   .object({
     mcp_stdio: z
@@ -752,9 +758,9 @@ function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "w
   const processes = composeBlock<HopProcesses>(parent.processes, y.processes);
   // the list is inherited whole; header credentials (P6) and kube credentials (v1.3) are kept apart, so a consumer
   // of the header kind never meets the other
-  const declared = y.credentials ? splitCredentials(y.credentials) : { credentials: parent.credentials, kubeCredentials: parent.kubeCredentials };
-  const { credentials, kubeCredentials } = declared;
-  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials?.length ? { credentials } : {}), ...(kubeCredentials?.length ? { kubeCredentials } : {}) };
+  // a declared list (even an empty one) replaces the parent's whole; absent, both kinds are inherited
+  const { credentials, kubeCredentials } = y.credentials ? splitCredentials(y.credentials) : { credentials: parent.credentials, kubeCredentials: parent.kubeCredentials };
+  return { ...(sandbox ? { sandbox } : {}), ...(workspace ? { workspace } : {}), ...(processes ? { processes } : {}), ...(credentials ? { credentials } : {}), ...(kubeCredentials?.length ? { kubeCredentials } : {}) };
 }
 
 function splitCredentials(list: NonNullable<ProfileYaml["credentials"]>): { credentials: HopCredential[]; kubeCredentials: KubeCredential[] } {
