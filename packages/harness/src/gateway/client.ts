@@ -208,21 +208,25 @@ const resolvedByGateway = (model: string) => /^mlpal(-|$)/.test(model) || model.
 /** The model id behind a serving backend's spelling (D-53 re-review R1-1), ported from the gateway's own
  *  `canonical_model_id` (mlpal-assistants-service `adapters/anthropic.py` and `adapters/openai.py` at 4157a56):
  *  Bedrock inference profiles `global.anthropic.claude-opus-5`, `us.anthropic.claude-…-v1:0`, `global.openai.<id>`,
- *  Vertex `claude-opus-5@20260801`; plus the provider's dated releases (`-20260801`, `-2026-09-01`). The gateway's
- *  native edge forwards the provider's `message_start.model` as the provider spells it. */
+ *  Vertex `claude-opus-5@20260801`. Only Bedrock's `-vN:N` version form is stripped (R2-1: `deepseek-v3` and
+ *  `deepseek-v4` stay distinct); a date is not stripped here (see `sameModel`). */
 export function canonicalModelId(model: string): string {
   let m = model.toLowerCase();
   if (m.includes(".anthropic.")) m = m.split(".anthropic.")[1]!;
   else if (m.startsWith("anthropic.")) m = m.slice("anthropic.".length);
   for (const prefix of ["global.openai.", "us.openai.", "eu.openai.", "openai."]) if (m.startsWith(prefix)) m = m.slice(prefix.length);
-  return m
-    .replace(/@.*$/, "")
-    .replace(/-v\d+(?::\d+)?$/, "")
-    .replace(/-\d{8}$/, "")
-    .replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  return m.replace(/@.*$/, "").replace(/-v\d+:\d+$/, "");
 }
 
-const sameModel = (a: string, b: string) => canonicalModelId(a) === canonicalModelId(b);
+const DATED = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
+
+/** Whether `served` is the model `requested` named. A dated release (`-20260801`, `-2026-09-01`) of an undated name is
+ *  the same model; when the request named a dated snapshot, only that snapshot is (R2-1). */
+export function sameModel(requested: string, served: string): boolean {
+  const r = canonicalModelId(requested);
+  const s = canonicalModelId(served);
+  return r === s || (!DATED.test(r) && s.replace(DATED, "") === r);
+}
 
 /** D-53: the call is about to be served by a model other than the one it named — announced when it happens, before
  *  that model's first delta: a client failover to the next rung (`code` from the error that ended the rung, or
@@ -779,7 +783,7 @@ export class GatewayClient implements ModelClient {
         case "message_start": {
           const msg = (ev.message ?? {}) as { model?: string; usage?: Partial<Usage> };
           // D-53 review I2: the gateway answering with another model than the one named is a fallback too
-          if (msg.model && !resolvedByGateway(fallbackModel) && !sameModel(msg.model, fallbackModel)) {
+          if (msg.model && !resolvedByGateway(fallbackModel) && !sameModel(fallbackModel, msg.model)) {
             if (noFallback) throw new GatewayError(`the gateway answered with ${msg.model} instead of ${fallbackModel}, and model.fallback is deny`, 409, "http", "fallback_denied", "fallback_denied", msg.model);
             this.metrics.increment("gateway.swap", 1, { from: fallbackModel, to: msg.model });
             yield { type: "model_switch", from: fallbackModel, to: msg.model, code: "gateway_swap", reason: "the gateway served another model" };

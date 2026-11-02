@@ -6,6 +6,7 @@ import {
   type ModelResult,
   type ModelSwitch,
   canonicalModelId,
+  sameModel,
   switchReason,
   type ModelRequest,
   parseComputeUnits,
@@ -669,6 +670,14 @@ describe("GatewayClient model failover", () => {
       }
     }
     expect(canonicalModelId("us.anthropic.claude-opus-5-v1:0")).toBe("claude-opus-5");
+    // R2-1 (round 2): only Bedrock's -vN:N is a version suffix; a date is stripped from the served id only, and only
+    // when the request named no date
+    expect(canonicalModelId("deepseek-v3")).toBe("deepseek-v3");
+    expect(sameModel("deepseek-v3", "deepseek-v4")).toBe(false);
+    expect(sameModel("claude-opus-5", "claude-opus-5-20261001")).toBe(true);
+    expect(sameModel("claude-opus-5-20260801", "claude-opus-5-20261001")).toBe(false);
+    expect(sameModel("claude-opus-5-20260801", "claude-opus-5")).toBe(false);
+    expect(sameModel("gpt-5.6-sol-2026-09-01", "gpt-5.6-sol-2026-09-01")).toBe(true);
     // another model is still another model
     globalThis.fetch = (async () => new Response(sseFor("us.anthropic.claude-sonnet-5-v1:0"), { status: 200 })) as unknown as typeof fetch;
     const { deltas } = await drain(new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 }).stream({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));

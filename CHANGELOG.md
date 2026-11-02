@@ -29,6 +29,9 @@
   retries, resets and resumes (R1-3). `ModelPolicy.fallback` documents that deny governs the agent's own calls, not
   the session-less side calls (R1-6). Follow-up (not built): the gateway could report the served canonical id in the
   `mlpal_usage` trailer next to `serving_backend`, and the check would compare against that.
+- Hardening (approved round 2, R2-1): only Bedrock's `-vN:N` form is stripped as a version (`deepseek-v3` and
+  `deepseek-v4` stay distinct), and a date is stripped from the served id only, and only when the request named no
+  date (`sameModel`), so dated snapshots stay distinct.
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
