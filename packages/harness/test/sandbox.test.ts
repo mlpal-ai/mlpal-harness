@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { createSandbox, hostAllowed, isSecretName, resolveSandboxSpec, scrubEnv, seatbeltProfile, startAllowlistProxy } from "../src/sandbox";
+import { createSandbox, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -30,7 +30,7 @@ describe("sandbox spec", () => {
     expect(spec.filesystem.unreadable).toContain("/home/u/.aws");
     expect(spec.filesystem.unreadable).not.toContain("/home/u/.kube");
     expect(spec.filesystem.unreadable).toContain("/home/u/.ssh/id_ed25519");
-    expect(spec.network).toEqual({ mode: "allowlist", allow: ["*.mlpal.ai"] });
+    expect(spec.network).toEqual({ mode: "allowlist", allow: ["*.mlpal.ai"], hostPorts: [], deny: [] });
     expect(spec.required).toBe(true);
   });
 
@@ -100,6 +100,56 @@ describe("allowlist proxy", () => {
   }, 15_000);
 });
 
+describe("host network (D-55 governed kube): the proxy port reachable, the real cluster endpoint refused", () => {
+  test("the spec carries the host's ports and denied endpoints; loopback aliases match a loopback endpoint", () => {
+    const spec = resolveSandboxSpec(undefined, { roots: ["/w"], home: "/h", hostNetwork: { hostPorts: [40001], deny: ["127.0.0.1:6443", "ABC.eks.amazonaws.com:443"] } });
+    expect(spec.network).toEqual({ mode: "all", allow: [], hostPorts: [40001], deny: ["127.0.0.1:6443", "abc.eks.amazonaws.com:443"] });
+    expect(endpointDenied("localhost", 6443, spec.network.deny)).toBe(true);
+    expect(endpointDenied("[::1]", 6443, spec.network.deny)).toBe(true);
+    expect(endpointDenied("127.0.0.1", 6444, spec.network.deny)).toBe(false);
+    expect(endpointDenied("abc.eks.amazonaws.com.", 443, spec.network.deny)).toBe(true);
+    expect(endpointDenied("other.eks.amazonaws.com", 443, spec.network.deny)).toBe(false);
+  });
+
+  test("seatbelt refuses a loopback endpoint by port in every mode and keeps the host ports open under none", () => {
+    for (const mode of ["all", "allowlist", "none"] as const) {
+      const p = seatbeltProfile(resolveSandboxSpec({ network: { mode } }, { roots: ["/w"], home: "/h", hostNetwork: { hostPorts: [40001], deny: ["127.0.0.1:6443"] } }));
+      // the deny is the profile's last network rule, so no allow above it wins
+      expect(p.trimEnd().split("\n").at(-1)).toBe('(deny network-outbound (remote ip "localhost:6443"))');
+      if (mode === "none") expect(p).toContain('(allow network-outbound (remote ip "localhost:40001"))');
+    }
+  });
+
+  test("what the platform cannot refuse is reported, never silent", () => {
+    const at = (mode: "all" | "allowlist" | "none") => resolveSandboxSpec({ network: { mode } }, { roots: ["/w"], home: "/h", hostNetwork: { deny: ["127.0.0.1:6443", "abc.eks.amazonaws.com:443"] } });
+    expect(unenforcedDeny(at("all"), "seatbelt")).toEqual(["abc.eks.amazonaws.com:443"]);
+    expect(unenforcedDeny(at("allowlist"), "seatbelt")).toEqual([]);
+    expect(unenforcedDeny(at("all"), "bwrap")).toEqual(["127.0.0.1:6443", "abc.eks.amazonaws.com:443"]);
+    expect(unenforcedDeny(at("none"), "bwrap")).toEqual([]);
+    const sb = createSandbox(at("all"), { platform: "linux", bwrapPath: "/usr/bin/bwrap", bwrapProbe: () => ({ ok: true }), baseEnv: {} });
+    expect(sb.describe()).toContain("2 governed endpoint(s) refused (NOT enforced here: 127.0.0.1:6443, abc.eks.amazonaws.com:443)");
+  });
+
+  test("the allowlist proxy refuses a denied endpoint even when its host is allowlisted", async () => {
+    const cluster = Bun.serve({ port: 0, fetch: () => new Response("cluster") });
+    const other = Bun.serve({ port: 0, fetch: () => new Response("other") });
+    const proxy = startAllowlistProxy(["127.0.0.1", "localhost"], { deny: [`127.0.0.1:${cluster.port}`] });
+    try {
+      expect((await curl("-x", proxy.url, `http://127.0.0.1:${other.port}/`)).out).toBe("other");
+      const refused = await curl("-x", proxy.url, `http://127.0.0.1:${cluster.port}/`);
+      expect(refused.out).toContain("is a governed cluster endpoint");
+      // CONNECT to a loopback alias of the endpoint
+      const tunnel = await curl("-p", "-x", proxy.url, `http://localhost:${cluster.port}/`);
+      expect(tunnel.out).toContain("CONNECT tunnel failed, response 403");
+      expect(proxy.denied).toEqual(["127.0.0.1", "localhost"]);
+    } finally {
+      proxy.close();
+      cluster.stop(true);
+      other.stop(true);
+    }
+  }, 15_000);
+});
+
 describe("bwrap argv", () => {
   test("binds writable roots that exist, shadows credential dirs and files, unshares net for none", () => {
     const dir = mkdtempSync(join(tmpdir(), "sb-"));
@@ -107,7 +157,7 @@ describe("bwrap argv", () => {
     writeFileSync(join(dir, "netrc"), "x");
     const argv = bwrapArgv("/usr/bin/bwrap", {
       filesystem: { mode: "workspace", writable: [dir, "/nonexistent-root"], unreadable: [join(dir, "aws"), join(dir, "netrc"), "/nonexistent-cred"] },
-      network: { mode: "none", allow: [] },
+      network: { mode: "none", allow: [], hostPorts: [], deny: [] },
       env: { keep: [] },
       required: false,
     }, ["/bin/sh", "-c", "id"]);
@@ -204,6 +254,30 @@ describe.if(darwin)("seatbelt (real, macOS)", () => {
       upstream.stop(true);
     }
   }, 20_000);
+
+  test("governed kube: the real cluster endpoint on loopback is refused by the kernel (any mode); the proxy port is reachable", async () => {
+    const cluster = Bun.serve({ port: 0, fetch: () => new Response("cluster") });
+    const kubeProxy = Bun.serve({ port: 0, fetch: () => new Response("proxy") });
+    try {
+      for (const mode of ["all", "allowlist", "none"] as const) {
+        const spec = resolveSandboxSpec({ network: { mode, allow: ["127.0.0.1"] } }, { roots: [work], home, hostNetwork: { hostPorts: [kubeProxy.port!], deny: [`127.0.0.1:${cluster.port}`] } });
+        const sb = createSandbox(spec, { baseEnv: { PATH: process.env.PATH ?? "", HOME: home } });
+        try {
+          expect((await run(sb, `curl -sS -m 5 --noproxy '*' http://127.0.0.1:${kubeProxy.port}/`)).out.trim()).toBe("proxy");
+          for (const host of ["127.0.0.1", "localhost"]) {
+            const direct = await run(sb, `curl -sS -m 5 --noproxy '*' http://${host}:${cluster.port}/`);
+            expect(direct.code).not.toBe(0);
+            expect(direct.out).not.toContain("cluster");
+          }
+        } finally {
+          sb.close();
+        }
+      }
+    } finally {
+      cluster.stop(true);
+      kubeProxy.stop(true);
+    }
+  }, 30_000);
 
   test("profile text names every writable root and unreadable path", () => {
     const spec = resolveSandboxSpec(undefined, { roots: ["/work/a b"], home: "/home/u" });

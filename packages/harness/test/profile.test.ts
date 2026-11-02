@@ -644,6 +644,9 @@ describe("profile loading", () => {
     expect(() => load("kube-unknown", ["credentials: [{ ref: a, tool: kube, name: a }]", "requires: { kube: [{ credential: b }] }"])).toThrow(/requires.kube names "b"/);
     expect(() => load("kube-value", ["credentials: [{ ref: a, tool: kube, value: s3cret }]"])).toThrow();
     expect(() => load("kube-source", ["credentials: [{ ref: a, tool: kube, source: file }]"])).toThrow();
+    // M-3: an insecure-TLS upstream is served only on the HOP's explicit opt-in
+    expect(load("kube-insecure", ["credentials: [{ ref: kind, tool: kube, source: local-context, allowInsecureTls: true }]"]).kubeCredentials).toEqual([{ ref: "kind", name: "kind", source: "local-context", allowInsecureTls: true }]);
+    expect(() => load("kube-insecure-bad", ["credentials: [{ ref: kind, tool: kube, allowInsecureTls: 'yes' }]"])).toThrow(/credentials\.0\.allowInsecureTls/);
   });
 
   test("safety + defaultMode autopilot is a load error (review 22)", () => {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { EventInbox } from "../../events/inbox";
 import { commandLabel } from "../../events/inbox";
 import { hostEnvName } from "../../host";
-import type { ExecPolicy } from "../types";
+import { type ExecPolicy, leaseFor } from "../types";
 
 /**
  * Background command execution (dev servers, watchers, long builds). Bash with
@@ -185,6 +185,7 @@ export class BackgroundTasks {
         cwd,
         detached: true,
         stdio: ["ignore", fd, fd],
+        // no lease: a durable monitor outlives this process, so nothing granted to one command could be taken back
         env: { ...(opts?.exec ? opts.exec.env() : process.env), [hostEnvName("MONITOR_CMD")]: command },
       });
       closeSync(fd); // the child holds its own copy
@@ -196,7 +197,12 @@ export class BackgroundTasks {
       // held its port (next run: EADDRINUSE). stdio stays piped for BashOutput; we do NOT
       // unref (this task is tracked, unlike a durable monitor).
       const argv = wrapArgv(opts?.exec, ["/bin/bash", "-c", command]);
-      child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, ...(opts?.exec ? { env: opts.exec.env() } : {}) });
+      const lease = opts?.exec ? leaseFor(opts.exec, command) : undefined;
+      child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, ...(lease ? { env: lease.env } : {}) });
+      if (lease) {
+        child.once("exit", () => lease.release());
+        child.once("error", () => lease.release());
+      }
     }
 
     const task: BgTask = {

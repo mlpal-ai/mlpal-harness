@@ -35,6 +35,21 @@ export interface ExecPolicy {
   wrap(argv: string[]): string[];
   /** The environment the child sees. */
   env(): Record<string, string>;
+  /** A command's own environment, held for the life of its process: what `env()` gives plus anything granted to this
+   *  one command (D-55: a governed kube mutation's one-time capability). The tool calls `release` once the process
+   *  exits, however it ends. Absent, every command sees `env()`. */
+  lease?(command: string): ExecLease;
+}
+
+/** One command's environment and the hold behind it (`ExecPolicy.lease`). */
+export interface ExecLease {
+  env: Record<string, string>;
+  release(): void;
+}
+
+/** The environment for one command under `exec`, and the release the caller owes when the process exits. */
+export function leaseFor(exec: ExecPolicy, command: string): ExecLease {
+  return exec.lease ? exec.lease(command) : { env: exec.env(), release: () => {} };
 }
 
 export interface ToolResult {

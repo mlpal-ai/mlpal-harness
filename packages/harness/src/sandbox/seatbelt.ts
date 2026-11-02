@@ -1,4 +1,4 @@
-import type { SandboxSpec } from "./spec";
+import { isLoopback, type SandboxSpec, splitEndpoint } from "./spec";
 
 /**
  * macOS enforcement: a Seatbelt profile handed to /usr/bin/sandbox-exec. The profile starts
@@ -35,6 +35,7 @@ export function seatbeltProfile(spec: SandboxSpec): string {
     case "none":
       lines.push("(deny network*)");
       lines.push("(allow network* (local unix-socket) (remote unix-socket))");
+      for (const p of spec.network.hostPorts) lines.push(`(allow network-outbound (remote ip "localhost:${p}"))`);
       break;
     case "allowlist":
       lines.push("(deny network*)");
@@ -49,6 +50,13 @@ export function seatbeltProfile(spec: SandboxSpec): string {
       break;
     case "all":
       break;
+  }
+  // Last, so they win over every allow above (SBPL: the last matching rule decides). Seatbelt filters a remote address
+  // only as `*` or `localhost`, so only a loopback endpoint can be refused here; a remote one is refused by the
+  // allowlist mode (loopback only, and the proxy refuses it by name) or not at all (`unenforcedDeny`).
+  for (const e of spec.network.deny) {
+    const d = splitEndpoint(e);
+    if (d && isLoopback(d[0])) lines.push(`(deny network-outbound (remote ip "localhost:${d[1]}"))`);
   }
   return `${lines.join("\n")}\n`;
 }

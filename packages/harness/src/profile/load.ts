@@ -297,6 +297,8 @@ const kubeCredentialSchema = z
     name: z.string().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "name is the kube context the agent sees (a DNS label)").optional(),
     source: z.enum(["secret", "local-context"]).default("secret"),
     namespace: z.string().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "namespace is a DNS label").optional(),
+    /** Serve a cluster whose kubeconfig skips TLS verification (`insecure-skip-tls-verify`); refused unless set. */
+    allowInsecureTls: z.boolean().default(false),
   })
   .strict();
 const credentialSchema = z
@@ -767,7 +769,7 @@ function splitCredentials(list: NonNullable<ProfileYaml["credentials"]>): { cred
   const credentials: HopCredential[] = [];
   const kubeCredentials: KubeCredential[] = [];
   for (const c of list) {
-    if (c.tool === "kube" && "source" in c) kubeCredentials.push({ ref: c.ref, name: c.name ?? c.ref.replace(/[^a-z0-9-]/g, "-").slice(0, 63), source: c.source, ...(c.namespace ? { namespace: c.namespace } : {}) });
+    if (c.tool === "kube" && "source" in c) kubeCredentials.push({ ref: c.ref, name: c.name ?? c.ref.replace(/[^a-z0-9-]/g, "-").slice(0, 63), source: c.source, ...(c.namespace ? { namespace: c.namespace } : {}), ...(c.allowInsecureTls ? { allowInsecureTls: true } : {}) });
     else credentials.push(c as HopCredential);
   }
   const names = kubeCredentials.map((k) => k.name);

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { backgroundTasks } from "./background";
 import { backgroundAgents } from "../../subagent/background";
-import { defineTool, err, ok, type ToolContext } from "../types";
+import { defineTool, err, leaseFor, ok, type ToolContext } from "../types";
 
 const MAX_TIMEOUT = 600_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -48,7 +48,13 @@ function run(
     // The sandbox (ctx.exec) confines the child and scrubs its environment; without one the
     // command runs as the agent does.
     const argv = ctx.exec ? ctx.exec.wrap(["/bin/bash", "-c", SHELL_PRELUDE + command]) : ["/bin/bash", "-c", SHELL_PRELUDE + command];
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(ctx.exec ? { env: ctx.exec.env() } : {}) });
+    const lease = ctx.exec ? leaseFor(ctx.exec, command) : undefined;
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(lease ? { env: lease.env } : {}) });
+    // Held until the process itself exits (adopted or not); a grandchild left running loses what was granted.
+    if (lease) {
+      child.once("exit", () => lease.release());
+      child.once("error", () => lease.release());
+    }
     let output = "";
     let truncated = false;
     let settled = false;

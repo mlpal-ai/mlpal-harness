@@ -256,6 +256,9 @@ export interface KubeCredential {
   source: "secret" | "local-context";
   /** The context's default namespace. */
   namespace?: string;
+  /** The HOP accepts a cluster served without TLS verification (`insecure-skip-tls-verify`: the host cannot
+   *  authenticate the cluster it sends the credential to). Absent, such a credential is not served. */
+  allowInsecureTls?: true;
 }
 
 export interface HopCredential {

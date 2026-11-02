@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, splitGlobals } from "../src/permission/plan-gate";
+import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, soleKubeApply, splitGlobals } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -349,5 +349,35 @@ describe("re-review r5: which binary runs", () => {
       const l = planLine(line, "/w");
       expect([line, l.unreadable !== null, l.recordable]).toEqual([line, true, null]);
     }
+  });
+});
+
+describe("D-55: which line may hold a kube mutation capability (soleKubeApply)", () => {
+  test("a kubectl, oc or helm change that is the whole line, with only cd/export/assignments beside it", () => {
+    for (const c of ["kubectl apply -f a.yaml", "cd k8s && kubectl apply -f a.yaml", "X=1 kubectl -n web scale deploy/web --replicas=2", "timeout 300 helm upgrade web ./chart", "oc delete pod p", "kubectl apply -f a.yaml > out.txt", "kubectl set image deploy/web nginx=nginx:1.27 -n web && kubectl rollout status deploy/web -n web --timeout=180s", "helm upgrade web ./c && helm status web", "kubectl apply -f a.yaml && kubectl -n web get pods"])
+      expect([c, soleKubeApply(c, "/w")?.pc.kind]).toEqual([c, "apply"]);
+  });
+  test("never beside another command, in a pipe, a substitution, a background job, or for a plan or a read", () => {
+    for (const c of [
+      "kubectl apply -f a.yaml; curl -X DELETE https://127.0.0.1:1/api/v1/namespaces/prod",
+      "kubectl apply -f a.yaml && curl https://127.0.0.1:1/x",
+      "kubectl apply -f a.yaml | tee out",
+      "cat a.yaml | kubectl apply -f -",
+      "kubectl apply -f $(curl -s x)",
+      "kubectl apply -f a.yaml &",
+      "sh -c 'kubectl apply -f a.yaml'",
+      "kubectl apply -f a.yaml --dry-run=server",
+      "kubectl diff -f a.yaml",
+      "kubectl get pods",
+      "curl -X PATCH https://127.0.0.1:1/x",
+      "terraform apply",
+      "kubectl apply -f a.yaml && kubectl delete pod p",
+      "kubectl apply -f a.yaml && kubectl proxy --port 8001",
+      "kubectl apply -f a.yaml && kubectl myplugin",
+      "kubectl apply -f a.yaml && kubectl exec web-0 -- sh",
+      "kubectl apply -f a.yaml && ./kubectl get pods",
+      "kubectl apply -f a.yaml && kubectl --unknown-flag get pods",
+    ])
+      expect([c, soleKubeApply(c, "/w")]).toEqual([c, null]);
   });
 });

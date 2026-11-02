@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### D-55 security review (evidence/D55-security-review.md; 2026-11-01)
+
+- **I-1, per-command capabilities:** `ExecPolicy.lease(command)` gives one command its own environment, held until its
+  process exits (Bash, adopted foreground commands and background tasks call `release` on exit; a durable monitor,
+  which outlives the host, gets none). `soleKubeApply(command, cwd)` names the line that may hold a kube mutation
+  capability: one kubectl, oc or helm change with nothing beside it that could use the capability (no background job,
+  substitution or other program; only `cd`/`export`/assignments and kubectl/helm reads such as `rollout status`, never
+  `kubectl proxy`, a plugin or `exec`).
+- **I-2, the network layer:** a sandbox spec carries host-supplied `network.hostPorts` (loopback ports reachable in
+  every mode; seatbelt keeps them open under `none`) and `network.deny` (endpoints refused in every mode: the allowlist
+  proxy refuses them by name even when allowlisted, seatbelt refuses a loopback one by port as the profile's last
+  rule). `unenforcedDeny` names what a platform cannot refuse (seatbelt: a remote host outside `allowlist`; bwrap:
+  anything outside `none`, since it keeps the host network) and `describe()` prints it: never silent.
+- **M-3:** `credentials[].allowInsecureTls` (kube kind, default false): the HOP's opt-in to serve a cluster whose
+  kubeconfig skips TLS verification.
+
 ### D-55: HOP v1.3 cluster credentials (schema; 2026-11-01)
 
 - `credentials[].tool: kube` (with `name`, `source: secret | local-context`, `namespace`) loads into

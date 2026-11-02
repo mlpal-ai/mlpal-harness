@@ -796,6 +796,40 @@ export function planLine(command: string, cwd: string): PlanLine {
   return { steps, unreadable: unreadable && (gated || steps.length > 0 || seen.length > 0) ? unreadable : null, recordable };
 }
 
+/** kubectl/oc and helm verbs that only read and start nothing (no server, plugin, stream or editor): the ones a change
+ *  may share its line with (`kubectl set image … && kubectl rollout status …`). */
+const KUBE_READS: Record<string, Set<string>> = {
+  kubectl: new Set(["get", "describe", "wait", "logs", "top", "events", "explain", "api-resources", "api-versions", "version", "cluster-info", "rollout status", "rollout history", "auth can-i", "auth whoami"]),
+  helm: new Set(["status", "list", "ls", "history", "get"]),
+};
+
+function kubeRead(form: string): boolean {
+  const ws = afterPrefixes(form.split(/\s+/));
+  if (!ws || ws.length === 0 || ws[0]!.includes("/")) return false;
+  const tool = ws[0] === "oc" ? "kubectl" : ws[0]!;
+  const reads = KUBE_READS[tool];
+  const g = reads && splitGlobals(tool, ws.slice(1));
+  if (!g || g.unknown) return false;
+  const [verb, sub] = positionals(g.rest, 0);
+  return reads.has(verb ?? "") || reads.has(`${verb} ${sub}`);
+}
+
+/** D-55: the line's one kubectl, oc or helm change, when nothing else on the line could use a capability granted to
+ *  it — readable, not backgrounded, beside it only context-only commands (`cd`, `export`) and kubectl/helm reads. The
+ *  host grants a mutation capability to such a line only, so no other program (a `curl`, a substitution, the far side
+ *  of a pipe, a kubectl plugin or `kubectl proxy`) holds it. */
+export function soleKubeApply(command: string, cwd: string): PlanStep | null {
+  const d = decomposeBash(command);
+  if (d.opaque !== null || /(?:^|[^&])&\s*$/.test(command.trim())) return null;
+  const line = planLine(command, cwd);
+  if (line.unreadable !== null || line.steps.length !== 1) return null;
+  const step = line.steps[0]!;
+  if (step.pc.kind !== "apply" || !(step.pc.tool === "kubectl" || step.pc.tool === "oc" || step.pc.tool === "helm")) return null;
+  const running = d.commands.filter((c) => c.forms.length > 0 && !CONTEXT_ONLY.has(c.forms[0]!.split(" ")[0]!));
+  const changes = running.filter((c) => classifyPlanCommand(c.forms[0]!)?.kind === "apply");
+  return changes.length === 1 && running.every((c) => changes.includes(c) || kubeRead(c.forms[0]!)) ? step : null;
+}
+
 /** Whether a dry run's exit status means it ran: 0, or the status a plan uses to say "there are changes" (`kubectl
  *  diff` 1, `terraform plan -detailed-exitcode` 2, `helm diff --detailed-exitcode` 2). D-56a. */
 export function planExitOk(pc: PlanCommand, command: string, code: number): boolean {

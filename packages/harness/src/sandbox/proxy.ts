@@ -1,5 +1,5 @@
 import type { Socket } from "bun";
-import { hostAllowed } from "./spec";
+import { endpointDenied, hostAllowed } from "./spec";
 
 /**
  * The network allowlist proxy. A sandboxed command may only reach the loopback interface
@@ -30,7 +30,7 @@ interface ClientState {
 
 const MAX_HEAD = 64 * 1024;
 
-export function startAllowlistProxy(allow: string[], opts: { onDeny?: (host: string) => void } = {}): AllowlistProxy {
+export function startAllowlistProxy(allow: string[], opts: { onDeny?: (host: string) => void; deny?: string[] } = {}): AllowlistProxy {
   const denied: string[] = [];
   const server = Bun.listen<ClientState>({
     hostname: "127.0.0.1",
@@ -79,6 +79,15 @@ export function startAllowlistProxy(allow: string[], opts: { onDeny?: (host: str
           port = url.port ? Number(url.port) : 80;
           const rewritten = headText.replace(requestLine, `${method} ${url.pathname}${url.search} HTTP/1.1`);
           forward = Buffer.concat([Buffer.from(`${rewritten}\r\n\r\n`, "latin1"), rest]);
+        }
+        if (host && endpointDenied(host, port, opts.deny ?? [])) {
+          denied.push(host);
+          opts.onDeny?.(host);
+          sock.end(
+            `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n` +
+              `sandbox: ${host}:${port} is a governed cluster endpoint; commands reach it only through the session's kubeconfig\n`,
+          );
+          return;
         }
         if (!host || !hostAllowed(host, allow)) {
           denied.push(host);
