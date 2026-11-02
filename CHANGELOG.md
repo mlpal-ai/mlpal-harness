@@ -21,6 +21,14 @@
   (`fallback_denied`, never retried) (M1, I2). Gateway note: on `/v1/messages` the gateway does not substitute a
   pinned model (backend failover keeps the model; the router's `get_adapter_with_fallback` has no caller at
   mlpal-assistants-service 4157a56), so no gateway flag was added; the swap check guards it if that changes.
+- Re-review round 1: the swap check compares the gateway's canonical model ids (`canonicalModelId`, ported from
+  mlpal-assistants-service `adapters/anthropic.py` / `adapters/openai.py` `canonical_model_id`: Bedrock
+  `<region>.anthropic.` / `anthropic.` / `<region>.openai.` prefixes, Vertex `@…`, `-vN:N`, and `-YYYYMMDD` /
+  `-YYYY-MM-DD` dates), so a backend's spelling of the same model is neither a warning nor, under deny, a failure
+  (R1-1); `user/…` (BYOM) tags are the gateway's to resolve, like `mlpal`. A switch is reported once per call across
+  retries, resets and resumes (R1-3). `ModelPolicy.fallback` documents that deny governs the agent's own calls, not
+  the session-less side calls (R1-6). Follow-up (not built): the gateway could report the served canonical id in the
+  `mlpal_usage` trailer next to `serving_backend`, and the check would compare against that.
 
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 

@@ -200,14 +200,29 @@ export function switchReason(err: GatewayError): { reason: string; code: string 
   return { reason: `gateway ${err.status}${machine.length ? ` ${machine.join(" ")}` : ""}`, code };
 }
 
-/** A model the request names that the gateway resolves itself (the `mlpal` meta-models): a different model in the
- *  answer is the routing it asked for, not a substitution. */
-const resolvedByGateway = (model: string) => /^mlpal(-|$)/.test(model);
-/** A dated or versioned spelling of the same model (`claude-opus-5-20261001`, `x@2`) is not another model. */
-const sameModel = (a: string, b: string) => {
-  const base = (m: string) => m.toLowerCase().replace(/@.*$/, "").replace(/-\d{8}$/, "");
-  return base(a) === base(b);
-};
+/** A model the request names that the gateway resolves itself: the `mlpal` meta-models, and a person's own
+ *  connection (`user/…`, BYOM), whose served id is the provider's. A different model in the answer is the routing it
+ *  asked for, not a substitution. */
+const resolvedByGateway = (model: string) => /^mlpal(-|$)/.test(model) || model.startsWith("user/");
+
+/** The model id behind a serving backend's spelling (D-53 re-review R1-1), ported from the gateway's own
+ *  `canonical_model_id` (mlpal-assistants-service `adapters/anthropic.py` and `adapters/openai.py` at 4157a56):
+ *  Bedrock inference profiles `global.anthropic.claude-opus-5`, `us.anthropic.claude-…-v1:0`, `global.openai.<id>`,
+ *  Vertex `claude-opus-5@20260801`; plus the provider's dated releases (`-20260801`, `-2026-09-01`). The gateway's
+ *  native edge forwards the provider's `message_start.model` as the provider spells it. */
+export function canonicalModelId(model: string): string {
+  let m = model.toLowerCase();
+  if (m.includes(".anthropic.")) m = m.split(".anthropic.")[1]!;
+  else if (m.startsWith("anthropic.")) m = m.slice("anthropic.".length);
+  for (const prefix of ["global.openai.", "us.openai.", "eu.openai.", "openai."]) if (m.startsWith(prefix)) m = m.slice(prefix.length);
+  return m
+    .replace(/@.*$/, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
+    .replace(/-\d{8}$/, "")
+    .replace(/-\d{4}-\d{2}-\d{2}$/, "");
+}
+
+const sameModel = (a: string, b: string) => canonicalModelId(a) === canonicalModelId(b);
 
 /** D-53: the call is about to be served by a model other than the one it named — announced when it happens, before
  *  that model's first delta: a client failover to the next rung (`code` from the error that ended the rung, or
@@ -412,6 +427,7 @@ export class GatewayClient implements ModelClient {
     const sent = { requests: 0 };
     let modelIdx = 0;
     let lastSwitch: ModelSwitch | undefined;
+    const announced = new Set<string>();
     let attempt = 0;
     let resume = 0;
     let streamResume = 0;
@@ -451,8 +467,16 @@ export class GatewayClient implements ModelClient {
         const gen = this.consume(res.body, model, idle.reset, req.noFallback === true);
         let step = await gen.next();
         while (!step.done) {
-          if (step.value.type === "model_switch") lastSwitch = step.value;
-          else emitted = true;
+          if (step.value.type === "model_switch") {
+            // one record per switch per call: a retry, a reset or a resume re-streams the same swap (re-review R1-3)
+            const key = `${step.value.from}\u0000${step.value.to}`;
+            if (announced.has(key)) {
+              step = await gen.next();
+              continue;
+            }
+            announced.add(key);
+            lastSwitch = step.value;
+          } else emitted = true;
           yield step.value;
           step = await gen.next();
         }
@@ -522,6 +546,7 @@ export class GatewayClient implements ModelClient {
             modelIdx++;
             attempt = 0;
             lastSwitch = { type: "model_switch", from: model, to: models[modelIdx]!, code: "model_refused", reason: "the model was refused by policy" };
+            announced.add(`${model}\u0000${models[modelIdx]}`);
             yield lastSwitch;
             continue;
           }
@@ -542,6 +567,7 @@ export class GatewayClient implements ModelClient {
             this.logger.warn("gateway model failover", { from: model, to: models[modelIdx] });
             // announced now, before the next model's first delta (D-53 review I1)
             lastSwitch = { type: "model_switch", from: model, to: models[modelIdx]!, ...switchReason(err) };
+            announced.add(`${model}\u0000${models[modelIdx]}`);
             yield lastSwitch;
             continue;
           }

@@ -179,7 +179,10 @@ export interface ModelPolicy {
    *  baseline's tiers are resolved by the host at runtime (offline the loader only sees inline tiers). */
   subscribe?: string;
   /** D-53: `allow` (the default) lets a main model that fails before any content fail over to its fallbacks, which the
-   *  run reports (a `model_fallback` event, the status, a metric); `deny` makes that failure fail the call instead. */
+   *  run reports (a `model_fallback` event, the status, a metric); `deny` makes that failure fail the call instead.
+   *  Scope (re-review R1-6): `deny` governs the agent's own model calls (the main loop, sub-agents, verifier
+   *  sessions); side calls made without a session (summarize/condense, compaction, the classifier, the judge, aside,
+   *  hooks, the watcher) send no ladder either, but a gateway swap on one of them is not refused. */
   fallback?: "allow" | "deny";
 }
 
