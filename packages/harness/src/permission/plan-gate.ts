@@ -49,6 +49,8 @@ export interface PlanCommand {
   /** kubectl, oc and helm: the kubeconfig and context flags the command gives, for the host to resolve where it lands
    *  (the context's cluster server and CA, its user and namespace) from the kubeconfig the command reads. */
   kube?: KubeSelection;
+  /** kubectl/oc `-k`: the kustomization directory, as written (D-55: the host checks it starts no plugin). */
+  kustomize?: string;
 }
 
 export interface KubeSelection {
@@ -530,7 +532,8 @@ function classifyWords(ws: string[]): Omit<PlanCommand, "bin"> | null {
     const change = cf.keep.map(({ w, i }) => (i === verbAt && w === "diff" ? "apply" : w));
     const target = [...identityKey(cf, "kube"), ...change].join(" ");
     const kind = verb === "diff" || dryRun(rest) === "plan" ? "plan" : "apply";
-    return { kind, tool, target, inputs: files, kube: kubeSelection(cf, { kubeconfig: "kubeconfig", context: "context", cluster: "cluster", user: "user" }) };
+    const kustomize = cf.values.get("kustomize")?.[0];
+    return { kind, tool, target, inputs: files, ...(kustomize ? { kustomize } : {}), kube: kubeSelection(cf, { kubeconfig: "kubeconfig", context: "context", cluster: "cluster", user: "user" }) };
   }
   if (tool === "helm") {
     const g = splitGlobals(tool, rest)!;
@@ -803,6 +806,29 @@ const KUBE_READS: Record<string, Set<string>> = {
   helm: new Set(["status", "list", "ls", "history", "get"]),
 };
 
+/** Why a kube change would start a program the line does not name, which would inherit the command's capability
+ *  (re-review R1-1): a helm `--post-renderer`, a chart fetched by a downloader plugin (a scheme other than
+ *  oci/http/https), an editor (`kubectl edit`, `--edit`, `apply edit-last-applied`), or kustomize plugins or helm
+ *  inflation. Null when it starts none (a `-k` directory's content is the host's to check). */
+export function spawnsProgram(form: string): string | null {
+  const ws = afterPrefixes(form.split(/\s+/)) ?? [];
+  const tool = (ws[0] ?? "").replace(/^.*\//, "");
+  const flag = (name: string) => ws.some((w) => w === `--${name}` || w.startsWith(`--${name}=`));
+  if (tool === "helm") {
+    if (flag("post-renderer") || flag("post-renderer-args")) return "helm runs the --post-renderer program with the command's environment";
+    const fetched = ws.find((w) => /^[a-z][a-z0-9+.-]*:\/\//i.test(w) && !/^(?:oci|https?):\/\//i.test(w));
+    if (fetched) return `helm fetches ${fetched.split("://")[0]}:// charts with a downloader plugin`;
+    return null;
+  }
+  if (tool === "kubectl" || tool === "oc") {
+    const g = splitGlobals(tool, ws.slice(1));
+    const [verb, sub] = g ? positionals(g.rest, 0) : [];
+    if (verb === "edit" || (verb === "apply" && sub === "edit-last-applied") || (flag("edit") && !ws.includes("--edit=false"))) return "kubectl opens an editor (KUBE_EDITOR/EDITOR) with the command's environment";
+    if (flag("enable-alpha-plugins") || flag("enable-helm") || flag("helm-command")) return "kustomize runs plugins or helm with the command's environment";
+  }
+  return null;
+}
+
 function kubeRead(form: string): boolean {
   const ws = afterPrefixes(form.split(/\s+/));
   if (!ws || ws.length === 0 || ws[0]!.includes("/")) return false;
@@ -814,10 +840,11 @@ function kubeRead(form: string): boolean {
   return reads.has(verb ?? "") || reads.has(`${verb} ${sub}`);
 }
 
-/** D-55: the line's one kubectl, oc or helm change, when nothing else on the line could use a capability granted to
- *  it — readable, not backgrounded, beside it only context-only commands (`cd`, `export`) and kubectl/helm reads. The
- *  host grants a mutation capability to such a line only, so no other program (a `curl`, a substitution, the far side
- *  of a pipe, a kubectl plugin or `kubectl proxy`) holds it. */
+/** D-55: the line's one kubectl, oc or helm change, when nothing else could use a capability granted to it — readable,
+ *  not backgrounded, beside it only context-only commands (`cd`, `export`) and kubectl/helm reads, and starting no
+ *  program of its own (`spawnsProgram`: a helm post-renderer, an editor, a plugin). The host grants a mutation
+ *  capability to such a line only, so no other program (a `curl`, a substitution, the far side of a pipe, a kubectl
+ *  plugin, `kubectl proxy`, a post-renderer) holds it. */
 export function soleKubeApply(command: string, cwd: string): PlanStep | null {
   const d = decomposeBash(command);
   if (d.opaque !== null || /(?:^|[^&])&\s*$/.test(command.trim())) return null;
@@ -827,7 +854,7 @@ export function soleKubeApply(command: string, cwd: string): PlanStep | null {
   if (step.pc.kind !== "apply" || !(step.pc.tool === "kubectl" || step.pc.tool === "oc" || step.pc.tool === "helm")) return null;
   const running = d.commands.filter((c) => c.forms.length > 0 && !CONTEXT_ONLY.has(c.forms[0]!.split(" ")[0]!));
   const changes = running.filter((c) => classifyPlanCommand(c.forms[0]!)?.kind === "apply");
-  return changes.length === 1 && running.every((c) => changes.includes(c) || kubeRead(c.forms[0]!)) ? step : null;
+  return changes.length === 1 && spawnsProgram(changes[0]!.forms[0]!) === null && running.every((c) => changes.includes(c) || kubeRead(c.forms[0]!)) ? step : null;
 }
 
 /** Whether a dry run's exit status means it ran: 0, or the status a plan uses to say "there are changes" (`kubectl

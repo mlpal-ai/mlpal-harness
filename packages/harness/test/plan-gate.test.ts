@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, soleKubeApply, splitGlobals } from "../src/permission/plan-gate";
+import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, soleKubeApply, spawnsProgram, splitGlobals } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -379,5 +379,30 @@ describe("D-55: which line may hold a kube mutation capability (soleKubeApply)",
       "kubectl apply -f a.yaml && kubectl --unknown-flag get pods",
     ])
       expect([c, soleKubeApply(c, "/w")]).toEqual([c, null]);
+  });
+});
+
+describe("D-55 re-review R1-1: no capability for a change that starts a program of its own", () => {
+  test("the reviewer's probe: helm upgrade … --post-renderer ./pr.sh gets no grant", () => {
+    for (const c of [
+      "helm upgrade web ./chart --post-renderer ./pr.sh",
+      "helm upgrade web ./chart --post-renderer=./pr.sh --post-renderer-args x",
+      "helm install web ./chart --post-renderer ./pr.sh -n web",
+      "helm upgrade --install web s3://bucket/charts/web-1.0.0.tgz",
+      "helm upgrade web git+https://github.com/o/r@charts/web?ref=v1",
+      "kubectl edit deploy/web",
+      "kubectl create -f a.yaml --edit",
+      "kubectl apply edit-last-applied deploy/web",
+      "oc edit dc/web",
+    ]) {
+      expect([c, soleKubeApply(c, "/w")]).toEqual([c, null]);
+      expect(spawnsProgram(c)).not.toBeNull();
+    }
+  });
+  test("ordinary changes still qualify; -k names its directory for the host's check", () => {
+    for (const c of ["helm upgrade web ./chart -f values.yaml", "helm upgrade web oci://registry.example/charts/web --version 1.2.3", "helm upgrade web web --repo https://charts.example", "kubectl create -f a.yaml --edit=false", "kubectl apply -k overlays/prod"])
+      expect([c, soleKubeApply(c, "/w")?.pc.kind]).toEqual([c, "apply"]);
+    expect(soleKubeApply("kubectl apply -k overlays/prod", "/w")?.pc.kustomize).toBe("overlays/prod");
+    expect(soleKubeApply("kubectl apply --kustomize=base -n web", "/w")?.pc.kustomize).toBe("base");
   });
 });

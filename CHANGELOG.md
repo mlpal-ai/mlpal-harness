@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### D-55 re-review round 1 (2026-11-01)
+
+- **R1-1:** `soleKubeApply` grants nothing to a change that starts a program of its own, which would inherit the
+  command's capability (`spawnsProgram`): a helm `--post-renderer` (and `--post-renderer-args`), a chart fetched by a
+  downloader plugin (any scheme but oci/http/https), an editor (`kubectl edit`, `--edit`, `apply edit-last-applied`),
+  kustomize plugin or helm-inflation flags. `PlanCommand.kustomize` names a `-k` directory so the host can check its
+  content.
+
 ### D-55 security review (evidence/D55-security-review.md; 2026-11-01)
 
 - **I-1, per-command capabilities:** `ExecPolicy.lease(command)` gives one command its own environment, held until its
