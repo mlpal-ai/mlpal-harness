@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### D-55 re-review round 2 (2026-11-01)
+
+- **R2-1:** `soleKubeApply` grants nothing to a line whose kube commands (the change or a read beside it) leave the
+  governed kubeconfig (`leavesGovernedKubeconfig`): `--kubeconfig`, `--server`/`-s`, `--token`, basic-auth, client
+  certificate, CA or TLS flags (helm: `--kubeconfig`, `--kube-apiserver`, `--kube-token`, `--kube-ca-file`,
+  `--kube-insecure-skip-tls-verify`, `--kube-tls-server-name`), or a `KUBECONFIG=` / `HELM_KUBE*=` assignment
+  (`HELM_KUBECONTEXT` aside). Another kubeconfig's `exec`/`auth-provider` user runs as a child with the command's
+  environment, the grant included; another server would be handed the grant token. `--context`, `--cluster`, `--user`,
+  `-n` and `--as` still qualify.
+
 ### D-55 re-review round 1 (2026-11-01)
 
 - **R1-1:** `soleKubeApply` grants nothing to a change that starts a program of its own, which would inherit the

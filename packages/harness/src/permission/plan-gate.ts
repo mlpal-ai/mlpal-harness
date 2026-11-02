@@ -829,6 +829,29 @@ export function spawnsProgram(form: string): string | null {
   return null;
 }
 
+/** Flags that make kubectl/oc or helm read another kubeconfig, talk to another server or authenticate another way than
+ *  the governed kubeconfig in the environment (re-review R2-1): another kubeconfig's user can be an `exec` or
+ *  `auth-provider` plugin, which client-go runs as a child with the command's environment (the grant included), and
+ *  another server would be handed the grant token. `--context`, `--cluster` and `--user` only choose among the
+ *  governed file's entries, all of them proxy token users. */
+const KUBE_TARGET_FLAGS: Record<string, string[]> = {
+  kubectl: ["kubeconfig", "server", "token", "username", "password", "client-certificate", "client-key", "certificate-authority", "insecure-skip-tls-verify", "tls-server-name"],
+  helm: ["kubeconfig", "kube-apiserver", "kube-token", "kube-ca-file", "kube-insecure-skip-tls-verify", "kube-tls-server-name"],
+};
+
+/** Why a kubectl/oc or helm command would not reach the cluster through the governed kubeconfig as written: a flag
+ *  above, or an assignment on the line of `KUBECONFIG` or helm's `HELM_KUBE*` connection variables. Null otherwise. */
+export function leavesGovernedKubeconfig(form: string, env: string[] = []): string | null {
+  const assigned = env.map((kv) => kv.slice(0, kv.indexOf("="))).find((n) => n === "KUBECONFIG" || (n.startsWith("HELM_KUBE") && n !== "HELM_KUBECONTEXT"));
+  if (assigned) return `the line sets ${assigned}`;
+  const ws = afterPrefixes(form.split(/\s+/)) ?? [];
+  const tool = (ws[0] ?? "").replace(/^.*\//, "");
+  const flags = KUBE_TARGET_FLAGS[tool === "oc" ? "kubectl" : tool];
+  if (!flags) return null;
+  const hit = ws.find((w) => flags.some((f) => w === `--${f}` || w.startsWith(`--${f}=`)) || ((tool === "kubectl" || tool === "oc") && (w === "-s" || /^-s\S/.test(w))));
+  return hit ? `${tool} ${hit.split("=")[0]} leaves the governed kubeconfig` : null;
+}
+
 function kubeRead(form: string): boolean {
   const ws = afterPrefixes(form.split(/\s+/));
   if (!ws || ws.length === 0 || ws[0]!.includes("/")) return false;
@@ -841,8 +864,9 @@ function kubeRead(form: string): boolean {
 }
 
 /** D-55: the line's one kubectl, oc or helm change, when nothing else could use a capability granted to it — readable,
- *  not backgrounded, beside it only context-only commands (`cd`, `export`) and kubectl/helm reads, and starting no
- *  program of its own (`spawnsProgram`: a helm post-renderer, an editor, a plugin). The host grants a mutation
+ *  not backgrounded, beside it only context-only commands (`cd`, `export`) and kubectl/helm reads, starting no program
+ *  of its own (`spawnsProgram`: a helm post-renderer, an editor, a plugin), and no kube command on the line leaving the
+ *  governed kubeconfig (`leavesGovernedKubeconfig`: `--kubeconfig`, `--server`, auth or TLS flags, `KUBECONFIG=`). The host grants a mutation
  *  capability to such a line only, so no other program (a `curl`, a substitution, the far side of a pipe, a kubectl
  *  plugin, `kubectl proxy`, a post-renderer) holds it. */
 export function soleKubeApply(command: string, cwd: string): PlanStep | null {
@@ -854,7 +878,9 @@ export function soleKubeApply(command: string, cwd: string): PlanStep | null {
   if (step.pc.kind !== "apply" || !(step.pc.tool === "kubectl" || step.pc.tool === "oc" || step.pc.tool === "helm")) return null;
   const running = d.commands.filter((c) => c.forms.length > 0 && !CONTEXT_ONLY.has(c.forms[0]!.split(" ")[0]!));
   const changes = running.filter((c) => classifyPlanCommand(c.forms[0]!)?.kind === "apply");
-  return changes.length === 1 && spawnsProgram(changes[0]!.forms[0]!) === null && running.every((c) => changes.includes(c) || kubeRead(c.forms[0]!)) ? step : null;
+  if (changes.length !== 1 || spawnsProgram(changes[0]!.forms[0]!) !== null) return null;
+  if (running.some((c) => leavesGovernedKubeconfig(c.forms[0]!, step.env) !== null)) return null;
+  return running.every((c) => changes.includes(c) || kubeRead(c.forms[0]!)) ? step : null;
 }
 
 /** Whether a dry run's exit status means it ran: 0, or the status a plan uses to say "there are changes" (`kubectl

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, soleKubeApply, spawnsProgram, splitGlobals } from "../src/permission/plan-gate";
+import { classifyPlanCommand, dryRun, matchPlan, PLAN_GATE_ENV, type PlanArtifact, planExitOk, planLine, leavesGovernedKubeconfig, soleKubeApply, spawnsProgram, splitGlobals } from "../src/permission/plan-gate";
 
 describe("plan gate: recognising plans and applies", () => {
   test("terraform: plan with -out, apply of the saved plan, destroy; chdir is the target", () => {
@@ -404,5 +404,30 @@ describe("D-55 re-review R1-1: no capability for a change that starts a program 
       expect([c, soleKubeApply(c, "/w")?.pc.kind]).toEqual([c, "apply"]);
     expect(soleKubeApply("kubectl apply -k overlays/prod", "/w")?.pc.kustomize).toBe("overlays/prod");
     expect(soleKubeApply("kubectl apply --kustomize=base -n web", "/w")?.pc.kustomize).toBe("base");
+  });
+});
+
+describe("D-55 re-review R2-1: no capability for a line that leaves the governed kubeconfig", () => {
+  test("the reviewer's probes: --kubeconfig on a kubectl or helm change gets no grant", () => {
+    for (const c of [
+      "kubectl apply -f x --kubeconfig /workspace/evil.yaml",
+      "helm upgrade web ./chart --kubeconfig /workspace/evil.yaml",
+      "kubectl --kubeconfig=/workspace/evil.yaml apply -f x",
+      "kubectl apply -f x && kubectl get pods --kubeconfig /workspace/evil.yaml",
+      "kubectl apply -f x -s https://127.0.0.1:9999",
+      "kubectl apply -f x --server=https://127.0.0.1:9999 --insecure-skip-tls-verify",
+      "kubectl apply -f x --token abc",
+      "kubectl apply -f x --certificate-authority ./ca.pem",
+      "helm upgrade web ./chart --kube-apiserver https://127.0.0.1:9999",
+      "KUBECONFIG=/workspace/evil.yaml kubectl apply -f x",
+      "export KUBECONFIG=/workspace/evil.yaml; kubectl apply -f x",
+      "HELM_KUBEAPISERVER=https://127.0.0.1:9 helm upgrade web ./chart",
+    ])
+      expect([c, soleKubeApply(c, "/w")]).toEqual([c, null]);
+    expect(leavesGovernedKubeconfig("kubectl apply -f x --kubeconfig /w/evil.yaml")).toContain("--kubeconfig");
+  });
+  test("choosing a governed context, cluster or user, a namespace or impersonation still qualifies", () => {
+    for (const c of ["kubectl apply -f x --context cluster", "kubectl --user cluster --cluster cluster -n web apply -f x", "helm upgrade web ./chart --kube-context cluster -n web", "HELM_KUBECONTEXT=cluster helm upgrade web ./chart", "kubectl apply -f x --as system:serviceaccount:web:deployer"])
+      expect([c, soleKubeApply(c, "/w")?.pc.kind]).toEqual([c, "apply"]);
   });
 });
