@@ -641,6 +641,21 @@ describe("profile loading", () => {
     expect(() => load("fb-bad", "{ main: claude-opus-5-5, fallback: sometimes }")).toThrow();
   });
 
+  test("D-55 (v1.3): kube credentials load apart from header credentials; requires.kube must name one; a value is refused", () => {
+    const load = (name: string, body: string[]) => loadProfile(writeProfile(`p/${name}`, ["spec: mlpal/hop-v1", `name: ${name}`, "version: 1.0.0", "extends: coding", "permissions: { defaultMode: cruise }", ...body].join("\n")), opts());
+    const p = load("kube-ok", ["credentials:", "  - { ref: kind-demo, tool: kube, name: cluster, source: local-context, namespace: hop-sandbox }", "  - { ref: gh, tool: sandbox, host: api.github.com, header: authorization }", "requires: { kube: [{ credential: cluster }] }"]);
+    expect(p.kubeCredentials).toEqual([{ ref: "kind-demo", name: "cluster", source: "local-context", namespace: "hop-sandbox" }]);
+    expect(p.credentials).toEqual([{ ref: "gh", tool: "sandbox", host: "api.github.com", header: "authorization" }]);
+    expect(p.requires?.kube).toEqual([{ credential: "cluster" }]);
+    expect(load("kube-default", ["credentials: [{ ref: infra-kube, tool: kube }]"]).kubeCredentials).toEqual([{ ref: "infra-kube", name: "infra-kube", source: "secret" }]);
+    expect(() => load("kube-unknown", ["credentials: [{ ref: a, tool: kube, name: a }]", "requires: { kube: [{ credential: b }] }"])).toThrow(/requires.kube names "b"/);
+    expect(() => load("kube-value", ["credentials: [{ ref: a, tool: kube, value: s3cret }]"])).toThrow();
+    expect(() => load("kube-source", ["credentials: [{ ref: a, tool: kube, source: file }]"])).toThrow();
+    // M-3: an insecure-TLS upstream is served only on the HOP's explicit opt-in
+    expect(load("kube-insecure", ["credentials: [{ ref: kind, tool: kube, source: local-context, allowInsecureTls: true }]"]).kubeCredentials).toEqual([{ ref: "kind", name: "kind", source: "local-context", allowInsecureTls: true }]);
+    expect(() => load("kube-insecure-bad", ["credentials: [{ ref: kind, tool: kube, allowInsecureTls: 'yes' }]"])).toThrow(/credentials\.0\.allowInsecureTls/);
+  });
+
   test("safety + defaultMode autopilot is a load error (review 22)", () => {
     const pdir = writeProfile("p/safauto", [
       "spec: mlpal/hop-v1", "name: safauto", "version: 1.0.0", "extends: coding",

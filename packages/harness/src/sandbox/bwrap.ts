@@ -8,7 +8,9 @@ import type { SandboxSpec } from "./spec";
  *
  * `allowlist` on Linux is proxy-env only in v1: an unshared namespace would also cut the
  * loopback path to the proxy, so the process keeps the host network and is handed the proxy
- * variables. Tools that honour them are confined; the sandbox report says so.
+ * variables. Tools that honour them are confined; the sandbox report says so. For the same reason the spec's denied
+ * endpoints are refused only by the allowlist proxy here, and the host's loopback ports are unreachable under `none`
+ * (a fresh namespace has its own loopback): both fail closed or are reported (`unenforcedDeny`), never silent.
  */
 
 export function bwrapArgv(bwrap: string, spec: SandboxSpec, argv: string[]): string[] {

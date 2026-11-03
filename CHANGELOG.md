@@ -54,6 +54,48 @@
 - Hardening (approved round 2): a peer's display name is reduced to `[A-Za-z0-9._@-]` in its label (R2-2); U+2028,
   U+2029 and fullwidth `＜` `＞` are escaped in fenced bodies like `<` (R2-3).
 
+### D-55 re-review round 2 (2026-11-01)
+
+- **R2-1:** `soleKubeApply` grants nothing to a line whose kube commands (the change or a read beside it) leave the
+  governed kubeconfig (`leavesGovernedKubeconfig`): `--kubeconfig`, `--server`/`-s`, `--token`, basic-auth, client
+  certificate, CA or TLS flags (helm: `--kubeconfig`, `--kube-apiserver`, `--kube-token`, `--kube-ca-file`,
+  `--kube-insecure-skip-tls-verify`, `--kube-tls-server-name`), or a `KUBECONFIG=` / `HELM_KUBE*=` assignment
+  (`HELM_KUBECONTEXT` aside). Another kubeconfig's `exec`/`auth-provider` user runs as a child with the command's
+  environment, the grant included; another server would be handed the grant token. `--context`, `--cluster`, `--user`,
+  `-n` and `--as` still qualify.
+
+### D-55 re-review round 1 (2026-11-01)
+
+- **R1-1:** `soleKubeApply` grants nothing to a change that starts a program of its own, which would inherit the
+  command's capability (`spawnsProgram`): a helm `--post-renderer` (and `--post-renderer-args`), a chart fetched by a
+  downloader plugin (any scheme but oci/http/https), an editor (`kubectl edit`, `--edit`, `apply edit-last-applied`),
+  kustomize plugin or helm-inflation flags. `PlanCommand.kustomize` names a `-k` directory so the host can check its
+  content.
+
+### D-55 security review (evidence/D55-security-review.md; 2026-11-01)
+
+- **I-1, per-command capabilities:** `ExecPolicy.lease(command)` gives one command its own environment, held until its
+  process exits (Bash, adopted foreground commands and background tasks call `release` on exit; a durable monitor,
+  which outlives the host, gets none). `soleKubeApply(command, cwd)` names the line that may hold a kube mutation
+  capability: one kubectl, oc or helm change with nothing beside it that could use the capability (no background job,
+  substitution or other program; only `cd`/`export`/assignments and kubectl/helm reads such as `rollout status`, never
+  `kubectl proxy`, a plugin or `exec`).
+- **I-2, the network layer:** a sandbox spec carries host-supplied `network.hostPorts` (loopback ports reachable in
+  every mode; seatbelt keeps them open under `none`) and `network.deny` (endpoints refused in every mode: the allowlist
+  proxy refuses them by name even when allowlisted, seatbelt refuses a loopback one by port as the profile's last
+  rule). `unenforcedDeny` names what a platform cannot refuse (seatbelt: a remote host outside `allowlist`; bwrap:
+  anything outside `none`, since it keeps the host network) and `describe()` prints it: never silent.
+- **M-3:** `credentials[].allowInsecureTls` (kube kind, default false): the HOP's opt-in to serve a cluster whose
+  kubeconfig skips TLS verification.
+
+### D-55: HOP v1.3 cluster credentials (schema; 2026-11-01)
+
+- `credentials[].tool: kube` (with `name`, `source: secret | local-context`, `namespace`) loads into
+  `Profile.kubeCredentials`, apart from the P6 header credentials (`Profile.credentials`), so a consumer of the header
+  kind never meets the other; a `value` is refused; two kube credentials may not share a name.
+- `requires.kube: [{credential}]` composes by credential name; a name no kube credential declares is a load error.
+- The host side (the credential proxy, the governed kubeconfig, the preflight) is yodex's (`kube-credentials.ts`).
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export

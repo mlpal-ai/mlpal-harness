@@ -200,6 +200,8 @@ export interface RequiresPolicy {
   agents?: { name: string; optional?: boolean }[];
   skills?: string[];
   memory?: { read: boolean; write: boolean };
+  /** v1.3 (D-55): the kube credentials (by `name`) preflight reaches the cluster through. */
+  kube?: { credential: string }[];
 }
 
 /** v1.1 — the apply-safety envelope. LOCKED whenever present (§10). Configures policy inputs;
@@ -251,6 +253,20 @@ export interface HopWorkspace {
 
 /** A credential the HOP needs, by reference only (P6): the publication binds `ref` to a vault
  *  secret; a value never appears in a HOP. */
+/** v1.3 (D-55): a cluster credential the host serves through its kube credential proxy. */
+export interface KubeCredential {
+  /** A secret id or name (`source: secret`), or a context of the person's own kubeconfig (`source: local-context`). */
+  ref: string;
+  /** The kube context the agent's commands see. */
+  name: string;
+  source: "secret" | "local-context";
+  /** The context's default namespace. */
+  namespace?: string;
+  /** The HOP accepts a cluster served without TLS verification (`insecure-skip-tls-verify`: the host cannot
+   *  authenticate the cluster it sends the credential to). Absent, such a credential is not served. */
+  allowInsecureTls?: true;
+}
+
 export interface HopCredential {
   ref: string;
   /** The MCP server that uses it, or `sandbox`. */
@@ -362,6 +378,7 @@ export interface Profile {
   workspace?: HopWorkspace;
   processes?: HopProcesses;
   credentials?: HopCredential[];
+  kubeCredentials?: KubeCredential[];
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */

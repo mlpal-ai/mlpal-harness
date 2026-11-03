@@ -5,7 +5,7 @@ import { bwrapArgv } from "./bwrap";
 import { scrubEnv } from "./env";
 import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
-import type { SandboxSpec } from "./spec";
+import { type SandboxSpec, unenforcedDeny } from "./spec";
 
 export * from "./spec";
 export { isSecretName, scrubEnv } from "./env";
@@ -83,7 +83,7 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
   registerSecrets(scrub.removed);
 
   let proxy: AllowlistProxy | undefined;
-  if (spec.network.mode === "allowlist") proxy = startAllowlistProxy(spec.network.allow, { onDeny: opts.onDeniedHost });
+  if (spec.network.mode === "allowlist") proxy = startAllowlistProxy(spec.network.allow, { deny: spec.network.deny, ...(opts.onDeniedHost ? { onDeny: opts.onDeniedHost } : {}) });
   const env = { ...scrub.env, ...(proxy ? proxyEnv(proxy) : {}) };
 
   let wrap: (argv: string[]) => string[] = (argv) => argv;
@@ -115,10 +115,14 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
         : spec.network.mode === "allowlist"
           ? `network to ${spec.network.allow.join(", ") || "nothing"}${confined === "bwrap" || !confined ? " (proxy env only)" : ""}`
           : "network open";
+    const gaps = unenforcedDeny(spec, confined);
+    const denied = spec.network.deny.length
+      ? `, ${spec.network.deny.length} governed endpoint(s) refused${gaps.length ? ` (NOT enforced here: ${gaps.join(", ")})` : ""}`
+      : "";
     const creds = `${spec.filesystem.unreadable.length} credential paths unreadable`;
     const envs = scrub.scrubbed.length ? `${scrub.scrubbed.length} secret env vars scrubbed` : "no secret env vars";
     const how = confined ? confined : `NOT confined: ${reason}`;
-    return `sandbox: ${how}; ${fs}, ${net}, ${creds}, ${envs}`;
+    return `sandbox: ${how}; ${fs}, ${net}${denied}, ${creds}, ${envs}`;
   };
 
   return {
