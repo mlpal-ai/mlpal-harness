@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
+
+- **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export
+  KUBECONFIG=…; kubectl set image …` (and any apply after a read, in a subshell, behind `X=1`, in `$(…)`, in `sh -c`)
+  ran as an unchecked mutation; the envelope's own splitter also missed `X=1`/`env`/`sh -c`/`eval` forms, so even a
+  destructive `X=1 kubectl delete …` was ungated.
+- `classifyAction`: a Bash line is classified per simple command (`decomposeBash`), the worst class wins; context-only
+  commands (`cd`, `export`, …) add nothing; a line that cannot be decomposed is `destructive` (fail closed).
+- `planLine(command, cwd)`: every plan and apply a line runs, with the directory (`cd`) and environment
+  (`export`/`X=1`/`env`) each runs in; an apply the gate cannot see the context of (nested shell, quoted substitution,
+  non-literal `cd` or assignment, an undecomposable line) makes the line `unreadable` (the host refuses it). A dry run is
+  `recordable` only when its exit status is the line's.
+- `classifyPlanCommand`: one simple command; redirections and `--dry-run`'s mode are not targets (D-56c); `--context`
+  / `--kubeconfig` / `--kube-context` are; `kubectl diff` is a plan (D-56); every mutating kubectl verb (`label`,
+  `annotate`, `taint`, `drain`, `cordon`, `uncordon`, `expose`, `autoscale`, `run`, `edit`) is an apply.
+- `planExitOk`: `kubectl diff` exit 1, `terraform plan -detailed-exitcode` 2 and `helm diff --detailed-exitcode` 2 mean
+  "changes found", not failure (D-56a).
+- Security review round 1 (evidence/D57-security-review.md): only a bare `--dry-run` or `=client|server|true` is a
+  dry run, `=none`/`=false`/anything else is the change (C-1, `dryRun`); the plan key is the change itself (verb, every
+  argument and mutating flag: `--replicas`, `-p` bodies, `--prune --all`, `--set`; I-1); terraform binds the config
+  directory without `-out` and the plan file with it (M-3); `kubectl rollout status|history` are reads (I-4); a negated
+  (`! …`) or backgrounded dry run is not recordable (I-3, M-1); `timeout`/`nice`/`stdbuf`/`ionice`/`command`/`builtin`/
+  `time`/`nohup` are read through (M-2).
+- Re-review round 1: global flags before the verb (`kubectl -s URL --as admin delete …`, `helm --kube-context p
+  uninstall`, `terraform -chdir=x apply`, `aws --profile p …`) are parsed past (`splitGlobals`), so the envelope sees
+  the verb (its verb-led form is matched too) and the plan gate keys server, context, impersonation and a token's hash;
+  an unknown flag before the verb is unreadable: destructive in the envelope, an apply no plan matches in the gate.
+- Re-review round 2, canonicalize or refuse (R2-1, R2-2): kubectl, oc, helm and terraform/tofu flags are parsed the
+  way the tool parses them (`canonicalFlags`, `terraformFlags`): attached shorthands (`-nprod`, `-shttps://…`, `-v6`,
+  `-fdeploy.yaml`), `--flag=value`, a value flag taking the next word, `-x` = `--x` for terraform. The effective
+  namespace, context, kubeconfig, cluster, server, user and impersonation lead the key. Refused (an apply no plan
+  matches, and no plan recorded): a non-accumulating flag given twice (`--context dev --context prod`, `-n a -n b`,
+  `-n a --namespace b`, `-chdir` twice), an unknown bare flag after the verb (its arity is unknown; `--x=v` is read), a
+  combined shorthand mixing a keyed flag with a kept one (`-Anprod`). terraform keys `-var`/`-var-file`/`-target`/
+  `-replace` with their values in order (`-var env=dev` and `-var env=prod` no longer share a key). helm-diff's
+  `--context` (lines) and display flags are dropped from the plan's key. Before the verb, `-A`, an attached `-v<N>` and
+  `--bool=true|false` are read, so `kubectl -A get pods` stays a read.
+- Re-review round 3, bind every file input or refuse (R3-1): the flag tables mark the flags that name files
+  (`KUBE_INPUTS`: `-f` (comma list), `-k`, `--patch-file`, `--from-file`/`--from-env-file` (`key=path`, comma list),
+  `--cert`/`--key`, `--kubeconfig` and the client TLS files; `HELM_INPUTS`: `-f`, `--set-file`, `--kubeconfig`, the TLS
+  files), and every one is a plan input. helm's chart argument is an input (a local directory or `.tgz`); unpinned, it
+  must be on disk (`PlanCommand.mustExist`), so a repository chart resolved at apply time binds nothing and is refused.
+  Refused outright: a repo or OCI chart without an exact `--version`, a chart URL, a `--post-renderer` found on PATH (a
+  script by path is an input that must exist). terraform keys `-state`, `-state-out`, `-backup`, `-refresh=false`,
+  `-lock=false`, `-parallelism` (every flag but the display/confirmation ones, defaults dropped) and hashes a `-state`
+  file; a saved plan's apply keys the flags left on the command. Minor: kubectl and helm flags key as `--name=value` by
+  long name (`--replicas 3` = `--replicas=3`, `-f a` = `--filename=a`, combined shorthands canonicalized instead of
+  refused); a key word with whitespace or a quote is JSON-quoted.
+- Kubeconfig ruling: `PlanCommand.kube` carries the kubeconfig selection flags a kubectl/oc/helm command gives
+  (`--kubeconfig`, `--context`/`--kube-context`, `--cluster`, `--user`) so the host can bind where the apply lands.
+- **Known limit (accepted residual):** a repository or OCI chart pinned by an exact `--version` is trusted by that
+  version: its pulled contents (and the repo-name mapping in `repositories.yaml`) are not hashed, so a repository
+  that republishes the same version is not detected. Follow-up: accept OCI digest pins (`oci://…@sha256:…`) and hash
+  the pulled chart into the plan.
+- Re-review round 4, R4-1 (kuberc): `--kuberc` on any kubectl/oc line, read or apply, before or after the verb, is
+  unreadable (destructive in the envelope, an apply no plan matches; `kuberc` left the known globals). A line that
+  sets or unsets `KUBECTL_KUBERC` or `KUBERC` (`X=…`, `export`, `env`, `unset`) is unreadable. `PLAN_GATE_ENV`
+  (`KUBECTL_KUBERC=false`) is the environment a host runs every command in under a preApply gate.
+- Locked minimum: with `requirePlanArtifact`, the profile loader always puts `plan` in `safety.preApply.hash` and warns
+  when the HOP left it out. `identity` and `backend` are advisory: host probes that cannot see a line's own flags or
+  environment; every content and target binding lives in `plan`.
+- Re-review round 5, R5-1 (which binary runs): a gated tool (kubectl, oc, helm, terraform, tofu) run by a path
+  (`./kubectl`, `/tmp/x/kubectl`, `bin/helm`) is unreadable in the plan gate and destructive in the envelope, read or
+  apply; `PATH` joins the locked variables (a line may not set, prepend or unset it); `PlanCommand.bin` carries the
+  executable as invoked (a bare name) for the host to resolve and bind.
+
 ### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
 
 - `HARNESS_PROTOCOL_VERSION` and `@mlpal/harness-protocol` are 0.23.0. Additive minor: capability `queue`;
