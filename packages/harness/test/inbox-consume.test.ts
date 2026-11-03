@@ -274,6 +274,47 @@ describe("SessionStoreClient.acceptTurn (P1 1.2 accept, the instance writer's tu
   });
 });
 
+describe("SessionStoreClient.inboxPending (P1 1.3 pending read, D-63)", () => {
+  function client(answer: () => Response) {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const c = new SessionStoreClient({
+      baseUrl: "http://store/v1",
+      tokenProvider: () => "R",
+      fetch: async (url, init) => {
+        calls.push({ url, method: String(init.method), ...(init.body === undefined ? {} : { body: String(init.body) }) });
+        return answer();
+      },
+    });
+    return { c, calls };
+  }
+
+  test("reads the session's pending items in queue order; a writer's carries its message, control's none", async () => {
+    // The store's fixture inbox-pending-200 (stack d63-pending-read).
+    const { c, calls } = client(() =>
+      Response.json({
+        items: [
+          { request_id: "rq-ui", kind: "turn", position: 1, inbox_seq: 1, accepted_by: "writer", accepted_at_ms: 1_760_000_000_000, message: { type: "run", sessionId: "s1", prompt: "Reply pong", origin: "api" } },
+          { request_id: "rq-api", kind: "turn", position: 2, inbox_seq: 2, accepted_by: "control", accepted_at_ms: 1_760_000_000_000 },
+        ],
+      }),
+    );
+    expect(await c.inboxPending("s1")).toEqual([
+      { requestId: "rq-ui", kind: "turn", position: 1, inboxSeq: 1, acceptedBy: "writer", acceptedAtMs: 1_760_000_000_000, message: { type: "run", sessionId: "s1", prompt: "Reply pong", origin: "api" } },
+      { requestId: "rq-api", kind: "turn", position: 2, inboxSeq: 2, acceptedBy: "control", acceptedAtMs: 1_760_000_000_000 },
+    ]);
+    expect(calls).toEqual([{ url: "http://store/v1/sessions/s1/inbox?state=pending", method: "GET" }]);
+  });
+
+  test("an older store (no pending read) and a refusal stay typed StoreHttpErrors", async () => {
+    for (const [status, code] of [[405, null], [404, "unknown_session"]] as const) {
+      const { c } = client(() => new Response(code ? JSON.stringify({ code }) : "", { status }));
+      const err = await c.inboxPending("s1").catch((e) => e);
+      expect(err).toBeInstanceOf(StoreHttpError);
+      expect(err.status).toBe(status);
+    }
+  });
+});
+
 describe("RemoteStore.consume with opening events (I-1)", () => {
   test("the opening events and the user entry go as one consuming batch, opening first", async () => {
     const s = stub();

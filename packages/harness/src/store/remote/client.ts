@@ -210,6 +210,29 @@ export interface InboxAccepted {
   code?: string;
 }
 
+/** One item of P1 1.3's pending read, in queue order. `message` is present only on an item an instance writer accepted
+ *  (a UI connection's own queued run); control's items (API, schedules) never carry theirs, nor does any item its
+ *  context. */
+export interface InboxPendingItem {
+  requestId: string;
+  kind: "turn" | "answer";
+  position: number;
+  inboxSeq: number;
+  acceptedBy: "control" | "writer";
+  acceptedAtMs: number;
+  message?: Record<string, unknown>;
+}
+
+interface WirePendingItem {
+  request_id: string;
+  kind: "turn" | "answer";
+  position: number;
+  inbox_seq: number;
+  accepted_by: "control" | "writer";
+  accepted_at_ms: number;
+  message?: Record<string, unknown>;
+}
+
 /** 413: `batch_too_large` (over the per-batch limits) or `event_too_large` (one event over the
  *  store's `max_event_bytes`). */
 export class BatchTooLargeError extends StoreHttpError {
@@ -267,7 +290,7 @@ export interface CreateSessionBody {
   origin: string;
 }
 
-type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream" | "head" | "accept" | "status" | "reject";
+type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream" | "head" | "accept" | "status" | "pending" | "reject";
 
 /** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
  *  first): an append retries any network failure or 5xx (the store answers a replay with its original
@@ -401,6 +424,21 @@ export class SessionStoreClient {
   async inboxStatus(sid: string, requestId: string): Promise<{ state: string; position: number | null; code?: string; consumedSeq?: number }> {
     const b = await this.call<{ state: string; position?: number | null; code?: string; consumed_seq?: number }>("status", sid, "GET", `/inbox/${encodeURIComponent(requestId)}`);
     return { state: b.state, position: b.position ?? null, ...(b.code ? { code: b.code } : {}), ...(typeof b.consumed_seq === "number" ? { consumedSeq: b.consumed_seq } : {}) };
+  }
+
+  /** P1 1.3 pending read (D-63; any reader of the session): the session's pending items in queue order. A store
+   *  before 1.3 answers 405 (a StoreHttpError). */
+  async inboxPending(sid: string): Promise<InboxPendingItem[]> {
+    const b = await this.call<{ items: WirePendingItem[] }>("pending", sid, "GET", "/inbox?state=pending");
+    return b.items.map((i) => ({
+      requestId: i.request_id,
+      kind: i.kind,
+      position: i.position,
+      inboxSeq: i.inbox_seq,
+      acceptedBy: i.accepted_by,
+      acceptedAtMs: i.accepted_at_ms,
+      ...(i.message ? { message: i.message } : {}),
+    }));
   }
 
   /** Withdraws a queued turn (P1 reject, code `withdrawn`, under the instance writer token); an item no longer pending

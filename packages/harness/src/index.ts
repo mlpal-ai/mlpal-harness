@@ -20,6 +20,7 @@ export {
   InboxItemNotPendingError,
   encodeEvent,
   type InboxAccepted,
+  type InboxPendingItem,
   type InboxTurnAccept,
   type CreateSessionBody,
   type EncodedEvent,
