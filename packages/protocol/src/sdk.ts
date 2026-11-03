@@ -204,6 +204,24 @@ export interface CompactEvent {
   ts: string;
 }
 
+/** D-53: the call is served by another model than the one it named: a client failover to the next fallback, or the
+ *  gateway answering with another model. Persisted and emitted when it happens, before that model's first delta, so
+ *  the transcript, the status and telemetry name the model actually used even if the answer is cancelled. */
+export interface ModelFallbackEvent {
+  type: "model_fallback";
+  uuid?: string;
+  /** The model the call asked for. */
+  from: string;
+  /** The model that answered. */
+  to: string;
+  /** Why `from` was left, from machine fields only (status, error type and code; never provider text), bounded. */
+  reason: string;
+  /** Low-cardinality: `http_5xx`, `http_<status>`, `timeout`, `network`, `stream`, `model_refused` (a fallback rung
+   *  the policy refused), `gateway_swap` (the gateway answered with another model). */
+  code: string;
+  ts: string;
+}
+
 /** Persisted + rendered. */
 export type SDKMessage =
   | SystemInitEvent
@@ -214,7 +232,8 @@ export type SDKMessage =
   | ResultEvent
   | ErrorEvent
   | CompactEvent
-  | SubagentEvent;
+  | SubagentEvent
+  | ModelFallbackEvent;
 
 export interface TextDelta {
   type: "text_delta";
@@ -256,6 +275,7 @@ const PERSISTED_TYPES = new Set<EngineEvent["type"]>([
   "subagent",
   "result",
   "error",
+  "model_fallback",
 ]);
 
 /** Runtime category: should this event be written to the conversation store? Since protocol

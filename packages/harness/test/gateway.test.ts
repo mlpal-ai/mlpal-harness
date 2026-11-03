@@ -4,6 +4,10 @@ import {
   GatewayClient,
   GatewayError,
   type ModelResult,
+  type ModelSwitch,
+  canonicalModelId,
+  sameModel,
+  switchReason,
   type ModelRequest,
   parseComputeUnits,
   withConversationCache,
@@ -36,9 +40,9 @@ data: {"type":"message_stop"}`,
 ].join("\n\n") + "\n\n";
 
 async function drain(
-  gen: AsyncGenerator<StreamDelta, ModelResult, void>,
-): Promise<{ deltas: StreamDelta[]; result: ModelResult }> {
-  const deltas: StreamDelta[] = [];
+  gen: AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void>,
+): Promise<{ deltas: Array<StreamDelta | ModelSwitch>; result: ModelResult }> {
+  const deltas: Array<StreamDelta | ModelSwitch> = [];
   let r = await gen.next();
   while (!r.done) {
     deltas.push(r.value);
@@ -379,7 +383,7 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"boom"}}`,
 
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
     const gen = client.stream({ model: "m", messages: [{ role: "user", content: "hi" }], maxTokens: 50 });
-    const seen: StreamDelta[] = [];
+    const seen: Array<StreamDelta | ModelSwitch> = [];
     await expect(
       (async () => {
         let r = await gen.next();
@@ -430,7 +434,7 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"boom"}}`,
 
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxResume: 2 });
     const gen = client.stream({ model: "m", messages: [{ role: "user", content: "hi" }], maxTokens: 50 });
-    const seen: StreamDelta[] = [];
+    const seen: Array<StreamDelta | ModelSwitch> = [];
     await expect(
       (async () => {
         let r = await gen.next();
@@ -478,7 +482,7 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"upstream str
     }) as unknown as typeof fetch;
 
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k" });
-    const seen: StreamDelta[] = [];
+    const seen: Array<StreamDelta | ModelSwitch> = [];
     await expect(
       (async () => {
         for await (const d of client.stream({
@@ -588,28 +592,129 @@ describe("GatewayClient live", () => {
 });
 
 describe("GatewayClient model failover", () => {
-  test("falls over to the next fallback model on a persistent pre-content error", async () => {
+  // the recorded stream, answered by `model`
+  const sseFor = (model: string) => SSE.replace('"model":"claude-opus-4-8"', `"model":"${model}"`);
+
+  test("falls over to the next fallback model on a persistent pre-content error, announcing the switch before its first delta", async () => {
     const seen: string[] = [];
     globalThis.fetch = (async (_url: string, init: RequestInit) => {
       const model = JSON.parse(init.body as string).model as string;
       seen.push(model);
       if (model === "primary")
-        return new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 });
-      return new Response(SSE, { status: 200 });
+        return new Response(JSON.stringify({ error: { type: "api_error", code: "upstream_error", message: "Incorrect API key provided: sk-proj-abc123" } }), { status: 502 });
+      return new Response(sseFor("fallback"), { status: 200 });
     }) as unknown as typeof fetch;
 
     const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
-    const { result } = await drain(
-      client.stream({
-        model: "primary",
-        fallbackModels: ["fallback"],
-        messages: [{ role: "user", content: "hi" }],
-        maxTokens: 50,
-      }),
-    );
+    const { deltas, result } = await drain(client.stream({ model: "primary", fallbackModels: ["fallback"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
     expect(result.stopReason).toBe("tool_use"); // succeeded on the fallback
     expect(seen.at(-1)).toBe("fallback");
     expect(seen.filter((m) => m === "fallback").length).toBe(1);
+    // D-53 review I1: the switch is the first thing yielded, before any of the fallback's content
+    expect(deltas[0]).toEqual({ type: "model_switch", from: "primary", to: "fallback", code: "http_5xx", reason: "gateway 502 api_error upstream_error" });
+    // review I3: the reason is the gateway's machine fields only, never the provider's text
+    expect(JSON.stringify(deltas)).not.toContain("sk-proj");
+    expect(result.fallback).toEqual({ from: "primary", reason: "gateway 502 api_error upstream_error", code: "http_5xx" });
+  });
+
+  test("D-53: a call the requested model answers carries no fallback and no switch", async () => {
+    globalThis.fetch = (async () => new Response(sseFor("primary-20261001"), { status: 200 })) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+    const { deltas, result } = await drain(client.stream({ model: "primary", fallbackModels: ["fallback"], messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(result.fallback).toBeUndefined(); // a dated spelling of the same model is the same model
+    expect(deltas.some((d) => d.type === "model_switch")).toBe(false);
+  });
+
+  test("D-53 review I2: the gateway answering with another model is a switch (gateway_swap); a meta-model is not", async () => {
+    globalThis.fetch = (async () => new Response(sseFor("gpt-5.6-sol"), { status: 200 })) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+    const { deltas, result } = await drain(client.stream({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(deltas[0]).toEqual({ type: "model_switch", from: "claude-opus-5", to: "gpt-5.6-sol", code: "gateway_swap", reason: "the gateway served another model" });
+    expect(result).toMatchObject({ model: "gpt-5.6-sol", fallback: { from: "claude-opus-5", code: "gateway_swap" } });
+    const meta = await drain(client.stream({ model: "mlpal", messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(meta.deltas.some((d) => d.type === "model_switch")).toBe(false);
+  });
+
+  test("D-53 review I2 + M1: under noFallback a swapped answer fails the call, never retried or failed over", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => (calls++, new Response(sseFor("gpt-5.6-sol"), { status: 200 }))) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 2 });
+    let caught: unknown;
+    try {
+      await drain(client.stream({ model: "claude-opus-5", noFallback: true, messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(GatewayError);
+    expect((caught as GatewayError).code).toBe("fallback_denied");
+    expect(calls).toBe(1);
+  });
+
+  test("re-review R1-1: a backend's spelling of the same model is not a swap, under allow or deny; a BYOM tag is the gateway's to resolve", async () => {
+    const cases: Array<[string, string]> = [
+      ["claude-opus-5", "global.anthropic.claude-opus-5"],
+      ["claude-opus-5", "us.anthropic.claude-opus-5-v1:0"],
+      ["claude-opus-5", "anthropic.claude-opus-5"],
+      ["claude-opus-5", "claude-opus-5@20260801"],
+      ["claude-opus-5", "claude-opus-5-20260801"],
+      ["gpt-5.6-sol", "gpt-5.6-sol-2026-09-01"],
+      ["gpt-5.6-sol", "global.openai.gpt-5.6-sol"],
+      ["user/my-claude", "claude-opus-5"],
+    ];
+    for (const [asked, served] of cases) {
+      for (const noFallback of [false, true]) {
+        globalThis.fetch = (async () => new Response(sseFor(served), { status: 200 })) as unknown as typeof fetch;
+        const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+        const { deltas, result } = await drain(client.stream({ model: asked, noFallback, messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+        expect([asked, served, noFallback, deltas.some((d) => d.type === "model_switch"), result.fallback]).toEqual([asked, served, noFallback, false, undefined]);
+      }
+    }
+    expect(canonicalModelId("us.anthropic.claude-opus-5-v1:0")).toBe("claude-opus-5");
+    // R2-1 (round 2): only Bedrock's -vN:N is a version suffix; a date is stripped from the served id only, and only
+    // when the request named no date
+    expect(canonicalModelId("deepseek-v3")).toBe("deepseek-v3");
+    expect(sameModel("deepseek-v3", "deepseek-v4")).toBe(false);
+    expect(sameModel("claude-opus-5", "claude-opus-5-20261001")).toBe(true);
+    expect(sameModel("claude-opus-5-20260801", "claude-opus-5-20261001")).toBe(false);
+    expect(sameModel("claude-opus-5-20260801", "claude-opus-5")).toBe(false);
+    expect(sameModel("gpt-5.6-sol-2026-09-01", "gpt-5.6-sol-2026-09-01")).toBe(true);
+    // another model is still another model
+    globalThis.fetch = (async () => new Response(sseFor("us.anthropic.claude-sonnet-5-v1:0"), { status: 200 })) as unknown as typeof fetch;
+    const { deltas } = await drain(new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 }).stream({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(deltas.filter((d) => d.type === "model_switch")).toHaveLength(1);
+  });
+
+  test("re-review R1-3: a swapped stream that is re-streamed reports the swap once per call", async () => {
+    let calls = 0;
+    const partial = sseFor("gpt-5.6-sol").split("event: content_block_stop")[0]!;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1)
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode(partial));
+              c.error(new TypeError("fetch failed: socket hang up"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      return new Response(sseFor("gpt-5.6-sol"), { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = new GatewayClient({ baseUrl: "http://x", apiKey: "k", maxRetries: 0 });
+    const { deltas } = await drain(client.stream({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], maxTokens: 50 }));
+    expect(calls).toBe(2); // the stream died before content and was retried on the same model
+    expect(deltas.filter((d) => d.type === "model_switch")).toHaveLength(1);
+  });
+
+  test("review M8: switch codes and reasons for each failure kind are bounded machine fields", () => {
+    expect(switchReason(new GatewayError("x", 0, "timeout"))).toEqual({ reason: "timeout", code: "timeout" });
+    expect(switchReason(new GatewayError("x", 0, "network"))).toEqual({ reason: "network", code: "network" });
+    expect(switchReason(new GatewayError("x", 0, "stream"))).toEqual({ reason: "stream", code: "stream" });
+    expect(switchReason(new GatewayError("rate limited by sk-live-123", 429, "http", "rate_limit_error"))).toEqual({ reason: "gateway 429 rate_limit_error", code: "http_429" });
+    // a machine field that is not a short token is left out rather than echoed
+    const long = switchReason(new GatewayError("x", 503, "http", "a".repeat(500), "has spaces in it"));
+    expect(long).toEqual({ reason: "gateway 503", code: "http_5xx" });
   });
 
   test("a failover rung the policy refuses is skipped, never reported as the run's refusal; the primary's error stands when no rung is left", async () => {

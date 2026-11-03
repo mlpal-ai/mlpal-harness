@@ -2,6 +2,7 @@ import {
   addUsage,
   type AssistantEvent,
   type Author,
+  type ModelFallbackEvent,
   type ContentBlock,
   type ConversationEntry,
   emptyUsage,
@@ -20,6 +21,7 @@ import {
   type Usage,
   type UserEvent,
 } from "@mlpal/harness-protocol";
+import { redactText } from "../obs/redact";
 import { maybeCompact, renderTranscript } from "../context/compaction";
 import { type EventInbox, renderEvents, waitForEvent } from "../events/inbox";
 import { type SessionEventBus, type SideEvent, SideQueue } from "../events/session-bus";
@@ -209,6 +211,9 @@ export interface AgentConfig {
   verifyHint?: string;
   /** Same-tier fallback models for the main model, tried on a transient pre-content failure. */
   modelFallbacks?: string[];
+  /** D-53 HOP `model.fallback`: under `deny` no fallback is tried and an answer from another model fails the call
+   *  (enforced here, whatever `modelFallbacks` holds). */
+  modelFallback?: "allow" | "deny";
   /**
    * Condense tool outputs longer than `threshold` chars via a cheap side-model before they enter
    * context. A separate one-shot call, so the main conversation's cache is untouched. Off if unset.
@@ -560,6 +565,11 @@ function summarizeBlocks(blocks: ToolResultBlocks): string {
  * A single addressable agent session. The agentic tool-use loop, built
  * against the callModel seam, the unified store, and an author-tagged input.
  */
+/** The transcript record of a model switch; `reason` is redacted and bounded whatever the model client gave. */
+function fallbackEvent(from: string, to: string, code: string, reason: string): ModelFallbackEvent {
+  return { type: "model_fallback", from, to, code: code.slice(0, 32), reason: redactText(reason).slice(0, 160), ts: now() };
+}
+
 export class AgentSession {
   private readonly maxTokens: number;
   private readonly maxTurns: number;
@@ -1002,17 +1012,54 @@ export class AgentSession {
       // record what the model saw, not what the registry holds afterwards.
       const toolSchemas = cfg.tools.schemas();
       try {
-        result = answered ?? (yield* cfg.model_client.stream({
-          model: activeModel,
-          system: cfg.systemPrompt,
-          messages: [...messages], // snapshot — the model client never sees our mutable array
-          tools: toolSchemas,
-          maxTokens: this.maxTokens,
-          signal: cfg.signal,
-          trace: { stamp: this.stamp(), callId },
-          ...(activeModel === cfg.model && cfg.modelFallbacks ? { fallbackModels: cfg.modelFallbacks } : {}),
-          ...(cfg.effort ? { effort: cfg.effort } : {}),
-        }));
+        if (answered) result = answered;
+        else {
+          const denied = cfg.modelFallback === "deny";
+          const gen = cfg.model_client.stream({
+            model: activeModel,
+            system: cfg.systemPrompt,
+            messages: [...messages], // snapshot — the model client never sees our mutable array
+            tools: toolSchemas,
+            maxTokens: this.maxTokens,
+            signal: cfg.signal,
+            trace: { stamp: this.stamp(), callId },
+            ...(activeModel === cfg.model && cfg.modelFallbacks && !denied ? { fallbackModels: cfg.modelFallbacks } : {}),
+            ...(denied ? { noFallback: true } : {}),
+            ...(cfg.effort ? { effort: cfg.effort } : {}),
+          });
+          let finished = false;
+          let announced = false;
+          try {
+            for (;;) {
+              const step = await gen.next();
+              if (step.done) {
+                result = step.value;
+                finished = true;
+                break;
+              }
+              if (step.value.type === "model_switch") {
+                // D-53 review I1: said when it happens, before the new model's first delta, and persisted at once, so a
+                // cancel or a failed fallback stream still leaves the record
+                announced = true;
+                const fb = fallbackEvent(step.value.from, step.value.to, step.value.code, step.value.reason);
+                parent = (await this.store.conversation.append(cfg.sessionId, fb, parent)).uuid;
+                await this.noteFallback(fb, callId, log);
+                yield { ...fb, uuid: parent };
+                continue;
+              }
+              yield step.value;
+            }
+          } finally {
+            if (!finished) await gen.return?.(undefined as never).catch(() => {});
+          }
+          // a model client that reports a fallback only on its result (no switch announced): said now, before the answer
+          if (result!.fallback && !announced) {
+            const fb = fallbackEvent(result!.fallback.from, result!.model, result!.fallback.code, result!.fallback.reason);
+            parent = (await this.store.conversation.append(cfg.sessionId, fb, parent)).uuid;
+            await this.noteFallback(fb, callId, log);
+            yield { ...fb, uuid: parent };
+          }
+        }
       } catch (e) {
         if (e instanceof GatewayError && e.kind === "cancelled") {
           log.warn("run cancelled mid-stream");
@@ -2148,6 +2195,13 @@ export class AgentSession {
    *  a new process never repeats a number; readers order by (run, seq), runs by their start). */
   private stampFields(): Record<string, string | number> {
     return { ...stampFields(this.stamp()), seq: ++this.seq };
+  }
+
+  /** D-53: a call served by another model, in the run log, the events channel and a metric. */
+  private async noteFallback(fb: ModelFallbackEvent, callId: string, log: { warn: (m: string, f?: Record<string, unknown>) => void }): Promise<void> {
+    log.warn("model fallback: the call is served by another model", { from: fb.from, to: fb.to, code: fb.code, reason: fb.reason });
+    (this.cfg.metrics ?? noopMetrics).increment("agent.model_fallbacks", 1, { from: fb.from, to: fb.to, code: fb.code });
+    await this.event("model.fallback", { callId, from: fb.from, to: fb.to, code: fb.code, reason: fb.reason });
   }
 
   /** One record in the session's events channel: what the harness did, stamped. Never content. */

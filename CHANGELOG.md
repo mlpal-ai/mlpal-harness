@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### D-53: a model fallback is never silent; protocol 0.24.0 (additive, 2026-11-01)
+
+- When the main model fails before any content and a fallback answers, `ModelResult.fallback` says so (`{from,
+  reason, code}`; `code` is low-cardinality: `http_5xx`, `http_<status>`, `timeout`, `network`, `stream`,
+  `refused`), and the loop persists and yields a typed **`model_fallback`** event (`{from, to, reason, code}`, protocol
+  0.24.0, additive) before the answer it produced. It also writes a `model.fallback` record to the events channel,
+  counts `agent.model_fallbacks{from,to,code}` and logs a warning. Replay (`loadMessages`) ignores the event.
+- HOP `model.fallback: allow | deny` (loader, schema, composition; default allow). Under `deny` a host sends no
+  fallbacks, so a failing main model fails the call.
+- Review fixes: the client yields a `model_switch` delta **when** it fails over (and when a fallback rung is refused),
+  before the next model's first delta, and the loop persists and yields `model_fallback` at once, so a cancelled or
+  failed fallback stream still leaves the transcript record, the metric and the `model.fallback` events record (I1).
+  A `message_start` naming another model than requested (dated spellings and `mlpal` meta-models aside) is a
+  `gateway_swap` switch (I2). `reason` is built from the gateway's status, error type and code only, never provider
+  text, and redacted and bounded again in the loop (I3). `AgentConfig.modelFallback: deny` is enforced by the
+  session: no fallbacks are sent, and `noFallback` makes an answer from another model fail the call
+  (`fallback_denied`, never retried) (M1, I2). Gateway note: on `/v1/messages` the gateway does not substitute a
+  pinned model (backend failover keeps the model; the router's `get_adapter_with_fallback` has no caller at
+  mlpal-assistants-service 4157a56), so no gateway flag was added; the swap check guards it if that changes.
+- Re-review round 1: the swap check compares the gateway's canonical model ids (`canonicalModelId`, ported from
+  mlpal-assistants-service `adapters/anthropic.py` / `adapters/openai.py` `canonical_model_id`: Bedrock
+  `<region>.anthropic.` / `anthropic.` / `<region>.openai.` prefixes, Vertex `@…`, `-vN:N`, and `-YYYYMMDD` /
+  `-YYYY-MM-DD` dates), so a backend's spelling of the same model is neither a warning nor, under deny, a failure
+  (R1-1); `user/…` (BYOM) tags are the gateway's to resolve, like `mlpal`. A switch is reported once per call across
+  retries, resets and resumes (R1-3). `ModelPolicy.fallback` documents that deny governs the agent's own calls, not
+  the session-less side calls (R1-6). Follow-up (not built): the gateway could report the served canonical id in the
+  `mlpal_usage` trailer next to `serving_backend`, and the check would compare against that.
+- Hardening (approved round 2, R2-1): only Bedrock's `-vN:N` form is stripped as a version (`deepseek-v3` and
+  `deepseek-v4` stay distinct), and a date is stripped from the served id only, and only when the request named no
+  date (`sameModel`), so dated snapshots stay distinct.
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export

@@ -12,6 +12,7 @@ import {
   type WithdrawMessage,
   type WithdrawnFrame,
   type HopView,
+  type ModelFallbackEvent,
   type ModelRefusal,
   type ResultEvent,
   type SandboxRefusal,
@@ -24,6 +25,7 @@ import {
   agentAuthor,
   contentBlockSchema,
   emptyUsage,
+  isPersisted,
   messageSchema,
   stopReasonSchema,
   toolUseBlockSchema,
@@ -205,11 +207,19 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.23.0 (queue in connection mode, P2 1.1: additive)", () => {
+describe("0.24.0 (model_fallback, D-53: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.23.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.23.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.24.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.24.0");
   });
+
+  test("a model_fallback is a persisted SDK message naming the asked-for and the answering model", () => {
+    const e: ModelFallbackEvent = { type: "model_fallback", from: "claude-opus-5", to: "gpt-5.6-sol", reason: "gateway 502: upstream 401", code: "http_5xx", ts: "t" };
+    expect(isPersisted(e)).toBe(true);
+  });
+});
+
+describe("0.23.0 (queue in connection mode, P2 1.1: additive)", () => {
 
   test("the queue frames are server messages, withdraw and watch.noticesAfter are client messages, and the codes are typed", () => {
     const queued: QueuedFrame = { type: "queued", requestId: "r1", sessionId: "s1", position: 2, inboxSeq: 7 };
