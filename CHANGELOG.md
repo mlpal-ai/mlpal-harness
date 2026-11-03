@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### D-63: a reloaded UI can show its queued runs again; protocol 0.25.0 (additive, 2026-11-03)
+
+- Protocol: `session_history.pendingQueue?: PendingQueuedRun[]` (`{requestId, position, inboxSeq, prompt, blocks?}`),
+  capability `queue`: the runs a UI connection queued on the session that still wait, sent on the newest page only and
+  only to the session's owner. A 0.24 client's tolerant schema drops the field.
+- Store client: `SessionStoreClient.inboxPending(sid)`, P1 1.3's `GET /sessions/{sid}/inbox?state=pending` (stack
+  `d63-pending-read`): the pending items in queue order, with the queued `message` on writer-accepted items only. A
+  store before 1.3 answers 405, a StoreHttpError.
+
 ### D-62(a): the store projection carries `inbox.blocked` (additive, 2026-11-03)
 
 - `SessionProjection.inbox?: {blocked: {reason, untilMs}}`, from P1 1.2's `inbox.blocked {reason, until_ms}`. It is

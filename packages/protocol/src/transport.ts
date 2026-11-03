@@ -503,6 +503,11 @@ export type ServerMessage =
       live?: boolean;
       /** yodex/2: older entries exist before the first one returned (paged load). */
       hasMore?: boolean;
+      /** 0.25.0 (capability "queue", D-63): this person's runs a UI connection queued on the session, still waiting,
+       *  in queue order. Sent on the newest page only (no `before`), and only to the session's owner. Each listed run
+       *  is then followed as a `queued` one: its position updates, then its `done` or `inbox_rejected`. Runs queued
+       *  through the API or a schedule are never listed. */
+      pendingQueue?: PendingQueuedRun[];
     }
   | { type: "models"; requestId?: string; models: Array<{ tag: string; displayName: string }> }
   /** yodex/2 (capability "mail"): how a `send` was delivered. `sent` = a run is live on the
@@ -610,6 +615,17 @@ export interface QueuedFrame {
   replayed?: true;
 }
 
+/** 0.25.0 (capability "queue", D-63): a run waiting in the session's inbox that a UI connection queued, with its own
+ *  words, so a reloaded client can show it queued again and withdraw it (`withdraw` needs only its `requestId`).
+ *  `position` is the store's, as on `queued`. */
+export interface PendingQueuedRun {
+  requestId: string;
+  position: number;
+  inboxSeq: number;
+  prompt: string;
+  blocks?: ContentBlock[];
+}
+
 /** P2 1.1 (capability "queue"): the store rejected a queued item (P1's rejection `code`: session_stopped, withdrawn,
  *  delivery_timeout, engine_config, ...), sent to every client watching the session. `seq` is the notice's store seq
  *  (`watch.noticesAfter` on reconnect). Unknown codes render generically. */
@@ -655,4 +671,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.24.0";
+export const HARNESS_PROTOCOL_VERSION = "0.25.0";

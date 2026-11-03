@@ -7,6 +7,7 @@ import {
   type ErrorCode,
   type ErrorEvent,
   type InboxRejectedFrame,
+  type PendingQueuedRun,
   type QueuedFrame,
   type ServerCapability,
   type WithdrawMessage,
@@ -207,11 +208,21 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.24.0 (model_fallback, D-53: additive)", () => {
+describe("0.25.0 (session_history.pendingQueue, D-63: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.24.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.24.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.25.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.25.0");
   });
+
+  test("a newest history page may list this person's UI-queued runs, each with its words; the field is optional", () => {
+    const run: PendingQueuedRun = { requestId: "rq-ui", position: 2, inboxSeq: 7, prompt: "and then?", blocks: [{ type: "text", text: "see" }] };
+    const page = { type: "session_history", sessionId: "s1", messages: [], pendingQueue: [run, { requestId: "rq-2", position: 3, inboxSeq: 8, prompt: "x" }] } satisfies ServerMessage;
+    const before = { type: "session_history", sessionId: "s1", messages: [] } satisfies ServerMessage;
+    expect([page.pendingQueue.map((r) => r.requestId), "pendingQueue" in before]).toEqual([["rq-ui", "rq-2"], false]);
+  });
+});
+
+describe("0.24.0 (model_fallback, D-53: additive)", () => {
 
   test("a model_fallback is a persisted SDK message naming the asked-for and the answering model", () => {
     const e: ModelFallbackEvent = { type: "model_fallback", from: "claude-opus-5", to: "gpt-5.6-sol", reason: "gateway 502: upstream 401", code: "http_5xx", ts: "t" };
