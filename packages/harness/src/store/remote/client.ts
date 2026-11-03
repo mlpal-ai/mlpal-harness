@@ -4,8 +4,12 @@
  * TypeScript over an injected fetch, so it runs in the engine, a test, or any host. Every store
  * timestamp is an integer of unix milliseconds.
  */
+import { createHash } from "node:crypto";
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
+import type { InboxConsume, InboxItem } from "../types";
+
+export type { InboxConsume, InboxItem };
 
 /** An event as the engine appends it: `kind` is the protocol frame's `type`, `data` the frame. */
 export interface StoreEvent {
@@ -152,6 +156,57 @@ export class SessionDeletedError extends StoreHttpError {
   }
 }
 
+/** 409 `inbox_item_not_pending` (P1 1.2): a consuming append whose item a stop or a supersession took meanwhile.
+ *  Nothing was written, and the writer goes on: the engine drops that turn and drains the next item. */
+export class InboxItemNotPendingError extends StoreHttpError {
+  override name = "InboxItemNotPendingError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    readonly state: string | null,
+  ) {
+    super(message, status, code);
+  }
+}
+
+/** 429 `inbox_full` (P1 1.2): the session already has `limit` pending items. Nothing was queued. */
+export class InboxFullError extends StoreHttpError {
+  override name = "InboxFullError";
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    readonly pending: number,
+    readonly limit: number,
+    readonly retryAfterS?: number,
+  ) {
+    super(message, status, code);
+  }
+}
+
+/** A turn item for P1's accept (`POST /sessions/{sid}/inbox`) under the instance writer token: the UI direction of
+ *  QUEUE. `message` is sent as given and its sha is of those exact bytes. It carries no context: P1 runs a writer's item
+ *  with the context the scheduler recorded for the session's scope (W-1), never one an engine names. */
+export interface InboxTurnAccept {
+  requestId: string;
+  message: string;
+}
+
+/** P1's accept answer. `position` is null when the item is no longer pending (a replay of one already run or
+ *  rejected; `code` then says why it was rejected). */
+export interface InboxAccepted {
+  requestId: string;
+  state: string;
+  inboxSeq: number;
+  replayed: boolean;
+  pending: number;
+  position: number | null;
+  /** The live lease's holder, when one is live. */
+  holder?: string;
+  code?: string;
+}
+
 /** 413: `batch_too_large` (over the per-batch limits) or `event_too_large` (one event over the
  *  store's `max_event_bytes`). */
 export class BatchTooLargeError extends StoreHttpError {
@@ -209,7 +264,7 @@ export interface CreateSessionBody {
   origin: string;
 }
 
-type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream";
+type Op = "create" | "lease" | "renew" | "release" | "append" | "read" | "projection" | "list" | "stream" | "head" | "accept" | "status" | "reject";
 
 /** What a call retries, within one budget (MAX_ATTEMPTS attempts or RETRY_BUDGET_MS, whichever ends
  *  first): an append retries any network failure or 5xx (the store answers a replay with its original
@@ -221,7 +276,7 @@ const retryAfterMs = (res: Response) => Number(res.headers.get("retry-after") ??
 
 const num = (v: unknown) => (typeof v === "number" ? v : undefined);
 
-function httpError(op: Op, sid: string | null, status: number, body: Record<string, unknown>): StoreHttpError {
+function httpError(op: Op, sid: string | null, status: number, body: Record<string, unknown>, retryAfterS?: number): StoreHttpError {
   const code = typeof body.code === "string" ? body.code : `http_${status}`;
   const message = `session store ${op}${sid === null ? "" : ` (${sid})`}: ${status} ${code}`;
   if (status === 404) return new SessionNotFoundError(message, status, code);
@@ -231,6 +286,8 @@ function httpError(op: Op, sid: string | null, status: number, body: Record<stri
   if (status === 409 && code === "session_leased") return new LeaseHeldError(message, status, code, num(body.expires_at));
   if (status === 409 && code === "lease_lost") return new LeaseLostError(message, status, code);
   if (status === 409 && code === "seq_conflict") return new SeqConflictError(message, status, code, num(body.last_seq));
+  if (status === 429 && code === "inbox_full") return new InboxFullError(message, status, code, num(body.pending) ?? 0, num(body.limit) ?? 0, retryAfterS);
+  if (status === 409 && code === "inbox_item_not_pending") return new InboxItemNotPendingError(message, status, code, typeof body.state === "string" ? body.state : null);
   return new StoreHttpError(message, status, code);
 }
 
@@ -290,13 +347,63 @@ export class SessionStoreClient {
   }
 
   /** `append` for events serialized at append time: the body is assembled once, before any attempt. */
-  async appendEncoded(sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[] }): Promise<{ firstSeq: number; lastSeq: number }> {
+  async appendEncoded(sid: string, opts: { leaseId: string; afterSeq: number; events: EncodedEvent[]; consumes?: InboxConsume }): Promise<{ firstSeq: number; lastSeq: number }> {
     const t0 = this.now();
     const events = opts.events.map((e) => `{"kind":${JSON.stringify(e.kind)},"data":${e.json},"ts_ms":${e.ts_ms}}`);
-    const body = `{"lease_id":${JSON.stringify(opts.leaseId)},"after_seq":${opts.afterSeq},"events":[${events.join(",")}]}`;
+    const consumes = opts.consumes ? `,"consumes":${JSON.stringify({ request_id: opts.consumes.requestId, outcome: opts.consumes.outcome })}` : "";
+    const body = `{"lease_id":${JSON.stringify(opts.leaseId)},"after_seq":${opts.afterSeq},"events":[${events.join(",")}]${consumes}}`;
     const b = await this.call<{ first_seq: number; last_seq: number }>("append", sid, "POST", "/events", body, "append");
     this.log.debug("store.append", { sid, events: opts.events.length, firstSeq: b.first_seq, lastSeq: b.last_seq, ms: this.now() - t0 });
     return { firstSeq: b.first_seq, lastSeq: b.last_seq };
+  }
+
+  /** P1 1.2 head (the session's engine, under its live lease): the next inbox item to run, or, with `answers`, the
+   *  pending answer to that ask; null when there is none. A read counts a delivery attempt of the item (P1 rejects it
+   *  `delivery_failed` past the store's maximum). */
+  async inboxHead(sid: string, answers?: string): Promise<InboxItem | null> {
+    const b = await this.call<WireInboxItem | null>("head", sid, "POST", "/inbox/head", JSON.stringify(answers === undefined ? {} : { answers }));
+    if (!b) return null;
+    return {
+      requestId: b.request_id,
+      kind: b.kind,
+      ...(b.answers !== undefined ? { answers: b.answers } : {}),
+      inboxSeq: b.inbox_seq,
+      message: b.message,
+      contextSha256: b.context_sha256,
+      acceptedAtMs: b.accepted_at_ms,
+      attempts: b.attempts,
+    };
+  }
+
+  /** Queues a turn on the session (P1 1.2 accept, `kind: "turn"`). A retry with the same request id and message is a
+   *  replay (`replayed`); the same id with another message is 409 `request_id_conflict`; a full inbox, InboxFullError.
+   *  The body is assembled from the given JSON texts so the shas are of exactly the bytes sent. */
+  async acceptTurn(sid: string, item: InboxTurnAccept): Promise<InboxAccepted> {
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const body = `{"request_id":${JSON.stringify(item.requestId)},"kind":"turn","pumpable":false,"message":${item.message},"message_sha256":"${sha(item.message)}"}`;
+    const b = await this.call<WireAccepted>("accept", sid, "POST", "/inbox", body);
+    return {
+      requestId: b.request_id,
+      state: b.state,
+      inboxSeq: b.inbox_seq,
+      replayed: b.replayed,
+      pending: b.pending,
+      position: b.position ?? null,
+      ...(b.lease?.holder ? { holder: b.lease.holder } : {}),
+      ...(b.code ? { code: b.code } : {}),
+    };
+  }
+
+  /** An inbox item's status (any reader of the session): its state, and its queue position while pending. */
+  async inboxStatus(sid: string, requestId: string): Promise<{ state: string; position: number | null; code?: string; consumedSeq?: number }> {
+    const b = await this.call<{ state: string; position?: number | null; code?: string; consumed_seq?: number }>("status", sid, "GET", `/inbox/${encodeURIComponent(requestId)}`);
+    return { state: b.state, position: b.position ?? null, ...(b.code ? { code: b.code } : {}), ...(typeof b.consumed_seq === "number" ? { consumedSeq: b.consumed_seq } : {}) };
+  }
+
+  /** Withdraws a queued turn (P1 reject, code `withdrawn`, under the instance writer token); an item no longer pending
+   *  is InboxItemNotPendingError with its state. Withdrawing one already withdrawn answers again. */
+  async withdrawTurn(sid: string, requestId: string): Promise<void> {
+    await this.call("reject", sid, "POST", `/inbox/${encodeURIComponent(requestId)}/reject`, JSON.stringify({ code: "withdrawn" }));
   }
 
   /** `after` past the store's last seq is `400 invalid_cursor`. */
@@ -442,7 +549,7 @@ export class SessionStoreClient {
         parsed = null;
       }
       if (res.ok) return parsed as T;
-      const err = httpError(op, sid, res.status, (parsed ?? {}) as Record<string, unknown>);
+      const err = httpError(op, sid, res.status, (parsed ?? {}) as Record<string, unknown>, retryAfterMs(res) / 1000 || undefined);
       const retryable = retry === "append" ? res.status >= 500 : isBusy(res.status, err.code);
       if (!retryable) throw err;
       failure = err;
@@ -466,6 +573,28 @@ function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promis
 /** Never lets the bearer reach a message; an empty token has nothing to hide. */
 function redact(s: string, token: string): string {
   return token ? s.split(token).join("[redacted]") : s;
+}
+
+interface WireAccepted {
+  request_id: string;
+  state: string;
+  inbox_seq: number;
+  replayed: boolean;
+  pending: number;
+  position?: number | null;
+  lease?: { holder?: string } | null;
+  code?: string;
+}
+
+interface WireInboxItem {
+  request_id: string;
+  kind: "turn" | "answer";
+  answers?: string;
+  inbox_seq: number;
+  message: Record<string, unknown>;
+  context_sha256: string;
+  accepted_at_ms: number;
+  attempts: number;
 }
 
 /** What a caller may impose on one call. */

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
 import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
-import type { AgentRecord, ConversationStore, LogChannel, LogStore, Mailbox, MemoryStore, Registry, SessionRecord, Store } from "../types";
+import type { AgentRecord, ConversationStore, InboxConsume, InboxItem, LogChannel, LogStore, Mailbox, MemoryStore, Registry, SessionRecord, Store } from "../types";
 import { EventTooLargeError } from "../errors";
 import { AppendBatcher } from "./batcher";
 import { encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
@@ -43,7 +43,7 @@ export class MailboxUnavailableError extends Error {
 }
 
 export interface RemoteStoreOptions {
-  client: Pick<SessionStoreClient, "readAll" | "appendEncoded">;
+  client: Pick<SessionStoreClient, "readAll" | "appendEncoded"> & Partial<Pick<SessionStoreClient, "inboxHead">>;
   sid: string;
   /** Held (acquired or adopted) by the host before the first write; released by close(). */
   lease: LeaseKeeper;
@@ -220,6 +220,31 @@ export class RemoteStore implements Store {
   async readEvents(sessionId: string, kind: string): Promise<Record<string, unknown>[]> {
     this.check(sessionId);
     return this.stored.filter((e) => e.kind === kind).map((e) => structuredClone(e.data) as Record<string, unknown>);
+  }
+
+  /** The events of any of `kinds` the store holds for this session, with their seqs, in seq order. */
+  async readEventsAt(sessionId: string, kinds: readonly string[]): Promise<Array<{ seq: number; kind: string; data: Record<string, unknown> }>> {
+    this.check(sessionId);
+    const want = new Set(kinds);
+    return this.stored.filter((e) => want.has(e.kind)).map((e) => ({ seq: e.seq, kind: e.kind, data: structuredClone(e.data) as Record<string, unknown> }));
+  }
+
+  /** P1 1.2: a consuming append (Store.consume). The memory views take the events only once the store acknowledged
+   *  them, so a withdrawn item (InboxItemNotPendingError) leaves nothing behind. */
+  async consume(sessionId: string, consumes: InboxConsume, events: Array<{ kind: string; data: unknown }>): Promise<number[]> {
+    this.check(sessionId);
+    this.writable();
+    const encoded = events.map((e) => encodeEvent(e.kind, e.data, this.now()));
+    const seqs = await this.writer().consume(encoded, consumes);
+    encoded.forEach((e, i) => this.fold({ seq: seqs[i]!, kind: e.kind, data: JSON.parse(e.json), ts_ms: e.ts_ms }));
+    return seqs;
+  }
+
+  /** P1 1.2 head, as this session's engine (Store.inboxHead). */
+  async inboxHead(sessionId: string, answers?: string): Promise<InboxItem | null> {
+    this.check(sessionId);
+    if (!this.opts.client.inboxHead) throw new Error("this session store client reads no inbox");
+    return this.opts.client.inboxHead(this.sid, answers);
   }
 
   artifactPath(sessionId: string, name: string): string {

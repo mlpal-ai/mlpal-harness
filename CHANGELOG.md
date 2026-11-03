@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Protocol 0.23.0: queue frames (INBOX T2, P2 1.1; additive, 2026-11-01)
+
+- `HARNESS_PROTOCOL_VERSION` and `@mlpal/harness-protocol` are 0.23.0. Additive minor: capability `queue`;
+  `QueuedFrame`, `InboxRejectedFrame`, `WithdrawnFrame` (server) and `WithdrawMessage`, `watch.noticesAfter`
+  (client); `ErrorCode` adds `inbox_full`, `request_id_conflict`, `queue_unavailable`, `withdraw_refused`, with the
+  error frame's `pending`, `limit`, `retryAfterS`, `state`. A 0.22.x client ignores them; a 0.22.x server never sends
+  them (it does not advertise `queue`).
+
+### Queue frames and the writer's accept (INBOX T2 addition, 2026-10-31)
+
+- `SessionStoreClient.acceptTurn` (P1 1.2 accept of a turn under the instance writer token, `pumpable: false`, the sha
+  of the exact message bytes; no context: P1 uses the scope's recorded one, W-1); `InboxFullError` (`429 inbox_full`, with `pending`, `limit` and the Retry-After).
+- Protocol (capability `queue`): `queued {requestId, sessionId, position, inboxSeq, replayed?}`, `inbox_rejected
+  {sessionId, requestId, code}`, and `error.code` `inbox_full` (with `pending`, `limit`, `retryAfterS`) /
+  `request_id_conflict` / `queue_unavailable` / `withdraw_refused` (`ErrorCode`); `withdraw` / `withdrawn`;
+  `watch.noticesAfter` and `inbox_rejected.seq`. The frames are exported types (`QueuedFrame`, `InboxRejectedFrame`,
+  `WithdrawnFrame`, `WithdrawMessage`).
+- `SessionStoreClient.withdrawTurn` and `inboxStatus` (state, position).
+- `Store.readEventsAt` (`RemoteStore`): events of the kinds asked with their seqs, so a host binds an answer to the
+  park the log raised last with its id (store security review r3).
+- T2 review: `TurnInput.opening` (a parked question's answer and its `user` entry in one consuming batch, I-1);
+  `settleableHeldCall` (a host resumes a held call whose park has a recorded decision and no marker, I-1).
+
+### Inbox consume and head (INBOX T2, P1 1.2, 2026-10-31)
+
+- `SessionStoreClient.inboxHead`; `appendEncoded({consumes})`; `InboxItemNotPendingError` for `409
+  inbox_item_not_pending`. `AppendBatcher.consume`: an isolated, acknowledged batch with `consumes`, non-fatal on
+  that 409. `Store.consume` / `Store.inboxHead` (`RemoteStore`; its memory views take a consumed batch only once
+  acknowledged).
+- `TurnInput.consumes` (the user entry opens an inbox turn) and `TurnInput.requestId` (on the `user` entry,
+  `UserEvent.requestId`). A run that opens no turn now drops its bus subscription (a withdrawn item, a rejected prompt).
+- `AskContext.toolUseId` and `.sessionId`; `stepGate("hook")` before the Stop hooks and `"finish"` after them (N6).
+- Protocol: `permission_response` / `question_response` take `sessionId`; `approval_response` takes `id`.
+
 ### D-48/D-49 fix round 2 (2026-10-31)
 
 - `stepGate("finish")`: the turn's end after a tool-less answer is a gated step (N3).
