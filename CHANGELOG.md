@@ -33,6 +33,27 @@
   `deepseek-v4` stay distinct), and a date is stripped from the served id only, and only when the request named no
   date (`sameModel`), so dated snapshots stay distinct.
 
+### D-54: the agent verifier judges each turn against that turn's own request (2026-11-01)
+
+- `agentVerifier` hands the framing `{task}` = **this turn's request** (`turnRequest`): the messages a person or a peer
+  sent since the last run boundary (a persisted `result`), in order; a run that resumes a parked approval keeps the
+  request that parked; the loop's own system-authored notes (`[Verification] …`) are not requests. The session's
+  opening message follows, marked "context only; not the request this turn answers". Before, `{task}` was always the
+  session's first user message, so a correct change asked for in a later turn failed fail-closed verifiers as "a
+  mutation nobody asked for" (the infra HOP, demo v2).
+- Review fixes: only a turn that completed (`success`) and did not end asking the person something (a parked
+  AskUserQuestion, or last words ending in a question) is a boundary; a park for approval, a cancel, an
+  interruption, an error or a turn limit carries its request forward and the later steer or answer joins it (I4).
+  The verifier gets the request with each message labelled by who sent it (`[person]`, `[peer <name>]`), then the
+  previous turn's request and the opening message fenced as quoted context (M6); a long request keeps its end (M5).
+  `isParkedAskResult` marks a parked ask's tool result.
+- Re-review round 1: only a parked AskUserQuestion carries a request into the next turn; a turn whose prose ends in a
+  question stays a boundary, and its request (`<previous-request>`) and the agent's question (`<asked-back>`) are
+  context, never the request, so "Anything else?" cannot chain old requests into a new one (R1-2). Message bodies are
+  JSON-encoded with `<` escaped, so a message can neither close a block nor forge a `[person]` line (R1-4).
+- Hardening (approved round 2): a peer's display name is reduced to `[A-Za-z0-9._@-]` in its label (R2-2); U+2028,
+  U+2029 and fullwidth `＜` `＞` are escaped in fenced bodies like `<` (R2-3).
+
 ### D-57: a compound command is gated by its most dangerous command; D-56 (2026-11-01, security)
 
 - **The bypass (D-57):** the preApply plan gate read only a Bash line's leading command, so `cd …; export
