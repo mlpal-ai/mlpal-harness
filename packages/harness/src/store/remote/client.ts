@@ -72,6 +72,9 @@ export interface SessionProjection {
   lease: { leaseId?: string; holder?: string; expiresAt: number } | null;
   lastSeq: number;
   updatedAt: number;
+  /** P1 1.2: present only while an open turn with no lease waits out its spent resume budget (`blocked`), until
+   *  `untilMs`; the scheduler resumes it then. Absent on stores without the inbox and when nothing is blocked. */
+  inbox?: { blocked: { reason: string; untilMs: number } };
 }
 
 export type StoreFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -620,6 +623,7 @@ interface WireProjection {
   lease: { lease_id?: string; holder?: string; expires_at: number } | null;
   last_seq: number;
   updated_at: number;
+  inbox?: { blocked?: { reason: string; until_ms: number } };
 }
 
 function projectionOf(b: WireProjection): SessionProjection {
@@ -638,6 +642,7 @@ function projectionOf(b: WireProjection): SessionProjection {
     lease: b.lease ? { ...(b.lease.lease_id !== undefined ? { leaseId: b.lease.lease_id } : {}), ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
     lastSeq: b.last_seq,
     updatedAt: b.updated_at,
+    ...(b.inbox?.blocked ? { inbox: { blocked: { reason: b.inbox.blocked.reason, untilMs: b.inbox.blocked.until_ms } } } : {}),
   };
 }
 

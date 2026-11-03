@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### D-62(a): the store projection carries `inbox.blocked` (additive, 2026-11-03)
+
+- `SessionProjection.inbox?: {blocked: {reason, untilMs}}`, from P1 1.2's `inbox.blocked {reason, until_ms}`. It is
+  present only while an open turn with no lease waits out its spent resume budget, until `untilMs`. yodex serve reads
+  it to keep such a turn live (recovering) rather than call it an orphan. A type plus its mapping in `projectionOf`;
+  nothing else in the projection changes.
+
 ### D-53: a model fallback is never silent; protocol 0.24.0 (additive, 2026-11-01)
 
 - When the main model fails before any content and a fallback answers, `ModelResult.fallback` says so (`{from,

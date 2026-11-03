@@ -100,6 +100,19 @@ describe("SessionStoreClient over P1", () => {
     expect(store.lease("s1")).toBeNull();
   });
 
+  test("P1 1.2: the projection's inbox.blocked (an open turn waiting out its resume budget) is carried as inbox.blocked {reason, untilMs}; absent, no inbox", async () => {
+    const wire = (inbox: unknown) => ({ sid: "s1", owner: "o", unit: "u", publication: "p", hop: { name: "h", version: "1", digest: null }, status: "running", parks: [], refusal: null,
+      usage: { input_tokens: 0, output_tokens: 0, cost_cu: 0 }, lease: null, last_seq: 3, updated_at: 1_000, ...(inbox === undefined ? {} : { inbox }) });
+    let body: unknown;
+    const { c } = client({ fetch: async () => Response.json(body) });
+    body = wire({ pending: 0, oldest_accepted_at: null, turn_resumes: 3, blocked: { reason: "resume_budget", until_ms: 120_000 } });
+    expect((await c.projection("s1")).inbox).toEqual({ blocked: { reason: "resume_budget", untilMs: 120_000 } });
+    body = wire({ pending: 1, oldest_accepted_at: 5, turn_resumes: 0 });
+    expect((await c.projection("s1")).inbox).toBeUndefined();
+    body = wire(undefined);
+    expect("inbox" in (await c.projection("s1"))).toBe(false);
+  });
+
   test("readAll of an empty session asks once, at 0; it never asks past the head", async () => {
     store.createSession("empty");
     const urls: string[] = [];
