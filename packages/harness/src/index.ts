@@ -75,7 +75,7 @@ export { DeferredTools, schemaTokens } from "./tools/deferred";
 export { createToolSearchTool } from "./tools/builtin/toolsearch";
 export * from "./permission/judge";
 export { containmentDeny } from "./permission/containment";
-export { registerSecret, registerSecrets, redactText, redactResult, clearSecrets } from "./obs/redact";
+export { registerSecret, registerSecrets, registerPattern, registerPlatformPatterns, PLATFORM_SECRET_PATTERNS, redactText, redactResult, clearSecrets } from "./obs/redact";
 export * from "./plugins/packs";
 export * from "./tasks/tracker";
 export * from "./tasks/tools";

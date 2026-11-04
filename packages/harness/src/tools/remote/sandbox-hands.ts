@@ -36,6 +36,9 @@ export interface HandsExecOptions extends HandsCallOptions {
   timeoutMs?: number;
   detach?: boolean;
   env?: Record<string, string>;
+  /** C8: values the sandbox host keeps for this one exec. The guest process sees a per-exec stand-in, and the host's
+   *  egress proxy puts the value in its place on the wire (C8-sandbox-side). Never with `detach`. */
+  secretEnv?: Record<string, string>;
   /** Written to the command's stdin whole (a hook's event JSON). */
   stdin?: string;
 }

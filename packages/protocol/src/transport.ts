@@ -1,6 +1,7 @@
 import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
+import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, ModelRefusal, SDKMessage } from "./sdk.js";
 import type { Usage } from "./usage.js";
@@ -73,7 +74,9 @@ export type ServerCapability =
   | "model_policy" // refusals carry ModelRefusal on error/result/tool_result; list_models.hop (0.20.5)
   | "principal" // 0.21.0: the signed X-Harness-Principal is verified on /ws; sessions carry `owner`; listings and session-addressed messages are filtered by it
   | "schedules" // 0.22.0: list/add/update/remove/run_schedule_now/schedule_runs and the schedule_fired side frame (SCHEDULES-WIRE.md)
-  | "queue"; // P2 1.1: a run on a session another holder leases is queued (`queued`, typed refusals) and followed (`inbox_rejected`)
+  | "queue" // P2 1.1: a run on a session another holder leases is queued (`queued`, typed refusals) and followed (`inbox_rejected`)
+  | "delegated_credentials" // 0.26.0 (C8): `delegated` on run and the answer messages, from a principal-verified front only
+  | "page_context"; // 0.26.0 (C2): run.context, checked by shape and injected as data when it changed
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -376,6 +379,20 @@ export interface SessionStoreGrant {
   url?: string;
 }
 
+/** 0.26.0 (C8, managed-v1 contracts): the signed-in user's credential for one named tool's exec environment. Held in
+ *  engine memory only, never logged, persisted, relayed into P1 or shown to the model; refused unless the connection's
+ *  principal was verified, `subject` equals it, and the session's HOP declares `delegated: [mlpal]`. */
+export interface DelegatedCredential {
+  /** v1: the only kind. Its token reaches `mlpal` commands as MLPAL_ACCESS_TOKEN (through the sandbox's stand-in). */
+  kind: "mlpal_user";
+  /** The user's access token (a JWT) as the front verified it; at most 8 KiB. Never a refresh or ID token. */
+  token: string;
+  /** When the token stops being valid, in ms since the epoch (its `exp` × 1000). */
+  expiresAt: number;
+  /** The principal the front put on this connection (`X-Harness-Principal`). */
+  subject: string;
+}
+
 export type ClientMessage =
   | {
       type: "run";
@@ -405,6 +422,11 @@ export type ClientMessage =
       origin?: SessionOrigin;
       /** 0.22.5: the session store grant for this turn (a remote-store engine refuses a run without one). */
       store?: SessionStoreGrant;
+      /** 0.26.0 (capability "delegated_credentials", C8). */
+      delegated?: DelegatedCredential;
+      /** 0.26.0 (capability "page_context", C2): the page the person is on, as data. An invalid one is dropped, never
+       *  the run. (Not the RunContext: the scheduler carries that beside the message, never in it.) */
+      context?: PageContextV1;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -423,13 +445,13 @@ export type ClientMessage =
   /** yodex/2: `limit` returns the newest `limit` entries (before `before`, an entry uuid, when
    *  given); `session_history.hasMore` says whether older entries exist. */
   | { type: "load_session"; requestId?: string; sessionId: string; before?: string; limit?: number }
-  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** P3 2.6: the session the answered ask belongs to (the scheduler sets it). */ sessionId?: string }
+  | { type: "permission_response"; id: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** P3 2.6: the session the answered ask belongs to (the scheduler sets it). */ sessionId?: string; /** 0.26.0 (C8) */ delegated?: DelegatedCredential }
   /** yodex/2: the answer to a question_request, or to a parked question named by load_session. */
-  | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant; /** P3 2.6: the session the answered park or ask belongs to; with it, `id` may be the projection's park id. */ sessionId?: string }
+  | { type: "question_response"; id: string; outcome: AskOutcome; store?: SessionStoreGrant; /** P3 2.6: the session the answered park or ask belongs to; with it, `id` may be the projection's park id. */ sessionId?: string; /** 0.26.0 (C8) */ delegated?: DelegatedCredential }
   /** yodex/2: resume a session whose last run ended `needs_approval`, with the decision. */
   | { type: "approval_response"; sessionId: string; decision: "allow" | "deny"; reason?: string; store?: SessionStoreGrant; /** D-48: the park this answers (`pendingApproval.parkId`). Without it an answer is refused
    *  `approval_id_required` unless this engine showed that park and nothing has run since; another park held by now is
-   *  refused `approval_stale`. Either refusal writes nothing. */ parkId?: string; /** P3 2.6: the park id as P1's inbox names the ask (`answers`); equal to `parkId`. */ id?: string }
+   *  refused `approval_stale`. Either refusal writes nothing. */ parkId?: string; /** P3 2.6: the park id as P1's inbox names the ask (`answers`); equal to `parkId`. */ id?: string; /** 0.26.0 (C8) */ delegated?: DelegatedCredential }
   /** yodex/2 (capability "subagents"): stop one running sub-agent; its `subagent end` event
    *  reports `cancelled`. The parent run continues. */
   | { type: "stop_subagent"; childSessionId: string }
@@ -600,7 +622,19 @@ export type ServerMessage =
     };
 
 /** The typed `error.code`s. `withdraw_refused` carries P1's `state` of the item. */
-export type ErrorCode = "approval_id_required" | "approval_stale" | "inbox_full" | "request_id_conflict" | "queue_unavailable" | "withdraw_refused";
+export type ErrorCode =
+  | "approval_id_required"
+  | "approval_stale"
+  | "inbox_full"
+  | "request_id_conflict"
+  | "queue_unavailable"
+  | "withdraw_refused"
+  /** 0.26.0 (C8 §3.2): a `delegated` credential was refused; nothing ran or was written. */
+  | "delegated_not_accepted"
+  | "delegated_not_declared"
+  | "delegated_subject_mismatch"
+  | "delegated_invalid"
+  | "delegated_expired";
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one
@@ -671,4 +705,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.25.0";
+export const HARNESS_PROTOCOL_VERSION = "0.26.0";

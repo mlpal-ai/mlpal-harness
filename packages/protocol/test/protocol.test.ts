@@ -4,6 +4,8 @@ import {
   CLOSE_PRINCIPAL_REFUSED,
   HARNESS_PROTOCOL_VERSION,
   type ClientMessage,
+  type DelegatedCredential,
+  type PageContextV1,
   type ErrorCode,
   type ErrorEvent,
   type InboxRejectedFrame,
@@ -208,11 +210,37 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.25.0 (session_history.pendingQueue, D-63: additive)", () => {
+describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.25.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.25.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.0");
   });
+
+  const cred: DelegatedCredential = { kind: "mlpal_user", token: "eyJh.eyJi.sig", expiresAt: 1_800_000_000_000, subject: "user:42" };
+
+  test("delegated rides run and the three answer messages; the page context rides run as `context`", () => {
+    const page: PageContextV1 = { v: 1, seq: 0, surface: "dashboard", routeId: "home", route: "/dashboard", title: "Dashboard home" };
+    const run = { type: "run", requestId: "r", sessionId: "s", prompt: "list my agents", delegated: cred, context: page } satisfies ClientMessage;
+    const perm = { type: "permission_response", id: "a", decision: "allow", delegated: cred } satisfies ClientMessage;
+    const question = { type: "question_response", id: "q", outcome: { declined: false, answers: [] }, delegated: cred } satisfies ClientMessage;
+    const approval = { type: "approval_response", sessionId: "s", decision: "allow", parkId: "p", delegated: cred } satisfies ClientMessage;
+    expect([run, perm, question, approval].map((m) => m.delegated.kind)).toEqual(["mlpal_user", "mlpal_user", "mlpal_user", "mlpal_user"]);
+    // @ts-expect-error a send carries no credential
+    const send: ClientMessage = { type: "send", sessionId: "s", text: "x", delegated: cred };
+    expect(send.type).toBe("send");
+  });
+
+  test("the capabilities and the refusal codes are typed", () => {
+    const caps: ServerCapability[] = ["delegated_credentials", "page_context"];
+    const codes: ErrorCode[] = ["delegated_not_accepted", "delegated_not_declared", "delegated_subject_mismatch", "delegated_invalid", "delegated_expired"];
+    expect([caps.length, codes.length]).toEqual([2, 5]);
+    // @ts-expect-error only mlpal_user exists in v1
+    const other: DelegatedCredential = { ...cred, kind: "gmail" };
+    expect(other.subject).toBe("user:42");
+  });
+});
+
+describe("0.25.0 (session_history.pendingQueue, D-63: additive)", () => {
 
   test("a newest history page may list this person's UI-queued runs, each with its words; the field is optional", () => {
     const run: PendingQueuedRun = { requestId: "rq-ui", position: 2, inboxSeq: 7, prompt: "and then?", blocks: [{ type: "text", text: "see" }] };

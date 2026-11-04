@@ -656,6 +656,17 @@ describe("profile loading", () => {
     expect(() => load("kube-insecure-bad", ["credentials: [{ ref: kind, tool: kube, allowInsecureTls: 'yes' }]"])).toThrow(/credentials\.0\.allowInsecureTls/);
   });
 
+  test("C8: delegated: [mlpal] loads; any other value is refused; it is never inherited", () => {
+    const load = (name: string, body: string[], ext = "coding") => loadProfile(writeProfile(`p/${name}`, ["spec: mlpal/hop-v1", `name: ${name}`, "version: 1.0.0", `extends: ${ext}`, ...body].join("\n")), opts());
+    expect(load("deleg-ok", ["delegated: [mlpal]"]).delegated).toEqual(["mlpal"]);
+    expect(load("deleg-none", []).delegated).toBeUndefined();
+    expect(load("deleg-empty", ["delegated: []"]).delegated).toBeUndefined();
+    expect(() => load("deleg-gmail", ["delegated: [gmail]"])).toThrow(/delegated/);
+    expect(() => load("deleg-twice", ["delegated: [mlpal, mlpal]"])).toThrow(/delegated/);
+    // A child must declare it itself: a credential grant never arrives through `extends`.
+    expect(load("deleg-child", [], "../deleg-ok").delegated).toBeUndefined();
+  });
+
   test("safety + defaultMode autopilot is a load error (review 22)", () => {
     const pdir = writeProfile("p/safauto", [
       "spec: mlpal/hop-v1", "name: safauto", "version: 1.0.0", "extends: coding",

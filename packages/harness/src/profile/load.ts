@@ -16,7 +16,7 @@ import type {
   SafetyPolicy,
   TuningPolicy,
 } from "./types";
-import { PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
+import { DELEGATED_KINDS, PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
 import { pinsOutsidePolicy } from "./model-policy";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
@@ -446,6 +446,11 @@ export const profileYamlSchema = z
     workspace: workspaceSchema.optional(),
     processes: processesSchema.optional(),
     credentials: z.array(credentialSchema).optional(),
+    // C8 (managed-v1): the end-user credentials this HOP's commands may carry. v1 knows only `mlpal`.
+    delegated: z
+      .array(z.enum(DELEGATED_KINDS))
+      .refine((l) => new Set(l).size === l.length, "a delegated kind is listed twice")
+      .optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -975,6 +980,8 @@ export function composeProfile(
     locked,
     tunable,
     ...(y.model_policy ? { modelPolicy: { allow: y.model_policy.allow ?? [], deny: y.model_policy.deny ?? [] } } : {}),
+    // Not inherited: a credential grant is declared by the HOP that runs, never arrives through `extends`.
+    ...(y.delegated?.length ? { delegated: y.delegated } : {}),
     ...p4Blocks(parent, y),
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };

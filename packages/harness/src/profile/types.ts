@@ -267,6 +267,10 @@ export interface KubeCredential {
   allowInsecureTls?: true;
 }
 
+/** C8: the delegated credential kinds a HOP may declare (closed set). */
+export const DELEGATED_KINDS = ["mlpal"] as const;
+export type DelegatedKind = (typeof DELEGATED_KINDS)[number];
+
 export interface HopCredential {
   ref: string;
   /** The MCP server that uses it, or `sandbox`. */
@@ -379,6 +383,9 @@ export interface Profile {
   processes?: HopProcesses;
   credentials?: HopCredential[];
   kubeCredentials?: KubeCredential[];
+  /** C8 (managed-v1): the end-user credentials this HOP's commands may carry (`mlpal`: the signed-in user's token in
+   *  `mlpal` commands only). Not inherited. Absent => none. */
+  delegated?: DelegatedKind[];
   /** Setting paths (dot notation) overrides and the tuner may NOT touch. */
   locked: string[];
   /** The declared optimization surface: paths the tuner may move, with bounds (numeric or enum). */
