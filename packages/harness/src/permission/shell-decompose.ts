@@ -654,6 +654,9 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Li
       if (rest === null) return;
       // `env` with any option or NAME=VALUE sets the command's environment
       if (basename(head.text) === "env" && rest.length < words.length - 1) line.envChanged = true;
+      // With no command after it, the prefix is the program that runs: a bare `env` prints the environment, and a rule
+      // must see it (managed-v1, C8).
+      if (rest.length === 0) break;
       words = rest;
       continue;
     }
