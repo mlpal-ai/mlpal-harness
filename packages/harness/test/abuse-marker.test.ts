@@ -40,6 +40,15 @@ describe("C1 §7.4: the HOP's abuse marker, wherever the model put it", () => {
     }
   });
 
+  test("review F7: an unclosed marker of any length is held, never streamed; a newline releases it as the record keeps it", () => {
+    const long = `x [[mlpal:abuse reason=${"a".repeat(300)}`;
+    expect(stream([long.slice(0, 100), long.slice(100, 250), long.slice(250)])).toBe("x ");
+    const closed = `x [[mlpal:abuse reason=${"a".repeat(300)}]] y`;
+    for (const cut of [5, 50, 200, 310]) expect(stream([closed.slice(0, cut), closed.slice(cut)])).toBe("x  y");
+    expect(stripAbuseMarker(msg(closed)).message).toEqual(msg("x y"));
+    expect(stream(["a [[mlpal:abuse broken\n", "next"])).toBe("a [[mlpal:abuse broken\nnext");
+  });
+
   test("brackets that are not a marker are released, in order", () => {
     expect(stream(["see [[x]]\n[", "note] done\n"])).toBe("see [[x]]\n[note] done\n");
     expect(stream(["a list [", "1] and [[mlpal:reveal kind=api_key]]"])).toBe("a list [1] and [[mlpal:reveal kind=api_key]]");

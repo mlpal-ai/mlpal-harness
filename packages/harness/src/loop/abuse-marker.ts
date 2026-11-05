@@ -12,8 +12,6 @@ export const ABUSE_MARKER_PREFIX = "[[mlpal:abuse";
 /** A marker, closed, or unclosed at the very end of the text; with the spaces around it. */
 const MARKER = /[ \t]*\[\[mlpal:abuse\b[^\]\n]*(?:\]\]|$)[ \t]*/g;
 const WELL_FORMED = /^\[\[mlpal:abuse reason=([a-z0-9_]{1,32})\]\]$/;
-/** Past this many characters an unclosed `[[mlpal:abuse` is not a marker the stream waits for. */
-const MAX_HELD = 256;
 
 /** `text` without its markers, and the first well-formed marker's reason (null when none is). */
 function strip(text: string): { text: string; reason: string | null; found: boolean } {
@@ -48,13 +46,14 @@ export function stripAbuseMarker<M extends Message>(message: M): { message: M; r
   return found ? { message: { ...message, content: next }, reason } : { message, reason: null };
 }
 
-/** The start of a tail that is, or may become, a marker: `[`, `[[`, `[[m`… up to an unclosed `[[mlpal:abuse…`. */
+/** The start of a tail that is, or may become, a marker: an unclosed `[[mlpal:abuse…` of any length (review F7: the
+ *  record strips it whatever its length, so the stream must never show it), or a last few characters that could still
+ *  grow into one (`[`, `[[`, `[[m`…). -1 when there is none. */
 function markerTail(s: string): number {
-  for (let i = Math.max(0, s.length - MAX_HELD); i < s.length; i++) {
-    if (s[i] !== "[") continue;
-    const tail = s.slice(i);
-    if (ABUSE_MARKER_PREFIX.startsWith(tail)) return i;
-    if (tail.startsWith(ABUSE_MARKER_PREFIX) && !tail.includes("]]") && !tail.includes("\n")) return i;
+  const open = s.lastIndexOf(ABUSE_MARKER_PREFIX);
+  if (open >= 0 && !s.includes("]]", open) && !s.includes("\n", open)) return open;
+  for (let i = Math.max(0, s.length - ABUSE_MARKER_PREFIX.length); i < s.length; i++) {
+    if (s[i] === "[" && ABUSE_MARKER_PREFIX.startsWith(s.slice(i))) return i;
   }
   return -1;
 }

@@ -15,19 +15,28 @@ describe("pattern redaction (C8 §8)", () => {
     const out = redactText(
       [
         `bearer ${JWT}`,
-        "created mlpal_sk_AbCdEf123456 and mlpal_hk_zzzzzzzz9 and mlpal_svc_q1w2e3r4t5 and cde_sk_00000000aaaa",
+        "created mlpal_sk_AbCdEf1234567890XY and mlpal_hk_zzzzzzzzzzzzzzzz9 and mlpal_svc_q1w2e3r4t5y6u7i8o9 and cde_sk_00000000aaaabbbbcc",
         "env MLPAL_ACCESS_TOKEN=mlpal-se-0123456789abcdef0123456789abcdef",
         "dsn postgresql://app:s3cr3t-P%40ss@db.internal:5432/app and redis://default:pw123456@cache:6379",
       ].join("\n"),
     );
     expect(out).not.toContain(JWT);
     expect(out).toContain("bearer [redacted:jwt]");
-    for (const leaked of ["AbCdEf123456", "zzzzzzzz9", "q1w2e3r4t5", "00000000aaaa", "0123456789abcdef0123456789abcdef", "s3cr3t", "pw123456"]) expect(out).not.toContain(leaked);
+    for (const leaked of ["AbCdEf1234567890XY", "zzzzzzzzzzzzzzzz9", "q1w2e3r4t5y6u7i8o9", "00000000aaaabbbbcc", "0123456789abcdef0123456789abcdef", "s3cr3t", "pw123456"]) expect(out).not.toContain(leaked);
     expect(out).toContain("[redacted:mlpal-key] and [redacted:mlpal-key]");
     expect(out).toContain("MLPAL_ACCESS_TOKEN=[redacted:sandbox-stand-in]");
     // The scheme, user and host stay readable: only the password goes.
     expect(out).toContain("postgresql://app:[redacted:db-url-password]@db.internal:5432/app");
     expect(out).toContain("redis://default:[redacted:db-url-password]@cache:6379");
+  });
+
+  test("review F1: a key's display prefix (8 characters, C1 §2.4) stays readable; 16 or more is a key", () => {
+    registerPlatformPatterns();
+    const line = "[[mlpal:reveal kind=api_key key_id=812 key_prefix=mlpal_sk_abcd1234... label=ci handle=rvl_abcdefghijklmnopqrstuvwxyz234567 expires_at=2026-11-04T21:05:00Z]]";
+    expect(redactText(line)).toBe(line);
+    expect(redactText("id 812  mlpal_sk_abcd1234...  ci")).toBe("id 812  mlpal_sk_abcd1234...  ci");
+    expect(redactText("mlpal_sk_abcd1234efgh5678")).toBe("[redacted:mlpal-key]");
+    expect(redactText("mlpal_sk_abcd1234efgh567")).toBe("mlpal_sk_abcd1234efgh567");
   });
 
   test("a reveal handle and ordinary text are left alone", () => {

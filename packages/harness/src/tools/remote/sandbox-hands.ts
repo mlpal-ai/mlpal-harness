@@ -39,6 +39,9 @@ export interface HandsExecOptions extends HandsCallOptions {
   /** C8: values the sandbox host keeps for this one exec. The guest process sees a per-exec stand-in, and the host's
    *  egress proxy puts the value in its place on the wire (C8-sandbox-side). Never with `detach`. */
   secretEnv?: Record<string, string>;
+  /** Who asks: the calling session and its tool call (C8: only the served root session's own `mlpal` call gets the
+   *  user's credential, and only that call's result may carry its reveal cards). */
+  caller?: { sessionId?: string; toolUseId?: string };
   /** Written to the command's stdin whole (a hook's event JSON). */
   stdin?: string;
 }
@@ -150,10 +153,10 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
       const signal = ctx.signal;
       try {
         if (input.run_in_background) {
-          const r = await client.exec(input.command, { cwd, timeoutMs: MAX_TIMEOUT, detach: true, signal });
+          const r = await client.exec(input.command, { cwd, timeoutMs: MAX_TIMEOUT, detach: true, signal, caller: { sessionId: ctx.sessionId, toolUseId: ctx.toolUseId } });
           return ok(`Started background task ${r.execId}. Read its output with BashOutput, stop it with Kill.`);
         }
-        const r = await client.exec(input.command, { cwd, timeoutMs: input.timeout ?? DEFAULT_TIMEOUT, signal });
+        const r = await client.exec(input.command, { cwd, timeoutMs: input.timeout ?? DEFAULT_TIMEOUT, signal, caller: { sessionId: ctx.sessionId, toolUseId: ctx.toolUseId } });
         return renderExec(r, maxOutput);
       } catch (e) {
         return failed("sandbox exec failed", e);

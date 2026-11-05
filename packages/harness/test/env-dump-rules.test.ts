@@ -1,5 +1,7 @@
 /**
  * managed-v1 (S-GUIDE-HOP's ask, C8 context): a command that prints the environment must be a command the rules see.
+ * DENY below is a test list shaped like the dashboard HOP's rules, not the HOP's own file: what the HOP denies is
+ * S-GUIDE-HOP's to test against its hop.yaml (review note).
  * A bare `env` (or `env -i`, `env A=1`) used to decompose to nothing, as the `env` prefix with no command after it, so a
  * deny rule never fired on it and `mlpal whoami; env` passed an allow rule written for `mlpal`.
  */
@@ -9,7 +11,7 @@ import { decomposeBash } from "../src/permission/shell-decompose";
 
 const decide = async (o: { allow?: string[]; deny?: string[] }, command: string) => (await createPolicy({ mode: "manual", ...o })({ toolName: "Bash", input: { command } } as never)).behavior;
 
-/** The dashboard HOP's deny rules for the environment dumpers. */
+/** Deny rules of the dashboard kind, for the environment dumpers (a copy for this test). */
 const DENY = ["Bash(env*)", "Bash(printenv*)", "Bash(export*)", "Bash(set*)", "Bash(declare*)", "Bash(typeset*)", "Bash(compgen*)", "Bash(*/proc/*/environ*)"];
 
 describe("environment dumpers are commands the rules see", () => {
@@ -23,7 +25,7 @@ describe("environment dumpers are commands the rules see", () => {
     expect(decomposeBash("env -u X git status").commands.map((c) => c.forms)).toEqual([["git status"]]);
   });
 
-  test("each dumper is denied by the HOP's rules, alone or behind an allowed command", async () => {
+  test("each dumper is denied by deny rules of the dashboard kind, alone or behind an allowed command", async () => {
     for (const command of [
       "env",
       "env -i",
