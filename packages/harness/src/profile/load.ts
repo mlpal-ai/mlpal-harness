@@ -1148,14 +1148,30 @@ export function assertSettingsRespectLocks(
     ["verify.agent", "verification.agent.enabled"],
   ];
   for (const [settingsPath, profilePath] of map) {
-    if (getPath(explicit, settingsPath) === undefined) continue;
+    const value = getPath(explicit, settingsPath);
+    if (value === undefined) continue;
     if (profile.locked.some((l) => profilePath === l || profilePath.startsWith(`${l}.`))) {
+      // A deny list only ever hardens: settings may add rules to a locked one (the host unions them, lockedDenyUnion),
+      // never clear, replace or reshape it (managed-v1: the workspace's credential-guard layer).
+      if (settingsPath === "permissions.deny") {
+        if (Array.isArray(value) && value.length > 0 && value.every((e) => typeof e === "string" && e.length > 0)) continue;
+        throw new Error(
+          `settings set "permissions.deny" to something other than rules to add, but profile "${profile.name}" locks ` +
+            `"permissions.deny": settings may only add rules to it (a non-empty list of rules), never clear or replace it`,
+        );
+      }
       throw new Error(
         `settings set "${settingsPath}", but profile "${profile.name}" locks "${profilePath}" — ` +
           `remove the setting or use a profile that does not lock it`,
       );
     }
   }
+}
+
+/** The deny rules a run enforces under a profile: every one the profile has, in order, then the ones settings add
+ *  (each rule once). Settings can only harden a deny list, never remove a rule from it. */
+export function lockedDenyUnion(profileDeny: readonly string[], settingsDeny: readonly string[]): string[] {
+  return [...new Set([...profileDeny, ...settingsDeny])];
 }
 
 /**

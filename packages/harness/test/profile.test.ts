@@ -10,7 +10,7 @@ import {
   CODING_ENV_BROKEN_RE,
   CODING_VERIFY_CMD_RE, CODING_MEMORY_CONTRACT } from "../src/profile/builtins/coding";
 import { REVIEWER_PROFILE } from "../src/profile/builtins/reviewer";
-import { assertSettingsRespectLocks, builtinProfiles, HopPathError, loadProfile } from "../src/profile/load";
+import { assertSettingsRespectLocks, builtinProfiles, HopPathError, loadProfile, lockedDenyUnion } from "../src/profile/load";
 import { describeProfile } from "../src/profile/describe";
 import { bashTool } from "../src/tools/builtin/bash";
 import { editTool, writeTool } from "../src/tools/builtin/files";
@@ -756,6 +756,35 @@ describe("profile loading", () => {
     expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, {})).not.toThrow();
     // Coding locks nothing.
     expect(() => assertSettingsRespectLocks(CODING_PROFILE, { mode: "manual" })).not.toThrow();
+  });
+});
+
+describe("a locked permissions.deny: settings may add to it, never remove or override it (managed-v1 workspace)", () => {
+  const lockedAllow = { ...CODING_PROFILE, name: "allow-locked", locked: ["permissions.allow"] };
+
+  test("adding entries to a locked deny list is allowed (the reviewer locks deny)", () => {
+    expect(REVIEWER_PROFILE.locked).toContain("permissions.deny");
+    expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, { permissions: { deny: ["Bash(cat ~/.mlpal/*)", "Read(~/.mlpal/**)"] } })).not.toThrow();
+  });
+
+  test("an empty list, a non-list or a non-string entry is refused: settings cannot clear or replace a locked deny", () => {
+    for (const deny of [[], null, "Bash(x)", { replace: [] }, ["Bash(x)", 7], [""]]) {
+      expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, { permissions: { deny } })).toThrow(/locks "permissions.deny".*only add/);
+    }
+  });
+
+  test("the merged deny keeps every locked entry, in order, whatever settings add", () => {
+    const merged = lockedDenyUnion(REVIEWER_PROFILE.permissions.deny, ["Read(~/.mlpal/**)", REVIEWER_PROFILE.permissions.deny[0] ?? "x"]);
+    expect(merged.slice(0, REVIEWER_PROFILE.permissions.deny.length)).toEqual(REVIEWER_PROFILE.permissions.deny);
+    expect(merged).toContain("Read(~/.mlpal/**)");
+    expect(new Set(merged).size).toBe(merged.length);
+  });
+
+  test("a locked allow and a locked mode are still refused, deny additions or not", () => {
+    expect(() => assertSettingsRespectLocks(lockedAllow, { permissions: { allow: ["Bash(*)"] } })).toThrow(/locks "permissions.allow"/);
+    expect(() => assertSettingsRespectLocks(REVIEWER_PROFILE, { mode: "autopilot", permissions: { deny: ["Bash(x)"] } })).toThrow(/locks "permissions.defaultMode"/);
+    // A deny on a HOP that does not lock it is what it always was: allowed.
+    expect(() => assertSettingsRespectLocks(CODING_PROFILE, { permissions: { deny: [] } })).not.toThrow();
   });
 });
 
