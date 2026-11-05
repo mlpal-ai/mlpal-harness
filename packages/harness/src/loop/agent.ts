@@ -1093,7 +1093,8 @@ export class AgentSession {
       const marked = stripAbuseMarker(result!.message);
       if (marked.message !== result!.message) {
         result = { ...result!, message: marked.message };
-        if (marked.reason) this.abuseReason = marked.reason;
+        // One flag per turn: the first well-formed reason of the run.
+        if (marked.reason) this.abuseReason ??= marked.reason;
         else log.warn("malformed abuse marker stripped; no flag raised");
       }
       // A model call is recorded once: a resumed answer was, by the engine that made it.
