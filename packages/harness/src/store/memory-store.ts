@@ -253,6 +253,27 @@ export interface MemoryStoreClientOptions {
   /** Per-request bound (default 10 s). */
   timeoutMs?: number;
   logger?: Logger;
+  /** Asks the token's issuer for a fresh token for the run (the scheduler's memory-token route, which rewrites the token
+   *  file); true when one is on file. Engine tokens live at most 300 s and a turn may run longer: the client renews a
+   *  token that expires within RENEW_BEFORE_S, and once on a 401, before its one retry. */
+  renew?: (att: MemoryAttribution) => Promise<boolean>;
+  /** The clock a token's `exp` is read against (ms). */
+  now?: () => number;
+}
+
+/** A token with less than this left is renewed before the request (a 300 s token: at 240 s). */
+export const RENEW_BEFORE_S = 60;
+
+/** The `exp` claim of a JWT (decoded, not verified: the store verifies), or null. */
+function tokenExp(token: string): number | null {
+  const part = token.split(".")[1];
+  if (!part) return null;
+  try {
+    const exp = (JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as { exp?: unknown }).exp;
+    return typeof exp === "number" ? exp : null;
+  } catch {
+    return null;
+  }
 }
 
 export class MemoryStoreClient {
@@ -261,6 +282,10 @@ export class MemoryStoreClient {
   private readonly fetchImpl: StoreFetch;
   private readonly timeoutMs: number;
   private readonly log: Logger;
+  private readonly renewToken?: (att: MemoryAttribution) => Promise<boolean>;
+  private readonly now: () => number;
+  /** The renewal under way, per run: concurrent requests wait for the one. */
+  private readonly renewing = new Map<string, Promise<boolean>>();
 
   constructor(opts: MemoryStoreClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
@@ -268,6 +293,25 @@ export class MemoryStoreClient {
     this.fetchImpl = opts.fetch ?? ((url, init) => fetch(url, init));
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.log = opts.logger ?? silentLogger;
+    this.renewToken = opts.renew;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** One renewal per run at a time; never throws (a failed renewal leaves the token as it was). */
+  private renew(att: MemoryAttribution, why: "expiring" | "unauthenticated"): Promise<boolean> {
+    if (!this.renewToken) return Promise.resolve(false);
+    let p = this.renewing.get(att.runId);
+    if (!p) {
+      p = this.renewToken(att)
+        .catch(() => false)
+        .then((ok) => {
+          this.log[ok ? "info" : "warn"]("memory.store.token_renewed", { why, ok, sid: att.sid, run_id: att.runId });
+          return ok;
+        })
+        .finally(() => this.renewing.delete(att.runId));
+      this.renewing.set(att.runId, p);
+    }
+    return p;
   }
 
   async checkpoint(body: MemoryCheckpointBody, att: MemoryAttribution): Promise<MemoryCheckpointAnswer> {
@@ -310,10 +354,14 @@ export class MemoryStoreClient {
 
   private async request(op: string, method: "GET" | "POST", path: string, att: MemoryAttribution, body?: unknown): Promise<Record<string, unknown>> {
     const payload = body === undefined ? undefined : JSON.stringify(body);
+    const exp = this.renewToken ? tokenExp(this.tokenProvider()) : null;
+    if (exp !== null && exp - this.now() / 1000 < RENEW_BEFORE_S) await this.renew(att, "expiring");
     let res = await this.send(op, method, path, att, payload);
-    // The token file may have been rewritten since this request read it (a refresh): read it once more.
+    // The token file may have been rewritten since this request read it (a refresh), or the token expired mid-turn:
+    // renew it once if the host can, then read it once more.
     if (res.status === 401) {
       this.log.info("memory.store.reauth", { op, sid: att.sid, run_id: att.runId });
+      await this.renew(att, "unauthenticated");
       res = await this.send(op, method, path, att, payload);
     }
     const parsed: unknown = await res.json().catch(() => null);

@@ -119,6 +119,49 @@ describe("MemoryStoreClient: checkpoints", () => {
     expect(fake.requests).toHaveLength(2);
   });
 
+  test("tokens live 300 s: a 401 asks for a fresh token once (renew), then the call succeeds", async () => {
+    let current = token;
+    const renewed: string[] = [];
+    const c = new MemoryStoreClient({ baseUrl: fake.url, tokenProvider: () => current, renew: async (a) => (renewed.push(a.runId), (current = fake.mintEngine(claims())), true) });
+    fake.revoke(token); // past its 300 s
+    await c.checkpoint(ck("ck:1", [learning("a", "x")]), att);
+    expect(renewed).toEqual(["run-1"]);
+    expect(fake.requests.map((r) => r.headers.authorization)).toEqual([`Bearer ${token}`, `Bearer ${current}`]);
+  });
+
+  test("a token about to expire is renewed before the request, once for concurrent calls", async () => {
+    const at = 1_800_000_000;
+    const jwt = (exp: number) => `h.${Buffer.from(JSON.stringify({ exp, run_id: "run-1" })).toString("base64url")}.s`;
+    let current = jwt(at + 50);
+    let renews = 0;
+    const seen: string[] = [];
+    const c = new MemoryStoreClient({
+      baseUrl: "http://memory.test/api/v1",
+      tokenProvider: () => current,
+      now: () => at * 1000,
+      renew: async () => {
+        renews += 1;
+        await Bun.sleep(5);
+        current = jwt(at + 300);
+        return true;
+      },
+      fetch: async (_u, init) => (seen.push(String((init?.headers as Record<string, string>).authorization)), new Response(JSON.stringify({ hits: [], store_version: 1 }), { status: 200 })),
+    });
+    await Promise.all([c.search({ query: "q" } as never, att).catch(() => undefined), c.search({ query: "q" } as never, att).catch(() => undefined)]);
+    expect(renews).toBe(1);
+    expect(seen).toEqual([`Bearer ${jwt(at + 300)}`, `Bearer ${jwt(at + 300)}`]);
+    // Far from expiry: no renewal.
+    await c.search({ query: "q" } as never, att).catch(() => undefined);
+    expect(renews).toBe(1);
+  });
+
+  test("a renew that fails leaves the old rule: one re-read, then unauthenticated (the rung turns memory off, never the turn)", async () => {
+    const c = new MemoryStoreClient({ baseUrl: fake.url, tokenProvider: () => "expired", renew: async () => false });
+    const e = await c.checkpoint(ck("ck:1", [learning("a", "x")]), att).catch((x) => x);
+    expect(e).toBeInstanceOf(MemoryUnauthenticatedError);
+    expect(fake.requests).toHaveLength(2);
+  });
+
   test("a checkpoint over max_write_bytes is 413 write_too_large {size, limit} and nothing is staged", async () => {
     const e = await client().checkpoint(ck("ck:big", [learning("big", "x".repeat(5000))]), att).catch((x) => x);
     expect(e).toBeInstanceOf(MemoryWriteTooLargeError);
