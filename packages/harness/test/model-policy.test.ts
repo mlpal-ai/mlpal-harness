@@ -240,6 +240,16 @@ describe("the budget refusal's window and resetsAt (protocol 0.22.2)", () => {
     expect(persisted).toMatchObject({ code: "budget_exceeded", window: "daily", resetsAt: "2026-10-27T00:00:00Z" });
   });
 
+  test("C1 §7.5 / C6: the cap's subject rides the refusal, so an edge can tell a shared pool from the user's own cap", async () => {
+    for (const subject of ["key", "anonymous_pool", "signed_in_pool", "end_user"] as const) {
+      const { raised, refusal, persisted } = await runAgainst(budget403({ window: "daily", reset_at: "2026-10-27T00:00:00Z", subject }));
+      expect([raised?.subject, refusal?.subject, persisted?.subject, refusal?.resetsAt]).toEqual([subject, subject, subject, "2026-10-27T00:00:00Z"]);
+    }
+    // A subject the contract does not name is absent, never passed on.
+    const odd = await runAgainst(budget403({ window: "daily", subject: "somebody" }));
+    expect([odd.raised?.subject, Object.keys(odd.refusal ?? {}).includes("subject")]).toEqual([undefined, false]);
+  });
+
   test("a 403 body without them (a gateway before d2e0489): both absent, nothing read from the prose", async () => {
     const { raised, refusal, persisted } = await runAgainst(BUDGET_403);
     expect(raised?.budgetExceeded).toBe(true);

@@ -95,7 +95,7 @@ export function modelRefusal(model: string, hop: string, reason: ModelRefusal["r
 
 /** The gateway refused a call because a budget cap of the key is spent (protocol 0.22.1); the
  *  cap's window and when it resets ride along only when the gateway named them (0.22.2). */
-export function budgetRefusal(model: string, hop: string, cap: Pick<ModelRefusal, "window" | "resetsAt"> = {}): ModelRefusal {
+export function budgetRefusal(model: string, hop: string, cap: Pick<ModelRefusal, "window" | "resetsAt" | "subject"> = {}): ModelRefusal {
   return {
     code: BUDGET_EXCEEDED,
     model,
@@ -104,6 +104,7 @@ export function budgetRefusal(model: string, hop: string, cap: Pick<ModelRefusal
     message: `HOP ${hop} cannot call ${model} now (the gateway refused it: a budget cap is spent)`,
     ...(cap.window !== undefined && { window: cap.window }),
     ...(cap.resetsAt !== undefined && { resetsAt: cap.resetsAt }),
+    ...(cap.subject !== undefined && { subject: cap.subject }),
   };
 }
 

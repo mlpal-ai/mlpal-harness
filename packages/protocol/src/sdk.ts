@@ -120,7 +120,13 @@ export interface ModelRefusal {
   /** ISO-8601 UTC instant the window resets — `budget_exceeded` only (0.22.2), present when the
    *  gateway names it. */
   resetsAt?: string;
+  /** 0.26.0 (C1 §7.5, C6): whose cap is spent, when the gateway names it. A shared pool's (`anonymous_pool`,
+   *  `signed_in_pool`) is "busy" to the person; their own (`end_user`) or the key's is a cap. */
+  subject?: BudgetSubject;
 }
+
+/** C6: the subjects a budget cap counts spend for. */
+export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user";
 
 /** 0.22.4: the remote sandbox refused for lack of capacity — a transient "not now", never a lost session. */
 export interface SandboxRefusal {

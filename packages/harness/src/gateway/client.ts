@@ -1,4 +1,5 @@
 import type {
+  BudgetSubject,
   ContentBlock,
   Message,
   StopReason,
@@ -189,11 +190,14 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 
 /** The `error` object of a non-2xx body (the Anthropic-wire envelope), string fields only: a
  *  machine field of another type (or `reset_at: null`) is absent, never coerced or read from prose. */
-function errorFields(body: unknown): { message?: string; type?: string; code?: string; model?: string; window?: string; resetAt?: string } {
+const BUDGET_SUBJECTS: ReadonlySet<string> = new Set<BudgetSubject>(["key", "anonymous_pool", "signed_in_pool", "end_user"]);
+
+function errorFields(body: unknown): { message?: string; type?: string; code?: string; model?: string; window?: string; resetAt?: string; subject?: BudgetSubject } {
   const e = (body as { error?: unknown } | null)?.error;
   if (typeof e !== "object" || e === null) return {};
   const f = e as Record<string, unknown>;
-  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at) };
+  const subject = str(f.subject);
+  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at), ...(subject && BUDGET_SUBJECTS.has(subject) ? { subject: subject as BudgetSubject } : {}) };
 }
 
 /** Why a call left a model, as a low-cardinality code and a reason built only from the gateway's machine fields
@@ -261,6 +265,8 @@ export class GatewayError extends Error {
     readonly resetAt?: string,
     /** What the request authenticated with: a key, or the platform's session token file (P6). */
     readonly credential: "key" | "session_token" = "key",
+    /** `budget_exceeded` (0.26.0, C6): whose cap is spent (`error.subject`), when the body names a known one. */
+    readonly subject?: BudgetSubject,
   ) {
     super(message);
     this.name = "GatewayError";
@@ -476,7 +482,7 @@ export class GatewayClient implements ModelClient {
           } catch {
             // not JSON after all — keep the raw excerpt
           }
-          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", f.type, f.code, f.model, f.window, f.resetAt);
+          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, undefined, f.subject);
         }
         const computeUnits = parseComputeUnits(res.headers);
         const effortApplied = parseEffortHeader(res.headers);
@@ -759,7 +765,7 @@ export class GatewayClient implements ModelClient {
     } catch {
       // non-JSON body
     }
-    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, isSessionToken(this.apiKey) ? "session_token" : "key");
+    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, isSessionToken(this.apiKey) ? "session_token" : "key", f.subject);
   }
 
   private normalizeError(e: unknown, userSignal: AbortSignal | undefined): Error {
