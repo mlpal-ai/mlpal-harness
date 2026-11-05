@@ -1,3 +1,4 @@
+import { stripAbuseMarker } from "./abuse-marker";
 import {
   addUsage,
   type AssistantEvent,
@@ -1087,6 +1088,14 @@ export class AgentSession {
         throw e;
       }
 
+      // C1 §7.4: a trailing abuse marker never reaches the record, the next call's history or the person; its reason
+      // rides the run's result.
+      const marked = stripAbuseMarker(result!.message);
+      if (marked.message !== result!.message) {
+        result = { ...result!, message: marked.message };
+        if (marked.reason) this.abuseReason = marked.reason;
+        else log.warn("malformed abuse marker stripped; no flag raised");
+      }
       // A model call is recorded once: a resumed answer was, by the engine that made it.
       if (!answered) {
         // The gateway's charge rides with the token counts (protocol 0.17.0): per call on the
@@ -2167,11 +2176,15 @@ export class AgentSession {
       const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.command}` : `run ended: ${subtype}`;
       void this.cfg.hooks.run({ event: "Notification", kind, message }, this.hookCtx()).catch(() => undefined);
     }
-    return { type: "result", subtype, numTurns, usage, ts: now(), ...(pendingApproval ? { pendingApproval } : {}) };
+    const abuse = this.abuseReason;
+    this.abuseReason = null;
+    return { type: "result", subtype, numTurns, usage, ts: now(), ...(pendingApproval ? { pendingApproval } : {}), ...(abuse ? { abuse: { reason: abuse } } : {}) };
   }
 
   // ---- telemetry v1: the stamp and the event log ----
   private currentRun: string | null = null;
+  /** C1 §7.4: the reason of the abuse marker this run's model ended a reply with; reported on its result. */
+  private abuseReason: string | null = null;
   private currentPrompt: string | null = null;
   private seq = 0;
 

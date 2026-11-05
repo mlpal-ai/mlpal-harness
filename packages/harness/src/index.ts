@@ -55,6 +55,7 @@ export { LspManager, DEFAULT_LSP_SERVERS, languageOf, projectRootOf, type LspSer
 export { createLspTool, type LspToolInput } from "./tools/builtin/lsp";
 export { CAPACITY_REASONS, createSandboxHands, guestPath, GUEST_CWD, HandsCapacityError, SANDBOX_HANDS_NAMES, type HandsCallOptions, type HandsClient, type HandsExecOptions, type HandsExecResult, type SandboxHandsOptions } from "./tools/remote/sandbox-hands";
 export * from "./loop/agent";
+export { ABUSE_MARKER_PREFIX, MarkerHoldback, stripAbuseMarker } from "./loop/abuse-marker";
 export { effectiveEntries, loadMessages } from "./loop/messages";
 export * from "./registry/models";
 export * from "./config/settings";

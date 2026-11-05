@@ -76,7 +76,9 @@ export type ServerCapability =
   | "schedules" // 0.22.0: list/add/update/remove/run_schedule_now/schedule_runs and the schedule_fired side frame (SCHEDULES-WIRE.md)
   | "queue" // P2 1.1: a run on a session another holder leases is queued (`queued`, typed refusals) and followed (`inbox_rejected`)
   | "delegated_credentials" // 0.26.0 (C8): `delegated` on run and the answer messages, from a principal-verified front only
-  | "page_context"; // 0.26.0 (C2): run.context, checked by shape and injected as data when it changed
+  | "page_context" // 0.26.0 (C2): run.context, checked by shape and injected as data when it changed
+  | "secret_reveal" // 0.26.0 (C1 §7.2): secret_reveal frames, session_history.secretReveals, the secret_revealed client frame
+  | "abuse_flag"; // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -393,6 +395,36 @@ export interface DelegatedCredential {
   subject: string;
 }
 
+/** 0.26.0 (C1 §2.3): a show-once key card. Never a plaintext key: `handle` (C4) is single use and owner-bound, and is
+ *  present only while `pending`. */
+export interface SecretRevealCard {
+  /** The tool call whose result carried the CLI's reveal line. */
+  toolUseId: string;
+  kind: string;
+  key_id: string;
+  key_prefix: string;
+  /** The key's name as the user gave it: untrusted text. */
+  label: string;
+  expires_at: string;
+  state: "pending" | "revealed" | "expired";
+  handle?: string;
+}
+
+/** 0.26.0 (capability "secret_reveal"): sent when a tool result carries the CLI's reveal line. */
+export interface SecretRevealFrame extends Omit<SecretRevealCard, "state" | "handle"> {
+  type: "secret_reveal";
+  sessionId: string;
+  handle: string;
+}
+
+/** 0.26.0 (capability "abuse_flag"): the HOP marked the turn abusive; for the front, never the browser. */
+export interface AbuseFlagFrame {
+  type: "abuse_flag";
+  sessionId: string;
+  requestId?: string;
+  reason: string;
+}
+
 export type ClientMessage =
   | {
       type: "run";
@@ -489,6 +521,8 @@ export type ClientMessage =
    *  reconnecting client's last seen `seq`) before anything else for it. */
   | { type: "watch"; sessionId: string; noticesAfter?: number }
   | WithdrawMessage
+  /** 0.26.0 (capability "secret_reveal"): the card was redeemed; the engine records it, so history says `revealed`. */
+  | { type: "secret_revealed"; sessionId: string; toolUseId: string }
   /** Internal to a front serve and its per-HOP children: a peer message for an idle session,
    *  delivered by the process that owns the session's inbox. Not for clients. */
   | { type: "deliver_mail"; sessionId: string; message: PeerMessage };
@@ -530,6 +564,8 @@ export type ServerMessage =
        *  is then followed as a `queued` one: its position updates, then its `done` or `inbox_rejected`. Runs queued
        *  through the API or a schedule are never listed. */
       pendingQueue?: PendingQueuedRun[];
+      /** 0.26.0 (capability "secret_reveal"): the reveal cards of this page of history, with their state. */
+      secretReveals?: SecretRevealCard[];
     }
   | { type: "models"; requestId?: string; models: Array<{ tag: string; displayName: string }> }
   /** yodex/2 (capability "mail"): how a `send` was delivered. `sent` = a run is live on the
@@ -601,6 +637,8 @@ export type ServerMessage =
   | ({ type: "workspace_stats"; requestId?: string } & WorkspaceStats)
   /** 0.20.5: `refusal` when the message is a model refusal (typed; see ModelRefusal). */
   | QueuedFrame
+  | SecretRevealFrame
+  | AbuseFlagFrame
   | InboxRejectedFrame
   | WithdrawnFrame
   | {

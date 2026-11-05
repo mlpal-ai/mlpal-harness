@@ -230,10 +230,18 @@ describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
     expect(send.type).toBe("send");
   });
 
+  test("C1 §7.2/§7.4: secret_reveal and abuse_flag frames, the secret_revealed client frame, history cards", () => {
+    const reveal = { type: "secret_reveal", sessionId: "s", toolUseId: "t1", kind: "api_key", key_id: "812", key_prefix: "mlpal_sk_abcd1234...", label: "ci", handle: "rvl_x", expires_at: "2026-11-04T21:05:00Z" } satisfies ServerMessage;
+    const flag = { type: "abuse_flag", sessionId: "s", requestId: "r", reason: "off_topic" } satisfies ServerMessage;
+    const redeemed = { type: "secret_revealed", sessionId: "s", toolUseId: "t1" } satisfies ClientMessage;
+    const page = { type: "session_history", sessionId: "s", messages: [], secretReveals: [{ toolUseId: "t1", kind: "api_key", key_id: "812", key_prefix: "p", label: "ci", expires_at: "x", state: "revealed" }] } satisfies ServerMessage;
+    expect([reveal.handle, flag.reason, redeemed.toolUseId, page.secretReveals[0]!.state]).toEqual(["rvl_x", "off_topic", "t1", "revealed"]);
+  });
+
   test("the capabilities and the refusal codes are typed", () => {
-    const caps: ServerCapability[] = ["delegated_credentials", "page_context"];
+    const caps: ServerCapability[] = ["delegated_credentials", "page_context", "secret_reveal", "abuse_flag"];
     const codes: ErrorCode[] = ["delegated_not_accepted", "delegated_not_declared", "delegated_subject_mismatch", "delegated_invalid", "delegated_expired"];
-    expect([caps.length, codes.length]).toEqual([2, 5]);
+    expect([caps.length, codes.length]).toEqual([4, 5]);
     // @ts-expect-error only mlpal_user exists in v1
     const other: DelegatedCredential = { ...cred, kind: "gmail" };
     expect(other.subject).toBe("user:42");

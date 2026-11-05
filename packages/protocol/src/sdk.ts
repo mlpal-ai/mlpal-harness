@@ -91,6 +91,9 @@ export interface ResultEvent {
    *  host's hop-run-result-v1 artifact. D-48: the held call an approval settles, by its id and its `index` in its
    *  assistant message's content (a provider id alone may not be unique). */
   pendingApproval?: { command: string; reason: string; toolUseId?: string; index?: number };
+  /** 0.26.0 (C1 §7.4): the HOP ended a reply with `[[mlpal:abuse reason=…]]` (stripped from the message); recorded on
+   *  the turn as data. The host tells its front with an `abuse_flag` frame. */
+  abuse?: { reason: string };
 }
 
 /**
