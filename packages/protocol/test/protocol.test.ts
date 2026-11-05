@@ -239,9 +239,9 @@ describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
   });
 
   test("the capabilities and the refusal codes are typed", () => {
-    const caps: ServerCapability[] = ["delegated_credentials", "page_context", "secret_reveal", "abuse_flag"];
+    const caps: ServerCapability[] = ["delegated_credentials", "page_context", "secret_reveal", "abuse_flag", "live_attach"];
     const codes: ErrorCode[] = ["delegated_not_accepted", "delegated_not_declared", "delegated_subject_mismatch", "delegated_invalid", "delegated_expired"];
-    expect([caps.length, codes.length]).toEqual([4, 5]);
+    expect([caps.length, codes.length]).toEqual([5, 5]);
     // @ts-expect-error only mlpal_user exists in v1
     const other: DelegatedCredential = { ...cred, kind: "gmail" };
     expect(other.subject).toBe("user:42");

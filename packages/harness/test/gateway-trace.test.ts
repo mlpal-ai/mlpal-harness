@@ -46,3 +46,43 @@ describe("gateway client carries the run's trace (telemetry v1, step 3)", () => 
     }
   });
 });
+
+describe("C6: X-MLPal-On-Behalf-Of on every gateway call of an owner-paid run", () => {
+  const run = async (client: GatewayClient) => {
+    const gen = client.stream({ model: "x", messages: [{ role: "user", content: "hi" }], maxTokens: 10 });
+    let r = await gen.next();
+    while (!r.done) r = await gen.next();
+  };
+
+  test("set: every message call and the feedback post carry it, across a retry; unset: absent", async () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    let first = true;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: { headers: Record<string, string> }) => {
+      seen.push({ url, headers: { ...init.headers } });
+      if (url.endsWith("/v1/feedback")) return new Response("{}", { status: 200 });
+      if (first) {
+        first = false;
+        return new Response("busy", { status: 503, headers: { "retry-after": "0" } });
+      }
+      return new Response(SSE, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    try {
+      const paid = new GatewayClient({ baseUrl: "http://gw", apiKey: "k", onBehalfOf: "42" });
+      await run(paid);
+      paid.postFeedback({ outcome: "accepted" } as never);
+      await Bun.sleep(10);
+      expect(seen.map((s) => s.headers["x-mlpal-on-behalf-of"])).toEqual(["42", "42", "42"]);
+      expect(seen.every((s) => s.headers.authorization === "Bearer k")).toBe(true);
+      seen.length = 0;
+      await run(new GatewayClient({ baseUrl: "http://gw", apiKey: "k" }));
+      expect(seen[0]!.headers["x-mlpal-on-behalf-of"]).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test("a value outside C6's shape is refused at construction, never sent", () => {
+    for (const bad of ["", "has space", "x".repeat(65), "tab\there", "é"]) expect(() => new GatewayClient({ baseUrl: "http://gw", apiKey: "k", onBehalfOf: bad })).toThrow(/on-behalf-of/);
+  });
+});

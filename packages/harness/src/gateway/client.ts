@@ -61,7 +61,13 @@ export interface GatewayConfig {
   signal?: AbortSignal;
   logger?: Logger;
   metrics?: Metrics;
+  /** C6: the end user an owner-paid run stands for (RunContext `gateway.on_behalf_of`), sent on every call as
+   *  `X-MLPal-On-Behalf-Of` so the gateway's per-end-user caps apply. 1–64 printable ASCII characters, no spaces. */
+  onBehalfOf?: string;
 }
+
+/** C6's value shape for `X-MLPal-On-Behalf-Of`. */
+export const ON_BEHALF_OF = /^[\x21-\x7e]{1,64}$/;
 
 export interface ToolSchema {
   name: string;
@@ -374,7 +380,12 @@ export class GatewayClient implements ModelClient {
     this.externalSignal = cfg.signal;
     this.logger = cfg.logger ?? silentLogger;
     this.metrics = cfg.metrics ?? noopMetrics;
+    if (cfg.onBehalfOf !== undefined && !ON_BEHALF_OF.test(cfg.onBehalfOf)) throw new Error("gateway on-behalf-of must be 1-64 printable ASCII characters with no spaces (C6)");
+    this.onBehalf = cfg.onBehalfOf !== undefined ? { "x-mlpal-on-behalf-of": cfg.onBehalfOf } : {};
   }
+
+  /** C6: the header every call carries on an owner-paid run; empty otherwise. */
+  private readonly onBehalf: Record<string, string>;
 
   /** Report a delegation outcome to the gateway (POST /v1/feedback). Fire-and-forget: it starts the
    *  request and returns immediately, and any failure (network, timeout, non-2xx) is swallowed — this
@@ -392,6 +403,7 @@ export class GatewayClient implements ModelClient {
     void fetch(`${this.baseUrl}/v1/feedback`, {
       method: "POST",
       headers: {
+        ...this.onBehalf,
         authorization,
         "content-type": "application/json",
         "anthropic-version": this.anthropicVersion,
@@ -718,6 +730,7 @@ export class GatewayClient implements ModelClient {
     return fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
+        ...this.onBehalf,
         ...headers,
         "content-type": "application/json",
         "anthropic-version": this.anthropicVersion,
