@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### A sandboxed Bash that exits non-zero is an error result (2026-11-06)
+
+- Remote hands (`createSandboxHands`): Bash and BashOutput answer a finished command with a non-zero exit with
+  `isError: true`, as the local Bash always has; the content (`[exit N]` and the output) is unchanged. A command still
+  running, or one with no exit status, is not an error. Before, the model saw `is_error: false` on `[exit 1]`.
+
 ### D-63: a reloaded UI can show its queued runs again; protocol 0.25.0 (additive, 2026-11-03)
 
 - Protocol: `session_history.pendingQueue?: PendingQueuedRun[]` (`{requestId, position, inboxSeq, prompt, blocks?}`),

@@ -123,7 +123,7 @@ describe("sandbox hands: the same nine tools, over a session", () => {
     expect(g.calls[0]!.opts).toMatchObject({ cwd: "/workspace", timeoutMs: 120_000 });
     const f = await t.Bash!.call({ command: "fail", timeout: 5000 }, ctx);
     expect(f.content).toBe("[exit 2]\npartial\nboom\n");
-    expect(f.isError).toBe(false);
+    expect(f.isError).toBe(true);
     expect(g.calls[1]!.opts).toMatchObject({ timeoutMs: 5000 });
     expect((await t.Bash!.call({ command: "slow" }, ctx)).content).toBe("tick\n\n[timed out]");
     const big = String((await t.Bash!.call({ command: "big" }, ctx)).content);
@@ -139,6 +139,22 @@ describe("sandbox hands: the same nine tools, over a session", () => {
     expect(g.killed).toEqual(["ex_5"]);
     const noKill = Object.fromEntries(createSandboxHands({ client: { ...g, killExec: undefined } as unknown as HandsClient }).map((x) => [x.name, x]));
     expect(await noKill.Kill!.call({ id: "ex_5" }, ctx)).toMatchObject({ isError: true });
+  });
+
+  test("a finished non-zero exit is an error result with the same content, from Bash and BashOutput; success, running and no status are not", async () => {
+    const g = guest();
+    const t = tools(g);
+    expect(await t.Bash!.call({ command: "echo ok" }, ctx)).toEqual({ content: "ok\n" });
+    expect(await t.Bash!.call({ command: "fail" }, ctx)).toEqual({ content: "[exit 2]\npartial\nboom\n", isError: true });
+    expect(await t.Bash!.call({ command: "missing-cli --version" }, ctx)).toEqual({ content: "[exit 127]\nsh: missing-cli --version: not found\n", isError: true });
+    const slow = await t.Bash!.call({ command: "slow" }, ctx);
+    expect(slow.isError).toBeFalsy();
+    const bg = await t.Bash!.call({ command: "sleep 1", run_in_background: true }, ctx);
+    const id = String(bg.content).match(/ex_\d+/)![0];
+    expect((await t.BashOutput!.call({ id }, ctx)).isError).toBeFalsy();
+    // the background command ends with exit 1: BashOutput reports the error as the foreground Bash does
+    Object.assign(g.execs.get(id)!, { state: "exited", exitCode: 1, stdout: "", stderr: "denied\n" });
+    expect(await t.BashOutput!.call({ id }, ctx)).toEqual({ content: "[exit 1]\ndenied\n", isError: true });
   });
 
   test("Read numbers lines with offset and limit and the continuation note; a missing file is an error", async () => {

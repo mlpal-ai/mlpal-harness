@@ -96,7 +96,9 @@ function renderExec(r: HandsExecResult, max: number): ToolResult {
   const body = [text, ...notes].filter(Boolean).join("\n");
   if (r.state === "running") return ok(`[still running: ${r.execId}]\n${body}`);
   if (r.exitCode === 0 || r.exitCode === null) return ok(body);
-  return { content: `[exit ${r.exitCode}]\n${body}`, isError: false };
+  // As the local Bash: a non-zero exit is an error result, so the model sees is_error and hooks, telemetry and the UI
+  // count it as one. The content is the same `[exit N]` line and output either way.
+  return { content: `[exit ${r.exitCode}]\n${body}`, isError: true };
 }
 
 /** The router's capacity reasons (all 429/503 with Retry-After); `rate_limited` is not one. */
