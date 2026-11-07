@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { HUMAN } from "@mlpal/harness-protocol";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
 import { AgentSession } from "../src/loop/agent";
-import { wrapMcpTool } from "../src/mcp/manager";
+import { unreadableSchema, wrapMcpTool } from "../src/mcp/manager";
 import { createMemorizeTool } from "../src/memory/derived";
 import { z } from "zod";
 import { canonicalInput, createPolicy, type PermissionRequest, ruleMatch, undeclaredArgs, unjudgeableAllow } from "../src/permission/engine";
@@ -112,6 +112,11 @@ describe("what an MCP tool declares", () => {
 
   test("a schema silent on additionalProperties is closed: the server may drop what it does not declare", () => {
     expect(undeclaredArgs(wrap({ type: "object", properties: { to: {} } }), { x: 1 })).toEqual(["x"]);
+  });
+
+  test("a schema whose arguments hide behind a reference or a combinator is flagged, so the host can say so", () => {
+    for (const s of [{ $ref: "#/x" }, { allOf: [{}] }, { anyOf: [{}] }, { oneOf: [{}] }, { patternProperties: {} }]) expect(unreadableSchema(s)).toBe(true);
+    for (const s of [{ type: "object", properties: {} }, { type: "object" }, undefined]) expect(unreadableSchema(s)).toBe(false);
   });
 
   test("a schema with no top-level properties declares nothing", () => {

@@ -419,6 +419,9 @@ export class McpManager {
     this.clientByName.set(name, client);
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
+    for (const t of result.tools) {
+      if (unreadableSchema(t.inputSchema)) this.logger.warn("mcp tool's arguments are not readable from its schema: a rule with an argument pattern on it fails closed", { server: name, tool: t.name });
+    }
     return result.tools.map((t) =>
       wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, {
         hands: mcpHands(config),
@@ -474,6 +477,12 @@ export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
 }
 
+
+/** A schema whose arguments sit behind a reference or a combinator: `declaredArgsOf` reads none of them. */
+export function unreadableSchema(schema: unknown): boolean {
+  if (schema === null || typeof schema !== "object" || "properties" in schema) return false;
+  return ["$ref", "allOf", "anyOf", "oneOf", "patternProperties"].some((k) => k in schema);
+}
 
 export function wrapMcpTool(
   server: string,

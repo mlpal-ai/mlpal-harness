@@ -29,6 +29,8 @@
 - A parked call records `toolName` and, for a tool other than Bash and the file tools, its canonical input as `args`
   (`pendingApproval`, additive). `command` stays the D-48 binding; a client shows `args` when present.
 - `callSubject(req)`: what a call is read by outside a rule.
+- An MCP tool whose arguments sit behind a `$ref` or a combinator is logged at connect (`unreadableSchema`): a rule
+  with an argument pattern on it fails closed.
 
 ### Memorize is a memory write, not a read (2026-11-07)
 
