@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Memorize is a memory write, not a read (2026-11-07)
+
+- `Memorize` is tagged `memory: true` and `readOnly: false`, the standing of the memory server's tools. Every mode still
+  admits it with no stop. It no longer runs concurrently with reads, and a call on record as started is not run twice.
+- A global-scope write (`Tool.isCallGlobalMemory`, `PermissionRequest.isGlobalMemory`) is refused in recon and in a
+  read-only run (`PermissionConfig.readOnlyRun`), ahead of allow rules and the safety envelope. Project scope is unchanged
+  there.
+- Derived memories are sanitized like instruction files and the section frames them as data.
+
 ### The prompt names only the memory tools a session has (2026-11-07)
 
 - `fitPromptToMemoryTools(prompt, has)` and `memoryToolsNamed(prompt)` (`memory/prompt-tools.ts`). The coding HOP's

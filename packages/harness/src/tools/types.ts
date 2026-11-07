@@ -116,6 +116,9 @@ export interface Tool<I = unknown> {
    *  (Agent with read_only/run_in_background). The loop's concurrency gate prefers this
    *  over the static flag; permission policy still uses `readOnly`. */
   isCallReadOnly?: (input: unknown) => boolean;
+  /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
+   *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
+  isCallGlobalMemory?: (input: unknown) => boolean;
   schema: z.ZodType<I>;
   /** JSON Schema handed to the model as `input_schema`. Derived from `schema`. */
   jsonSchema: Record<string, unknown>;
@@ -164,6 +167,7 @@ export function defineTool<I>(def: {
   infra?: boolean;
   memory?: boolean;
   isCallReadOnly?: (input: unknown) => boolean;
+  isCallGlobalMemory?: (input: unknown) => boolean;
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
 }): Tool<I> {
@@ -180,6 +184,7 @@ export function defineTool<I>(def: {
     infra: def.infra,
     memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
+    isCallGlobalMemory: def.isCallGlobalMemory,
     schema: def.schema,
     jsonSchema: js,
     call: def.call,

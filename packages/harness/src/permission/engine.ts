@@ -48,6 +48,8 @@ export interface PermissionRequest {
   /** A working-memory write (a `memory`-tagged tool). Not a change to the estate, so no mode
    *  guards it: recon admits it alongside reads. Deny rules and the hard denials still apply. */
   isMemory?: boolean;
+  /** A memory write that reaches every later session (`Tool.isCallGlobalMemory`). */
+  isGlobalMemory?: boolean;
   principal: Author;
 }
 
@@ -67,6 +69,8 @@ export interface PermissionConfig {
    * maps that to needs_approval headless); `deny` is a hard policy denial.
    */
   safety?: (req: PermissionRequest) => SafetyDisposition | null;
+  /** A run that may change nothing whatever its mode (a read-only sub-agent), held to what recon holds it to. */
+  readOnlyRun?: boolean;
   /** Where `bash.rule_opaque` is logged (a Bash command a rule could check only as named). */
   logger?: Logger;
 }
@@ -85,6 +89,11 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // or model choice can override it. This is the whole point: allow is earned, deny is absolute.
     const hard = hardDeny(req);
     if (hard) return { behavior: "deny", reason: hard, source: "hard_deny" };
+    // A global memory lands in every later session of every HOP, so a run that may change nothing cannot write one.
+    // Here, not in the mode default: an allow rule or the envelope must not widen it.
+    if (req.isGlobalMemory === true && (config.mode === "recon" || config.readOnlyRun === true)) {
+      return { behavior: "deny", reason: "a read-only run cannot write a global memory: use scope project", source: "mode" };
+    }
     // Autopilot asks nobody, so the containment-escape routes (cloud metadata, curl-pipe-shell,
     // privilege escalation, persistence, credential dumps) are refused outright there. In every
     // other mode the same commands reach the human through the mode default.

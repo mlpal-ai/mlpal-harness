@@ -2012,6 +2012,7 @@ export class AgentSession {
       readOnly: tool?.readOnly ?? false,
       isEdit: tool?.edits ?? false,
       isMemory: tool?.memory ?? false,
+      isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
       principal,
     };
     const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at);
