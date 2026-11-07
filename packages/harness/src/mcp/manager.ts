@@ -474,6 +474,14 @@ export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
 }
 
+/** The arguments an input schema declares, or undefined when it takes any key. A schema silent on
+ *  additionalProperties is read as closed, the way servers that drop unknown keys publish theirs. */
+function declaredArgs(schema: unknown): ReadonlySet<string> | undefined {
+  const s = (schema ?? {}) as { properties?: object; additionalProperties?: unknown };
+  if (s.additionalProperties !== undefined && s.additionalProperties !== false) return undefined;
+  return new Set(Object.keys(s.properties ?? {}));
+}
+
 export function wrapMcpTool(
   server: string,
   client: Client,
@@ -488,6 +496,8 @@ export function wrapMcpTool(
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
+  // Before the sanitizer, which drops additionalProperties.
+  const declared = declaredArgs(js);
   sanitizeJsonSchema(js);
 
   return {
@@ -498,6 +508,7 @@ export function wrapMcpTool(
     readOnly: def.annotations?.readOnlyHint === true,
     ...(opts.hands ? { hands: opts.hands } : {}),
     ...(opts.memory ? { memory: true } : {}),
+    ...(declared ? { declaredArgs: declared } : {}),
     schema: z.record(z.unknown()) as unknown as Tool<unknown>["schema"],
     jsonSchema: js,
     async call(input, ctx): Promise<ToolResult> {

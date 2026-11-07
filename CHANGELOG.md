@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Rule argument patterns: file tools by path, everything else by its declared arguments (2026-11-07)
+
+- A rule's argument pattern reads `path` only on the builtin file tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `List`,
+  `Lsp`). On any other tool it reads the whole input, as canonical JSON (keys sorted at every depth) or as sent, so key
+  order no longer decides a match. The permission judge is shown the same subject.
+- MCP rules match declared arguments only. `wrapMcpTool` records the arguments a server's schema declares
+  (`Tool.declaredArgs`); a schema silent on `additionalProperties` is read as closed. A call with an undeclared argument
+  cannot be judged: no allow with a pattern admits it, and every deny or approval entry with a pattern names it. A rule
+  with no pattern is unaffected.
+- A deny or approval entry still fires on a declared `path` of a non-file tool. An allow does not: write it against the
+  whole input.
+
 ### Memorize is a memory write, not a read (2026-11-07)
 
 - `Memorize` is tagged `memory: true` and `readOnly: false`, the standing of the memory server's tools. Every mode still

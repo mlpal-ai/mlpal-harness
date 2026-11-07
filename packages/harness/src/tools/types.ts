@@ -119,6 +119,9 @@ export interface Tool<I = unknown> {
   /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
    *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
   isCallGlobalMemory?: (input: unknown) => boolean;
+  /** The input keys this tool declares, set where the schema is the tool's only contract (an MCP server's). A key
+   *  outside it may never reach the tool, so a rule that reads arguments cannot judge that call. Absent: any key. */
+  declaredArgs?: ReadonlySet<string>;
   schema: z.ZodType<I>;
   /** JSON Schema handed to the model as `input_schema`. Derived from `schema`. */
   jsonSchema: Record<string, unknown>;

@@ -36,7 +36,7 @@ import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
 import { type Metrics, noopMetrics } from "../obs/metrics";
-import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
+import { type CanUseTool, type Decision, type PermissionRequest, undeclaredArgs } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
@@ -2006,6 +2006,7 @@ export class AgentSession {
     // resolve() lets tools that register asynchronously (MCP servers still connecting)
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
     const tool = await cfg.tools.resolve(tu.name);
+    const undeclared = undeclaredArgs(tool, input);
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
@@ -2013,6 +2014,7 @@ export class AgentSession {
       isEdit: tool?.edits ?? false,
       isMemory: tool?.memory ?? false,
       isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
+      ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
       principal,
     };
     const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at);

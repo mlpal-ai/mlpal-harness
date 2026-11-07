@@ -90,3 +90,20 @@ describe("autopilot containment", () => {
     expect(createPolicy({ mode: "cruise" })(req)).toMatchObject({ behavior: "ask" });
   });
 });
+
+describe("what the judge is shown", () => {
+  const seenFor = async (toolName: string, input: Record<string, unknown>) => {
+    const seen: { user?: string } = {};
+    await createPermissionJudge({ model_client: fakeModel('{"verdict":"unsure","reason":"r"}', seen), model: "m", context })({ toolName, input, readOnly: false, isEdit: false, principal: "user" as never });
+    return seen.user ?? "";
+  };
+
+  test("an MCP tool's whole input, whatever a path says", async () => {
+    const user = await seenFor("mcp__mail__send", { to: "a", path: "x" });
+    expect(user).toContain('"to":"a"');
+  });
+
+  test("a builtin file tool's path", async () => {
+    expect(await seenFor("Read", { path: "src/a.ts" })).toContain("Action:\nsrc/a.ts");
+  });
+});

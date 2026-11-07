@@ -1,6 +1,6 @@
 import type { Message } from "@mlpal/harness-protocol";
 import type { ModelClient } from "../gateway/client";
-import type { PermissionRequest } from "./engine";
+import { filePathOf, type PermissionRequest } from "./engine";
 
 /**
  * The permission judge: a cheap-tier classifier that decides a request the cascade would
@@ -63,8 +63,7 @@ function extractText(content: Message["content"]): string {
 
 function subjectOf(req: PermissionRequest): string {
   if (req.toolName === "Bash") return String(req.input.command ?? "");
-  if (typeof req.input.path === "string") return req.input.path;
-  return JSON.stringify(req.input).slice(0, 2000);
+  return filePathOf(req) ?? JSON.stringify(req.input).slice(0, 2000);
 }
 
 export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge {

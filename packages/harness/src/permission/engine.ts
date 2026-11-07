@@ -50,6 +50,9 @@ export interface PermissionRequest {
   isMemory?: boolean;
   /** A memory write that reaches every later session (`Tool.isCallGlobalMemory`). */
   isGlobalMemory?: boolean;
+  /** Input keys the tool's schema does not declare (`undeclaredArgs`): the tool may never see them, so a rule that reads
+   *  arguments cannot judge this call. */
+  undeclaredArgs?: string[];
   principal: Author;
 }
 
@@ -197,7 +200,9 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
     const run = subjects.commands.filter((c) => c.forms.length > 0);
     return run.length > 0 && run.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
   }
-  return globMatch(pattern, representativeArg(req));
+  const path = filePathOf(req);
+  if (path !== undefined) return globMatch(pattern, path);
+  return !req.undeclaredArgs?.length && inputForms(req).some((f) => globMatch(pattern, f));
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
@@ -212,6 +217,7 @@ const DENY_RULE = /^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/;
 /**
  * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
  * null when it does not; `""` when it names the call outright (no argument pattern, or a tool other than Bash);
+ * for a tool with arguments it does not declare, those names: such a call cannot be judged, so every pattern names it;
  * for Bash, the simple command that matched, or `undecomposable: <form>` when the command could not be decomposed (it
  * then fires every rule on Bash, whatever the pattern: fail closed). For Bash a rule fires if ANY simple command the
  * shell would run matches (inside `sh -c '…'`, substitutions, groups, compound bodies, behind prefixes), so `Bash(rm*)`
@@ -231,7 +237,7 @@ export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger)
     return r !== null && "hit" in r ? r.hit : null;
   }
   if (!toolMatches(m[1]!, req.toolName)) return null;
-  if (req.toolName !== "Bash") return pattern === undefined || globMatch(pattern, representativeArg(req)) ? "" : null;
+  if (req.toolName !== "Bash") return pattern === undefined ? "" : argumentHit(pattern, req);
   const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
@@ -302,11 +308,44 @@ export function parseApprovalEntry(entry: string): { tool: string; pattern?: str
   return { tool: m[1]!, ...(pattern !== undefined ? { pattern } : {}) };
 }
 
-/** The arg a rule pattern is matched against, per tool. */
-function representativeArg(req: PermissionRequest): string {
-  if (req.toolName === "Bash") return String(req.input.command ?? "");
-  if (typeof req.input.path === "string") return req.input.path;
-  return JSON.stringify(req.input);
+/** The tools whose `path` is what they act on, so it is what their rules read. On any other tool `path` is one more
+ *  argument, and the model writes the input. */
+const FILE_TOOLS = new Set(["Read", "Write", "Edit", "Glob", "Grep", "List", "Lsp"]);
+
+/** A builtin file tool's path; undefined for every other tool. */
+export function filePathOf(req: Pick<PermissionRequest, "toolName" | "input">): string | undefined {
+  return FILE_TOOLS.has(req.toolName) && typeof req.input.path === "string" ? req.input.path : undefined;
+}
+
+/** JSON with its keys sorted at every depth: one form for an input, whatever order a call sent it in. */
+export function canonicalInput(input: unknown): string {
+  return JSON.stringify(input, (_key, value: unknown) =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  );
+}
+
+/** The input keys `tool` does not declare. A tool with no `declaredArgs` takes its input as it comes. */
+export function undeclaredArgs(tool: { declaredArgs?: ReadonlySet<string> } | undefined, input: Record<string, unknown>): string[] {
+  const declared = tool?.declaredArgs;
+  return declared ? Object.keys(input).filter((k) => !declared.has(k)) : [];
+}
+
+/** The forms a pattern may match: canonical, so key order cannot dodge a rule, and as sent, for a rule written that way. */
+function inputForms(req: PermissionRequest): string[] {
+  return [canonicalInput(req.input), JSON.stringify(req.input)];
+}
+
+/** A deny rule or approval entry's argument pattern against a tool other than Bash: as `ruleMatch` answers. */
+function argumentHit(pattern: string, req: PermissionRequest): string | null {
+  const path = filePathOf(req);
+  if (path !== undefined) return globMatch(pattern, path) ? "" : null;
+  if (req.undeclaredArgs?.length) return `arguments the tool does not declare: ${req.undeclaredArgs.join(", ").slice(0, 200)}`;
+  // Every key here is one the tool takes, so a deny written against its `path` still holds. An allow gets no such form:
+  // it would admit the call on one argument and leave the rest unread.
+  const forms = typeof req.input.path === "string" ? [...inputForms(req), req.input.path] : inputForms(req);
+  return forms.some((f) => globMatch(pattern, f)) ? "" : null;
 }
 
 export function globMatch(pattern: string, value: string): boolean {
