@@ -176,15 +176,15 @@ describe("through the loop", () => {
 });
 
 describe("a wildcard spans every character of a value", () => {
-  for (const code of [0x0a, 0x0d, 0x85, 0x2028, 0x2029]) {
+  [0x0a, 0x0d, 0x85, 0x2028, 0x2029].forEach((code, i) => {
     const c = String.fromCodePoint(code);
-    test(`U+${code.toString(16).padStart(4, "0")} in an argument changes nothing`, async () => {
+    test(`line break ${i + 1} in an argument changes nothing`, async () => {
       const input = { to: "a", cc: ["b"], body: `one${c}two` };
       expect(await decide({ deny: [`${TOOL}(*"cc":*)`], allow: [TOOL] }, call(input))).toBe("deny");
       expect(ruleMatch(`${TOOL}(*"cc":*)`, call(input))).toBe("");
       expect(await decide({ deny: ["Read(/secret/*)"] }, call({ path: `/secret/a${c}b` }, [], "Read"))).toBe("deny");
     });
-  }
+  });
 });
 
 describe("an allow on a whole input is a literal prefix", () => {
