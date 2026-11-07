@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A stored memory reaches the prompt as quoted, sanitized data (2026-11-07)
+
+- Each line of a derived memory is quoted, so its text cannot open a heading or a fence of its own.
+- `fitMemorySection` handles a memory section; `fitPromptToMemoryTools` is for the HOP's prompt only and no longer runs
+  over stored text.
+- `projectionSection` is sanitized and carries the same frame as the local section.
+- The sanitizer also takes the underscore spelling of the system-reminder tag.
+
 ### Rule argument patterns: file tools by path, everything else by its declared arguments (2026-11-07)
 
 - A rule's argument pattern reads `path` only on the builtin file tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `List`,

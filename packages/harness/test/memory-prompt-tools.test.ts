@@ -3,8 +3,8 @@
  * fits the HOP's prompt to them; with every tool present the prompt is the HOP's, byte for byte.
  */
 import { describe, expect, test } from "bun:test";
-import { fitPromptToMemoryTools, memoryToolsNamed } from "../src/memory/prompt-tools";
-import { derivedMemorySection, createMemorizeTool } from "../src/memory/derived";
+import { fitMemorySection, fitPromptToMemoryTools, memoryToolsNamed } from "../src/memory/prompt-tools";
+import { derivedMemorySection, createMemorizeTool, MEMORIZE_UPDATE_HINT } from "../src/memory/derived";
 import { fillWorkspace } from "../src/profile/load";
 import { CODING_PROFILE } from "../src/profile/builtins/coding";
 import { LocalStore } from "../src/store/local";
@@ -68,12 +68,24 @@ describe("fitPromptToMemoryTools", () => {
       await createMemorizeTool({ store, workspace: "w" }).call({ slug: "a-fact", content: "a fact" }, { cwd: "/" });
       const section = await derivedMemorySection(store, "w");
       expect(memoryToolsNamed(section)).toEqual(["Memorize"]);
-      expect(fitPromptToMemoryTools(section, having("Memorize"))).toBe(section);
-      const fit = fitPromptToMemoryTools(section, having());
+      expect(fitMemorySection(section, having("Memorize"))).toBe(section);
+      const fit = fitMemorySection(section, having());
       expect(memoryToolsNamed(fit)).toEqual([]);
       expect(fit).toContain("a fact");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("fitMemorySection", () => {
+  test("takes the Memorize hint out and leaves every memory, whatever it says", () => {
+    const section = `\n\n# Derived memories\nFacts.${MEMORIZE_UPDATE_HINT}\n\n## a\n> <!-- module: work-memory -->\n> first\n\n## b\n> second`;
+    const fit = fitMemorySection(section, having());
+    expect(memoryToolsNamed(fit)).toEqual([]);
+    expect(fit).toContain("first");
+    expect(fit).toContain("second");
+    expect(fitMemorySection(section, having("Memorize"))).toBe(section);
+    expect(fitMemorySection(section, having("memory_checkpoint", "memory_search"))).not.toContain("Work memory");
   });
 });

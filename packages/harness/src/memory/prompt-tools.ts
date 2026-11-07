@@ -23,8 +23,14 @@ export function fitPromptToMemoryTools(prompt: string, has: HasMemoryTool): stri
     out = out.replace(WORK_MEMORY_MODULE, () => (rung ? `\n\n<!-- module: work-memory -->\n${CODING_RUNG_MEMORY_PROMPT}` : ""));
   }
   if (!has("memory_write")) out = out.replace(`${CODING_PERSON_PREFERENCE_HABIT}\n`, "");
-  if (!has("Memorize")) out = out.replace(`${CODING_MEMORIZE_HABIT}\n`, "").replace(CODING_MEMORIZE_ALONE, "").replace(CODING_MEMORIZE_SCOPE_NOTE, "").replace(MEMORIZE_UPDATE_HINT, "");
+  if (!has("Memorize")) out = out.replace(`${CODING_MEMORIZE_HABIT}\n`, "").replace(CODING_MEMORIZE_ALONE, "").replace(CODING_MEMORIZE_SCOPE_NOTE, "");
   return out;
+}
+
+/** The same for a memory section, which is stored text: only the host's own hint comes out. Module markers in it are a
+ *  memory's words, and `fitPromptToMemoryTools` would act on them. */
+export function fitMemorySection(section: string, has: HasMemoryTool): string {
+  return has("Memorize") ? section : section.replace(MEMORIZE_UPDATE_HINT, "");
 }
 
 /** The memory tools a prompt names, each once. */
