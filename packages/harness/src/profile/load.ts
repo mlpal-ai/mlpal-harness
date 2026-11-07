@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import { DELEGATED_KINDS, PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
 import { pinsOutsidePolicy } from "./model-policy";
+import { unjudgeableAllow } from "../permission/engine";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
 import { hostDir } from "../host";
@@ -817,6 +818,9 @@ export function composeProfile(
     );
   }
 
+  for (const rule of y.permissions.allow ?? []) {
+    if (unjudgeableAllow(rule)) throw new Error(`profile ${y.name}: permissions.allow "${rule}" can never admit a call: on this tool an argument pattern is a literal prefix of the input's JSON, with at most a trailing *`);
+  }
   const observe = y.verification.observe ?? parent.verification.observe;
   const observed = OBSERVE_SOURCES[observe]!;
   const tunable = [...parent.tunable.filter((t) => !y.tunable.some((o) => o.path === t.path)), ...y.tunable];

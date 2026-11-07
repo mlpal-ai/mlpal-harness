@@ -58,7 +58,8 @@ export interface PermissionRequest {
 
 export interface PermissionConfig {
   mode: PermissionMode;
-  /** Rules like "Read", "Bash", or "Bash(git*)" — trailing * is a wildcard. */
+  /** Rules like "Read", "Bash", or "Bash(git*)". On Bash and the file tools `*` is a wildcard anywhere. On any other tool
+   *  an argument pattern is a literal prefix of the input's JSON, with at most a trailing `*`: `Tool({"to":"a",*)`. */
   allow?: string[];
   deny?: string[];
   /**
@@ -72,7 +73,8 @@ export interface PermissionConfig {
    * maps that to needs_approval headless); `deny` is a hard policy denial.
    */
   safety?: (req: PermissionRequest) => SafetyDisposition | null;
-  /** A run that may change nothing whatever its mode (a read-only sub-agent), held to what recon holds it to. */
+  /** A run restricted to read-only tools whatever its mode (a read-only sub-agent). The restriction is its registry;
+   *  this adds what a registry cannot say, a refusal of the global memory writes its memory tools could make. */
   readOnlyRun?: boolean;
   /** Where `bash.rule_opaque` is logged (a Bash command a rule could check only as named). */
   logger?: Logger;
@@ -202,7 +204,21 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   }
   const path = filePathOf(req);
   if (path !== undefined) return globMatch(pattern, path);
-  return !req.undeclaredArgs?.length && inputForms(req).some((f) => globMatch(pattern, f));
+  return !req.undeclaredArgs?.length && prefixPattern(pattern) && inputForms(req).some((f) => globMatch(pattern, f));
+}
+
+/** What an allow may say about a whole input: `*`, or a literal with at most a trailing `*`. Text after a wildcard could
+ *  be any argument's value at any depth, so it says nothing about the argument it names. A string value cannot hold a
+ *  raw quote, so a literal prefix can only be the input's real start. */
+function prefixPattern(pattern: string): boolean {
+  const star = pattern.indexOf("*");
+  return star === -1 || star === pattern.length - 1;
+}
+
+/** An allow rule with an argument pattern that can never admit a call: a host says so rather than leave it inert. */
+export function unjudgeableAllow(rule: string): boolean {
+  const m = rule.match(/^([A-Za-z_]+)\((.*)\)$/);
+  return m !== null && m[1] !== "Bash" && !FILE_TOOLS.has(m[1]!) && !prefixPattern(m[2]!);
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
@@ -317,6 +333,13 @@ export function filePathOf(req: Pick<PermissionRequest, "toolName" | "input">): 
   return FILE_TOOLS.has(req.toolName) && typeof req.input.path === "string" ? req.input.path : undefined;
 }
 
+/** What a call is read by outside a rule (a judge, an `--answers` policy, a line about it): its command, a file tool's
+ *  path, or its whole input. */
+export function callSubject(req: Pick<PermissionRequest, "toolName" | "input">): string {
+  if (req.toolName === "Bash") return String(req.input.command ?? "");
+  return filePathOf(req) ?? canonicalInput(req.input);
+}
+
 /** JSON with its keys sorted at every depth: one form for an input, whatever order a call sent it in. */
 export function canonicalInput(input: unknown): string {
   return JSON.stringify(input, (_key, value: unknown) =>
@@ -332,7 +355,8 @@ export function undeclaredArgs(tool: { declaredArgs?: ReadonlySet<string> } | un
   return declared ? Object.keys(input).filter((k) => !declared.has(k)) : [];
 }
 
-/** The forms a pattern may match: canonical, so key order cannot dodge a rule, and as sent, for a rule written that way. */
+/** The forms a pattern may match: canonical, one form whatever order a call used, and as sent, for a rule written that
+ *  way. A pattern anchored on a key that does not sort first still depends on the order sent; a deny should not anchor. */
 function inputForms(req: PermissionRequest): string[] {
   return [canonicalInput(req.input), JSON.stringify(req.input)];
 }
@@ -341,16 +365,23 @@ function inputForms(req: PermissionRequest): string[] {
 function argumentHit(pattern: string, req: PermissionRequest): string | null {
   const path = filePathOf(req);
   if (path !== undefined) return globMatch(pattern, path) ? "" : null;
-  if (req.undeclaredArgs?.length) return `arguments the tool does not declare: ${req.undeclaredArgs.join(", ").slice(0, 200)}`;
+  if (req.undeclaredArgs?.length) return `arguments the tool does not declare: ${req.undeclaredArgs.map(shownKey).join(", ").slice(0, 200)}`;
   // Every key here is one the tool takes, so a deny written against its `path` still holds. An allow gets no such form:
   // it would admit the call on one argument and leave the rest unread.
   const forms = typeof req.input.path === "string" ? [...inputForms(req), req.input.path] : inputForms(req);
   return forms.some((f) => globMatch(pattern, f)) ? "" : null;
 }
 
+/** The model wrote this key, and the reason reaches a person: only a plain name is repeated. */
+function shownKey(key: string): string {
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(key) ? key : "(unnamed)";
+}
+
 export function globMatch(pattern: string, value: string): boolean {
+  // `s`: a wildcard spans every character, or one line-breaking character in a value would hide the rest from a rule.
   const re = new RegExp(
     `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`,
+    "s",
   );
   return re.test(value);
 }

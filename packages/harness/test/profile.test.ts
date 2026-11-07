@@ -173,6 +173,14 @@ describe("profile loading", () => {
     return pdir;
   }
 
+  test("an allow pattern that can never admit a call is refused at load", () => {
+    const hop = (rule: string) => `spec: mlpal/hop-v1\nname: rules\nversion: 1.0.0\ndescription: d\nextends: coding\npermissions:\n  allow:\n    - '${rule}'\n`;
+    writeProfile("hops/rules", hop('mcp__mail__send(*"to":"a"*)'));
+    expect(() => loadProfile(join(dir, "hops/rules"), opts())).toThrow(/can never admit a call/);
+    writeProfile("hops/rules", hop('mcp__mail__send({"to":"a",*)'));
+    expect(loadProfile(join(dir, "hops/rules"), opts()).permissions.allow).toContain('mcp__mail__send({"to":"a",*)');
+  });
+
   test("undefined ref loads the coding builtin", () => {
     const p = loadProfile(undefined, opts());
     expect(p.name).toBe("coding");

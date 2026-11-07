@@ -119,8 +119,8 @@ export interface Tool<I = unknown> {
   /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
    *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
   isCallGlobalMemory?: (input: unknown) => boolean;
-  /** The input keys this tool declares, set where the schema is the tool's only contract (an MCP server's). A key
-   *  outside it may never reach the tool, so a rule that reads arguments cannot judge that call. Absent: any key. */
+  /** The input keys this tool declares. A key outside it may never reach the tool, so a rule that reads arguments
+   *  cannot judge that call. Absent: any key. */
   declaredArgs?: ReadonlySet<string>;
   schema: z.ZodType<I>;
   /** JSON Schema handed to the model as `input_schema`. Derived from `schema`. */
@@ -159,6 +159,15 @@ export function sanitizeJsonSchema(node: unknown): void {
   }
 }
 
+/** The arguments an input schema declares, or undefined when it takes any key. A schema silent on
+ *  additionalProperties is read as closed, the way servers that drop unknown keys publish theirs. Read it before
+ *  `sanitizeJsonSchema`, which drops additionalProperties. */
+export function declaredArgsOf(schema: unknown): ReadonlySet<string> | undefined {
+  const s = (schema ?? {}) as { properties?: object; additionalProperties?: unknown };
+  if (s.additionalProperties !== undefined && s.additionalProperties !== false) return undefined;
+  return new Set(Object.keys(s.properties ?? {}));
+}
+
 export function defineTool<I>(def: {
   name: string;
   description: string;
@@ -175,6 +184,8 @@ export function defineTool<I>(def: {
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
 }): Tool<I> {
   const js = zodToJsonSchema(def.schema, { $refStrategy: "none" }) as Record<string, unknown>;
+  // A schema that is no plain object (a union) says nothing about its keys here, and zod is its contract at the call.
+  const declared = "properties" in js ? declaredArgsOf(js) : undefined;
   sanitizeJsonSchema(js);
   return {
     name: def.name,
@@ -188,6 +199,7 @@ export function defineTool<I>(def: {
     memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
     isCallGlobalMemory: def.isCallGlobalMemory,
+    ...(declared ? { declaredArgs: declared } : {}),
     schema: def.schema,
     jsonSchema: js,
     call: def.call,

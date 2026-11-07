@@ -5,14 +5,22 @@
 ### Rule argument patterns: file tools by path, everything else by its declared arguments (2026-11-07)
 
 - A rule's argument pattern reads `path` only on the builtin file tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `List`,
-  `Lsp`). On any other tool it reads the whole input, as canonical JSON (keys sorted at every depth) or as sent, so key
-  order no longer decides a match. The permission judge is shown the same subject.
+  `Lsp`). On any other tool it reads the whole input, as canonical JSON (keys sorted at every depth) or as sent. A pattern
+  anchored on a key that does not sort first still depends on the order sent, so a deny should not anchor. The permission
+  judge is shown the same subject.
 - MCP rules match declared arguments only. `wrapMcpTool` records the arguments a server's schema declares
   (`Tool.declaredArgs`); a schema silent on `additionalProperties` is read as closed. A call with an undeclared argument
   cannot be judged: no allow with a pattern admits it, and every deny or approval entry with a pattern names it. A rule
   with no pattern is unaffected.
-- A deny or approval entry still fires on a declared `path` of a non-file tool. An allow does not: write it against the
-  whole input.
+- A deny or approval entry still fires on a declared `path` of a non-file tool. An allow does not.
+- On a tool other than Bash and the file tools, an allow's argument pattern is a literal prefix of the input's JSON, with
+  at most a trailing `*` (`Tool({"to":"a",*)`), or a lone `*`. Any other wildcard never admits a call, and a HOP declaring
+  one is refused at load (`unjudgeableAllow`).
+- `*` spans every character of a value.
+- Builtin tools declare their arguments as MCP tools do (`defineTool`; a schema that is no plain object declares none).
+- A parked call records `toolName` and, for a tool other than Bash and the file tools, its canonical input as `args`
+  (`pendingApproval`, additive). `command` stays the D-48 binding; a client shows `args` when present.
+- `callSubject(req)`: what a call is read by outside a rule.
 
 ### Memorize is a memory write, not a read (2026-11-07)
 

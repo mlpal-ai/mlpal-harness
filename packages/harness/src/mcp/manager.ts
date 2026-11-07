@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
-import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../tools/types";
+import { declaredArgsOf, sanitizeJsonSchema, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../tools/types";
 import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
@@ -474,13 +474,6 @@ export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
 }
 
-/** The arguments an input schema declares, or undefined when it takes any key. A schema silent on
- *  additionalProperties is read as closed, the way servers that drop unknown keys publish theirs. */
-function declaredArgs(schema: unknown): ReadonlySet<string> | undefined {
-  const s = (schema ?? {}) as { properties?: object; additionalProperties?: unknown };
-  if (s.additionalProperties !== undefined && s.additionalProperties !== false) return undefined;
-  return new Set(Object.keys(s.properties ?? {}));
-}
 
 export function wrapMcpTool(
   server: string,
@@ -496,8 +489,7 @@ export function wrapMcpTool(
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
-  // Before the sanitizer, which drops additionalProperties.
-  const declared = declaredArgs(js);
+  const declared = declaredArgsOf(js);
   sanitizeJsonSchema(js);
 
   return {

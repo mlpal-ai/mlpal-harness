@@ -36,7 +36,7 @@ import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
 import { type Metrics, noopMetrics } from "../obs/metrics";
-import { type CanUseTool, type Decision, type PermissionRequest, undeclaredArgs } from "../permission/engine";
+import { type CanUseTool, canonicalInput, type Decision, filePathOf, type PermissionRequest, undeclaredArgs } from "../permission/engine";
 import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
@@ -308,6 +308,8 @@ class SafetyParkSignal extends Error {
     readonly reason: SafetyReason | "approval_required",
     /** The held call: an approval settles exactly this one (D-48), named by its position in its message. */
     readonly call: CallAt,
+    /** What a person is shown of the call (`parkedCall`). */
+    readonly shown: { toolName: string; args?: string },
   ) {
     super("safety approval edge (headless park)");
     this.name = "SafetyParkSignal";
@@ -415,9 +417,20 @@ function movesTurn(entries: ConversationEntry[]): boolean {
   return entries.some((e) => e.payload.type === "user" || e.payload.type === "assistant" || e.payload.type === "tool_result");
 }
 
-/** What a park names a call by: its command, or the path it touches. */
+/** What a park's binding names a call by: its command, or the path it touches. On a tool other than Bash and the file
+ *  tools these are just keys of its input, so this is never what a person approves by: see `parkedCall`. */
 function parkCommand(input: Record<string, unknown>): string {
   return String(input.command ?? input.path ?? "");
+}
+
+/** The most of a parked call's input a result carries. */
+const PARK_ARGS_MAX = 8000;
+
+/** What a person is shown of a parked call: its tool and, where `parkCommand` says nothing reliable, its whole input. */
+function parkedCall(req: PermissionRequest): { toolName: string; args?: string } {
+  if (req.toolName === "Bash" || filePathOf(req) !== undefined) return { toolName: req.toolName };
+  const args = canonicalInput(req.input);
+  return { toolName: req.toolName, args: args.length > PARK_ARGS_MAX ? `${args.slice(0, PARK_ARGS_MAX)}… (${args.length - PARK_ARGS_MAX} more characters)` : args };
 }
 
 /** The tool call a `needs_approval` park holds (D-48), read from the log so that it binds in any engine process. */
@@ -1518,7 +1531,7 @@ export class AgentSession {
         outcome = "needs_approval";
         log.info("run parked for approval", { reason: e.reason });
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
-        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index });
+        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index, ...e.shown });
       } else {
         throw e;
       }
@@ -2127,7 +2140,7 @@ export class AgentSession {
     // proceed past the edge.
     if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
-      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call);
+      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req));
     }
     return {
       decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),
@@ -2177,7 +2190,7 @@ export class AgentSession {
     void this.event("run.end", { subtype, turns: numTurns, usage, ...(pendingApproval ? { pending: pendingApproval.reason } : {}) });
     if (subtype !== "success" && this.cfg.hooks?.has("Notification")) {
       const kind = subtype === "needs_approval" ? "needs_approval" : subtype === "max_turns" ? "max_turns" : subtype === "cancelled" ? "cancelled" : "error";
-      const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.command}` : `run ended: ${subtype}`;
+      const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.args ? `${pendingApproval.toolName} ${pendingApproval.args}` : pendingApproval.command}` : `run ended: ${subtype}`;
       void this.cfg.hooks.run({ event: "Notification", kind, message }, this.hookCtx()).catch(() => undefined);
     }
     const abuse = this.abuseReason;

@@ -364,6 +364,11 @@ export interface WorkspaceStats {
 export interface PendingApproval {
   command: string;
   reason: string;
+  /** The held call's tool. */
+  toolName?: string;
+  /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
+   *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
+  args?: string;
   /** D-48: the held call's id (informational: a provider id may repeat across messages). */
   toolUseId?: string;
   /** D-48: the park (its needs_approval result entry's uuid; the store's approval park id). An approval_response

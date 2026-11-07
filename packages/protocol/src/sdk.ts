@@ -90,7 +90,17 @@ export interface ResultEvent {
   /** Present on subtype `needs_approval`: the pending action + its safety reason code, for the
    *  host's hop-run-result-v1 artifact. D-48: the held call an approval settles, by its id and its `index` in its
    *  assistant message's content (a provider id alone may not be unique). */
-  pendingApproval?: { command: string; reason: string; toolUseId?: string; index?: number };
+  pendingApproval?: {
+    command: string;
+    reason: string;
+    toolUseId?: string;
+    index?: number;
+    /** The held call's tool. */
+    toolName?: string;
+    /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
+     *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
+    args?: string;
+  };
   /** 0.26.0 (C1 §7.4): the HOP ended a reply with `[[mlpal:abuse reason=…]]` (stripped from the message); recorded on
    *  the turn as data. The host tells its front with an `abuse_flag` frame. */
   abuse?: { reason: string };

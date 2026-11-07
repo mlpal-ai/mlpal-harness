@@ -11,9 +11,12 @@ import { HUMAN } from "@mlpal/harness-protocol";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
 import { AgentSession } from "../src/loop/agent";
 import { wrapMcpTool } from "../src/mcp/manager";
-import { canonicalInput, createPolicy, type PermissionRequest, ruleMatch, undeclaredArgs } from "../src/permission/engine";
+import { createMemorizeTool } from "../src/memory/derived";
+import { z } from "zod";
+import { canonicalInput, createPolicy, type PermissionRequest, ruleMatch, undeclaredArgs, unjudgeableAllow } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
 import { ToolRegistry } from "../src/tools/registry";
+import { defineTool } from "../src/tools/types";
 
 const TOOL = "mcp__mail__send";
 
@@ -30,7 +33,7 @@ describe("an MCP tool's rules read its arguments, not a path", () => {
     expect(await decide(rule, call({ to: "a", path: "ok" }))).toBe("ask");
   });
 
-  test("an allow matches the whole input, in either key order", async () => {
+  test("an allow reads the whole input, canonical or as sent", async () => {
     const rule = { allow: [`${TOOL}({"to":"a",*)`] };
     expect(await decide(rule, call({ to: "a", subject: "s" }))).toBe("allow");
     const canonical = { allow: [`${TOOL}({"subject":"s","to":"a"})`] };
@@ -48,7 +51,7 @@ describe("an MCP tool's rules read its arguments, not a path", () => {
     expect((d as { reason: string }).reason).toContain("path");
   });
 
-  test("a deny reads the whole input whatever a path says, and key order cannot hide a key", async () => {
+  test("a deny reads the whole input whatever a path says, and an unanchored pattern finds a key in any order", async () => {
     const rule = { deny: [`${TOOL}(*"cc":*)`], allow: [TOOL] };
     expect(await decide(rule, call({ to: "a", cc: ["b"], path: "x" }))).toBe("deny");
     expect(await decide(rule, call({ cc: ["b"], to: "a" }))).toBe("deny");
@@ -164,5 +167,151 @@ describe("through the loop", () => {
 
   test("a call with an undeclared argument never reaches a server a deny pattern guards", async () => {
     expect(await run({ to: "a", other: "b" }, { deny: [`${TOOL}(*"cc":*)`] })).toEqual([]);
+  });
+});
+
+describe("a wildcard spans every character of a value", () => {
+  for (const code of [0x0a, 0x0d, 0x85, 0x2028, 0x2029]) {
+    const c = String.fromCodePoint(code);
+    test(`U+${code.toString(16).padStart(4, "0")} in an argument changes nothing`, async () => {
+      const input = { to: "a", cc: ["b"], body: `one${c}two` };
+      expect(await decide({ deny: [`${TOOL}(*"cc":*)`], allow: [TOOL] }, call(input))).toBe("deny");
+      expect(ruleMatch(`${TOOL}(*"cc":*)`, call(input))).toBe("");
+      expect(await decide({ deny: ["Read(/secret/*)"] }, call({ path: `/secret/a${c}b` }, [], "Read"))).toBe("deny");
+    });
+  }
+});
+
+describe("an allow on a whole input is a literal prefix", () => {
+  test("it matches on what comes first, and a trailing wildcard takes the rest", async () => {
+    expect(await decide({ allow: [`${TOOL}({"to":"a",*)`] }, call({ to: "a", subject: "s" }))).toBe("allow");
+    expect(await decide({ allow: [`${TOOL}({"to":"a"})`] }, call({ to: "a" }))).toBe("allow");
+    expect(await decide({ allow: [`${TOOL}(*)`] }, call({ to: "a" }))).toBe("allow");
+  });
+
+  test("a wildcard anywhere else never admits a call: what follows it could be any value at any depth", async () => {
+    for (const input of [{ to: "b", options: { to: "a" } }, { to: "b", list: [{ to: "a" }] }, { to: "b", subject: "a" }, { to: "a" }]) {
+      expect(await decide({ allow: [`${TOOL}(*"to":"a"*)`, `${TOOL}(*a*)`, `${TOOL}({"to":*"a"})`] }, call(input))).toBe("ask");
+    }
+  });
+
+  test("Bash and the file tools keep their globs", async () => {
+    expect(await decide({ allow: ["Read(*.md)"] }, call({ path: "a.md" }, [], "Read"))).toBe("allow");
+    expect(await decide({ allow: ["Bash(git *)"] }, call({ command: "git status" }, [], "Bash"))).toBe("allow");
+  });
+
+  test("unjudgeableAllow names exactly the rules that can never admit a call", () => {
+    expect(unjudgeableAllow(`${TOOL}(*"to":"a"*)`)).toBe(true);
+    expect(unjudgeableAllow("WebFetch(*mlpal.ai*)")).toBe(true);
+    for (const ok of [TOOL, `${TOOL}(*)`, `${TOOL}({"to":"a",*)`, "Read(*.md)", "Bash(*git*)"]) expect(unjudgeableAllow(ok)).toBe(false);
+  });
+});
+
+describe("a key order a pattern depends on", () => {
+  test("a deny anchored on a key that does not sort first holds only for the order it was written in: write denies unanchored", async () => {
+    const anchored = { deny: [`${TOOL}({"to":"a",*)`] };
+    expect(await decide(anchored, call({ to: "a", subject: "s" }))).toBe("deny");
+    expect(await decide(anchored, call({ subject: "s", to: "a" }))).toBe("ask");
+    expect(await decide({ deny: [`${TOOL}(*"to":"a"*)`] }, call({ subject: "s", to: "a" }))).toBe("deny");
+  });
+});
+
+describe("a deny's reason", () => {
+  test("names an undeclared argument only when the name is a plain identifier", () => {
+    expect(ruleMatch(`${TOOL}(*x*)`, call({ a_b: 1 }, ["a_b"]))).toContain("a_b");
+    const hit = ruleMatch(`${TOOL}(*x*)`, call({}, ["free text, with spaces"]));
+    expect(hit).toContain("does not declare");
+    expect(hit).not.toContain("free text");
+  });
+});
+
+describe("builtin tools declare their arguments too", () => {
+  const tool = defineTool({ name: "Fetch", description: "d", readOnly: true, schema: z.object({ url: z.string() }), call: async () => ({ content: "" }) });
+
+  test("a key its schema drops is undeclared", () => {
+    expect(undeclaredArgs(tool, { url: "u", z: 1 })).toEqual(["z"]);
+  });
+
+  test("a schema that takes any key declares nothing, and a non-object schema is left alone", () => {
+    const open = defineTool({ name: "Open", description: "d", readOnly: true, schema: z.record(z.unknown()), call: async () => ({ content: "" }) });
+    const either = defineTool({ name: "Either", description: "d", readOnly: true, schema: z.union([z.object({ a: z.string() }), z.object({ b: z.string() })]), call: async () => ({ content: "" }) });
+    expect(open.declaredArgs).toBeUndefined();
+    expect(either.declaredArgs).toBeUndefined();
+  });
+});
+
+describe("a parked call shows what it would do", () => {
+  const parked = async (toolName: string, input: Record<string, unknown>) => {
+    const root = join(tmpdir(), `rule-park-${crypto.randomUUID()}`);
+    const tools = new ToolRegistry();
+    tools.register(defineTool({ name: toolName, description: "d", readOnly: false, schema: z.record(z.unknown()), call: async () => ({ content: "ran" }) }));
+    let calls = 0;
+    const model_client = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        calls += 1;
+        return { model: "m", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: toolName, input }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use" } as unknown as ModelResult;
+      },
+    } as unknown as ModelClient;
+    const session = new AgentSession({ agentId: "a", sessionId: "s", workspace: "w", cwd: root, model: "m", systemPrompt: "t", tools, store: new LocalStore(root), model_client, canUseTool: () => ({ behavior: "ask", reason: "r" }), parkHeadless: "every_ask", maxTokens: 100 });
+    let result: Record<string, unknown> | undefined;
+    try {
+      for await (const e of session.run({ text: "go" })) if (e.type === "result") result = e as unknown as Record<string, unknown>;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+    expect(calls).toBe(1);
+    return result?.pendingApproval as { command: string; toolName?: string; args?: string };
+  };
+
+  test("an MCP tool: its name and its whole canonical input, whatever a path says", async () => {
+    const p = await parked(TOOL, { to: "a", body: "b", path: "c" });
+    expect(p.toolName).toBe(TOOL);
+    expect(p.args).toBe('{"body":"b","path":"c","to":"a"}');
+  });
+
+  test("a tool with nothing a binding can name still shows its arguments", async () => {
+    const p = await parked(TOOL, { to: "a" });
+    expect(p.command).toBe("");
+    expect(p.args).toBe('{"to":"a"}');
+  });
+
+  test("Bash and the file tools show the command or path they always did", async () => {
+    expect(await parked("Bash", { command: "ls" })).toMatchObject({ toolName: "Bash", command: "ls" });
+    expect((await parked("Bash", { command: "ls" })).args).toBeUndefined();
+    expect(await parked("Write", { path: "a.txt", content: "c" })).toMatchObject({ toolName: "Write", command: "a.txt" });
+  });
+
+  test("a long input is cut and says so", async () => {
+    const p = await parked(TOOL, { body: "x".repeat(9000) });
+    expect(p.args!.length).toBeLessThan(8100);
+    expect(p.args).toContain("more characters)");
+  });
+});
+
+describe("through the loop, a global memory", () => {
+  test("recon refuses the Memorize call the model made; the project one lands", async () => {
+    const root = join(tmpdir(), `rule-mem-${crypto.randomUUID()}`);
+    const store = new LocalStore(root);
+    const memorize = async (scope: string, slug: string) => {
+      let calls = 0;
+      const model_client = {
+        async *stream(): AsyncGenerator<never, ModelResult, void> {
+          calls += 1;
+          const content = calls === 1 ? [{ type: "tool_use", id: `t${slug}`, name: "Memorize", input: { slug, content: "c", scope } }] : [{ type: "text", text: "done" }];
+          return { model: "m", message: { role: "assistant", content }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: calls === 1 ? "tool_use" : "end_turn" } as unknown as ModelResult;
+        },
+      } as unknown as ModelClient;
+      const tools = new ToolRegistry();
+      tools.register(createMemorizeTool({ store, workspace: "w" }));
+      const session = new AgentSession({ agentId: "a", sessionId: `s-${slug}`, workspace: "w", cwd: root, model: "m", systemPrompt: "t", tools, store, model_client, canUseTool: createPolicy({ mode: "recon" }), maxTokens: 100 });
+      for await (const _ of session.run({ text: "go" })) void _;
+    };
+    try {
+      await memorize("global", "g-fact");
+      await memorize("project", "p-fact");
+      expect(await store.memory.listTopics()).toEqual(["w--p-fact"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
