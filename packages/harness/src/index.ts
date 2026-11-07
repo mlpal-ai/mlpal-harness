@@ -41,6 +41,7 @@ export { systemTimers, type Timers } from "./store/remote/timers";
 export * from "./store/memory-store";
 export * from "./memory/memory";
 export * from "./memory/derived";
+export * from "./memory/prompt-tools";
 export * from "./memory/projection";
 export * from "./usage/stats";
 export { CheckpointStore, type CheckpointTurn, type CheckpointFile, type RewindResult } from "./checkpoints/store";

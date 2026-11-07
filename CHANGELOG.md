@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The prompt names only the memory tools a session has (2026-11-07)
+
+- `fitPromptToMemoryTools(prompt, has)` and `memoryToolsNamed(prompt)` (`memory/prompt-tools.ts`). The coding HOP's
+  `work-memory` module told every session it had the memory server's tools, and the prompt's other memory sentences
+  assumed `Memorize` or `memory_write`. What a session has is known only at session build, so a host now fits the prompt
+  there: the module stays when all its tools are present, becomes a short one on a store grant
+  (`memory_checkpoint`, `memory_search`), and goes otherwise, along with the sentences about a missing tool. With a local
+  store only, `Memorize` is the memory and nothing calls it scratch.
+- With every tool present the prompt is byte-identical. Text a HOP wrote itself is not edited.
+
 ### D-63: a reloaded UI can show its queued runs again; protocol 0.25.0 (additive, 2026-11-03)
 
 - Protocol: `session_history.pendingQueue?: PendingQueuedRun[]` (`{requestId, position, inboxSeq, prompt, blocks?}`),

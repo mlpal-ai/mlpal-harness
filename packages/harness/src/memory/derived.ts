@@ -122,6 +122,9 @@ export function topicToEnvelope(topic: string, parsed: ParsedTopic): EpisodeEnve
   };
 }
 
+/** The section's pointer to Memorize; a host takes it out for a session without the tool. */
+export const MEMORIZE_UPDATE_HINT = " Update them with Memorize when they change.";
+
 /**
  * Render the derived-memory section for the system prompt: full content of every topic
  * in scope (global + this workspace), newest-updated first, capped so it can't crowd
@@ -175,7 +178,7 @@ export async function derivedMemoryInjection(
   if (out.length === 0) return { section: "", eventIds: [] };
   return {
     section:
-      "\n\n# Derived memories\nFacts you saved in past sessions (point-in-time — verify against current code before relying on file/line specifics). Update them with Memorize when they change.\n\n" +
+      `\n\n# Derived memories\nFacts you saved in past sessions (point-in-time — verify against current code before relying on file/line specifics).${MEMORIZE_UPDATE_HINT}\n\n` +
       out.join("\n\n") +
       (dropped ? `\n\n(${dropped} older memories omitted — see /memory)` : ""),
     eventIds,
