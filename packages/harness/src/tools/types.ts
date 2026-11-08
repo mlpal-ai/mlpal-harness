@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
@@ -185,7 +186,14 @@ export function defineTool<I>(def: {
   };
 }
 
-export function resolvePath(cwd: string, p: string): string {
+/**
+ * `p` as an absolute path. `~` and `~/…` are `$HOME`, as the shell reads them, so a file tool and a
+ * shell command agree on where `~/x` is; any other relative path is under `cwd`. `~user` and a `~`
+ * anywhere else in a name are left as they are.
+ */
+export function resolvePath(cwd: string, p: string, home: string = process.env.HOME || homedir()): string {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join(home, p.slice(2));
   return isAbsolute(p) ? p : join(cwd, p);
 }
 
@@ -236,12 +244,13 @@ export function resolveInRoots(
   const roots = contextRoots(ctx);
   const abs = resolvePath(ctx.cwd, p);
   if (!withinRoots(abs, roots)) {
+    // Said so the agent can correct itself: where to save instead, and why it matters to the user.
     return {
       error: {
         ...err(
-          `Path is outside the allowed directories: ${p}\n` +
-            `Allowed: ${roots.join(", ")}\n` +
-            `Grant access by starting ${host().name} with --add-dir <dir>.`,
+          `Path is outside the allowed directories: ${p}${abs === p ? "" : ` (${abs})`}\n` +
+            `Save it under ${roots.join(" or ")} instead. Files outside these directories are not shown to the user and may not be kept.\n` +
+            `Only the user can allow another directory, by starting ${host().name} with --add-dir <dir>.`,
         ),
         meta: { refused: "outside_roots" },
       },

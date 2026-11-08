@@ -28,6 +28,9 @@ export type SubagentRun = (
     callerRunId?: string;
     /** The caller's `Agent` tool_use id: the child's session record names it as its parent step. */
     callerToolUseId?: string;
+    /** The caller's working directory: the child runs there, so a relative path means the same
+     *  file to both. Absent, the host's default. */
+    cwd?: string;
     /** Pin the child to a specific gateway-served model or tier alias (cheap|mid|frontier|max).
      *  The gateway is a multi-model surface: consulting a different provider's model is a
      *  delegation, never a hand-rolled API call. */
@@ -161,6 +164,7 @@ export function createTaskTool(
                 callerSessionId: ctx.sessionId,
                 callerRunId: ctx.runId,
                 callerToolUseId: ctx.toolUseId,
+                cwd: ctx.cwd,
                 prompt: input.prompt,
                 agent: input.agent,
                 model: input.model,
@@ -215,6 +219,7 @@ export function createTaskTool(
             callerSessionId: ctx.sessionId,
             callerRunId: ctx.runId,
             callerToolUseId: ctx.toolUseId,
+            cwd: ctx.cwd,
             prompt: input.prompt,
             agent: input.agent,
             model: input.model,

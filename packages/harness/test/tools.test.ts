@@ -1,8 +1,10 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { defaultRegistry, runTool, type ToolContext } from "../src/tools";
+import { resolvePath } from "../src/tools/types";
 
 let cwd: string;
 let ctx: ToolContext;
@@ -286,6 +288,59 @@ describe("workspace boundary (--add-dir)", () => {
     await runTool(reg, "Write", { path: "in.txt", content: "hi" }, { cwd, roots: [cwd] });
     const r = await runTool(reg, "Read", { path: "in.txt" }, { cwd, roots: [cwd] });
     expect(r.content).toContain("hi");
+  });
+});
+
+describe("~ in a file tool's path (R1: a Write and the shell agree on where ~/x is)", () => {
+  test("resolvePath: ~ and ~/ are the home directory; ~user and a ~ inside a name are not", () => {
+    expect(resolvePath("/w", "~", "/h")).toBe("/h");
+    expect(resolvePath("/w", "~/x", "/h")).toBe("/h/x");
+    expect(resolvePath("/w", "~/", "/h")).toBe("/h");
+    expect(resolvePath("/w", "~/a/../b", "/h")).toBe("/h/b");
+    expect(resolvePath("/w", "a~b", "/h")).toBe("/w/a~b");
+    expect(resolvePath("/w", "~bob/x", "/h")).toBe("/w/~bob/x");
+    expect(resolvePath("/w", "x/~/y", "/h")).toBe("/w/x/~/y");
+    expect(resolvePath("/w", "/abs/~/x", "/h")).toBe("/abs/~/x");
+    expect(resolvePath("/w", "~/x")).toBe(join(process.env.HOME!, "x"));
+  });
+
+  let home: string;
+  let savedHome: string | undefined;
+  beforeEach(async () => {
+    home = join(tmpdir(), `yodex-home-${crypto.randomUUID()}`);
+    await mkdir(home, { recursive: true });
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    await rm(home, { recursive: true, force: true });
+  });
+
+  test("Write(\"~/.mlpal/x\") outside the roots is refused, and makes no folder named ~", async () => {
+    const r = await runTool(reg, "Write", { path: "~/.mlpal/x", content: "x" }, { cwd, roots: [cwd] });
+    expect(r.isError).toBe(true);
+    expect(r.meta).toEqual({ refused: "outside_roots" });
+    expect(existsSync(join(home, ".mlpal", "x"))).toBe(false);
+    expect(existsSync(join(cwd, "~"))).toBe(false);
+  });
+
+  test("Write(\"~/x\") with the home inside the roots writes the home's file", async () => {
+    const r = await runTool(reg, "Write", { path: "~/in.txt", content: "hi" }, { cwd, roots: [cwd, home] });
+    expect(r.isError).toBeFalsy();
+    expect(await readFile(join(home, "in.txt"), "utf8")).toBe("hi");
+    expect(existsSync(join(cwd, "~"))).toBe(false);
+  });
+
+  test("the refusal says where to save instead and why, naming the path ~ stood for", async () => {
+    const r = await runTool(reg, "Write", { path: "~/notes.md", content: "x" }, { cwd, roots: [cwd] });
+    expect(r.content).toContain(`Path is outside the allowed directories: ~/notes.md (${join(home, "notes.md")})`);
+    expect(r.content).toContain(`Save it under ${cwd} instead.`);
+    expect(r.content).toContain("not shown to the user");
+    const abs = await runTool(reg, "Write", { path: "/tmp/w.txt", content: "x" }, { cwd, roots: [cwd] });
+    expect(String(abs.content).split("\n")[0]).toBe("Path is outside the allowed directories: /tmp/w.txt");
+    expect(abs.meta).toEqual({ refused: "outside_roots" });
   });
 });
 
