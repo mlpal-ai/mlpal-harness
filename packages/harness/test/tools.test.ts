@@ -333,14 +333,17 @@ describe("~ in a file tool's path (R1: a Write and the shell agree on where ~/x 
     expect(existsSync(join(cwd, "~"))).toBe(false);
   });
 
-  test("the refusal says where to save instead and why, naming the path ~ stood for", async () => {
+  test("the refusal says which paths to use instead and why, naming the path ~ stood for; worded for reads too", async () => {
     const r = await runTool(reg, "Write", { path: "~/notes.md", content: "x" }, { cwd, roots: [cwd] });
     expect(r.content).toContain(`Path is outside the allowed directories: ~/notes.md (${join(home, "notes.md")})`);
-    expect(r.content).toContain(`Save it under ${cwd} instead.`);
+    expect(r.content).toContain(`Use a path under ${cwd} instead.`);
     expect(r.content).toContain("not shown to the user");
     const abs = await runTool(reg, "Write", { path: "/tmp/w.txt", content: "x" }, { cwd, roots: [cwd] });
     expect(String(abs.content).split("\n")[0]).toBe("Path is outside the allowed directories: /tmp/w.txt");
     expect(abs.meta).toEqual({ refused: "outside_roots" });
+    const read = await runTool(reg, "Read", { path: "/tmp/w.txt" }, { cwd, roots: [cwd] });
+    expect(read.content).toContain(`Use a path under ${cwd} instead.`);
+    expect(read.content).not.toContain("Save");
   });
 });
 

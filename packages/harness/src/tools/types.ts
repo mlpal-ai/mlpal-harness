@@ -249,7 +249,7 @@ export function resolveInRoots(
       error: {
         ...err(
           `Path is outside the allowed directories: ${p}${abs === p ? "" : ` (${abs})`}\n` +
-            `Save it under ${roots.join(" or ")} instead. Files outside these directories are not shown to the user and may not be kept.\n` +
+            `Use a path under ${roots.join(" or ")} instead. Files outside these directories are not shown to the user and may not be kept.\n` +
             `Only the user can allow another directory, by starting ${host().name} with --add-dir <dir>.`,
         ),
         meta: { refused: "outside_roots" },
