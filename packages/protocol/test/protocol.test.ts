@@ -17,6 +17,7 @@ import {
   type HopView,
   type ModelFallbackEvent,
   type ModelRefusal,
+  type PendingApproval,
   type ResultEvent,
   type SandboxRefusal,
   type ScheduleView,
@@ -210,11 +211,21 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
+describe("0.26.1 (a parked call's tool and arguments: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.1");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.1");
   });
+
+  test("pendingApproval may carry toolName and args, on the result event and on the session's history", () => {
+    const pending: PendingApproval = { command: "send_email", reason: "approval_required", toolName: "mcp__mail__send", args: '{"to":"a@b.c"}' };
+    const result: ResultEvent = { type: "result", subtype: "needs_approval", numTurns: 1, usage: emptyUsage(), ts: "t", pendingApproval: { ...pending } };
+    const bare: PendingApproval = { command: "rm -rf build", reason: "approval_required" };
+    expect([result.pendingApproval?.toolName, result.pendingApproval?.args, bare.toolName]).toEqual(["mcp__mail__send", '{"to":"a@b.c"}', undefined]);
+  });
+});
+
+describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
 
   const cred: DelegatedCredential = { kind: "mlpal_user", token: "eyJh.eyJi.sig", expiresAt: 1_800_000_000_000, subject: "user:42" };
 

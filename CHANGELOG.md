@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
+
+- `pendingApproval` (on the `needs_approval` result and on `PendingApproval`) may carry `toolName` and `args`. Additive: a
+  0.26.0 client ignores them.
+
 ### A stored memory reaches the prompt as quoted, sanitized data (2026-11-07)
 
 - Each line of a derived memory is quoted, so its text cannot open a heading or a fence of its own.

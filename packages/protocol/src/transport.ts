@@ -364,7 +364,7 @@ export interface WorkspaceStats {
 export interface PendingApproval {
   command: string;
   reason: string;
-  /** The held call's tool. */
+  /** 0.26.1: the held call's tool. */
   toolName?: string;
   /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
    *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
@@ -749,4 +749,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.0";
+export const HARNESS_PROTOCOL_VERSION = "0.26.1";

@@ -95,7 +95,7 @@ export interface ResultEvent {
     reason: string;
     toolUseId?: string;
     index?: number;
-    /** The held call's tool. */
+    /** 0.26.1: the held call's tool. */
     toolName?: string;
     /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
      *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
