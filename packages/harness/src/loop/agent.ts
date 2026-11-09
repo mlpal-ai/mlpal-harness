@@ -31,7 +31,7 @@ import type { HookContext, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
-import { budgetRefusal, modelRefusal, spendRefusal } from "../profile/model-policy";
+import { budgetRefusal, ModelAccessError, modelRefusal, spendRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
@@ -580,6 +580,28 @@ function summarizeBlocks(blocks: ToolResultBlocks): string {
  * against the callModel seam, the unified store, and an author-tagged input.
  */
 /** The transcript record of a model switch; `reason` is redacted and bounded whatever the model client gave. */
+/**
+ * The typed refusal a gateway error ends a run with, or undefined for any other error: the gateway refused the model
+ * for this HOP (rule 4) or the session token's models_allow (P6 1.1), refused the call on the account's spend (a spent
+ * cap 0.22.1; an empty wallet, or a cap or billing it could not check, 0.26.2), or refused the session token itself
+ * after its re-read (P6). The frontend reads it from fields, not from a thrown exception it must parse.
+ */
+function gatewayRefusal(e: unknown, activeModel: string, stampHop: string | undefined, log: Logger, metrics: Metrics): ModelRefusal | undefined {
+  if (!(e instanceof GatewayError) || !(e.modelAccessDenied || e.spendCode || e.sessionTokenRejected)) return undefined;
+  const hop = (stampHop ?? "?").split("@")[0]!;
+  const model = e.model ?? activeModel;
+  const spend = e.spendCode;
+  const refusal =
+    spend === "budget_exceeded"
+      ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt, subject: e.subject, message: e.gatewayMessage })
+      : spend
+        ? spendRefusal(spend, model, hop)
+        : modelRefusal(model, hop, "gateway");
+  log.warn(spend === "budget_exceeded" ? "budget cap spent: the gateway refused the call" : spend ? "the gateway refused the call on the account's spend" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
+  metrics.increment(`agent.${refusal.code}`, 1, { model, cause: spend ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
+  return refusal;
+}
+
 function fallbackEvent(from: string, to: string, code: string, reason: string): ModelFallbackEvent {
   return { type: "model_fallback", from, to, code: code.slice(0, 32), reason: redactText(reason).slice(0, 160), ts: now() };
 }
@@ -1081,22 +1103,8 @@ export class AgentSession {
           parent = yield* this.finish("cancelled", turns, totalUsage, parent);
           return;
         }
-        // The gateway refused the model for this HOP (rule 4) or the session token's models_allow (P6 1.1), refused
-        // the call on the account's spend (a spent cap 0.22.1; an empty wallet, or a cap or billing it could not
-        // check, 0.26.2), or refused the session token itself after its re-read (P6): the run ends as a typed error
-        // the frontend reads from fields, not a thrown exception it must parse.
-        if (e instanceof GatewayError && (e.modelAccessDenied || e.spendCode || e.sessionTokenRejected)) {
-          const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
-          const model = e.model ?? activeModel;
-          const spend = e.spendCode;
-          const refusal =
-            spend === "budget_exceeded"
-              ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt, subject: e.subject, message: e.gatewayMessage })
-              : spend
-                ? spendRefusal(spend, model, hop)
-                : modelRefusal(model, hop, "gateway");
-          log.warn(spend === "budget_exceeded" ? "budget cap spent: the gateway refused the call" : spend ? "the gateway refused the call on the account's spend" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
-          metrics.increment(`agent.${refusal.code}`, 1, { model, cause: spend ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
+        const refusal = gatewayRefusal(e, activeModel, cfg.stamp?.hop, log, metrics);
+        if (refusal) {
           outcome = "error";
           parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;
@@ -1540,7 +1548,12 @@ export class AgentSession {
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
         parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index, ...e.shown });
       } else {
-        throw e;
+        // A call outside the turn's own model call (the compaction summary) met the same gateway refusal: the run ends
+        // as the same typed error. The turn's own call never reaches here typed: it ended above.
+        const refusal = gatewayRefusal(e, activeModel, cfg.stamp?.hop, log, metrics);
+        if (!refusal) throw e;
+        outcome = "error";
+        parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
       }
     } finally {
       // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
@@ -1771,7 +1784,14 @@ export class AgentSession {
         this.hookCtx(),
       );
     }
-    const summary = await this.summarize(messages, instructions);
+    let summary: string;
+    try {
+      summary = await this.summarize(messages, instructions);
+    } catch (e) {
+      // The same typed refusal a run ends with, for the host to show (`/compact` has no run to end).
+      const refusal = gatewayRefusal(e, cfg.model, cfg.stamp?.hop, cfg.logger ?? silentLogger, cfg.metrics ?? noopMetrics);
+      throw refusal ? new ModelAccessError(refusal) : e;
+    }
     let parent = await this.store.conversation.head(cfg.sessionId);
     const ce = {
       type: "compact" as const,

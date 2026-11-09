@@ -19,7 +19,14 @@
   injectable. `spendRefusal(code, model, hop)` builds the other three refusals.
 - `BudgetSubject` adds `tag`: a cap on the keys that share a tag's value, such as a workspace's. A cap's `subject`
   (`ModelRefusal.subject`, `GatewayError.subject`) is kept as sent when it is any other non-empty string, where before
-  a subject this build did not name was dropped.
+  a subject this build did not name was dropped. A subject is kept only as a machine token of 1–64 characters
+  (`[A-Za-z0-9_.-]`).
+- A spend code met outside the turn's own model call (the compaction summary, automatic or `/compact`) ends the run
+  with the same typed refusal. `compact()` throws it as a `ModelAccessError`.
+- A stream's `error` event carries the same fields as a non-2xx body (`code`, `window`, `reset_at`, `subject`), so a
+  spend code there is typed too. It is never failed over or re-streamed. Before content, a transient one is retried on
+  the same model within the same bound; after content it ends the call.
+- A `Retry-After` of zero or less on a transient spend code waits the client's own backoff (1 s, then 2 s).
 
 ### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
 

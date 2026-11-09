@@ -200,8 +200,11 @@ export const SPEND_RETRY_BUDGET_MS = 20_000;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
-/** A cap's `subject` as the body names it: a non-empty string, kept as sent, so a subject newer than this build
- *  still reaches the refusal. */
+/** A gateway machine field (error type, code, cap subject) that is safe to carry and show. */
+const MACHINE_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** A cap's `subject` as the body names it, kept as sent so a subject newer than this build still reaches the
+ *  refusal: a machine token of 1–64 characters, else absent. */
 export type CapSubject = BudgetSubject | (string & {});
 
 /** The `error` object of a non-2xx body (the Anthropic-wire envelope), string fields only: a
@@ -211,7 +214,7 @@ function errorFields(body: unknown): { message?: string; type?: string; code?: s
   if (typeof e !== "object" || e === null) return {};
   const f = e as Record<string, unknown>;
   const subject = str(f.subject);
-  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at), ...(subject ? { subject } : {}) };
+  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at), ...(subject && MACHINE_TOKEN.test(subject) ? { subject } : {}) };
 }
 
 /** Why a call left a model, as a low-cardinality code and a reason built only from the gateway's machine fields
@@ -220,7 +223,7 @@ function errorFields(body: unknown): { message?: string; type?: string; code?: s
 export function switchReason(err: GatewayError): { reason: string; code: string } {
   if (err.kind !== "http") return { reason: err.kind, code: err.kind };
   const code = err.status >= 500 ? "http_5xx" : `http_${err.status}`;
-  const machine = [err.errorType, err.code].filter((x): x is string => typeof x === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(x));
+  const machine = [err.errorType, err.code].filter((x): x is string => typeof x === "string" && MACHINE_TOKEN.test(x));
   return { reason: `gateway ${err.status}${machine.length ? ` ${machine.join(" ")}` : ""}`, code };
 }
 
@@ -449,6 +452,7 @@ export class GatewayClient implements ModelClient {
 
   async *stream(req: ModelRequest): AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void> {
     const started = Date.now();
+    const spendStarted = this.now();
     const userSignal = anySignal(this.externalSignal, req.signal);
     this.metrics.increment("gateway.calls", 1, { model: req.model });
     // Model failover ladder: primary first, then same-tier alternates from the catalog. We advance
@@ -539,6 +543,21 @@ export class GatewayClient implements ModelClient {
         };
       } catch (e) {
         const err = this.normalizeError(e, userSignal);
+        // A spend code concerns the account: another model gets the same answer, and a re-streamed turn would too. On
+        // the handshake connect() already spent the retries a transient one gets; one that arrives in the stream before
+        // any content gets the same bound here, counted in requests and time from the call's first. After content it
+        // ends the call: re-streaming would not clear it, and the shown text would have to be discarded.
+        if (err instanceof GatewayError && err.spendCode) {
+          const delay = backoffMs(sent.requests);
+          if (err.kind === "stream" && !emitted && err.retryable && sent.requests < SPEND_RETRY_ATTEMPTS && this.now() - spendStarted + delay <= SPEND_RETRY_BUDGET_MS) {
+            this.logger.warn("gateway retry", { model, code: err.spendCode, attempt: sent.requests, delay, in: "stream" });
+            await this.sleep(delay);
+            continue;
+          }
+          this.metrics.increment("gateway.spend_refusal", 1, { code: err.spendCode });
+          this.logger.warn("gateway spend refusal: not failed over", { model, code: err.spendCode, status: err.status, attempts: sent.requests });
+          throw err;
+        }
         // Resume across a transient connection drop *after* content was emitted (the laptop-sleep
         // signature). Re-streaming the whole turn is safe: the request is byte-identical and the
         // caller commits nothing until stream() returns, so history can't duplicate. The half-
@@ -583,13 +602,6 @@ export class GatewayClient implements ModelClient {
           attempt = 0;
           await this.sleep(backoffMs(streamResume));
           continue;
-        }
-        // A spend code concerns the account: another model gets the same answer, and connect() already spent the
-        // retries a transient one gets.
-        if (err instanceof GatewayError && err.spendCode) {
-          this.metrics.increment("gateway.spend_refusal", 1, { code: err.spendCode });
-          this.logger.warn("gateway spend refusal: not failed over", { model, code: err.spendCode, status: err.status, attempts: sent.requests });
-          throw err;
         }
         // A failover rung the HOP may not use (the key's policy narrowed between the listing and
         // the call): skip it, never report it as the refusal that ended the run; the primary's own
@@ -693,8 +705,10 @@ export class GatewayClient implements ModelClient {
         }
         if (!err.retryable) throw err;
         if (err.spendCode) {
-          // Retry-After is honoured, never shortened: a wait that would overrun the budget ends the retries.
-          const delay = retryAfterMs(res) ?? backoffMs(attempt + 1);
+          // Retry-After is honoured, never shortened: a wait that would overrun the budget ends the retries. Absent, zero
+          // or negative, the client's own backoff (1 s, then 2 s) applies, never back-to-back requests.
+          const ra = retryAfterMs(res);
+          const delay = ra !== undefined && ra > 0 ? ra : backoffMs(attempt + 1);
           if (attempt + 1 >= SPEND_RETRY_ATTEMPTS || this.now() - started + delay > SPEND_RETRY_BUDGET_MS) throw err;
           attempt++;
           this.logger.warn("gateway retry", { model, status: res.status, code: err.spendCode, attempt, delay });
@@ -893,8 +907,9 @@ export class GatewayClient implements ModelClient {
           break;
         }
         case "error": {
-          const e = (ev.error ?? {}) as { type?: string; message?: string };
-          throw new GatewayError(e.message ?? "stream error", 502, "stream", e.type);
+          // The event carries the same `error` object as a non-2xx body, so a spend code here is typed too.
+          const f = errorFields(ev);
+          throw new GatewayError(f.message ?? "stream error", 502, "stream", f.type, f.code, f.model, f.window, f.resetAt, undefined, f.subject, f.message);
         }
         case "mlpal_usage": {
           // The meter's own figures: CU as a decimal string (same value the non-streaming header
@@ -989,12 +1004,12 @@ function normalizeUsage(u: Partial<Usage>): Usage {
   };
 }
 
-/** Retry-After in seconds as milliseconds, or undefined when absent or not a number of seconds. */
+/** Retry-After in seconds as milliseconds, or undefined when absent, negative or not a number of seconds. */
 function retryAfterMs(res: Response): number | undefined {
   const ra = res.headers.get("retry-after");
   if (!ra) return undefined;
   const secs = Number(ra);
-  return Number.isNaN(secs) ? undefined : secs * 1000;
+  return Number.isNaN(secs) || secs < 0 ? undefined : secs * 1000;
 }
 
 function backoffMs(attempt: number): number {
