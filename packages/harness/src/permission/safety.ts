@@ -123,7 +123,14 @@ const CATASTROPHIC: Array<{ test: RegExp; reason: string }> = [
   },
 ];
 
-/** True only for rm -rf whose TARGET is a root/home (not a project subdir). */
+/** The filesystem root, or the home folder by `~` / `$HOME`, or a glob of either. */
+const ROOT_OR_HOME_ALIAS = /^\/$|^\/\*$|^~$|^~\/?\*?$|^\$HOME\/?\*?$/;
+/** A system folder and everything in it. */
+const SYSTEM_TREE = /^\/(bin|etc|usr|var|lib|boot|dev|sys|root|System|Library)(\/|$|\*)/;
+/** The folder that holds the homes, one user's home, or a glob of either; a project inside a home is not one. */
+const HOME_ROOT = /^\/(home|Users)(\/[^/*]+)?\/?\*?$/;
+
+/** True only for rm -rf whose TARGET is the root, a system folder or a home (not a project folder). */
 function isRootRm(cmd: string): boolean {
   if (!/\brm\b/i.test(cmd) || !/-[a-z]*r/i.test(cmd) || !/-[a-z]*f/i.test(cmd)) return false;
   // strip flags, look at the operands
@@ -131,11 +138,7 @@ function isRootRm(cmd: string): boolean {
     .replace(/\brm\b/i, "")
     .split(/\s+/)
     .filter((t) => t && !t.startsWith("-"));
-  return operands.some((t) =>
-    /^\/$|^\/\*$|^~$|^~\/?\*?$|^\$HOME\/?\*?$|^\/(bin|etc|usr|var|lib|boot|dev|sys|home|root|System|Library)(\/|$|\*)/.test(
-      t,
-    ),
-  );
+  return operands.some((t) => ROOT_OR_HOME_ALIAS.test(t) || SYSTEM_TREE.test(t) || HOME_ROOT.test(t));
 }
 
 /** Returns a deny reason if the command is catastrophic, else null.

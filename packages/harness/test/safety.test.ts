@@ -42,6 +42,38 @@ describe("catastrophicDeny", () => {
     expect(catastrophicDeny("rm -rf ./build dist")).toBeNull();
     expect(catastrophicDeny("rm file.txt")).toBeNull();
   });
+  test("blocks rm -rf on a home folder itself, by path or alias", () => {
+    for (const target of [
+      "~",
+      "~/",
+      "~/*",
+      "$HOME",
+      "/home",
+      "/home/",
+      "/home/*",
+      "/home/mlpaluser",
+      "/home/mlpaluser/",
+      "/home/mlpaluser/*",
+      "/Users",
+      "/Users/me",
+      "/Users/me/*",
+      "/root",
+      "/root/project",
+    ]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBe("blocked: recursive-force rm targeting a system/home root");
+    }
+  });
+  test("still blocks every path in a system folder", () => {
+    for (const target of ["/usr/local/lib", "/var/tmp/x", "/etc/nginx", "/bin/*", "/Library/Caches"]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBeTruthy();
+    }
+  });
+  test("allows rm -rf on a project folder inside a home", () => {
+    expect(catastrophicDeny("rm -rf /home/mlpaluser/workspace/r2check")).toBeNull();
+    expect(catastrophicDeny("rm -rf /home/mlpaluser/workspace/app/node_modules")).toBeNull();
+    expect(catastrophicDeny("rm -rf /Users/me/code/app/build")).toBeNull();
+    expect(catastrophicDeny("cd /home/mlpaluser/workspace && rm -rf r2check")).toBeNull();
+  });
   test("blocks mkfs, dd-to-device, fork bomb, chmod -R /", () => {
     expect(catastrophicDeny("mkfs.ext4 /dev/sda1")).toBeTruthy();
     expect(catastrophicDeny("dd if=/dev/zero of=/dev/sda")).toBeTruthy();
