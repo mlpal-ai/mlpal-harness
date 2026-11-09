@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Protocol 0.26.2: the gateway's spend codes (2026-11-09)
+
+- `ModelRefusal.code` may be `wallet_empty`, `budget_unavailable` or `billing_unavailable`, beside `budget_exceeded`
+  (`SpendCode`). Each is mid-run with reason `gateway`. Additive for a client that falls back on `message`; a client that
+  checks `code` against a closed list should add the three.
+- The client reads these from `error.code`, whatever the HTTP status: a 402 is `wallet_empty` or `budget_exceeded` on
+  the OpenAI wire, and only the code tells them apart. `GatewayError.spendCode` names it.
+- None of them is failed over to another model: they concern the account, so every model gets the same answer.
+  `budget_exceeded` and `wallet_empty` are not retried. `budget_unavailable` and `billing_unavailable` are retried after
+  the gateway's `Retry-After` (never sooner), within `SPEND_RETRY_ATTEMPTS` (3) requests or `SPEND_RETRY_BUDGET_MS`
+  (20 s), whichever ends first, and then end the run as their refusal.
+- `budget_exceeded`'s `message` is the gateway's own sentence, which names the amounts and the reset time; the
+  harness's sentence only when the gateway sent none. `window`, `resetsAt` and `subject` are kept.
+- `GatewayError.gatewayMessage` is the body's `error.message`. `GatewayConfig.sleep` and `now` make the retry waits
+  injectable. `spendRefusal(code, model, hop)` builds the other three refusals.
+
 ### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
 
 - `pendingApproval` (on the `needs_approval` result and on `PendingApproval`) may carry `toolName` and `args`. Additive: a

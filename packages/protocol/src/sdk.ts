@@ -116,13 +116,17 @@ export interface ResultEvent {
 export interface ModelRefusal {
   /** `model_access_denied`: the HOP's, the key's or the gateway's policy refused the model.
    *  `budget_exceeded` (0.22.1): the gateway refused the call for a spent budget cap; mid-run
-   *  (reason `gateway`). */
-  code: "model_access_denied" | "budget_exceeded";
+   *  (reason `gateway`).
+   *  0.26.2, the account's spend codes, all mid-run with reason `gateway`, none failed over to another model:
+   *  `wallet_empty`, the wallet has no balance left; `budget_unavailable`, the spend cap could not be checked;
+   *  `billing_unavailable`, billing could not be reached. The last two were retried first. */
+  code: "model_access_denied" | SpendCode;
   model: string;
   /** The HOP's name. */
   hop: string;
   reason?: "hop_policy" | "key_policy" | "not_served" | "gateway";
-  /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". */
+  /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". On `budget_exceeded` (0.26.2), the gateway's
+   *  own sentence, which names the amounts and the reset time. */
   message: string;
   /** The budget window the cap belongs to, e.g. `daily`, `monthly` — `budget_exceeded` only
    *  (0.22.2), present when the gateway names it. */
@@ -134,6 +138,9 @@ export interface ModelRefusal {
    *  `signed_in_pool`) is "busy" to the person; their own (`end_user`) or the key's is a cap. */
   subject?: BudgetSubject;
 }
+
+/** 0.26.2: the gateway's spend codes. They concern the account, not the model. */
+export type SpendCode = "budget_exceeded" | "wallet_empty" | "budget_unavailable" | "billing_unavailable";
 
 /** C6: the subjects a budget cap counts spend for. */
 export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user";

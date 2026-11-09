@@ -2,6 +2,7 @@ import type {
   BudgetSubject,
   ContentBlock,
   Message,
+  SpendCode,
   StopReason,
   StreamDelta,
   Usage,
@@ -65,6 +66,9 @@ export interface GatewayConfig {
   /** C6: the end user an owner-paid run stands for (RunContext `gateway.on_behalf_of`), sent on every call as
    *  `X-MLPal-On-Behalf-Of` so the gateway's per-end-user caps apply. 1–64 printable ASCII characters, no spaces. */
   onBehalfOf?: string;
+  /** Time for the retry waits, injectable so tests run on a manual clock. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 /** C6's value shape for `X-MLPal-On-Behalf-Of`. */
@@ -186,6 +190,14 @@ export function parseComputeUnits(headers: Headers): number | undefined {
 
 export type GatewayErrorType = "http" | "timeout" | "cancelled" | "stream" | "network";
 
+/** The gateway's spend codes. They concern the account, not the model, so another model gets the same answer: a call
+ *  that meets one is never failed over. The two `_unavailable` codes are transient and retried within
+ *  SPEND_RETRY_ATTEMPTS requests or SPEND_RETRY_BUDGET_MS from the first, whichever ends first. */
+const SPEND_CODES: ReadonlySet<string> = new Set<SpendCode>(["budget_exceeded", "wallet_empty", "budget_unavailable", "billing_unavailable"]);
+const SPEND_RETRIED: ReadonlySet<string> = new Set<SpendCode>(["budget_unavailable", "billing_unavailable"]);
+export const SPEND_RETRY_ATTEMPTS = 3;
+export const SPEND_RETRY_BUDGET_MS = 20_000;
+
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /** The `error` object of a non-2xx body (the Anthropic-wire envelope), string fields only: a
@@ -267,6 +279,8 @@ export class GatewayError extends Error {
     readonly credential: "key" | "session_token" = "key",
     /** `budget_exceeded` (0.26.0, C6): whose cap is spent (`error.subject`), when the body names a known one. */
     readonly subject?: BudgetSubject,
+    /** The body's `error.message` as the gateway wrote it, without the status prefix `message` carries. */
+    readonly gatewayMessage?: string,
   ) {
     super(message);
     this.name = "GatewayError";
@@ -284,14 +298,20 @@ export class GatewayError extends Error {
     return this.credential === "session_token" && this.status === 401 && this.code === "invalid_api_key";
   }
 
-  /** A budget cap of the key is spent (the gateway's typed 403): never retried, reported typed. */
+  /** A budget cap of the key is spent (the gateway's typed 403, or 402 on the OpenAI wire): never retried, reported typed. */
   get budgetExceeded(): boolean {
     return this.code === "budget_exceeded";
+  }
+
+  /** One of the gateway's spend codes (read from `error.code`, whatever the status): never failed over, reported typed. */
+  get spendCode(): SpendCode | undefined {
+    return this.code !== undefined && SPEND_CODES.has(this.code) ? (this.code as SpendCode) : undefined;
   }
 
   /** Transient failures worth retrying. Cancellation never is. */
   get retryable(): boolean {
     if (this.kind === "cancelled") return false;
+    if (this.spendCode) return SPEND_RETRIED.has(this.spendCode);
     if (this.code === "fallback_denied") return false; // model.fallback: deny refused an answer from another model
     if (this.kind === "timeout") return true;
     if (this.kind === "network") return true;
@@ -375,6 +395,8 @@ export class GatewayClient implements ModelClient {
   private readonly externalSignal?: AbortSignal;
   private readonly logger: Logger;
   private readonly metrics: Metrics;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => number;
 
   constructor(cfg: GatewayConfig) {
     this.baseUrl = cfg.baseUrl.replace(/\/$/, "");
@@ -386,6 +408,8 @@ export class GatewayClient implements ModelClient {
     this.externalSignal = cfg.signal;
     this.logger = cfg.logger ?? silentLogger;
     this.metrics = cfg.metrics ?? noopMetrics;
+    this.sleep = cfg.sleep ?? sleep;
+    this.now = cfg.now ?? Date.now;
     if (cfg.onBehalfOf !== undefined && !ON_BEHALF_OF.test(cfg.onBehalfOf)) throw new Error("gateway on-behalf-of must be 1-64 printable ASCII characters with no spaces (C6)");
     this.onBehalf = cfg.onBehalfOf !== undefined ? { "x-mlpal-on-behalf-of": cfg.onBehalfOf } : {};
   }
@@ -482,7 +506,7 @@ export class GatewayClient implements ModelClient {
           } catch {
             // not JSON after all — keep the raw excerpt
           }
-          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, undefined, f.subject);
+          throw new GatewayError(message, res.status === 200 ? 400 : res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, undefined, f.subject, f.message);
         }
         const computeUnits = parseComputeUnits(res.headers);
         const effortApplied = parseEffortHeader(res.headers);
@@ -535,7 +559,7 @@ export class GatewayClient implements ModelClient {
           });
           yield { type: "reset" };
           attempt = 0; // the resumed turn gets a fresh handshake-retry budget
-          await sleep(backoffMs(Math.min(resume, 4)));
+          await this.sleep(backoffMs(Math.min(resume, 4)));
           continue;
         }
         // Mid-stream upstream error after content — re-stream the turn, tightly bounded (see above).
@@ -555,8 +579,15 @@ export class GatewayClient implements ModelClient {
           });
           yield { type: "reset" };
           attempt = 0;
-          await sleep(backoffMs(streamResume));
+          await this.sleep(backoffMs(streamResume));
           continue;
+        }
+        // A spend code concerns the account: another model gets the same answer, and connect() already spent the
+        // retries a transient one gets.
+        if (err instanceof GatewayError && err.spendCode) {
+          this.metrics.increment("gateway.spend_refusal", 1, { code: err.spendCode });
+          this.logger.warn("gateway spend refusal: not failed over", { model, code: err.spendCode, status: err.status, attempts: sent.requests });
+          throw err;
         }
         // A failover rung the HOP may not use (the key's policy narrowed between the listing and
         // the call): skip it, never report it as the refusal that ended the run; the primary's own
@@ -578,7 +609,7 @@ export class GatewayClient implements ModelClient {
           if (attempt < maxStreamRetry) {
             attempt++;
             this.logger.warn("gateway stream retry (pre-content)", { model, attempt });
-            await sleep(backoffMs(attempt));
+            await this.sleep(backoffMs(attempt));
             continue;
           }
           if (modelIdx < models.length - 1) {
@@ -639,6 +670,7 @@ export class GatewayClient implements ModelClient {
   ): Promise<Response> {
     let attempt = 0;
     let reread = false;
+    const started = this.now();
     for (;;) {
       if (userSignal?.aborted) {
         throw new GatewayError("request cancelled", 0, "cancelled");
@@ -657,13 +689,23 @@ export class GatewayClient implements ModelClient {
           this.logger.warn("gateway session token refused; re-reading it once", { model, status: res.status });
           continue;
         }
-        if (!err.retryable || attempt >= this.maxRetries) throw err;
+        if (!err.retryable) throw err;
+        if (err.spendCode) {
+          // Retry-After is honoured, never shortened: a wait that would overrun the budget ends the retries.
+          const delay = retryAfterMs(res) ?? backoffMs(attempt + 1);
+          if (attempt + 1 >= SPEND_RETRY_ATTEMPTS || this.now() - started + delay > SPEND_RETRY_BUDGET_MS) throw err;
+          attempt++;
+          this.logger.warn("gateway retry", { model, status: res.status, code: err.spendCode, attempt, delay });
+          await this.sleep(delay);
+          continue;
+        }
+        if (attempt >= this.maxRetries) throw err;
         attempt++;
         const delay = this.retryDelay(res, attempt);
         this.logger.warn("gateway retry", { model, status: res.status, attempt, delay });
-        await sleep(delay);
+        await this.sleep(delay);
       } catch (e) {
-        if (e instanceof GatewayError && !e.retryable) throw e;
+        if (e instanceof GatewayError && (!e.retryable || e.spendCode)) throw e;
         if (isAbort(e)) {
           if (userSignal?.aborted) {
             throw new GatewayError("request cancelled", 0, "cancelled");
@@ -673,21 +715,21 @@ export class GatewayClient implements ModelClient {
           }
           attempt++;
           this.logger.warn("gateway timeout retry", { model, attempt });
-          await sleep(backoffMs(attempt));
+          await this.sleep(backoffMs(attempt));
           continue;
         }
         if (e instanceof GatewayError) {
           // retryable http error already handled above; this is the throw path
           if (attempt >= this.maxRetries) throw e;
           attempt++;
-          await sleep(backoffMs(attempt));
+          await this.sleep(backoffMs(attempt));
           continue;
         }
         // network-level error
         if (attempt >= this.maxRetries) throw e;
         attempt++;
         this.logger.warn("gateway network retry", { model, attempt, error: String(e) });
-        await sleep(backoffMs(attempt));
+        await this.sleep(backoffMs(attempt));
       }
     }
   }
@@ -750,12 +792,8 @@ export class GatewayClient implements ModelClient {
   }
 
   private retryDelay(res: Response, attempt: number): number {
-    const ra = res.headers.get("retry-after");
-    if (ra) {
-      const secs = Number(ra);
-      if (!Number.isNaN(secs)) return Math.min(secs * 1000, 30_000);
-    }
-    return backoffMs(attempt);
+    const ra = retryAfterMs(res);
+    return ra === undefined ? backoffMs(attempt) : Math.min(ra, 30_000);
   }
 
   private async toError(res: Response): Promise<GatewayError> {
@@ -765,7 +803,7 @@ export class GatewayClient implements ModelClient {
     } catch {
       // non-JSON body
     }
-    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, isSessionToken(this.apiKey) ? "session_token" : "key", f.subject);
+    return new GatewayError(`gateway ${res.status}: ${f.message || res.statusText}`, res.status, "http", f.type, f.code, f.model, f.window, f.resetAt, isSessionToken(this.apiKey) ? "session_token" : "key", f.subject, f.message);
   }
 
   private normalizeError(e: unknown, userSignal: AbortSignal | undefined): Error {
@@ -947,6 +985,14 @@ function normalizeUsage(u: Partial<Usage>): Usage {
     cache_creation_input_tokens: u.cache_creation_input_tokens,
     cache_read_input_tokens: u.cache_read_input_tokens,
   };
+}
+
+/** Retry-After in seconds as milliseconds, or undefined when absent or not a number of seconds. */
+function retryAfterMs(res: Response): number | undefined {
+  const ra = res.headers.get("retry-after");
+  if (!ra) return undefined;
+  const secs = Number(ra);
+  return Number.isNaN(secs) ? undefined : secs * 1000;
 }
 
 function backoffMs(attempt: number): number {

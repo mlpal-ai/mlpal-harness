@@ -17,6 +17,7 @@ import {
   type HopView,
   type ModelFallbackEvent,
   type ModelRefusal,
+  type SpendCode,
   type PendingApproval,
   type ResultEvent,
   type SandboxRefusal,
@@ -211,12 +212,23 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.1 (a parked call's tool and arguments: additive)", () => {
+describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.1");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.1");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.2");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.2");
   });
 
+  test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {
+    const codes: SpendCode[] = ["budget_exceeded", "wallet_empty", "budget_unavailable", "billing_unavailable"];
+    const refusals: ModelRefusal[] = codes.map((code) => ({ code, model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "m" }));
+    const results: ResultEvent[] = refusals.map((refusal) => ({ type: "result", subtype: "error", reason: refusal.message, refusal, numTurns: 1, usage: emptyUsage(), ts: "t" }));
+    // @ts-expect-error insufficient_quota is the OpenAI wire's error type, not a code
+    const wrong: ModelRefusal = { code: "insufficient_quota", model: "m", hop: "h", message: "m" };
+    expect([results.map((r) => r.refusal?.code), wrong.hop]).toEqual([codes, "h"]);
+  });
+});
+
+describe("0.26.1 (a parked call's tool and arguments: additive)", () => {
   test("pendingApproval may carry toolName and args, on the result event and on the session's history", () => {
     const pending: PendingApproval = { command: "send_email", reason: "approval_required", toolName: "mcp__mail__send", args: '{"to":"a@b.c"}' };
     const result: ResultEvent = { type: "result", subtype: "needs_approval", numTurns: 1, usage: emptyUsage(), ts: "t", pendingApproval: { ...pending } };

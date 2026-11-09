@@ -100,7 +100,7 @@ export {
 export { persistInbox, restoreInbox, type LiveWorkRef } from "./events/persist";
 export { SessionEventBus, SideQueue, type SideEvent } from "./events/session-bus";
 export { describeProfile } from "./profile/describe";
-export { BUDGET_EXCEEDED, budgetRefusal, globToRegExp, MODEL_ACCESS_DENIED, ModelAccessError, modelRefusal, pinnedModels, pinsOutsidePolicy, policyAllows, policyIsOpen, type HopModelPolicy } from "./profile/model-policy";
+export { BUDGET_EXCEEDED, budgetRefusal, globToRegExp, MODEL_ACCESS_DENIED, ModelAccessError, modelRefusal, pinnedModels, pinsOutsidePolicy, policyAllows, policyIsOpen, spendRefusal, type HopModelPolicy } from "./profile/model-policy";
 export * from "./verifiers/index";
 export * from "./verify/detect";
 export * from "./catalog/catalog";
