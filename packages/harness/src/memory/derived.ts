@@ -209,6 +209,9 @@ export interface MemorizeDeps {
   sessionId?: string;
   /** Called per write (the host may resolve it lazily). */
   provenance?: () => MemorizeProvenance;
+  /** The folder the store keeps topic files in, when they are plain files there (a local store). The description then
+   *  says how to remove a memory, since no tool retracts one. */
+  topicDir?: string;
 }
 
 export function createMemorizeTool(deps: MemorizeDeps): Tool<{
@@ -221,7 +224,10 @@ export function createMemorizeTool(deps: MemorizeDeps): Tool<{
     name: "Memorize",
     hands: "local",
     description:
-      "Save a durable fact to persistent memory so future sessions know it: decisions + why, hard-won gotchas, user preferences, important commands/URLs. NOT for anything derivable from the repo itself or only relevant right now. Re-using an existing slug updates that memory (state the fact fresh, don't append). scope=global for user-level facts, project (default) for this workspace.",
+      "Save a durable fact to persistent memory so future sessions know it: decisions + why, hard-won gotchas, user preferences, important commands/URLs. NOT for anything derivable from the repo itself or only relevant right now. Re-using an existing slug updates that memory (state the fact fresh, don't append). scope=global for user-level facts, project (default) for this workspace." +
+      (deps.topicDir
+        ? ` To remove a memory, delete its topic file, ${deps.topicDir}/${topicKey("project", deps.workspace, "<slug>")}.md (${topicKey("global", deps.workspace, "<slug>")}.md for scope=global); there is no tool that retracts one, so never save a "retracted" memory in its place.`
+        : ""),
     readOnly: false,
     memory: true, // writes user memory, not the workspace: never worth a permission stop
     isCallGlobalMemory: (input) => (input as { scope?: unknown } | undefined)?.scope === "global",

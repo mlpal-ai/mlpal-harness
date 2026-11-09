@@ -28,6 +28,12 @@
   the same model within the same bound; after content it ends the call.
 - A `Retry-After` of zero or less on a transient spend code waits the client's own backoff (1 s, then 2 s).
 
+### Memorize says how to remove a memory (2026-11-09)
+
+- `MemorizeDeps.topicDir`: when the host keeps topic files there, the tool's description names the file a memory lives
+  in (`<topicDir>/<workspace>--<slug>.md`, `global--<slug>.md` for scope=global) and says no tool retracts one, so an
+  agent deletes the file instead of saving a "retracted" memory.
+
 ### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
 
 - `pendingApproval` (on the `needs_approval` result and on `PendingApproval`) may carry `toolName` and `args`. Additive: a
