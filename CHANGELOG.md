@@ -17,6 +17,9 @@
   harness's sentence only when the gateway sent none. `window`, `resetsAt` and `subject` are kept.
 - `GatewayError.gatewayMessage` is the body's `error.message`. `GatewayConfig.sleep` and `now` make the retry waits
   injectable. `spendRefusal(code, model, hop)` builds the other three refusals.
+- `BudgetSubject` adds `tag`: a cap on the keys that share a tag's value, such as a workspace's. A cap's `subject`
+  (`ModelRefusal.subject`, `GatewayError.subject`) is kept as sent when it is any other non-empty string, where before
+  a subject this build did not name was dropped.
 
 ### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
 

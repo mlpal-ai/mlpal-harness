@@ -258,6 +258,22 @@ describe("a run that meets a spend code ends with a typed refusal, persisted, wi
     });
   }
 
+  // assistants-ff managed-v1/budget-tag-subject: the workspace cap counts spend per key tag (`workspace_id`) and its
+  // 403/402 name `subject: "tag"`. No captured body is in the ledger yet; these are 04db639's bodies with that subject.
+  for (const c of CASES.filter((x) => x.code === "budget_exceeded")) {
+    test(`a tag-scoped cap (${c.wire} wire): subject "tag" rides the refusal, the sentence is the gateway's`, async () => {
+      const body = structuredClone(c.body) as { error: Record<string, unknown> };
+      body.error.subject = "tag";
+      fakeGateway(() => answer({ ...c, body }));
+      const { error } = await drain(clientOn(new FakeClock()).client);
+      expect([error?.spendCode, error?.subject, error?.gatewayMessage]).toEqual(["budget_exceeded", "tag", CAP_MESSAGE]);
+      const { events, persisted } = await runAgainst({ ...c, body });
+      const refusal = { code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: CAP_MESSAGE, subject: "tag" };
+      expect(events.find((e) => e.type === "result")?.refusal).toMatchObject(refusal);
+      expect(persisted.find((p) => p.type === "result")?.refusal).toMatchObject(refusal);
+    });
+  }
+
   test("the cap's refusal carries the gateway's window, reset_at and subject for the UI", async () => {
     const { events } = await runAgainst(CASES[0]!);
     expect(events.find((e) => e.type === "result")?.refusal).toEqual({ code: "budget_exceeded", model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: CAP_MESSAGE, window: "daily", resetsAt: "2026-11-10T00:00:00+00:00", subject: "key" });

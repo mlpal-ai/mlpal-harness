@@ -200,16 +200,18 @@ export const SPEND_RETRY_BUDGET_MS = 20_000;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
+/** A cap's `subject` as the body names it: a non-empty string, kept as sent, so a subject newer than this build
+ *  still reaches the refusal. */
+export type CapSubject = BudgetSubject | (string & {});
+
 /** The `error` object of a non-2xx body (the Anthropic-wire envelope), string fields only: a
  *  machine field of another type (or `reset_at: null`) is absent, never coerced or read from prose. */
-const BUDGET_SUBJECTS: ReadonlySet<string> = new Set<BudgetSubject>(["key", "anonymous_pool", "signed_in_pool", "end_user"]);
-
-function errorFields(body: unknown): { message?: string; type?: string; code?: string; model?: string; window?: string; resetAt?: string; subject?: BudgetSubject } {
+function errorFields(body: unknown): { message?: string; type?: string; code?: string; model?: string; window?: string; resetAt?: string; subject?: CapSubject } {
   const e = (body as { error?: unknown } | null)?.error;
   if (typeof e !== "object" || e === null) return {};
   const f = e as Record<string, unknown>;
   const subject = str(f.subject);
-  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at), ...(subject && BUDGET_SUBJECTS.has(subject) ? { subject: subject as BudgetSubject } : {}) };
+  return { message: str(f.message), type: str(f.type), code: str(f.code), model: str(f.model), window: str(f.window), resetAt: str(f.reset_at), ...(subject ? { subject } : {}) };
 }
 
 /** Why a call left a model, as a low-cardinality code and a reason built only from the gateway's machine fields
@@ -277,8 +279,8 @@ export class GatewayError extends Error {
     readonly resetAt?: string,
     /** What the request authenticated with: a key, or the platform's session token file (P6). */
     readonly credential: "key" | "session_token" = "key",
-    /** `budget_exceeded` (0.26.0, C6): whose cap is spent (`error.subject`), when the body names a known one. */
-    readonly subject?: BudgetSubject,
+    /** `budget_exceeded` (0.26.0, C6): whose cap is spent (`error.subject`), when the body names one. */
+    readonly subject?: CapSubject,
     /** The body's `error.message` as the gateway wrote it, without the status prefix `message` carries. */
     readonly gatewayMessage?: string,
   ) {

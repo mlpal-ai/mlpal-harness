@@ -135,15 +135,16 @@ export interface ModelRefusal {
    *  gateway names it. */
   resetsAt?: string;
   /** 0.26.0 (C1 §7.5, C6): whose cap is spent, when the gateway names it. A shared pool's (`anonymous_pool`,
-   *  `signed_in_pool`) is "busy" to the person; their own (`end_user`) or the key's is a cap. */
-  subject?: BudgetSubject;
+   *  `signed_in_pool`) is "busy" to the person; their own (`end_user`), the key's or a key tag's (`tag`, 0.26.2) is a
+   *  cap. 0.26.2: a subject this protocol does not name is passed through as the gateway sent it. */
+  subject?: BudgetSubject | (string & {});
 }
 
 /** 0.26.2: the gateway's spend codes. They concern the account, not the model. */
 export type SpendCode = "budget_exceeded" | "wallet_empty" | "budget_unavailable" | "billing_unavailable";
 
-/** C6: the subjects a budget cap counts spend for. */
-export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user";
+/** C6: the subjects a budget cap counts spend for. 0.26.2: `tag`, the keys that share a tag's value (a workspace's). */
+export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user" | "tag";
 
 /** 0.22.4: the remote sandbox refused for lack of capacity — a transient "not now", never a lost session. */
 export interface SandboxRefusal {

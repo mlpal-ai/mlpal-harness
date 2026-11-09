@@ -241,13 +241,17 @@ describe("the budget refusal's window and resetsAt (protocol 0.22.2)", () => {
   });
 
   test("C1 §7.5 / C6: the cap's subject rides the refusal, so an edge can tell a shared pool from the user's own cap", async () => {
-    for (const subject of ["key", "anonymous_pool", "signed_in_pool", "end_user"] as const) {
+    for (const subject of ["key", "anonymous_pool", "signed_in_pool", "end_user", "tag"] as const) {
       const { raised, refusal, persisted } = await runAgainst(budget403({ window: "daily", reset_at: "2026-10-27T00:00:00Z", subject }));
       expect([raised?.subject, refusal?.subject, persisted?.subject, refusal?.resetsAt]).toEqual([subject, subject, subject, "2026-10-27T00:00:00Z"]);
     }
-    // A subject the contract does not name is absent, never passed on.
+    // 0.26.2: a subject the contract does not name is passed on as sent; a non-string or an empty one is absent.
     const odd = await runAgainst(budget403({ window: "daily", subject: "somebody" }));
-    expect([odd.raised?.subject, Object.keys(odd.refusal ?? {}).includes("subject")]).toEqual([undefined, false]);
+    expect([odd.raised?.subject, odd.refusal?.subject, odd.persisted?.subject]).toEqual(["somebody", "somebody", "somebody"]);
+    for (const junk of [7, "", null, { kind: "tag" }]) {
+      const none = await runAgainst(budget403({ window: "daily", subject: junk }));
+      expect([none.raised?.subject, Object.keys(none.refusal ?? {}).includes("subject")]).toEqual([undefined, false]);
+    }
   });
 
   test("a 403 body without them (a gateway before d2e0489): both absent, nothing read from the prose", async () => {

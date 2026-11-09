@@ -16,6 +16,7 @@ import {
   type WithdrawnFrame,
   type HopView,
   type ModelFallbackEvent,
+  type BudgetSubject,
   type ModelRefusal,
   type SpendCode,
   type PendingApproval,
@@ -225,6 +226,13 @@ describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () =
     // @ts-expect-error insufficient_quota is the OpenAI wire's error type, not a code
     const wrong: ModelRefusal = { code: "insufficient_quota", model: "m", hop: "h", message: "m" };
     expect([results.map((r) => r.refusal?.code), wrong.hop]).toEqual([codes, "h"]);
+  });
+
+  test("a cap's subject may be tag, or a subject this protocol does not name, as sent", () => {
+    const tag: BudgetSubject = "tag";
+    const spent: ModelRefusal = { code: "budget_exceeded", model: "m", hop: "h", reason: "gateway", message: "m", subject: tag };
+    const newer: ModelRefusal = { ...spent, subject: "org" };
+    expect([spent.subject, newer.subject]).toEqual(["tag", "org"]);
   });
 });
 
