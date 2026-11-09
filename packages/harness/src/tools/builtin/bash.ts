@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { backgroundTasks } from "./background";
 import { backgroundAgents } from "../../subagent/background";
-import { defineTool, err, leaseFor, ok, type ToolContext } from "../types";
+import { shellCwd } from "../shell-cwd";
+import { contextRoots, defineTool, err, leaseFor, ok, type ToolContext } from "../types";
 
 const MAX_TIMEOUT = 600_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -49,13 +50,14 @@ function run(
     // command runs as the agent does.
     const argv = ctx.exec ? ctx.exec.wrap(["/bin/bash", "-c", SHELL_PRELUDE + command]) : ["/bin/bash", "-c", SHELL_PRELUDE + command];
     const lease = ctx.exec ? leaseFor(ctx.exec, command) : undefined;
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(lease ? { env: lease.env } : {}) });
+    const where = shellCwd(ctx.cwd, contextRoots(ctx));
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: where.cwd, ...(lease ? { env: lease.env } : {}) });
     // Held until the process itself exits (adopted or not); a grandchild left running loses what was granted.
     if (lease) {
       child.once("exit", () => lease.release());
       child.once("error", () => lease.release());
     }
-    let output = "";
+    let output = where.note ? `${where.note}\n` : "";
     let truncated = false;
     let settled = false;
 
@@ -154,9 +156,10 @@ export const bashTool = defineTool({
   }),
   async call(input, ctx) {
     if (input.run_in_background) {
-      const task = backgroundTasks.start(input.command, ctx.cwd, ctx.sessionId, { exec: ctx.exec });
+      const where = shellCwd(ctx.cwd, contextRoots(ctx));
+      const task = backgroundTasks.start(input.command, where.cwd, ctx.sessionId, { exec: ctx.exec });
       return ok(
-        `Started background task ${task.id}. You'll be notified when it finishes or if it looks ` +
+        `${where.note ? `${where.note}\n` : ""}Started background task ${task.id}. You'll be notified when it finishes or if it looks ` +
           `stuck on a prompt; you can also read output anytime with BashOutput(id: "${task.id}").`,
       );
     }
@@ -224,13 +227,14 @@ export const monitorTool = defineTool({
       );
     }
     const timeoutMs = (input.timeout_s ?? MONITOR_DEFAULT_TIMEOUT_S) * 1000;
-    const task = backgroundTasks.start(input.command, ctx.cwd, ctx.sessionId, {
+    const where = shellCwd(ctx.cwd, contextRoots(ctx));
+    const task = backgroundTasks.start(input.command, where.cwd, ctx.sessionId, {
       monitor: true,
       timeoutMs,
       exec: ctx.exec,
     });
     return ok(
-      `Started monitor ${task.id} (timeout ${Math.round(timeoutMs / 1000)}s). Its output will reach you as events — keep working; do not poll or wait for it.`,
+      `${where.note ? `${where.note}\n` : ""}Started monitor ${task.id} (timeout ${Math.round(timeoutMs / 1000)}s). Its output will reach you as events — keep working; do not poll or wait for it.`,
     );
   },
 });

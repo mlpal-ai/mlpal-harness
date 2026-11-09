@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { shellCwd } from "../tools/shell-cwd";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
 
@@ -19,7 +20,7 @@ function runShell(
   timeoutMs: number,
 ): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-c", command], { cwd });
+    const child = spawn("/bin/bash", ["-c", command], { cwd: shellCwd(cwd).cwd });
     let output = "";
     let killed = false;
     const timer = setTimeout(() => {

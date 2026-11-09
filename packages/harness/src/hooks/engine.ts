@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
+import { shellCwd } from "../tools/shell-cwd";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
 
 /** Hook output past this many characters is cut and marked: a runaway hook never floods a prompt. */
@@ -146,7 +147,7 @@ export class CommandHook implements Hook {
 
   private runLocal(input: HookInput, ctx: HookContext): Promise<HookResult> {
     return new Promise((resolve) => {
-      const child = spawn("/bin/bash", ["-c", this.command], { cwd: ctx.cwd });
+      const child = spawn("/bin/bash", ["-c", this.command], { cwd: shellCwd(ctx.cwd).cwd });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), this.timeoutMs);
