@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { shellCwd } from "../tools/shell-cwd";
+import { isDir } from "../tools/shell-cwd";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
 
@@ -19,8 +19,10 @@ function runShell(
   cwd: string,
   timeoutMs: number,
 ): Promise<{ code: number; output: string }> {
+  // Never in another folder: a verifier proves the session's folder, not its parent.
+  if (!isDir(cwd)) return Promise.resolve({ code: 127, output: `the working folder ${cwd} no longer exists` });
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-c", command], { cwd: shellCwd(cwd).cwd });
+    const child = spawn("/bin/bash", ["-c", command], { cwd });
     let output = "";
     let killed = false;
     const timer = setTimeout(() => {

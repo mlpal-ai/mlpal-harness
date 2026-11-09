@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
-import { shellCwd } from "../tools/shell-cwd";
+import { isDir } from "../tools/shell-cwd";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
 
 /** Hook output past this many characters is cut and marked: a runaway hook never floods a prompt. */
@@ -146,8 +146,13 @@ export class CommandHook implements Hook {
   }
 
   private runLocal(input: HookInput, ctx: HookContext): Promise<HookResult> {
+    // Never in another folder: a formatter hook run on a parent would rewrite every project in it.
+    if (!isDir(ctx.cwd)) {
+      this.logger.warn("command hook not run: its working folder no longer exists", { hook: this.id, cwd: ctx.cwd });
+      return Promise.resolve({});
+    }
     return new Promise((resolve) => {
-      const child = spawn("/bin/bash", ["-c", this.command], { cwd: shellCwd(ctx.cwd).cwd });
+      const child = spawn("/bin/bash", ["-c", this.command], { cwd: ctx.cwd });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), this.timeoutMs);

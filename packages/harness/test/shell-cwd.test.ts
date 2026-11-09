@@ -87,12 +87,28 @@ describe("shell tools when the session's folder has been removed", () => {
     expect(task.output.trim()).toBe(workspace);
   });
 
-  test("a command hook and a command verifier still run", async () => {
+  test("a command hook does not run in another folder", async () => {
     await rm(project, { recursive: true });
     const ctx: HookContext = { sessionId: "s1", agentId: "a1", cwd: project };
-    // A hook that fails to spawn is a silent no-op, so the hook reports where it ran.
+    const hook = new CommandHook("format", ["PostToolUse"], "touch ran-here");
+    const r = await hook.run({ event: "PostToolUse", toolName: "Write", input: {}, result: "x", isError: false }, ctx);
+    expect(r).toEqual({});
+    expect(await Bun.file(join(workspace, "ran-here")).exists()).toBe(false);
+  });
+
+  test("a command verifier fails with a clear message instead of checking another folder", async () => {
+    await rm(project, { recursive: true });
+    const ctx: HookContext = { sessionId: "s1", agentId: "a1", cwd: project };
+    const r = await commandVerifier({ command: "touch ran-here" }).run({ event: "Stop", numTurns: 1 }, ctx);
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain(`the working folder ${project} no longer exists`);
+    expect(await Bun.file(join(workspace, "ran-here")).exists()).toBe(false);
+  });
+
+  test("a command hook and a command verifier run in an existing folder as before", async () => {
+    const ctx: HookContext = { sessionId: "s1", agentId: "a1", cwd: project };
     const hook = new CommandHook("cwd", ["PreToolUse"], `printf '{"updatedInput":{"cwd":"%s"}}' "$(pwd)"`);
-    expect((await hook.run({ event: "PreToolUse", toolName: "Bash", input: {} }, ctx)).updatedInput).toEqual({ cwd: workspace });
+    expect((await hook.run({ event: "PreToolUse", toolName: "Bash", input: {} }, ctx)).updatedInput).toEqual({ cwd: project });
     expect(await commandVerifier({ command: "true" }).run({ event: "Stop", numTurns: 1 }, ctx)).toEqual({});
   });
 });

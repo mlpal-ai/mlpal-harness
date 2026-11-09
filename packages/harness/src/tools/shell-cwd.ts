@@ -8,7 +8,7 @@ export interface ShellCwd {
   note?: string;
 }
 
-function isDir(p: string): boolean {
+export function isDir(p: string): boolean {
   try {
     return statSync(p).isDirectory();
   } catch {
