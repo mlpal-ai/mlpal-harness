@@ -2056,6 +2056,8 @@ export class AgentSession {
       isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
       ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
       principal,
+      cwd: cfg.cwd,
+      roots: cfg.roots ?? [cfg.cwd],
     };
     const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at);
     const toolStartMs = Date.now();

@@ -1,6 +1,7 @@
 import type { Author } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
+import { shellCwd } from "../tools/shell-cwd";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
 import { type Decomposed, decomposeBash, refusesAutoApproval } from "./shell-decompose";
@@ -54,6 +55,10 @@ export interface PermissionRequest {
    *  arguments cannot judge this call. */
   undeclaredArgs?: string[];
   principal: Author;
+  /** The session's working folder and folders: the rm -rf guard resolves relative paths where the shell will run
+   *  and refuses the session's own folders. Absent: neither is judged. */
+  cwd?: string;
+  roots?: readonly string[];
 }
 
 export interface PermissionConfig {
@@ -138,7 +143,10 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
 function hardDeny(req: PermissionRequest): string | null {
   if (req.toolName === "Bash") {
     const command = String(req.input.command ?? "");
-    const cat = catastrophicDeny(command);
+    const cat = catastrophicDeny(command, {
+      ...(req.cwd !== undefined ? { cwd: shellCwd(req.cwd, req.roots ?? []).cwd } : {}),
+      ...(req.roots ? { roots: req.roots } : {}),
+    });
     if (cat) return cat;
     for (const target of redirectTargets(command)) {
       const cs = contentSafetyDeny(target);

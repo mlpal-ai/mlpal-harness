@@ -8,6 +8,8 @@
  * than an LLM-classifier boundary: allow is earned; deny here is absolute.
  */
 
+import { posix } from "node:path";
+
 /**
  * Split a shell command into its constituent simple-commands across operators and
  * substitutions (`&&`, `||`, `;`, `|`, newlines, `$( … )`, backticks). Not a full parser —
@@ -123,22 +125,95 @@ const CATASTROPHIC: Array<{ test: RegExp; reason: string }> = [
   },
 ];
 
-/** The filesystem root, or the home folder by `~` / `$HOME`, or a glob of either. */
-const ROOT_OR_HOME_ALIAS = /^\/$|^\/\*$|^~$|^~\/?\*?$|^\$HOME\/?\*?$/;
+/** Where `~`, `~/…`, `$HOME` and `${HOME}` point, for matching: a marker, so it reads as the home folder whatever
+ *  the host's HOME is (the host's own HOME is matched too). */
+const HOME_MARK = "/~home";
 /** A system folder and everything in it. */
-const SYSTEM_TREE = /^\/(bin|etc|usr|var|lib|boot|dev|sys|root|System|Library)(\/|$|\*)/;
-/** The folder that holds the homes, one user's home, or a glob of either; a project inside a home is not one. */
-const HOME_ROOT = /^\/(home|Users)(\/[^/*]+)?\/?\*?$/;
+const SYSTEM_TREE = /^\/(bin|sbin|etc|usr|var|lib|lib64|boot|dev|proc|sys|root|opt|System|Library)(\/|$|\*)/;
+/** The folder that holds the homes, or one user's home. A project inside a home is not one. */
+const HOME_ROOT = /^\/(home|Users)(\/[^/]+)?$/;
+const GLOB = /[*?[]/;
 
-/** True only for rm -rf whose TARGET is the root, a system folder or a home (not a project folder). */
-function isRootRm(cmd: string): boolean {
-  if (!/\brm\b/i.test(cmd) || !/-[a-z]*r/i.test(cmd) || !/-[a-z]*f/i.test(cmd)) return false;
-  // strip flags, look at the operands
-  const operands = cmd
-    .replace(/\brm\b/i, "")
-    .split(/\s+/)
-    .filter((t) => t && !t.startsWith("-"));
-  return operands.some((t) => ROOT_OR_HOME_ALIAS.test(t) || SYSTEM_TREE.test(t) || HOME_ROOT.test(t));
+export const RM_ROOT_REASON = "blocked: recursive-force rm targeting a system/home root";
+export const RM_SESSION_ROOT_REASON = "blocked: recursive-force rm targeting the session's own folder";
+
+/** Where the guard resolves a command's relative paths, and the folders it must never let rm -rf take. */
+export interface RmGuardContext {
+  /** The folder the command runs in (resolved as the shell resolves it). Without it, relative operands are not judged. */
+  cwd?: string;
+  /** The session's folders: refused as an rm -rf target, as `<root>/*`, and as any folder that contains one. */
+  roots?: readonly string[];
+}
+
+/** An rm operand as an absolute, normalized path (`//`, `.` and `..` resolved, no trailing `/`), or undefined when it
+ *  is relative and no cwd is known. Quotes are dropped; the home spellings become HOME_MARK. */
+function normalizeOperand(raw: string, cwd: string | undefined): string | undefined {
+  let t = raw.replace(/^(['"])(.*)\1$/, "$2");
+  t = t.replace(/^(~|\$HOME|\$\{HOME\})(?=\/|$)/, HOME_MARK);
+  if (!t.startsWith("/")) {
+    if (cwd === undefined) return undefined;
+    t = `${cwd}/${t}`;
+  }
+  const n = posix.normalize(t);
+  return n.length > 1 ? n.replace(/\/+$/, "") : n;
+}
+
+/** `p` without a trailing `/*` or `/.*`: the folder a glob of its contents empties. */
+function globbedFolder(p: string): string {
+  const m = /^(.*)\/\.?\*$/.exec(p);
+  return m ? m[1] || "/" : p;
+}
+
+function globRegExp(p: string): RegExp {
+  const body = p.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  return new RegExp(`^${body}$`);
+}
+
+/** `root` and every folder above it, down to `/`. */
+function selfAndAncestors(root: string): string[] {
+  const out: string[] = [];
+  for (let p = posix.normalize(root); ; p = posix.dirname(p)) {
+    out.push(p);
+    if (p === "/") return out;
+  }
+}
+
+/** Which rule an rm -rf of `target` (normalized) breaks, if any. */
+function rmTargetDeny(target: string, ctx: RmGuardContext): string | null {
+  const folder = globbedFolder(target);
+  const home = process.env.HOME ? posix.normalize(process.env.HOME) : undefined;
+  if (folder === "/" || folder === HOME_MARK || folder === home || SYSTEM_TREE.test(folder) || HOME_ROOT.test(folder)) {
+    return RM_ROOT_REASON;
+  }
+  if (folder.startsWith(`${HOME_MARK}/`)) {
+    // `~/…`: judged as the real home's path when known, else only `~` itself was a root.
+    if (!home) return null;
+    return rmTargetDeny(home + folder.slice(HOME_MARK.length) + target.slice(folder.length), ctx);
+  }
+  const protectedFolders = (ctx.roots ?? []).flatMap((r) => selfAndAncestors(r));
+  if (protectedFolders.length === 0) return null;
+  if (GLOB.test(folder)) {
+    const re = globRegExp(folder);
+    return protectedFolders.some((p) => re.test(p)) ? RM_SESSION_ROOT_REASON : null;
+  }
+  return protectedFolders.includes(folder) ? RM_SESSION_ROOT_REASON : null;
+}
+
+/** The deny reason for an rm -rf whose target is the filesystem root, a system folder, a home folder itself, or (with
+ *  `ctx.roots`) one of the session's folders or a folder containing one; a project folder inside them is allowed.
+ *  A backstop on literal spellings, not a boundary: `find -delete`, `xargs rm` or a path held in a variable are not
+ *  seen here. */
+function rootRmDeny(cmd: string, ctx: RmGuardContext): string | null {
+  if (!/\brm\b/i.test(cmd) || !/-[a-z]*r/i.test(cmd) || !/-[a-z]*f/i.test(cmd)) return null;
+  const tokens = cmd.split(/\s+/).filter(Boolean);
+  const at = tokens.findIndex((t) => /^\\?rm$/i.test(t.split("/").pop() ?? ""));
+  const operands = tokens.slice(at + 1).filter((t) => !t.startsWith("-"));
+  for (const raw of operands) {
+    const target = normalizeOperand(raw, ctx.cwd);
+    const reason = target === undefined ? null : rmTargetDeny(target, ctx);
+    if (reason) return reason;
+  }
+  return null;
 }
 
 /** Returns a deny reason if the command is catastrophic, else null.
@@ -146,11 +221,13 @@ function isRootRm(cmd: string): boolean {
  *    chain would false-positive on a `/` operand belonging to a different command).
  *  - The regex rules are self-anchored (mkfs/dd/fork-bomb/chmod), so they run against the
  *    whole command AND each sub-command — catching a fork bomb (spans operators) and a
- *    destructive command hidden in a `&&`/`;` chain alike. */
-export function catastrophicDeny(command: string): string | null {
+ *    destructive command hidden in a `&&`/`;` chain alike.
+ *  - `ctx` (optional): the folder the command runs in and the session's folders, for the rm rule. */
+export function catastrophicDeny(command: string, ctx: RmGuardContext = {}): string | null {
   const subs = splitShellCommands(command);
   for (const sub of subs) {
-    if (isRootRm(sub)) return "blocked: recursive-force rm targeting a system/home root";
+    const rm = rootRmDeny(sub, ctx);
+    if (rm) return rm;
   }
   for (const c of [command, ...subs]) {
     for (const rule of CATASTROPHIC) {
