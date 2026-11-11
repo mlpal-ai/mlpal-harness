@@ -79,7 +79,8 @@ export type ServerCapability =
   | "page_context" // 0.26.0 (C2): run.context, checked by shape and injected as data when it changed
   | "secret_reveal" // 0.26.0 (C1 §7.2): secret_reveal frames, session_history.secretReveals, the secret_revealed client frame
   | "abuse_flag" // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
-  | "live_attach"; // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
+  | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
+  | "concurrent_runs"; // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -749,4 +750,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.2";
+export const HARNESS_PROTOCOL_VERSION = "0.26.3";

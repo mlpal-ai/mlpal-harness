@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Protocol 0.26.3: several runs on one connection (2026-11-11)
+
+- Capability `concurrent_runs`: one connection runs several sessions at once. Each run's frames carry its `sessionId`
+  (a `done` and an `error` also carry the run's `requestId`), `interrupt {sessionId}` stops only that run, and a run's
+  end closes only its own asks. A second run on a session already running is still refused. Additive: a client that
+  does not see the capability keeps one run per connection.
+
 ### Protocol 0.26.2: the gateway's spend codes (2026-11-09)
 
 - `ModelRefusal.code` may be `wallet_empty`, `budget_unavailable` or `billing_unavailable`, beside `budget_exceeded`

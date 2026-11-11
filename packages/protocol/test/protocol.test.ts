@@ -215,8 +215,8 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
 
 describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.2");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.2");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.3");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.3");
   });
 
   test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {
