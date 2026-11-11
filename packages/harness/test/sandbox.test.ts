@@ -63,6 +63,21 @@ describe("env scrub", () => {
     expect(isSecretName("ANTHROPIC_API_KEY")).toBe(true);
     expect(isSecretName("TERM")).toBe(false);
   });
+
+  test("the mlpal CLI's credential helper settings stay; mlpal secrets still go", () => {
+    const { env, scrubbed } = scrubEnv({
+      PATH: "/bin",
+      MLPAL_CREDENTIAL_HELPER: "/run/helper.sock",
+      MLPAL_CREDENTIAL_HELPER_UID: "1001",
+      MLPAL_API_KEY: "k",
+      MLPAL_TOKEN: "t",
+      MLPAL_ACCESS_TOKEN: "a",
+      MLPAL_CREDENTIALS: "c",
+    });
+    expect(env.MLPAL_CREDENTIAL_HELPER).toBe("/run/helper.sock");
+    expect(env.MLPAL_CREDENTIAL_HELPER_UID).toBe("1001");
+    expect(scrubbed).toEqual(["MLPAL_ACCESS_TOKEN", "MLPAL_API_KEY", "MLPAL_CREDENTIALS", "MLPAL_TOKEN"]);
+  });
 });
 
 describe("redaction", () => {

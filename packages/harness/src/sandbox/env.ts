@@ -24,8 +24,23 @@ const KNOWN_SECRETS = new Set([
   "REDIS_URL",
 ]);
 
-/** Names the pattern would catch that are not secrets and that programs rely on. */
-const NOT_SECRETS = new Set(["SSH_AUTH_SOCK", "GPG_TTY", "LESSKEY", "XAUTHORITY", "AUTH_SOCK", "PUBKEY", "KEYMAP", "TERM_PROGRAM_KEY"]);
+/**
+ * Names the pattern would catch that are not secrets and that programs rely on. The mlpal CLI's
+ * credential helper settings are a socket path and a uid: the CLI asks that socket for its
+ * session, so without them it is signed out.
+ */
+const NOT_SECRETS = new Set([
+  "SSH_AUTH_SOCK",
+  "GPG_TTY",
+  "LESSKEY",
+  "XAUTHORITY",
+  "AUTH_SOCK",
+  "PUBKEY",
+  "KEYMAP",
+  "TERM_PROGRAM_KEY",
+  "MLPAL_CREDENTIAL_HELPER",
+  "MLPAL_CREDENTIAL_HELPER_UID",
+]);
 
 export function isSecretName(name: string): boolean {
   if (NOT_SECRETS.has(name)) return false;
