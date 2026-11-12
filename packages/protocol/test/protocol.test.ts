@@ -25,6 +25,7 @@ import {
   type ScheduleView,
   type ServerMessage,
   type SessionStoreGrant,
+  type SessionArchiveFilter,
   type SessionSummary,
   type ToolResultEvent,
   addUsage,
@@ -200,6 +201,27 @@ describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
   });
 });
 
+describe("0.26.4 (session_archive: archive, restore and delete a session; additive)", () => {
+  test("archive_sessions and delete_session are client messages; their answers and refusal codes are typed", () => {
+    const archive = { type: "archive_sessions", requestId: "r1", sessionIds: ["a", "b"], archived: true } satisfies ClientMessage;
+    const restore = { type: "archive_sessions", requestId: "r2", sessionIds: ["a"], archived: false } satisfies ClientMessage;
+    const del = { type: "delete_session", requestId: "r3", sessionId: "a" } satisfies ClientMessage;
+    const filters: SessionArchiveFilter[] = ["exclude", "include", "only"];
+    const list = { type: "list_sessions", requestId: "r4", archived: "only" } satisfies ClientMessage;
+    const archived = { type: "sessions_archived", requestId: "r1", sessionIds: ["a", "b"], archived: true, archivedAt: "2026-11-12T00:00:00.000Z" } satisfies ServerMessage;
+    const deleted = { type: "session_deleted", requestId: "r3", sessionId: "a", deleted: ["a", "a-child"] } satisfies ServerMessage;
+    const running = { type: "error", requestId: "r3", code: "session_running", sessionId: "a", message: "m" } satisfies ServerMessage;
+    const codes: ErrorCode[] = ["session_running", "session_not_found", "session_id_invalid"];
+    const capability: ServerCapability = "session_archive";
+    const row: SessionSummary = { sessionId: "a", agentId: "x", status: "idle", model: "m", updatedAt: "t", title: "t", archivedAt: "2026-11-12T00:00:00.000Z" };
+    // @ts-expect-error the filter is a closed set
+    const wrong: SessionArchiveFilter = "all";
+    expect([archive.sessionIds.length, restore.archived, del.sessionId, filters.length, list.archived, archived.archived, deleted.deleted, running.code, codes.length, capability, row.archivedAt, wrong]).toEqual([
+      2, false, "a", 3, "only", true, ["a", "a-child"], "session_running", 3, "session_archive", "2026-11-12T00:00:00.000Z", "all",
+    ]);
+  });
+});
+
 describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   test("a sandbox_capacity refusal rides the tool_result, the result and the error event, beside refusal", () => {
     const capacity: SandboxRefusal = { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message: "remote sandbox at capacity (quota_global): retry after 5 s" };
@@ -215,8 +237,8 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
 
 describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.3");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.3");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.4");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.4");
   });
 
   test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {

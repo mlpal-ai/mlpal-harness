@@ -13,9 +13,11 @@ import type {
   Mailbox,
   MemoryStore,
   Registry,
+  SessionLifecycle,
   SessionRecord,
   Store,
 } from "./types";
+import { isSafeSessionId, UnsafeSessionIdError } from "./types";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -339,6 +341,7 @@ class LocalRegistry implements Registry {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     await this.migrate();
+    if (isSafeSessionId(sessionId) && existsSync(join(this.deletedDir, sessionId))) return null;
     return readJson<SessionRecord | null>(this.sessionFile(sessionId), null);
   }
 
@@ -346,7 +349,8 @@ class LocalRegistry implements Registry {
     await this.migrate();
     if (this.listing && Date.now() - this.listing.at < LocalRegistry.LISTING_TTL_MS) return this.listing.records;
     if (!existsSync(this.sessionsDir)) return [];
-    const files = (await readdir(this.sessionsDir)).filter((f) => f.endsWith(".json"));
+    const dead = await this.deletedIds();
+    const files = (await readdir(this.sessionsDir)).filter((f) => f.endsWith(".json") && !dead.has(f.slice(0, -".json".length)));
     const out: SessionRecord[] = [];
     // Bounded parallelism: thousands of small files, never thousands of open handles.
     for (let i = 0; i < files.length; i += 256) {
@@ -361,6 +365,41 @@ class LocalRegistry implements Registry {
 
   async listAgents(): Promise<AgentRecord[]> {
     return Object.values(await readJson<Record<string, AgentRecord>>(this.agentsFile, {}));
+  }
+
+  /** One empty file per deleted session id, named by it: a marker, never removed, so the id stays dead whatever a
+   *  sync restores (the workspace daemon reads the same directory to purge the session's synced copy). */
+  get deletedDir(): string {
+    return join(this.dir, "deleted");
+  }
+
+  async deletedIds(): Promise<Set<string>> {
+    if (!existsSync(this.deletedDir)) return new Set();
+    return new Set((await readdir(this.deletedDir)).filter(isSafeSessionId));
+  }
+
+  async markDeleted(sessionId: string): Promise<void> {
+    await ensureDir(this.deletedDir);
+    await writeFile(join(this.deletedDir, sessionId), "");
+    this.listing = null;
+  }
+
+  async setArchived(sessionId: string, archivedAt: string | null): Promise<boolean> {
+    await this.migrate();
+    this.listing = null;
+    return this.serialize(sessionId, async () => {
+      const cur = await this.getSession(sessionId);
+      if (!cur) return false;
+      const { archivedAt: _was, ...rest } = cur;
+      await writeJson(this.sessionFile(sessionId), archivedAt === null ? rest : { ...rest, archivedAt });
+      return true;
+    });
+  }
+
+  /** The record's file goes; the marker (markDeleted) is what keeps the id dead. */
+  async removeRecord(sessionId: string): Promise<void> {
+    this.listing = null;
+    await this.serialize(sessionId, () => rm(this.sessionFile(sessionId), { force: true }));
   }
 }
 
@@ -406,6 +445,8 @@ export class LocalStore implements Store {
   readonly memory: MemoryStore;
   readonly registry: Registry;
   readonly mailbox: Mailbox;
+  readonly lifecycle: SessionLifecycle;
+  private readonly sessions: LocalRegistry;
   /** The background writer behind conversation and logs: appends never wait on the disk. */
   readonly queue: AppendQueue;
 
@@ -426,8 +467,52 @@ export class LocalStore implements Store {
     this.conversation = new LocalConversation(join(root, "conversation"), this.queue);
     this.logs = new LocalLogs(join(root, "logs"), this.queue, opts.logs ?? "on");
     this.memory = new LocalMemory(join(root, "memory"));
-    this.registry = new LocalRegistry(join(root, "registry"));
+    this.sessions = new LocalRegistry(join(root, "registry"));
+    this.registry = this.sessions;
     this.mailbox = new LocalMailbox(join(root, "mailbox"));
+    this.lifecycle = {
+      setArchived: async (sessionId, archivedAt) => this.sessions.setArchived(safe(sessionId), archivedAt),
+      deleteSession: async (sessionId) => {
+        safe(sessionId);
+        // Buffered appends land first, so none recreates a file after it is removed.
+        await this.queue.flush();
+        await this.sessions.markDeleted(sessionId);
+        await this.removeSessionFiles(new Set([sessionId]));
+      },
+      deletedIds: () => this.sessions.deletedIds(),
+      sweepDeleted: async () => {
+        const dead = await this.sessions.deletedIds();
+        if (!dead.size) return [];
+        await this.queue.flush();
+        return [...(await this.removeSessionFiles(dead))];
+      },
+    };
+  }
+
+  /** Every file of these (safe) sessions: the record, and in conversation/, logs/ and mailbox/ each entry named by the
+   *  id or `<id>.<anything>` (a safe id has no dot, so no other session's file can match), and artifacts/<id>/.
+   *  Returns the ids that had any. */
+  private async removeSessionFiles(ids: ReadonlySet<string>): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (const id of ids) {
+      if (existsSync(join(this.root, "registry", "sessions", `${id}.json`))) found.add(id);
+      await this.sessions.removeRecord(id);
+    }
+    const ownerOf = (name: string): string | undefined => {
+      const dot = name.indexOf(".");
+      const id = dot < 0 ? name : name.slice(0, dot);
+      return ids.has(id) ? id : undefined;
+    };
+    for (const dir of ["conversation", "logs", "mailbox", "artifacts", join("registry", "sessions")].map((d) => join(this.root, d))) {
+      if (!existsSync(dir)) continue;
+      for (const name of await readdir(dir)) {
+        const id = ownerOf(name);
+        if (id === undefined) continue;
+        found.add(id);
+        await rm(join(dir, name), { recursive: true, force: true });
+      }
+    }
+    return found;
   }
 
   artifactPath(sessionId: string, name: string): string {
@@ -454,4 +539,9 @@ export class LocalStore implements Store {
     const records = await this.logs.read(sessionId, "events");
     return records.filter((r) => r.kind === kind).map(({ kind: _, ...data }) => data);
   }
+}
+
+function safe(sessionId: string): string {
+  if (!isSafeSessionId(sessionId)) throw new UnsafeSessionIdError(sessionId);
+  return sessionId;
 }

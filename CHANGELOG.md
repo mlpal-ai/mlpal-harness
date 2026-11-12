@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Protocol 0.26.4: archive and delete a session (2026-11-12)
+
+- Capability `session_archive`. `archive_sessions {sessionIds, archived}` archives (or, with `archived: false`, restores)
+  1–100 top-level sessions, all or none, answered `sessions_archived`. `delete_session {sessionId}` deletes a session
+  and its sub-agents for good, answered `session_deleted {deleted}`. Refusals are typed and change nothing:
+  `session_running` (the session or a sub-agent runs: stop it first), `session_not_found`, `session_id_invalid`.
+- `list_sessions.archived` (`exclude`, the default, `include`, `only`) and `SessionSummary.archivedAt`. A sub-agent
+  carries its parent's `archivedAt`, so it is listed beside its parent. A run on an archived session leaves it
+  archived; a client restores it first. Additive: a client that does not see the capability lists what it listed
+  before, minus archived sessions, which only a client with the capability can create.
+- Store: `SessionRecord.archivedAt`, and `Store.lifecycle` (`SessionLifecycle`: `setArchived`, `deleteSession`,
+  `deletedIds`, `sweepDeleted`), which the file backend implements. Archiving keeps `updatedAt`. A delete marks the id
+  dead first (`registry/deleted/<id>`, an empty file that is never removed), then removes the record and every
+  `conversation/`, `logs/`, `mailbox/` and `artifacts/` entry named `<id>` or `<id>.*`. A dead id is left out of
+  `listSessions` and `getSession` even when a sync restores its files, and `sweepDeleted` removes those again. Ids are
+  `SAFE_SESSION_ID` (`[A-Za-z0-9_-]{1,128}`) or refused `UnsafeSessionIdError` before any file is touched.
+
 ### Protocol 0.26.3: several runs on one connection (2026-11-11)
 
 - Capability `concurrent_runs`: one connection runs several sessions at once. Each run's frames carry its `sessionId`

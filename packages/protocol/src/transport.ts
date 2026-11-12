@@ -51,7 +51,14 @@ export interface SessionSummary {
   owner?: string;
   /** 0.21.0: present when a hosted serve started the session (`run.origin`, default "ui"). */
   origin?: SessionOrigin;
+  /** 0.26.4 (capability "session_archive"): when the person archived the session, or the parent it is a sub-agent of
+   *  (ISO 8601); absent when neither is archived. Listed only when `list_sessions.archived` is `include` or `only`. */
+  archivedAt?: string;
 }
+
+/** 0.26.4 (capability "session_archive"): which sessions `list_sessions` returns by their archive state. `exclude`
+ *  (the default, also on a server without the capability) lists the sessions not archived; `only` the archived ones. */
+export type SessionArchiveFilter = "exclude" | "include" | "only";
 
 /** What a server can do beyond yodex/1. Absent from `ready` on a yodex/1 server. */
 export type ServerCapability =
@@ -80,7 +87,8 @@ export type ServerCapability =
   | "secret_reveal" // 0.26.0 (C1 §7.2): secret_reveal frames, session_history.secretReveals, the secret_revealed client frame
   | "abuse_flag" // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
   | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
-  | "concurrent_runs"; // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
+  | "concurrent_runs" // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
+  | "session_archive"; // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -477,7 +485,18 @@ export type ClientMessage =
    *  `before` as that row's `{updatedAt, sessionId}` (0.20.1) seeks by position and survives the
    *  row being updated in between; as a bare id it is looked up, so an updated row restarts the
    *  order (refetch from the top on a repeat). */
-  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number }
+  /** 0.26.4 (capability "session_archive"): `archived` filters by archive state (default `exclude`). */
+  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number; archived?: SessionArchiveFilter }
+  /** 0.26.4 (capability "session_archive"): archive (`archived: true`) or restore sessions, 1–100 at once,
+   *  all or none: an id that is not this principal's session in this workspace refuses the whole message
+   *  (`session_not_found`, `session_id_invalid`), nothing changed. Archiving keeps everything, and a run on an archived
+   *  session leaves it archived (a client that sends one restores it first). Answered with `sessions_archived`. */
+  | { type: "archive_sessions"; requestId?: string; sessionIds: string[]; archived: boolean }
+  /** 0.26.4 (capability "session_archive"): delete a session for good: its record, transcript, logs, mail, parked
+   *  question and plan, and those of its sub-agents. Refused `session_running` while it or a sub-agent runs (stop it
+   *  first), `session_not_found` / `session_id_invalid` as for archive_sessions. The id stays dead: no message can
+   *  address it again. Answered with `session_deleted`. */
+  | { type: "delete_session"; requestId?: string; sessionId: string }
   /** 0.20.5: under hop_per_run, `hop` lists the models that HOP's key may use. */
   | { type: "list_models"; requestId?: string; hop?: string }
   | { type: "list_skills"; requestId?: string }
@@ -553,6 +572,10 @@ export type ServerMessage =
   | { type: "question_request"; id: string; sessionId: string; questions: AskQuestion[] }
   /** 0.20.0: `hasMore` when rows exist past this page. */
   | { type: "sessions"; requestId?: string; sessions: SessionSummary[]; hasMore?: boolean }
+  /** 0.26.4 (capability "session_archive"): the sessions now archived (`archivedAt` set) or restored. */
+  | { type: "sessions_archived"; requestId?: string; sessionIds: string[]; archived: boolean; archivedAt?: string }
+  /** 0.26.4 (capability "session_archive"): `deleted` is the session and every sub-agent session deleted with it. */
+  | { type: "session_deleted"; requestId?: string; sessionId: string; deleted: string[] }
   | {
       type: "session_history";
       requestId?: string;
@@ -679,7 +702,13 @@ export type ErrorCode =
   | "delegated_not_declared"
   | "delegated_subject_mismatch"
   | "delegated_invalid"
-  | "delegated_expired";
+  | "delegated_expired"
+  /** 0.26.4 (capability "session_archive"): nothing was changed. `session_running`: the session or a sub-agent of it
+   *  runs (stop it, then delete); `session_not_found`: no such session for this principal in this workspace, or one
+   *  already deleted; `session_id_invalid`: an id that cannot name a session (path characters, too long, empty). */
+  | "session_running"
+  | "session_not_found"
+  | "session_id_invalid";
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one
@@ -750,4 +779,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.3";
+export const HARNESS_PROTOCOL_VERSION = "0.26.4";
