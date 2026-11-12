@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { HUMAN } from "@mlpal/harness-protocol";
 import { LocalStore } from "../src/store/local";
 import { resolveSessionRef } from "../src/store/sessions";
-import { isSafeSessionId, type SessionRecord, UnsafeSessionIdError } from "../src/store/types";
+import { isSafeSessionId, SessionDeletedError, type SessionRecord, UnsafeSessionIdError } from "../src/store/types";
+import { hostname } from "node:os";
 
 let root: string;
 let store: LocalStore;
@@ -156,10 +157,10 @@ describe("a deleted session cannot be resurrected", () => {
     expect(await store.conversation.read("s2")).toHaveLength(1);
   });
 
-  test("a status patch after the delete does not recreate the record", async () => {
+  test("a status patch after the delete is refused and does not recreate the record", async () => {
     await seed("s1");
     await store.lifecycle.deleteSession("s1");
-    await store.registry.patchSession("s1", { status: "idle" });
+    await expect(store.registry.patchSession("s1", { status: "idle" })).rejects.toBeInstanceOf(SessionDeletedError);
     expect(existsSync(join(root, "registry", "sessions", "s1.json"))).toBe(false);
   });
 
@@ -167,5 +168,68 @@ describe("a deleted session cannot be resurrected", () => {
     await seed("s1");
     expect(await store.lifecycle.sweepDeleted()).toEqual([]);
     expect((await filesOf("s1")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("a dead id takes no writes (any process)", () => {
+  test("record, patch, conversation, mail and logs are refused, typed, and nothing is created", async () => {
+    await seed("s1");
+    await store.lifecycle.deleteSession("s1");
+    // Another process: a fresh store on the same root, which never saw the delete.
+    for (const s of [store, new LocalStore(root)]) {
+      expect(s.lifecycle.isDeleted("s1")).toBe(true);
+      await expect(s.registry.putSession(record("s1"))).rejects.toBeInstanceOf(SessionDeletedError);
+      await expect(s.registry.patchSession("s1", { status: "active" })).rejects.toBeInstanceOf(SessionDeletedError);
+      await expect(s.conversation.append("s1", { type: "user", message: { role: "user", content: "back?" }, author: HUMAN, ts: "t" }, null)).rejects.toBeInstanceOf(SessionDeletedError);
+      await expect(s.mailbox.post("s1", { type: "peer_message", from: { type: "agent", id: "x", displayName: "x" }, toSession: "s1", text: "m" })).rejects.toBeInstanceOf(SessionDeletedError);
+      await expect(s.logs.write("s1", "events", { kind: "k" })).rejects.toBeInstanceOf(SessionDeletedError);
+      await s.flush();
+    }
+    expect(await filesOf("s1")).toEqual([]);
+    expect(store.lifecycle.isDeleted("s2")).toBe(false);
+  });
+
+  test("a live session's writes go on until it is deleted", async () => {
+    await seed("s1");
+    await store.registry.patchSession("s1", { status: "active" });
+    expect((await store.registry.getSession("s1"))?.status).toBe("active");
+  });
+});
+
+describe("a dotted id is never taken for another session's", () => {
+  test("deleting abc leaves abc.x's files", async () => {
+    await seed("abc");
+    // Made before ids were checked: the file backend wrote whatever a client named.
+    for (const f of ["conversation/abc.x.jsonl", "registry/sessions/abc.x.json", "mailbox/abc.x.jsonl", "logs/abc.x.events.jsonl"]) {
+      await mkdir(join(root, f, ".."), { recursive: true });
+      await writeFile(join(root, f), "{}\n");
+    }
+    await store.lifecycle.deleteSession("abc");
+    for (const f of ["conversation/abc.x.jsonl", "registry/sessions/abc.x.json", "mailbox/abc.x.jsonl", "logs/abc.x.events.jsonl"]) expect(existsSync(join(root, f))).toBe(true);
+    expect(existsSync(join(root, "conversation", "abc.jsonl"))).toBe(false);
+  });
+});
+
+describe("live locks", () => {
+  test("a hold is seen by every store on the root; nested holds count; the last release frees it", async () => {
+    const other = new LocalStore(root);
+    const a = store.lifecycle.holdLive("s1");
+    const b = store.lifecycle.holdLive("s1");
+    expect([other.lifecycle.isLive("s1"), other.lifecycle.isLive("s2")]).toEqual([true, false]);
+    a();
+    a();
+    expect(other.lifecycle.isLive("s1")).toBe(true);
+    b();
+    expect(other.lifecycle.isLive("s1")).toBe(false);
+    expect(existsSync(join(root, "live", "s1"))).toBe(false);
+  });
+
+  test("a lock left by a dead process, or another host, is free", async () => {
+    await mkdir(join(root, "live"), { recursive: true });
+    await writeFile(join(root, "live", "dead"), `${hostname()}:2147483646`);
+    await writeFile(join(root, "live", "elsewhere"), `another-pod:${process.pid}`);
+    await writeFile(join(root, "live", "mine"), `${hostname()}:${process.pid}`);
+    expect([store.lifecycle.isLive("dead"), store.lifecycle.isLive("elsewhere"), store.lifecycle.isLive("mine"), store.lifecycle.isLive("../x")]).toEqual([false, false, true, false]);
+    expect(() => store.lifecycle.holdLive("../x")).toThrow(UnsafeSessionIdError);
   });
 });

@@ -697,7 +697,22 @@ export class AgentSession {
   }
 
   /** Run one turn to completion, yielding the live event stream. */
-  async *run(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
+  /** A turn. It holds the session's live lock (Store.lifecycle) while it goes, as resume and approve do. */
+  run(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
+    return this.holdingLive(this.runTurn(input));
+  }
+
+  /** Another process asking whether this session runs (a delete) reads the lock, whatever a step's length. */
+  private async *holdingLive<R>(inner: AsyncGenerator<EngineEvent, R, void>): AsyncGenerator<EngineEvent, R, void> {
+    const release = this.store.lifecycle?.holdLive(this.cfg.sessionId);
+    try {
+      return yield* inner;
+    } finally {
+      release?.();
+    }
+  }
+
+  private async *runTurn(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
     await this.init();
     const { cfg } = this;
     const author = input.author ?? HUMAN;
@@ -1877,7 +1892,11 @@ export class AgentSession {
    * turn continues from the head (no new user entry) to its result, as `run()` does. A held call whose
    * approved run began (its marker) but whose result was lost with the engine (D-48) is such a turn too.
    */
-  async *resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
+  resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
+    return this.holdingLive(this.resumeTurn());
+  }
+
+  private async *resumeTurn(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
     const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
     const turnEntries = turnToResume(all, await this.startedCalls());
     if (turnEntries.length === 0) return { resumed: false };
@@ -1900,7 +1919,11 @@ export class AgentSession {
    * `parkId` names the park the person answered (`HeldCall.parkId`); another park held by now, or none, is
    * NoHeldCallError and nothing is written.
    */
-  async *approve(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
+  approve(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
+    return this.holdingLive(this.approveTurn(d));
+  }
+
+  private async *approveTurn(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
     const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
     const held = heldCall(all);
     if (!held || movesTurn(all.slice(held.resultAt + 1))) throw new NoHeldCallError(this.cfg.sessionId);

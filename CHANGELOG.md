@@ -18,6 +18,14 @@
   `conversation/`, `logs/`, `mailbox/` and `artifacts/` entry named `<id>` or `<id>.*`. A dead id is left out of
   `listSessions` and `getSession` even when a sync restores its files, and `sweepDeleted` removes those again. Ids are
   `SAFE_SESSION_ID` (`[A-Za-z0-9_-]{1,128}`) or refused `UnsafeSessionIdError` before any file is touched.
+- A dead id takes no writes: `putSession`, `patchSession`, `conversation.append`, `mailbox.post` and `logs.write` throw
+  `SessionDeletedError` for it, in any process (the marker is read from disk; a positive answer is cached), so no
+  wake, resume or second process brings a deleted session back. `SessionLifecycle.isDeleted`.
+- Live locks: `AgentSession.run`, `resume` and `approve` hold `SessionLifecycle.holdLive` (`<root>/live/<id>`,
+  `<host>:<pid>`, nested holds counted) for as long as they go, and `isLive` reads it: a run is seen as running however
+  long a step takes, and a lock whose process or host is gone reads as free.
+- A delete matches the backend's exact per-directory names, so a session with a dotted id (`abc.x`) is never taken
+  for `abc`'s.
 
 ### Protocol 0.26.3: several runs on one connection (2026-11-11)
 

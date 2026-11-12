@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
@@ -17,7 +18,30 @@ import type {
   SessionRecord,
   Store,
 } from "./types";
-import { isSafeSessionId, UnsafeSessionIdError } from "./types";
+import { isSafeSessionId, SessionDeletedError, UnsafeSessionIdError } from "./types";
+
+/** The ids marked dead (`registry/deleted/<id>`). A positive answer is cached (a marker is never removed); a negative
+ *  one is read again each time, so a delete by another process is seen by the next write. */
+class DeadIds {
+  private readonly known = new Set<string>();
+  constructor(readonly dir: string) {}
+
+  has(sessionId: string): boolean {
+    if (this.known.has(sessionId)) return true;
+    if (!isSafeSessionId(sessionId) || !existsSync(join(this.dir, sessionId))) return false;
+    this.known.add(sessionId);
+    return true;
+  }
+
+  add(sessionId: string): void {
+    this.known.add(sessionId);
+  }
+
+  /** Throws SessionDeletedError for a dead id: the one check every write of the file store makes. */
+  guard(sessionId: string): void {
+    if (this.has(sessionId)) throw new SessionDeletedError(sessionId);
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -98,6 +122,7 @@ class LocalConversation implements ConversationStore {
   constructor(
     private readonly dir: string,
     private readonly queue: AppendQueue,
+    private readonly dead: DeadIds,
   ) {}
 
   private file(sessionId: string): string {
@@ -112,6 +137,7 @@ class LocalConversation implements ConversationStore {
     payload: SDKMessage,
     parentUuid: string | null,
   ): Promise<ConversationEntry> {
+    this.dead.guard(sessionId);
     const entry: ConversationEntry = {
       uuid: crypto.randomUUID(),
       parentUuid,
@@ -168,6 +194,7 @@ class LocalLogs implements LogStore {
   constructor(
     private readonly dir: string,
     private readonly queue: AppendQueue,
+    private readonly dead: DeadIds,
     /** `off`: nothing is written or read (YODEX_LOG=off). The conversation is unaffected. */
     private readonly mode: "on" | "off" = "on",
   ) {}
@@ -182,6 +209,7 @@ class LocalLogs implements LogStore {
     record: Record<string, unknown>,
   ): Promise<void> {
     if (this.mode === "off") return;
+    this.dead.guard(sessionId);
     this.queue.push(this.file(sessionId, channel), JSON.stringify({ ts: nowIso(), ...record }));
   }
 
@@ -262,7 +290,10 @@ class LocalMemory implements MemoryStore {
 }
 
 class LocalRegistry implements Registry {
-  constructor(private readonly dir: string) {}
+  readonly dead: DeadIds;
+  constructor(private readonly dir: string) {
+    this.dead = new DeadIds(join(dir, "deleted"));
+  }
 
   // Serialize read-modify-write per record: without it, concurrent async writers in one process
   // (a listen() heartbeat every 1.5s, sub-agent session patches, the main loop's status updates)
@@ -318,12 +349,14 @@ class LocalRegistry implements Registry {
   }
 
   async putSession(s: SessionRecord): Promise<void> {
+    this.dead.guard(s.sessionId);
     await this.migrate();
     this.listing = null;
     return this.serialize(s.sessionId, () => writeJson(this.sessionFile(s.sessionId), s));
   }
 
   async patchSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void> {
+    this.dead.guard(sessionId);
     await this.migrate();
     this.listing = null;
     return this.serialize(sessionId, async () => {
@@ -341,7 +374,7 @@ class LocalRegistry implements Registry {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     await this.migrate();
-    if (isSafeSessionId(sessionId) && existsSync(join(this.deletedDir, sessionId))) return null;
+    if (this.dead.has(sessionId)) return null;
     return readJson<SessionRecord | null>(this.sessionFile(sessionId), null);
   }
 
@@ -370,7 +403,7 @@ class LocalRegistry implements Registry {
   /** One empty file per deleted session id, named by it: a marker, never removed, so the id stays dead whatever a
    *  sync restores (the workspace daemon reads the same directory to purge the session's synced copy). */
   get deletedDir(): string {
-    return join(this.dir, "deleted");
+    return this.dead.dir;
   }
 
   async deletedIds(): Promise<Set<string>> {
@@ -381,6 +414,7 @@ class LocalRegistry implements Registry {
   async markDeleted(sessionId: string): Promise<void> {
     await ensureDir(this.deletedDir);
     await writeFile(join(this.deletedDir, sessionId), "");
+    this.dead.add(sessionId);
     this.listing = null;
   }
 
@@ -404,13 +438,17 @@ class LocalRegistry implements Registry {
 }
 
 class LocalMailbox implements Mailbox {
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    private readonly dead: DeadIds,
+  ) {}
 
   private file(sessionId: string): string {
     return join(this.dir, `${sessionId}.jsonl`);
   }
 
   async post(sessionId: string, message: PeerMessage): Promise<void> {
+    this.dead.guard(sessionId);
     await appendJsonl(this.file(sessionId), message);
   }
 
@@ -464,12 +502,14 @@ export class LocalStore implements Store {
       LocalStore.queues.set(root, queue);
     }
     this.queue = queue;
-    this.conversation = new LocalConversation(join(root, "conversation"), this.queue);
-    this.logs = new LocalLogs(join(root, "logs"), this.queue, opts.logs ?? "on");
-    this.memory = new LocalMemory(join(root, "memory"));
     this.sessions = new LocalRegistry(join(root, "registry"));
     this.registry = this.sessions;
-    this.mailbox = new LocalMailbox(join(root, "mailbox"));
+    const dead = this.sessions.dead;
+    this.conversation = new LocalConversation(join(root, "conversation"), this.queue, dead);
+    this.logs = new LocalLogs(join(root, "logs"), this.queue, dead, opts.logs ?? "on");
+    this.memory = new LocalMemory(join(root, "memory"));
+    this.mailbox = new LocalMailbox(join(root, "mailbox"), dead);
+    const live = LiveLocks.at(join(root, "live"));
     this.lifecycle = {
       setArchived: async (sessionId, archivedAt) => this.sessions.setArchived(safe(sessionId), archivedAt),
       deleteSession: async (sessionId) => {
@@ -480,34 +520,32 @@ export class LocalStore implements Store {
         await this.removeSessionFiles(new Set([sessionId]));
       },
       deletedIds: () => this.sessions.deletedIds(),
+      isDeleted: (sessionId) => dead.has(sessionId),
+      holdLive: (sessionId) => live.hold(safe(sessionId)),
+      isLive: (sessionId) => isSafeSessionId(sessionId) && live.held(sessionId),
       sweepDeleted: async () => {
-        const dead = await this.sessions.deletedIds();
-        if (!dead.size) return [];
+        const marked = await this.sessions.deletedIds();
+        if (!marked.size) return [];
         await this.queue.flush();
-        return [...(await this.removeSessionFiles(dead))];
+        return [...(await this.removeSessionFiles(marked))];
       },
     };
   }
 
-  /** Every file of these (safe) sessions: the record, and in conversation/, logs/ and mailbox/ each entry named by the
-   *  id or `<id>.<anything>` (a safe id has no dot, so no other session's file can match), and artifacts/<id>/.
-   *  Returns the ids that had any. */
+  /** Every file of these (safe) sessions, by the exact names the backend gives them (SESSION_ENTRIES): the record, the
+   *  conversation and its blobs, the log channels, the mailbox and artifacts/<id>/. Returns the ids that had any. */
   private async removeSessionFiles(ids: ReadonlySet<string>): Promise<Set<string>> {
     const found = new Set<string>();
     for (const id of ids) {
       if (existsSync(join(this.root, "registry", "sessions", `${id}.json`))) found.add(id);
       await this.sessions.removeRecord(id);
     }
-    const ownerOf = (name: string): string | undefined => {
-      const dot = name.indexOf(".");
-      const id = dot < 0 ? name : name.slice(0, dot);
-      return ids.has(id) ? id : undefined;
-    };
-    for (const dir of ["conversation", "logs", "mailbox", "artifacts", join("registry", "sessions")].map((d) => join(this.root, d))) {
+    for (const [sub, names] of SESSION_ENTRIES) {
+      const dir = join(this.root, sub);
       if (!existsSync(dir)) continue;
       for (const name of await readdir(dir)) {
-        const id = ownerOf(name);
-        if (id === undefined) continue;
+        const id = sessionOfEntry(name, names);
+        if (id === undefined || !ids.has(id)) continue;
         found.add(id);
         await rm(join(dir, name), { recursive: true, force: true });
       }
@@ -544,4 +582,84 @@ export class LocalStore implements Store {
 function safe(sessionId: string): string {
   if (!isSafeSessionId(sessionId)) throw new UnsafeSessionIdError(sessionId);
   return sessionId;
+}
+
+/** What the file backend keeps per session, by directory: the exact entry names, so a session whose id has a dot
+ *  (`abc.x`, made before ids were checked) is never taken for session `abc`'s. */
+const SESSION_ENTRIES: ReadonlyArray<readonly [string, ReadonlyArray<RegExp>]> = [
+  ["conversation", [/^(.+)\.jsonl$/, /^(.+)\.blobs$/]],
+  ["logs", [/^(.+)\.(?:exec|model|events)\.jsonl$/]],
+  ["mailbox", [/^(.+)\.jsonl$/]],
+  ["artifacts", [/^(.+)$/]],
+  [join("registry", "sessions"), [/^(.+)\.json$/, /^(.+)\.json\.[0-9a-f]{8}\.tmp$/]],
+];
+
+function sessionOfEntry(name: string, patterns: ReadonlyArray<RegExp>): string | undefined {
+  for (const re of patterns) {
+    const id = re.exec(name)?.[1];
+    if (id !== undefined && isSafeSessionId(id)) return id;
+  }
+  return undefined;
+}
+
+/** Live locks (`<root>/live/<id>`, holding `<host>:<pid>`): a run in any process on this host says it runs the session
+ *  for as long as it does, which a record's freshness cannot (a tool call can outlast it). Not under a synced
+ *  directory, and a lock whose host or pid is gone reads as free, so no restart or restore leaves a session stuck. */
+class LiveLocks {
+  /** One per directory per process, as the append queue: every LocalStore on a root shares the hold counts. */
+  private static readonly byDir = new Map<string, LiveLocks>();
+  static at(dir: string): LiveLocks {
+    let locks = LiveLocks.byDir.get(dir);
+    if (!locks) LiveLocks.byDir.set(dir, (locks = new LiveLocks(dir)));
+    return locks;
+  }
+
+  private readonly counts = new Map<string, number>();
+  private readonly me = `${hostname()}:${process.pid}`;
+  private constructor(private readonly dir: string) {}
+
+  hold(sessionId: string): () => void {
+    const n = this.counts.get(sessionId) ?? 0;
+    this.counts.set(sessionId, n + 1);
+    if (n === 0) {
+      try {
+        mkdirSync(this.dir, { recursive: true });
+        writeFileSync(join(this.dir, sessionId), this.me);
+      } catch {
+        // A lock that cannot be written leaves the record's status as the only sign of the run, as before.
+      }
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.counts.get(sessionId) ?? 1) - 1;
+      if (left > 0) return void this.counts.set(sessionId, left);
+      this.counts.delete(sessionId);
+      try {
+        if (readFileSync(join(this.dir, sessionId), "utf8") === this.me) rmSync(join(this.dir, sessionId), { force: true });
+      } catch {
+        // already gone
+      }
+    };
+  }
+
+  held(sessionId: string): boolean {
+    if (this.counts.has(sessionId)) return true;
+    let owner: string;
+    try {
+      owner = readFileSync(join(this.dir, sessionId), "utf8");
+    } catch {
+      return false;
+    }
+    const cut = owner.lastIndexOf(":");
+    const pid = Number(owner.slice(cut + 1));
+    if (owner.slice(0, cut) !== hostname() || !Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
 }
