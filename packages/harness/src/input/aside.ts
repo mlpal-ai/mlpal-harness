@@ -1,5 +1,6 @@
 import type { Message } from "@mlpal/harness-protocol";
 import type { ModelClient } from "../gateway/client";
+import { CODING_ASIDE_SYSTEM } from "../profile/side-prompts";
 
 /**
  * Answer a quick side question ("/btw …") about an in-flight session WITHOUT touching it: a single
@@ -10,6 +11,8 @@ import type { ModelClient } from "../gateway/client";
  */
 export interface AsideOptions {
   model_client: ModelClient;
+  /** The HOP's system for this call (`profile.prompts.side`); default: the coding text. */
+  system?: string;
   /** Cheap tier — a side answer shouldn't cost like a main turn. */
   model: string;
   /** The user's question (already stripped of the "/btw" prefix). */
@@ -20,11 +23,6 @@ export interface AsideOptions {
   maxOutputTokens?: number;
 }
 
-const SYSTEM =
-  "The user is running a coding agent and has paused to ask you a quick side question about the " +
-  "work in progress. Answer it directly and briefly (1–4 sentences) FROM THE CONTEXT you're given. " +
-  "You are read-only: you have no tools and must not propose taking any action or changing anything " +
-  "— just answer. If the context doesn't contain the answer, say so in one line.";
 
 function extractText(content: Message["content"]): string {
   return typeof content === "string"
@@ -38,7 +36,7 @@ export async function answerAside(opts: AsideOptions): Promise<string> {
   try {
     const gen = opts.model_client.stream({
       model: opts.model,
-      system: SYSTEM,
+      system: opts.system ?? CODING_ASIDE_SYSTEM,
       messages: [
         {
           role: "user",

@@ -24,8 +24,15 @@ const schema = z.object({
   max_results: z.number().int().min(1).max(20).optional().describe(`how many matches to load (default ${MAX_RESULTS})`),
 });
 
-function describe(deferred: DeferredTools): string {
-  const pending = deferred.pending();
+/** The deferred servers and tools a HOP admits (all of them without a HOP view). */
+function pendingFor(deferred: DeferredTools, admit?: (name: string) => boolean): { server: string; names: string[] }[] {
+  return admit
+    ? deferred.pending().map((p) => ({ ...p, names: p.names.filter(admit) })).filter((p) => p.names.length > 0)
+    : deferred.pending();
+}
+
+function describe(deferred: DeferredTools, admit?: (name: string) => boolean): string {
+  const pending = pendingFor(deferred, admit);
   const head =
     "Load deferred tools before calling them. Some MCP servers' tools are not in your tool list until you load them here: " +
     'search by keyword ("gmail send", "jira issue") or by exact name ("select:mcp__gmail__send_email,mcp__gmail__search"). ' +
@@ -72,21 +79,29 @@ function rank(query: string, candidates: Tool<unknown>[]): Tool<unknown>[] {
   return scored.filter((x) => x.s >= best / 2).map((x) => x.t);
 }
 
+/** What the session's HOP lets ToolSearch offer: only tools its `tools.include` admits (a loaded tool the session
+ *  cannot call would fail), described in its `tools.describe` words. Absent = every deferred tool, its own words. */
+export interface ToolSearchHopView {
+  admit?: (name: string) => boolean;
+  describe?: (tool: Tool<unknown>) => string;
+}
+
 /** The registry must be the one whose tools the model calls (deferred tools are registered there). */
-export function createToolSearchTool(deferred: DeferredTools, registry: ToolRegistry): Tool<ToolSearchInput> {
+export function createToolSearchTool(deferred: DeferredTools, registry: ToolRegistry, hop: ToolSearchHopView = {}): Tool<ToolSearchInput> {
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<string, unknown>;
   sanitizeJsonSchema(jsonSchema);
   return {
     name: "ToolSearch",
     hands: "pure",
     get description() {
-      return describe(deferred);
+      return describe(deferred, hop.admit);
     },
     readOnly: true,
     schema,
     jsonSchema,
     async call(input) {
-      const candidates = registry.list().filter((t) => deferred.isDeferred(t.name));
+      const pendingText = () => pendingFor(deferred, hop.admit).map((p) => `${p.server} (${p.names.join(", ")})`).join("; ") || "none";
+      const candidates = registry.list().filter((t) => deferred.isDeferred(t.name) && (hop.admit?.(t.name) ?? true));
       const limit = input.max_results ?? MAX_RESULTS;
       let matches: Tool<unknown>[];
       if (input.query.startsWith("select:")) {
@@ -94,16 +109,16 @@ export function createToolSearchTool(deferred: DeferredTools, registry: ToolRegi
         matches = wanted.map((n) => candidates.find((t) => t.name === n)).filter((t): t is Tool<unknown> => Boolean(t));
         const missing = wanted.filter((n) => !matches.some((t) => t.name === n));
         if (missing.length && matches.length === 0) {
-          return { content: `No deferred tool named ${missing.join(", ")}. Deferred servers: ${deferred.pending().map((p) => `${p.server} (${p.names.join(", ")})`).join("; ") || "none"}`, isError: true };
+          return { content: `No deferred tool named ${missing.join(", ")}. Deferred servers: ${pendingText()}`, isError: true };
         }
       } else {
         matches = rank(input.query, candidates).slice(0, limit);
       }
       if (matches.length === 0) {
-        return { content: `No deferred tool matches "${input.query}". Deferred servers: ${deferred.pending().map((p) => `${p.server} (${p.names.join(", ")})`).join("; ") || "none"}`, isError: true };
+        return { content: `No deferred tool matches "${input.query}". Deferred servers: ${pendingText()}`, isError: true };
       }
       deferred.load(matches.map((t) => t.name));
-      const rendered = matches.map((t) => JSON.stringify({ name: t.name, description: t.description, input_schema: t.jsonSchema })).join("\n");
+      const rendered = matches.map((t) => JSON.stringify({ name: t.name, description: hop.describe?.(t) ?? t.description, input_schema: t.jsonSchema })).join("\n");
       return { content: `Loaded ${matches.length} tool${matches.length === 1 ? "" : "s"}; call them directly from now on:\n${rendered}` };
     },
   };

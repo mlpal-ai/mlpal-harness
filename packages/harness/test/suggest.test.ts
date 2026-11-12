@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
 import { suggestCompletion } from "../src/input/suggest";
+import { CODING_SUGGEST_SYSTEM } from "../src/profile/side-prompts";
 
 /** A model client that returns a fixed reply, and records the request it was given. */
 class Fixed implements ModelClient {
@@ -27,6 +28,13 @@ const run = (reply: string, draft: string, context?: string) =>
   suggestCompletion({ model_client: new Fixed(reply), model: "cheap", draft, context });
 
 describe("suggestCompletion", () => {
+  test("sends the HOP's suggest system when given, coding's otherwise", async () => {
+    const client = new Fixed("more");
+    await suggestCompletion({ model_client: client, model: "cheap", draft: "fix the" });
+    await suggestCompletion({ model_client: client, model: "cheap", draft: "fix the", system: "HOP suggest." });
+    expect(client.seen.map((x) => x.system)).toEqual([CODING_SUGGEST_SYSTEM, "HOP suggest."]);
+  });
+
   test("returns the continuation, joined with a space when both sides are words", async () => {
     expect(await run("for the parser", "add tests")).toBe(" for the parser");
   });

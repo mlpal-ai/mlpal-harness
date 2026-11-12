@@ -1,5 +1,6 @@
 import type { Message } from "@mlpal/harness-protocol";
 import type { ModelClient } from "../gateway/client";
+import { CODING_SUGGEST_SYSTEM } from "../profile/side-prompts";
 
 /**
  * One-shot input autocomplete: given a developer's partial message to the agent and the recent
@@ -13,6 +14,8 @@ import type { ModelClient } from "../gateway/client";
  */
 export interface SuggestOptions {
   model_client: ModelClient;
+  /** The HOP's system for this call (`profile.prompts.side`); default: the coding text. */
+  system?: string;
   /** Cheap classify/summarize-tier model — this must not cost real money per keystroke-pause. */
   model: string;
   /** The partial message, completed from its end. */
@@ -24,11 +27,6 @@ export interface SuggestOptions {
   maxOutputTokens?: number;
 }
 
-const SYSTEM =
-  "You autocomplete a developer's in-progress message to a coding agent. Given the recent " +
-  "conversation and their partial message, output ONLY the text to APPEND to finish it — the " +
-  "continuation from where they stopped, not the whole message. One short line, at most ~10 " +
-  "words. No quotes, no explanation, no leading label. If nothing useful fits, output nothing.";
 
 function extractText(content: Message["content"]): string {
   return typeof content === "string"
@@ -42,7 +40,7 @@ export async function suggestCompletion(opts: SuggestOptions): Promise<string | 
   try {
     const gen = opts.model_client.stream({
       model: opts.model,
-      system: SYSTEM,
+      system: opts.system ?? CODING_SUGGEST_SYSTEM,
       messages: [
         {
           role: "user",

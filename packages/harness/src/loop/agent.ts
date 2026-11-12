@@ -1033,12 +1033,14 @@ export class AgentSession {
       // memory v13 (F5): the periodic checkpoint is a host trigger, not a habit the model keeps.
       if (!answered && cfg.memoryCheckpoint && cfg.memoryCheckpoint.everyTurns > 0 && turns % cfg.memoryCheckpoint.everyTurns === 0 && (cfg.memoryCheckpoint.enabled?.() ?? true)) {
         const note = cfg.memoryCheckpoint.nudge(turns);
-        const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
-        parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
-        yield { ...ue, uuid: parent };
-        messages.push({ role: "user", content: note });
-        log.info("memory checkpoint nudge", { turns });
-        metrics.increment("agent.checkpoint_nudges", 1);
+        if (note) { // "" = the HOP switched the note off
+          const ue: UserEvent = { type: "user", message: { role: "user", content: note }, author: SYSTEM, ts: now() };
+          parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
+          yield { ...ue, uuid: parent };
+          messages.push({ role: "user", content: note });
+          log.info("memory checkpoint nudge", { turns });
+          metrics.increment("agent.checkpoint_nudges", 1);
+        }
       }
 
       let result: ModelResult;
@@ -1357,9 +1359,12 @@ export class AgentSession {
         // Completion self-check (default-on, one-shot): a run that edited real code but never
         // ran a test/build/typecheck gets a single nudge to verify-or-admit before finishing.
         // Edit-gated + one-shot, so trivial and already-verified runs pay nothing.
-        if (selfCheckOn && !selfCheckFired && editsMade >= selfCheckMinEdits && !verifyObserved) {
+        // A HOP whose selfCheck text is "" has switched the note off: nothing is sent.
+        const selfCheckNote =
+          selfCheckOn && !selfCheckFired && editsMade >= selfCheckMinEdits && !verifyObserved ? loop.selfCheckNudge(editsMade, cfg.verifyHint) : "";
+        if (selfCheckNote) {
           selfCheckFired = true;
-          const note = loop.selfCheckNudge(editsMade, cfg.verifyHint);
+          const note = selfCheckNote;
           log.info("completion self-check fired", { editsMade });
           metrics.increment("agent.self_check", 1);
           const ue: UserEvent = {
@@ -1469,8 +1474,11 @@ export class AgentSession {
           if (n >= loop.churnThreshold) {
             churnFired = true;
             churnNote = loop.antiChurnNudge(path, n);
-            log.info("anti-churn breaker fired", { path, edits: n });
-            metrics.increment("agent.anti_churn", 1);
+            // "" = the HOP switched the note off: nothing is sent, so nothing fired.
+            if (churnNote) {
+              log.info("anti-churn breaker fired", { path, edits: n });
+              metrics.increment("agent.anti_churn", 1);
+            }
             break;
           }
         }

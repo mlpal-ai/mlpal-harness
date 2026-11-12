@@ -13,6 +13,7 @@ import { defaultRegistry } from "../src/tools";
 import { FunctionHook, HookEngine } from "../src/hooks/engine";
 import { AgentSession, type AgentConfig } from "../src/loop/agent";
 import { loadMessages } from "../src/loop/messages";
+import { CODING_PROFILE } from "../src/profile/builtins/coding";
 
 class ScriptedModel implements ModelClient {
   private i = 0;
@@ -906,6 +907,21 @@ describe("agentic loop", () => {
     expect(result && "subtype" in result ? result.subtype : "").toBe("success");
   });
 
+  test("a HOP whose self-check text is \"\" sends no note and the run finishes", async () => {
+    const model = new ScriptedModel([
+      toolUse("Write", { path: "a.txt", content: "1" }),
+      toolUse("Write", { path: "b.txt", content: "2" }),
+      toolUse("Write", { path: "c.txt", content: "3" }),
+      textDone("all done"),
+    ]);
+    const loop = { ...CODING_PROFILE.loop, selfCheckNudge: () => "" };
+    const events = await collect(session(model, "autopilot", { loop }).run({ text: "edit three files" }));
+    expect(nudgeCount(events)).toBe(0);
+    expect(events.some((e) => e.type === "user" && (e as { message?: { content?: unknown } }).message?.content === "")).toBe(false);
+    const result = events.find((e) => e.type === "result");
+    expect(result && "subtype" in result ? result.subtype : "").toBe("success");
+  });
+
   test("self-check stays quiet when a verification command ran", async () => {
     const model = new ScriptedModel([
       toolUse("Write", { path: "a.txt", content: "1" }),
@@ -968,6 +984,19 @@ describe("agentic loop", () => {
     ]);
     await collect(session(model, "autopilot", { selfCheck: false }).run({ text: "keep editing one file" }));
     expect(sawChurnNote(model)).toBe(true);
+  });
+
+  test("a HOP whose anti-churn text is \"\" sends no note at all (not an empty block)", async () => {
+    const model = new ScriptedModel([
+      ...Array.from({ length: 6 }, (_, i) => toolUse("Write", { path: "same.py", content: `v${i}` })),
+      textDone("finishing"),
+    ]);
+    const loop = { ...CODING_PROFILE.loop, antiChurnNudge: () => "" };
+    const metrics = new MemoryMetrics();
+    await collect(session(model, "autopilot", { selfCheck: false, loop, metrics }).run({ text: "keep editing one file" }));
+    expect(sawChurnNote(model)).toBe(false);
+    expect(metrics.counters.get("agent.anti_churn") ?? 0).toBe(0); // nothing sent, so nothing counted
+    expect(model.seen.some((req) => JSON.stringify(req.messages).includes('{"type":"text","text":""}'))).toBe(false);
   });
 
   test("anti-churn stays quiet when edits are spread across files", async () => {
