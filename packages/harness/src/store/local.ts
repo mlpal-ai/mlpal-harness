@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -514,14 +514,15 @@ export class LocalStore implements Store {
       setArchived: async (sessionId, archivedAt) => this.sessions.setArchived(safe(sessionId), archivedAt),
       deleteSession: async (sessionId) => {
         safe(sessionId);
-        // Buffered appends land first, so none recreates a file after it is removed.
-        await this.queue.flush();
+        // Marked first, so no append is accepted from here on; then what was accepted before lands, and only then
+        // the files go, so nothing recreates one after it is removed.
         await this.sessions.markDeleted(sessionId);
+        await this.queue.flush();
         await this.removeSessionFiles(new Set([sessionId]));
       },
       deletedIds: () => this.sessions.deletedIds(),
       isDeleted: (sessionId) => dead.has(sessionId),
-      holdLive: (sessionId) => live.hold(safe(sessionId)),
+      holdLive: (sessionId) => live.hold(safe(sessionId), opts.logger),
       isLive: (sessionId) => isSafeSessionId(sessionId) && live.held(sessionId),
       sweepDeleted: async () => {
         const marked = await this.sessions.deletedIds();
@@ -602,9 +603,11 @@ function sessionOfEntry(name: string, patterns: ReadonlyArray<RegExp>): string |
   return undefined;
 }
 
-/** Live locks (`<root>/live/<id>`, holding `<host>:<pid>`): a run in any process on this host says it runs the session
- *  for as long as it does, which a record's freshness cannot (a tool call can outlast it). Not under a synced
- *  directory, and a lock whose host or pid is gone reads as free, so no restart or restore leaves a session stuck. */
+/** Live locks: `<root>/live/<id>/<host>_<pid>`, one file per holding process, holding that process's start
+ *  (processStart). A run in any process on this host says it runs the session for as long as it does, which a record's
+ *  freshness cannot (a tool call can outlast it). A lock reads free, and is removed, when its host is another, its
+ *  process is gone or is not ours to signal (EPERM: a lock is only ever written by this user's yodex), or the pid now
+ *  names a process that started at another time (a reused pid). Not under a synced directory. */
 class LiveLocks {
   /** One per directory per process, as the append queue: every LocalStore on a root shares the hold counts. */
   private static readonly byDir = new Map<string, LiveLocks>();
@@ -615,18 +618,20 @@ class LiveLocks {
   }
 
   private readonly counts = new Map<string, number>();
-  private readonly me = `${hostname()}:${process.pid}`;
+  private readonly name = `${hostname()}_${process.pid}`;
   private constructor(private readonly dir: string) {}
 
-  hold(sessionId: string): () => void {
+  hold(sessionId: string, logger?: Logger): () => void {
     const n = this.counts.get(sessionId) ?? 0;
     this.counts.set(sessionId, n + 1);
+    const mine = join(this.dir, sessionId, this.name);
     if (n === 0) {
       try {
-        mkdirSync(this.dir, { recursive: true });
-        writeFileSync(join(this.dir, sessionId), this.me);
-      } catch {
-        // A lock that cannot be written leaves the record's status as the only sign of the run, as before.
+        mkdirSync(join(this.dir, sessionId), { recursive: true });
+        writeFileSync(mine, processStart(process.pid) ?? "");
+      } catch (e) {
+        // The run goes on; a delete from another process cannot see it, and the store guard is what keeps the data.
+        logger?.warn("store.live_lock.write_failed", { sessionId, error: (e as Error).message });
       }
     }
     let released = false;
@@ -636,30 +641,73 @@ class LiveLocks {
       const left = (this.counts.get(sessionId) ?? 1) - 1;
       if (left > 0) return void this.counts.set(sessionId, left);
       this.counts.delete(sessionId);
-      try {
-        if (readFileSync(join(this.dir, sessionId), "utf8") === this.me) rmSync(join(this.dir, sessionId), { force: true });
-      } catch {
-        // already gone
-      }
+      // A release never throws (it runs in a run's finally): a lock that was never written has nothing to remove.
+      quietly(() => rmSync(mine, { force: true }));
+      quietly(() => rmdirSync(join(this.dir, sessionId))); // only when no other process holds it
     };
   }
 
   held(sessionId: string): boolean {
     if (this.counts.has(sessionId)) return true;
-    let owner: string;
+    let holders: string[];
     try {
-      owner = readFileSync(join(this.dir, sessionId), "utf8");
+      holders = readdirSync(join(this.dir, sessionId));
     } catch {
       return false;
     }
-    const cut = owner.lastIndexOf(":");
-    const pid = Number(owner.slice(cut + 1));
-    if (owner.slice(0, cut) !== hostname() || !Number.isInteger(pid) || pid <= 0) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === "EPERM";
+    let live = false;
+    for (const holder of holders) {
+      if (holderLive(holder, () => readFileSync(join(this.dir, sessionId, holder), "utf8"))) live = true;
+      else quietly(() => rmSync(join(this.dir, sessionId, holder), { force: true }));
     }
+    return live;
+  }
+}
+
+function quietly(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // best effort
+  }
+}
+
+/** `<host>_<pid>` with `started` (the start the lock recorded; "" when it could not be read) names a live process. */
+function holderLive(holder: string, started: () => string): boolean {
+  const cut = holder.lastIndexOf("_");
+  const pid = Number(holder.slice(cut + 1));
+  if (cut < 0 || holder.slice(0, cut) !== hostname() || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false; // ESRCH: gone; EPERM: another user's process, never a yodex of ours
+  }
+  let recorded: string;
+  try {
+    recorded = started();
+  } catch {
+    return false;
+  }
+  const now = processStart(pid);
+  return recorded === "" || now === null || recorded === now;
+}
+
+/** When `pid` started, as a stable string: Linux `/proc/<pid>/stat` field 22 with the boot id, else `ps -o lstart`.
+ *  Null when it cannot be read (then a lock is judged by its pid alone). */
+export function processStart(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const boot = existsSync("/proc/sys/kernel/random/boot_id") ? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() : "";
+    return `${boot}:${fields[19]}`;
+  } catch {
+    // not Linux
+  }
+  try {
+    const r = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    const out = r.stdout.toString().trim();
+    return r.exitCode === 0 && out ? out : null;
+  } catch {
+    return null;
   }
 }

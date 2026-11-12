@@ -224,12 +224,45 @@ describe("live locks", () => {
     expect(existsSync(join(root, "live", "s1"))).toBe(false);
   });
 
-  test("a lock left by a dead process, or another host, is free", async () => {
-    await mkdir(join(root, "live"), { recursive: true });
-    await writeFile(join(root, "live", "dead"), `${hostname()}:2147483646`);
-    await writeFile(join(root, "live", "elsewhere"), `another-pod:${process.pid}`);
-    await writeFile(join(root, "live", "mine"), `${hostname()}:${process.pid}`);
-    expect([store.lifecycle.isLive("dead"), store.lifecycle.isLive("elsewhere"), store.lifecycle.isLive("mine"), store.lifecycle.isLive("../x")]).toEqual([false, false, true, false]);
+  test("a lock reads free, and is removed, when its process is gone, not ours, on another host, or a reused pid", async () => {
+    const { processStart } = await import("../src/store/local");
+    const lock = async (sid: string, holder: string, started: string) => {
+      await mkdir(join(root, "live", sid), { recursive: true });
+      await writeFile(join(root, "live", sid, holder), started);
+    };
+    const me = processStart(process.pid)!;
+    expect(me).toBeTruthy();
+    await lock("dead", `${hostname()}_2147483646`, "");
+    await lock("elsewhere", `another-pod_${process.pid}`, me);
+    await lock("root", `${hostname()}_1`, ""); // pid 1 is root's: EPERM, never a yodex of ours
+    await lock("reused", `${hostname()}_${process.pid}`, "Mon Jan  1 00:00:00 2001");
+    await lock("mine", `${hostname()}_${process.pid}`, me);
+    expect(["dead", "elsewhere", "root", "reused", "mine"].map((s) => store.lifecycle.isLive(s))).toEqual([false, false, false, false, true]);
+    for (const s of ["dead", "elsewhere", "root", "reused"]) expect((await readdir(join(root, "live", s))).length).toBe(0);
+    expect(store.lifecycle.isLive("../x")).toBe(false);
     expect(() => store.lifecycle.holdLive("../x")).toThrow(UnsafeSessionIdError);
+  });
+
+  test("two processes hold one session each by their own file: one's release leaves the other's lock", async () => {
+    await mkdir(join(root, "live", "s1"), { recursive: true });
+    const { processStart } = await import("../src/store/local");
+    // Another live process of ours (the test runner's parent shell stands in): its own file.
+    const other = `${hostname()}_${process.ppid}`;
+    await writeFile(join(root, "live", "s1", other), processStart(process.ppid) ?? "");
+    const release = store.lifecycle.holdLive("s1");
+    release();
+    expect(new LocalStore(root).lifecycle.isLive("s1")).toBe(true);
+    expect(await readdir(join(root, "live", "s1"))).toEqual([other]);
+  });
+
+  test("a lock that cannot be written is logged; the run goes on", async () => {
+    const warned: string[] = [];
+    const logger = { warn: (e: string) => void warned.push(e), info: () => {}, error: () => {}, debug: () => {}, child: () => logger } as never;
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "live"), "a file where the directory goes");
+    const s = new LocalStore(root, { logger });
+    const release = s.lifecycle.holdLive("s1");
+    release();
+    expect(warned).toEqual(["store.live_lock.write_failed"]);
   });
 });

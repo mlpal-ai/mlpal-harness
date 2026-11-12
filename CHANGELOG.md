@@ -21,9 +21,14 @@
 - A dead id takes no writes: `putSession`, `patchSession`, `conversation.append`, `mailbox.post` and `logs.write` throw
   `SessionDeletedError` for it, in any process (the marker is read from disk; a positive answer is cached), so no
   wake, resume or second process brings a deleted session back. `SessionLifecycle.isDeleted`.
-- Live locks: `AgentSession.run`, `resume` and `approve` hold `SessionLifecycle.holdLive` (`<root>/live/<id>`,
-  `<host>:<pid>`, nested holds counted) for as long as they go, and `isLive` reads it: a run is seen as running however
-  long a step takes, and a lock whose process or host is gone reads as free.
+- Live locks: `AgentSession.run`, `resume` and `approve` hold `SessionLifecycle.holdLive` for as long as they go
+  (one file per holding process, `<root>/live/<id>/<host>_<pid>`, holding the process's start time; nested holds
+  counted), and `isLive` reads it: a run is seen as running however long a step takes. A lock reads free, and is
+  removed, when its host is another, its process is gone or not ours (EPERM), or its pid now names a process that
+  started at another time (pid reuse). A lock that cannot be written is logged (`store.live_lock.write_failed`), and a
+  release never throws.
+- A delete marks the id dead before it flushes the append queue, so no append is accepted between the flush and the
+  removal.
 - A delete matches the backend's exact per-directory names, so a session with a dotted id (`abc.x`) is never taken
   for `abc`'s.
 
