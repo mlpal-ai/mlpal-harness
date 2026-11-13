@@ -86,6 +86,9 @@ export type ToolHands = "pure" | "routed" | "local";
 export interface Tool<I = unknown> {
   name: string;
   description: string;
+  /** The engine's own last sentence of `description` (already part of it), kept after a HOP's
+   *  `tools.describe` override: e.g. Memorize's "how to remove a memory" path. */
+  descriptionTail?: string;
   /** See ToolHands. Absent = unclassified: admitted only by a registry nobody restricted. */
   hands?: ToolHands;
   /** Read-only tools can be auto-allowed by default policy. */
@@ -171,6 +174,7 @@ export function declaredArgsOf(schema: unknown): ReadonlySet<string> | undefined
 export function defineTool<I>(def: {
   name: string;
   description: string;
+  descriptionTail?: string;
   hands?: ToolHands;
   readOnly: boolean;
   edits?: boolean;
@@ -190,6 +194,7 @@ export function defineTool<I>(def: {
   return {
     name: def.name,
     description: def.description,
+    ...(def.descriptionTail ? { descriptionTail: def.descriptionTail } : {}),
     ...(def.hands ? { hands: def.hands } : {}),
     readOnly: def.readOnly,
     edits: def.edits,

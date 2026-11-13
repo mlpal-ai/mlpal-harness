@@ -192,4 +192,32 @@ describe("memory v13 host triggers (F5)", () => {
     );
     expect(userTexts(quiet).filter((t) => t.startsWith("[Checkpoint]"))).toHaveLength(0);
   });
+
+  test("a checkpoint nudge of \"\" (a HOP that switched it off) appends nothing", async () => {
+    let turn = 0;
+    const model: ModelClient = {
+      async *stream(): AsyncGenerator<never, ModelResult, void> {
+        turn += 1;
+        if (turn <= 4) return toolUse("Bash", { command: "echo hi" });
+        return textDone("done");
+      },
+    };
+    const events = await collect(
+      new AgentSession({
+        agentId: "ag1",
+        sessionId: "s-v13-off",
+        workspace: "billing-v2",
+        cwd,
+        model: "main-model",
+        systemPrompt: "t",
+        tools: defaultRegistry(),
+        store: new LocalStore(root),
+        model_client: model,
+        canUseTool: createPolicy({ mode: "autopilot" }),
+        maxTokens: 200,
+        memoryCheckpoint: { everyTurns: 1, nudge: () => "" },
+      }).run({ text: "start" }),
+    );
+    expect(userTexts(events)).toEqual(["start"]);
+  });
 });

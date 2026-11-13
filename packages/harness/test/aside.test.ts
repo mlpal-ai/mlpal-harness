@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
 import { answerAside } from "../src/input/aside";
+import { CODING_ASIDE_SYSTEM } from "../src/profile/side-prompts";
 
 class Fixed implements ModelClient {
   readonly seen: { system?: string; content: unknown }[] = [];
@@ -23,6 +24,13 @@ class Throws implements ModelClient {
 }
 
 describe("answerAside", () => {
+  test("sends the HOP's aside system when given, coding's otherwise", async () => {
+    const client = new Fixed("ok");
+    await answerAside({ model_client: client, model: "cheap", question: "q?" });
+    await answerAside({ model_client: client, model: "cheap", question: "q?", system: "HOP aside." });
+    expect(client.seen.map((x) => x.system)).toEqual([CODING_ASIDE_SYSTEM, "HOP aside."]);
+  });
+
   test("returns the model's brief answer", async () => {
     const a = await answerAside({ model_client: new Fixed("It uses bun test."), model: "cheap", question: "what runs the tests?" });
     expect(a).toBe("It uses bun test.");

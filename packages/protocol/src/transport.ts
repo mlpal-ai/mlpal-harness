@@ -174,7 +174,8 @@ export interface HopView {
   permissions: { defaultMode: string; allow: string[]; deny: string[] };
   /** `include` absent = every registered tool, `[]` = none, a list = that allowlist (optional
    *  since 0.22.1; the harness has left an absent include out since f7551ef). */
-  tools: { include?: string[] };
+  /** `describe` (0.26.5): the HOP's tool description overrides by tool name (absent = none). */
+  tools: { include?: string[]; describe?: Record<string, string> };
   budgets: { maxTurns: number };
   telemetry: { taskType: string };
   evals: Array<Record<string, unknown>>;
@@ -750,4 +751,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.3";
+export const HARNESS_PROTOCOL_VERSION = "0.26.5";

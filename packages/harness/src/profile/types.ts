@@ -19,6 +19,44 @@ import type { Tier } from "../catalog/catalog";
 
 export const PROFILE_SPEC_ID = "mlpal/hop-v1";
 
+/** Engine features a HOP can declare it needs (`engine.features`). `hop-base`: the `base` root and the
+ *  slot keys (prompts.*, sections, tools.describe, memory.policy.record: []) of 2026-11. */
+export const ENGINE_FEATURES = ["hop-base"] as const;
+
+/**
+ * The host-assembled sections of the main-loop system prompt, after the HOP's own text. Each is
+ * `on` (always sent: what `coding` and `reviewer` have always had), `off`, or `auto`: sent only
+ * when what it describes is available to the session (a web tool for capabilities; AskModel,
+ * ListModels or Agent for gateway; Skill for skills; an observe source other than builtin:none
+ * for verify). `base` is `auto` throughout.
+ */
+export const SECTION_NAMES = ["capabilities", "environment", "gateway", "verify", "projectMemory", "skills"] as const;
+export type SectionName = (typeof SECTION_NAMES)[number];
+export type SectionMode = "on" | "off" | "auto";
+
+/**
+ * Prompts for the side calls a host makes around the main loop. Each is a HOP slot; the
+ * `coding` HOP's values are the strings these calls used before they were slots.
+ */
+export interface SidePrompts {
+  /** System of the turn watcher (person-facing notices about a finished turn). */
+  watcher: string;
+  /** System of the read-only `/btw` side question. */
+  aside: string;
+  /** System of the input autocomplete. */
+  suggest: string;
+  /** AskModel's system when the calling model passes none. */
+  askModel: string;
+  /** The label line AskModel puts before `<conversation>` when context="recent". */
+  askModelContext: string;
+  /** System of the host's session recap. Absent: the host's own text (coding's lives in the host). */
+  recap?: string;
+  /** System prompt of a cross-repo HandoffTask peer session working in `cwd`. Absent: the host's own. */
+  handoff?: (cwd: string) => string;
+  /** System of the memory disclosure pass (what the person stated that a future session needs). Absent: the host's own. */
+  disclose?: (today: string) => string;
+}
+
 /** Where a profile was discovered — trust derives from this, never from the file. */
 export type ProfileSource = "builtin" | "user" | "project" | "path";
 
@@ -314,6 +352,12 @@ export interface Profile {
   prompts: {
     /** Base identity/system prompt (the operating contract). */
     system: string;
+    /** Engine-owned ground rules the host sends right after `system` (and its modules). Set only by
+     *  a builtin root (`base`), never from YAML, so no HOP on that root can drop it. `""` = none
+     *  (`coding` and `reviewer` carry their own trust sections inside `system`). */
+    floor: string;
+    /** Side-call prompts (watcher, aside, suggest, AskModel, recap, handoff, disclose). */
+    side: SidePrompts;
     /** System prompt for the adversarial verification sub-agent. */
     verifierAgent: string;
     /** User-turn framing handed to the verifier. Receives the original task text and the
@@ -346,7 +390,20 @@ export interface Profile {
     /** Allowlist over builtin + host registries. Absent = every registered tool; `[]` = no
      *  tools. The host filters at use time, since only it knows what is registered. */
     include?: string[];
+    /** A tool's top-level description, replaced for this HOP (merged per tool down the chain).
+     *  The host applies it to the schemas it sends; parameter descriptions stay the tool's own. */
+    describe?: Record<string, string>;
   };
+  /** Host-assembled prompt sections, each on, off or auto (merged per section down the chain). */
+  sections: Record<SectionName, SectionMode>;
+  /** Engine features this HOP needs (`engine.features`, accumulated down the chain). A catalog or an
+   *  installer compares them with `ENGINE_FEATURES`; this engine refuses a HOP that needs one it lacks. */
+  engine?: { features: string[] };
+  /** The hop.yaml did not say `extends` (so it extends `coding` by default). For lint. */
+  extendsImplicit?: boolean;
+  /** Provenance: which profile in the chain set each prompt slot, section and tool description
+   *  (`prompts.<slot>`, `sections.<name>`, `tools.describe.<Tool>`). For `hop show` and lint. */
+  origins: Record<string, string>;
   budgets: {
     maxTurns: number;
   };
