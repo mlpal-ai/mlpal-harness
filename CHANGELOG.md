@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Protocol 0.26.5: incognito sessions (2026-11-12)
+
+- Capability `incognito`. `run.memory` (`SessionMemoryMode`: `"on"` | `"incognito"`) sets a new session's memory mode;
+  on an existing session it may only repeat the session's own mode. `SessionSummary.memory` is `"incognito"` for such a
+  session and absent otherwise. Refusals, typed, nothing run or created: `incognito_unavailable` (the engine cannot
+  keep memory off), `memory_mode_fixed` (a run named another mode than the session's). Additive: a client sends
+  `"incognito"` only to a server listing the capability.
+- Store: `SessionRecord.memory` (`"incognito"`, absent = on), written once by `AgentSession.init` from
+  `AgentSessionConfig.memory`. A sub-agent inherits its parent's (its parent's record is now always read at a child's
+  creation, so a builder that passes owner and origin cannot drop it).
+
 ### Protocol 0.26.4: archive and delete a session (2026-11-12)
 
 - Capability `session_archive`. `archive_sessions {sessionIds, archived}` archives (or, with `archived: false`, restores)

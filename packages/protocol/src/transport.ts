@@ -54,7 +54,15 @@ export interface SessionSummary {
   /** 0.26.4 (capability "session_archive"): when the person archived the session, or the parent it is a sub-agent of
    *  (ISO 8601); absent when neither is archived. Listed only when `list_sessions.archived` is `include` or `only`. */
   archivedAt?: string;
+  /** 0.26.5 (capability "incognito"): the session runs with memory off; absent = memory on. */
+  memory?: "incognito";
 }
+
+/** 0.26.5 (capability "incognito"): a session's memory, fixed when the session is created. `on`: the engine reads and
+ *  writes memory as configured. `incognito`: nothing from memory reaches the session's prompt, it is offered no memory
+ *  tool, and nothing it does is written to memory (no checkpoint, no deviation, no consent item). Its own history is
+ *  kept as any session's is. */
+export type SessionMemoryMode = "on" | "incognito";
 
 /** 0.26.4 (capability "session_archive"): which sessions `list_sessions` returns by their archive state. `exclude`
  *  (the default, also on a server without the capability) lists the sessions not archived; `only` the archived ones. */
@@ -88,7 +96,8 @@ export type ServerCapability =
   | "abuse_flag" // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
   | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
   | "concurrent_runs" // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
-  | "session_archive"; // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
+  | "session_archive" // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
+  | "incognito"; // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -474,6 +483,11 @@ export type ClientMessage =
       /** 0.26.0 (capability "page_context", C2): the page the person is on, as data. An invalid one is dropped, never
        *  the run. (Not the RunContext: the scheduler carries that beside the message, never in it.) */
       context?: PageContextV1;
+      /** 0.26.5 (capability "incognito"): on a new session, its memory mode (absent: "on"). On an existing session it
+       *  may only repeat the session's own mode: any other is refused `memory_mode_fixed`. An engine that cannot keep
+       *  memory off refuses "incognito" with `incognito_unavailable`; nothing runs and no session is created. A client
+       *  sends "incognito" only to a server that lists the capability. */
+      memory?: SessionMemoryMode;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -708,7 +722,12 @@ export type ErrorCode =
    *  already deleted; `session_id_invalid`: an id that cannot name a session (path characters, too long, empty). */
   | "session_running"
   | "session_not_found"
-  | "session_id_invalid";
+  | "session_id_invalid"
+  /** 0.26.5 (capability "incognito"): `incognito_unavailable`: the engine cannot keep memory off for this run (a hosted
+   *  memory grant, a remote session store, a child serve without the capability, a session whose mode cannot be read);
+   *  `memory_mode_fixed`: the run named a memory mode other than the session's. Nothing ran or was created. */
+  | "incognito_unavailable"
+  | "memory_mode_fixed";
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one
@@ -779,4 +798,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.4";
+export const HARNESS_PROTOCOL_VERSION = "0.26.5";

@@ -26,6 +26,7 @@ import {
   type ServerMessage,
   type SessionStoreGrant,
   type SessionArchiveFilter,
+  type SessionMemoryMode,
   type SessionSummary,
   type ToolResultEvent,
   addUsage,
@@ -222,6 +223,28 @@ describe("0.26.4 (session_archive: archive, restore and delete a session; additi
   });
 });
 
+describe("0.26.5 (incognito: a session with memory off; additive)", () => {
+  test("run.memory, SessionSummary.memory, the capability and the refusal codes are typed and survive the wire", () => {
+    const modes: SessionMemoryMode[] = ["on", "incognito"];
+    const run = { type: "run", requestId: "r1", sessionId: "s1", prompt: "hi", memory: "incognito" } satisfies ClientMessage;
+    const row: SessionSummary = { sessionId: "s1", agentId: "x", status: "idle", model: "m", updatedAt: "t", title: "t", memory: "incognito" };
+    const refused = { type: "error", requestId: "r1", code: "incognito_unavailable", sessionId: "s1", message: "m" } satisfies ServerMessage;
+    const fixed = { type: "error", requestId: "r2", code: "memory_mode_fixed", sessionId: "s1", message: "m" } satisfies ServerMessage;
+    const codes: ErrorCode[] = ["incognito_unavailable", "memory_mode_fixed"];
+    const capability: ServerCapability = "incognito";
+    // @ts-expect-error the memory mode is a closed set: no boolean, no "off"
+    const off: SessionMemoryMode = "off";
+    // @ts-expect-error a summary only ever names the non-default mode
+    const on: SessionSummary["memory"] = "on";
+    const back = JSON.parse(JSON.stringify({ run, row, refused, fixed })) as { run: ClientMessage; row: SessionSummary; refused: ServerMessage; fixed: ServerMessage };
+    expect(back.run).toEqual(run);
+    expect(back.run.type === "run" && back.run.memory).toBe("incognito");
+    expect(back.row.memory).toBe("incognito");
+    expect([back.refused, back.fixed].map((m) => (m.type === "error" ? m.code : null))).toEqual(codes);
+    expect([modes, capability, off, on] as unknown[]).toEqual([["on", "incognito"], "incognito", "off", "on"]);
+  });
+});
+
 describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   test("a sandbox_capacity refusal rides the tool_result, the result and the error event, beside refusal", () => {
     const capacity: SandboxRefusal = { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message: "remote sandbox at capacity (quota_global): retry after 5 s" };
@@ -237,8 +260,8 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
 
 describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.4");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.4");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.5");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.5");
   });
 
   test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {

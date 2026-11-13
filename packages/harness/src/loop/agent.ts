@@ -81,6 +81,8 @@ export interface AgentConfig {
    *  that opened it and how it came to exist (`ui` | `api` | `schedule:<id>`). */
   owner?: string;
   origin?: string;
+  /** Protocol 0.26.5: written to a new session's record (never changed after); a sub-agent inherits its parent's. */
+  memory?: "incognito";
   /** Routes side events (a sub-agent's lifecycle, a child's forwarded events) to this session
    *  whether or not its loop is running. Without it, side events raised while a tool runs still
    *  reach the stream; those raised after the run (a background child's end) are dropped. */
@@ -648,9 +650,11 @@ export class AgentSession {
     if (!existing) {
       // 0.21: a sub-agent belongs to whoever owns its parent (and came to exist the same way), so a
       // principal's listing and guard cover its children; an explicit owner on the child wins.
-      const inherited = cfg.parent && (!cfg.owner || !cfg.origin) ? await store.registry.getSession(cfg.parent.sessionId).catch(() => null) : null;
+      // An incognito parent's child is incognito whatever its builder said: memory off is never narrowed back on.
+      const inherited = cfg.parent ? await store.registry.getSession(cfg.parent.sessionId).catch(() => null) : null;
       const owner = cfg.owner ?? inherited?.owner;
       const origin = cfg.origin ?? inherited?.origin;
+      const memory = cfg.memory ?? inherited?.memory;
       await store.registry.putSession({
         sessionId: cfg.sessionId,
         agentId: cfg.agentId,
@@ -663,6 +667,7 @@ export class AgentSession {
         ...(cfg.parent ? { parent: cfg.parent } : {}),
         ...(owner ? { owner } : {}),
         ...(origin ? { origin } : {}),
+        ...(memory ? { memory } : {}),
         createdAt: ts,
         updatedAt: ts,
       });
