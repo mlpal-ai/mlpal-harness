@@ -48,7 +48,8 @@ export interface SessionRecord {
   createdAt: string;
   updatedAt: string;
   /** When the person archived the session (ISO 8601): hidden from default listings, kept whole. Absent = not archived. */
-  archivedAt?: string;  /** Protocol 0.26.5: the session runs with memory off (no memory read, offered or written). Written once, at creation,
+  archivedAt?: string;
+  /** Protocol 0.26.5: the session runs with memory off (no memory read, offered or written). Written once, at creation,
    *  and inherited by its sub-agents; absent = memory on. */
   memory?: "incognito";
 }

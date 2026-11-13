@@ -404,6 +404,14 @@ type PendingApprovalRecord = NonNullable<Extract<EngineEvent, { type: "result" }
 
 /** An approval with no call to settle: nothing is held, the held call was settled or overtaken by a later turn, or the
  *  client named another call than the held one. Nothing was written. */
+/** Protocol 0.26.5: a session recorded incognito was opened by a host that did not build it incognito. Nothing ran. */
+export class SessionMemoryModeError extends Error {
+  override name = "SessionMemoryModeError";
+  constructor(readonly sessionId: string) {
+    super(`session ${sessionId.slice(0, 8)} is incognito (memory off) but this host built it with memory on: refused before it ran`);
+  }
+}
+
 export class NoHeldCallError extends Error {
   constructor(
     readonly sessionId: string,
@@ -647,11 +655,16 @@ export class AgentSession {
       lastSeen: ts,
     });
     const existing = await store.registry.getSession(cfg.sessionId);
+    // Protocol 0.26.5, the narrow waist: a session recorded incognito never runs under a builder that did not say so.
+    // Every host path (serve, a wake, a peer, a CLI resume, a future one) fails here, before its first model call,
+    // rather than run a memory-on prompt and tools over an incognito conversation.
+    if (existing?.memory === "incognito" && cfg.memory !== "incognito") throw new SessionMemoryModeError(cfg.sessionId);
     if (!existing) {
       // 0.21: a sub-agent belongs to whoever owns its parent (and came to exist the same way), so a
       // principal's listing and guard cover its children; an explicit owner on the child wins.
-      // An incognito parent's child is incognito whatever its builder said: memory off is never narrowed back on.
-      const inherited = cfg.parent ? await store.registry.getSession(cfg.parent.sessionId).catch(() => null) : null;
+      // An incognito parent's child is incognito whatever its builder said: memory off is never narrowed back on. A
+      // parent record that cannot be read fails the child's start: its mode cannot be known.
+      const inherited = cfg.parent ? await store.registry.getSession(cfg.parent.sessionId) : null;
       const owner = cfg.owner ?? inherited?.owner;
       const origin = cfg.origin ?? inherited?.origin;
       const memory = cfg.memory ?? inherited?.memory;

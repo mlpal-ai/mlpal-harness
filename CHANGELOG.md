@@ -12,6 +12,11 @@
 - Store: `SessionRecord.memory` (`"incognito"`, absent = on), written once by `AgentSession.init` from
   `AgentSessionConfig.memory`. A sub-agent inherits its parent's (its parent's record is now always read at a child's
   creation, so a builder that passes owner and origin cannot drop it).
+- Review round 1 (F4, L4, L9): `AgentSession.init` refuses a session recorded incognito when its builder did not set
+  `memory: "incognito"` (`SessionMemoryModeError`, before any model call): any host path that resumes an incognito
+  conversation with memory on fails closed. A sub-agent whose parent record cannot be read no longer starts as memory
+  on (the read error propagates). `memorySection(files, "instructions")` titles the instruction files "Project
+  instructions" for an incognito prompt.
 
 ### Protocol 0.26.4: archive and delete a session (2026-11-12)
 
