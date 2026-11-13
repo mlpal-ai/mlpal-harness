@@ -1,5 +1,7 @@
 import type { Profile } from "../types";
 import { PROFILE_SPEC_ID } from "../types";
+import { rootOrigins } from "../origins";
+import { ALL_SECTIONS_ON, CODING_SIDE_PROMPTS } from "../side-prompts";
 
 /**
  * The coding profile — yodex's default. Every string and threshold here was extracted
@@ -253,8 +255,10 @@ export const CODING_PROFILE: Profile = {
   modules: { "work-memory": { description: "the three memory habits and the topic table for this workspace", prompt: CODING_WORK_MEMORY_PROMPT, enabled: true } },
   prompts: {
     system: `${CODING_SYSTEM_PROMPT}\n\n<!-- module: work-memory -->\n${CODING_WORK_MEMORY_PROMPT}`,
+    floor: "", // the trust and hard-to-undo rules are sections of CODING_SYSTEM_PROMPT itself
     verifierAgent: CODING_VERIFIER_AGENT_PROMPT,
     verifierTask: codingVerifierTask,
+    side: CODING_SIDE_PROMPTS,
   },
   loop: {
     taskType: "coding",
@@ -290,6 +294,8 @@ export const CODING_PROFILE: Profile = {
   },
   permissions: { defaultMode: "autopilot", allow: [], deny: [] },
   tools: {}, // include absent = every registered tool
+  sections: ALL_SECTIONS_ON,
+  origins: { ...rootOrigins("coding"), "memory.policy": "coding" },
   budgets: { maxTurns: 200 },
   telemetry: { taskType: "coding" },
   // The keyring a coding HOP key grants by default (founder direction 2026-09-22): every model

@@ -367,6 +367,9 @@ export const settingsSchema = z.object({
   /** Output style: a named presentation addendum to the system prompt (built-ins default |
    *  explanatory | learning | concise, or a file under ~/.yodex/output-styles). /output-style switches per session. */
   outputStyle: z.string().optional(),
+  // The person's own instruction files (YODEX.md, AGENTS.md, CLAUDE.md) in the prompt. Only the person turns
+  // them off: a HOP's `sections.projectMemory: off` is not honoured by a host.
+  instructionFiles: z.boolean().optional(),
   // Status line: a user command whose first output line replaces the mode description in the
   // footer, re-run every refreshMs with a JSON context (model, mode, session, cwd, hop, tokens,
   // context, cost) on stdin — the same shape as the /status figures. Off unless `command` is set.

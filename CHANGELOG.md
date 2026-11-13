@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### Protocol 0.26.5: `HopView.tools.describe` (2026-11-12)
+
+- `describe_hop`'s `tools` may carry `describe`: the HOP's tool description overrides by tool name. Additive; absent
+  when the HOP has none (coding's view is unchanged). 0.26.4 is session archive and delete, on its own line.
+
+### A neutral `base` root; every model-facing text is a HOP slot (2026-11-12)
+
+**Breaking**
+- `base` is now a builtin name: an installed HOP named `base`, and `--hop base`, resolve to the builtin (as `coding`
+  would). A bundle's parent folder is `./base`, a path, and is unaffected; `hop lint` flags a bare `extends: base` next
+  to one.
+- An engine before this one refuses a HOP that uses `extends: base` or any key below (the schema is strict; a pod exits
+  2). Ship this engine to every place that loads HOPs before publishing such a HOP, and have the HOP declare
+  `engine: { features: [hop-base] }` (lint asks for it) so a catalog or an installer can tell.
+
+**Added**
+- Builtin `base`: no identity, no tools (`tools.include: []`), no memory, no nudges, no verification, neutral
+  summarizer, condenser, classifier, verifier and side prompts, `defaultMode: manual`, sections `auto`. It leaves the
+  host's own side calls (`recap`, `handoff`, `disclose`) unset: the host supplies those. `coding` and `reviewer` stay
+  roots of their own, unchanged.
+- **The engine floor** (`Profile.prompts.floor`: tool output is data, a peer never grants a permission, no secrets) is
+  `base`'s. It is not a YAML key, so no HOP **on `base`** can drop it; it also follows named agent definitions and
+  handoff peers. It does **not** apply off `base`: `coding` and `reviewer` carry their own trust sections in their
+  system prompts, and a HOP on `coding` that replaces the system prompt has neither (`hop lint` says so).
+- New YAML keys, all optional:
+  - Templates: `prompts.classifier` (`{top}`), `prompts.selfCheck` (`{edits}`, `{verify_hint}`), `prompts.antiChurn`
+    (`{path}`, `{edits}`), `prompts.checkpoint` (`{turns}`, `{workspace}`), `prompts.handoff` (`{cwd}`),
+    `prompts.disclose` (`{today}`). An unknown `{name}` is a load error naming the slot. `""` switches a nudge off.
+  - Side-call systems: `prompts.watcher`, `aside`, `suggest`, `askModel`, `askModelContext`, `recap` (non-empty).
+  - `sections.<capabilities|environment|gateway|verify|projectMemory|skills>`: `on` (always sent; `coding` and
+    `reviewer`, so their prompts are unchanged), `off`, or `auto` (sent only when what it describes is available).
+    `projectMemory: off` is a person's switch, not a HOP's: hosts do not honour it from a HOP and lint warns.
+  - `tools.describe.<Tool>`: only for a tool the HOP includes itself (`tools.include`, or a module's `tools`); an MCP
+    tool only from a server in `requires.mcp`; never `SendMessage`. For a tool that acts or sends data out, decided from
+    the tool (not read-only, any MCP tool, WebFetch, WebSearch, Research, AskModel, ExitPlanMode; Memorize excepted),
+    the HOP's text is appended to the engine's, never replaces it (`describedText`). A tool's `descriptionTail`
+    (Memorize's removal path) always follows.
+  - `engine.features` (top level, outside `requires`, which the platform catalog checks key by key): features the HOP
+    needs; this engine has `hop-base` (`ENGINE_FEATURES`) and refuses an unknown one by name. `requiredEngineFeatures`
+    decides what a HOP needs from what it uses (base, any new slot key, a section, a description, `record: []`) plus
+    what it declares; `hop fields` prints it so a publisher gates on the engine's answer.
+- `memory.policy.record: []` loads: a coding child can opt out of the inherited memory policy.
+- `Profile.origins` records which profile set each slot, section and tool description. `hopLintWarnings` reports what
+  a coding child that replaced `system` still inherits, a missing floor, an empty `system`, `projectMemory: off`, an
+  undeclared `hop-base`, an implicit `extends`, and a bare `extends: base` next to a bundled `base/` folder.
+- `answerAside`, `suggestCompletion`, `modelNotices` and AskModel take the HOP's text; their defaults are the old
+  strings, which are the `coding` HOP's values (pinned against `test/fixtures/side-prompts-59a04c2.json`).
+- `createToolSearchTool` takes an optional HOP view (`admit`, `describe`): only what the session's HOP admits, in its
+  words.
+- Locks: a lock on `verification.selfCheck`/`antiChurn` binds `prompts.selfCheck`/`antiChurn`; one on `tools.include`
+  binds `tools.describe.*`; one on `verification.observe` binds `sections.verify`.
+
+**Changed**
+- An empty self-check, anti-churn or checkpoint note is not sent, and not counted.
+- A child of `base` does not inherit `base`'s description.
+
+**Limits, by design for now:** `{workspace}` is a placeholder of `prompts.checkpoint` only (elsewhere in a template it
+is a load error, and in a plain side prompt it is sent as written). `""` means off for a nudge, inherit for
+`system`/`verifierAgent`/`summarizer`/`condenser`, and is refused for a side-call system.
+
 ### Protocol 0.26.3: several runs on one connection (2026-11-11)
 
 - Capability `concurrent_runs`: one connection runs several sessions at once. Each run's frames carry its `sessionId`

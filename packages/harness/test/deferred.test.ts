@@ -13,6 +13,37 @@ const mk = (name: string, description: string) =>
   defineTool({ name, description, readOnly: true, schema: z.object({ q: z.string().optional() }), call: async () => ({ content: `${name} ran` }) });
 
 describe("tool deferral", () => {
+  test("ToolSearch offers only what the HOP admits, in the HOP's words; without a HOP view, everything as before", async () => {
+    const build = (hop?: Parameters<typeof createToolSearchTool>[2]) => {
+      const reg = new ToolRegistry();
+      const deferred = new DeferredTools();
+      reg.setSchemaFilter(deferred.visible);
+      reg.register(mk("mcp__gmail__send_email", "send an email through Gmail"));
+      reg.register(mk("mcp__gmail__search_threads", "search Gmail threads"));
+      reg.register(mk("mcp__jira__issue", "open a Jira issue"));
+      reg.register(createToolSearchTool(deferred, reg, hop));
+      for (const n of ["mcp__gmail__send_email", "mcp__gmail__search_threads"]) deferred.defer(n, "gmail");
+      deferred.defer("mcp__jira__issue", "jira");
+      return reg;
+    };
+    const hop = build({ admit: (n) => n !== "mcp__jira__issue" && n !== "mcp__gmail__search_threads", describe: (t) => (t.name === "mcp__gmail__send_email" ? "Send the customer's reply." : t.description) });
+    const desc = hop.schemas().find((s) => s.name === "ToolSearch")!.description;
+    expect(desc).toContain("gmail: 1 tools (send_email)");
+    expect(desc).not.toContain("- jira:");
+    const refused = await runTool(hop, "ToolSearch", { query: "select:mcp__jira__issue" }, { cwd: "/" });
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain("Deferred servers: gmail (mcp__gmail__send_email)"); // nothing the HOP excludes
+    const none = await runTool(hop, "ToolSearch", { query: "weather" }, { cwd: "/" });
+    expect(none.content).not.toContain("jira");
+    expect(none.content).not.toContain("search_threads");
+    const found = await runTool(hop, "ToolSearch", { query: "gmail" }, { cwd: "/" });
+    expect(found.content).toContain('"name":"mcp__gmail__send_email","description":"Send the customer\'s reply."');
+    expect(found.content).not.toContain("search_threads");
+    const open = build();
+    expect(open.schemas().find((s) => s.name === "ToolSearch")!.description).toContain("gmail: 2 tools (search_threads, send_email)");
+    expect(open.schemas().find((s) => s.name === "ToolSearch")!.description).toContain("jira: 1 tools (issue)");
+  });
+
   test("a deferred tool is hidden from schemas, refused until loaded, and shown after ToolSearch", async () => {
     const reg = new ToolRegistry();
     const deferred = new DeferredTools();

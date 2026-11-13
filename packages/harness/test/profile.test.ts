@@ -188,7 +188,7 @@ describe("profile loading", () => {
   });
 
   test("builtins are discoverable by name", () => {
-    expect(Object.keys(builtinProfiles()).sort()).toEqual(["coding", "reviewer"]);
+    expect(Object.keys(builtinProfiles()).sort()).toEqual(["base", "coding", "reviewer"]);
     expect(loadProfile("reviewer", opts()).name).toBe("reviewer");
   });
 
@@ -376,12 +376,13 @@ describe("profile loading", () => {
   });
 
   test("locked: [tuning.promote] in a parent blocks a child override (blast-radius ratchet)", () => {
-    writeProfile(".yodex/hops/base", tunedYaml() + "\nlocked: [tuning.promote]");
+    // (Installed as "tuned-root": "base" is a builtin name since 2026-11-12, and builtins resolve first.)
+    writeProfile(".yodex/hops/tuned-root", tunedYaml() + "\nlocked: [tuning.promote]");
     const child = writeProfile("p/child", [
       "spec: mlpal/hop-v1",
       "name: child",
       "version: 1.0.0",
-      "extends: base",
+      "extends: tuned-root",
       "tuning: { promote: auto }",
     ].join("\n"));
     expect(() => loadProfile(child, opts())).toThrow(/overrides "tuning.promote", which is locked by its parent "tuned"/);

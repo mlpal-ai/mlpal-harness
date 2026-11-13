@@ -14,6 +14,7 @@
 import type { Message } from "@mlpal/harness-protocol";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
+import { CODING_WATCHER_SYSTEM } from "../profile/side-prompts";
 
 export type WatchNoticeKind = "unverified_claim" | "unchecked_edits" | "rule_miss" | "unaddressed" | "quiet_risk" | "other";
 
@@ -134,17 +135,14 @@ export function shouldWatch(d: WatchDigest): boolean {
   return CLAIMS.some((c) => c.re.test(d.reply));
 }
 
-export const WATCHER_SYSTEM = `You watch a coding agent's finished turn on behalf of the person it works for. You never speak to the agent. Report only what the person should know that the agent did not say itself:
-- a rule from the instruction files that the turn did not follow (rule_miss)
-- a part of the request that was not addressed and not acknowledged (unaddressed)
-- a claim in the reply that the tool log does not support (unverified_claim)
-- a risky action the agent took without saying so: a push, a delete, a config change, a network call with data (quiet_risk)
-Be strict about evidence: the tool log is summarised, so only report what the summary shows or clearly fails to show. Do not restate what the reply already admits. Do not give advice or praise. An empty list is the common, correct answer.
-Answer with JSON only: {"notices":[{"kind":"rule_miss|unaddressed|unverified_claim|quiet_risk|other","text":"one sentence, under 200 characters, naming the specific thing"}]} with at most three notices.`;
+/** The coding HOP's watcher text (a HOP sets its own as `prompts.watcher`; the host passes it in). */
+export const WATCHER_SYSTEM = CODING_WATCHER_SYSTEM;
 
 export interface ModelWatchOptions {
   client: Pick<ModelClient, "stream">;
   model: string;
+  /** The HOP's watcher system (`profile.prompts.side.watcher`); default: the coding text. */
+  system?: string;
   timeoutMs?: number;
   logger?: Logger;
 }
@@ -161,7 +159,7 @@ export async function modelNotices(d: WatchDigest, opts: ModelWatchOptions): Pro
   try {
     const gen = opts.client.stream({
       model: opts.model,
-      system: WATCHER_SYSTEM,
+      system: opts.system ?? WATCHER_SYSTEM,
       messages: [{ role: "user", content: renderDigest(d) }],
       maxTokens: 400,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 25_000),

@@ -29,8 +29,8 @@ export function describeProfile(p: Profile): HopView {
     catalog: p.catalog,
     routing: { ...p.routing },
     permissions: p.permissions,
-    // Absent include (= every registered tool) stays absent on the wire.
-    tools: p.tools,
+    // Absent include (= every registered tool) stays absent on the wire; so does an absent describe (0.26.5).
+    tools: { ...(p.tools.include ? { include: p.tools.include } : {}), ...(p.tools.describe ? { describe: p.tools.describe } : {}) },
     budgets: p.budgets,
     telemetry: p.telemetry,
     evals: p.evals.map((e) => ({ ...e })),

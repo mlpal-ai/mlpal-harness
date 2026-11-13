@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Message } from "@mlpal/harness-protocol";
 import type { ModelClient, ModelResult } from "../src/gateway/client";
-import { deterministicNotices, digestFromMessages, extractRules, modelNotices, renderDigest, shouldWatch, watchTurn } from "../src/watcher/watcher";
+import { deterministicNotices, digestFromMessages, extractRules, modelNotices, renderDigest, shouldWatch, watchTurn, WATCHER_SYSTEM } from "../src/watcher/watcher";
 
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
 const assistant = (text: string, uses: { id: string; name: string; input: Record<string, unknown> }[] = []): Message => ({ role: "assistant", content: [...(text ? [{ type: "text" as const, text }] : []), ...uses.map((u) => ({ type: "tool_use" as const, id: u.id, name: u.name, input: u.input }))] });
@@ -60,6 +60,20 @@ describe("watcher: the free layer", () => {
 });
 
 describe("watcher: the model layer", () => {
+  test("the HOP's watcher system is sent when given, coding's otherwise", async () => {
+    const systems: (string | undefined)[] = [];
+    const client: Pick<ModelClient, "stream"> = {
+      async *stream(req) {
+        systems.push(req.system);
+        return done('{"notices":[]}');
+      },
+    };
+    const d = { prompt: "p", reply: "r", rules: [], toolCalls: [] };
+    await modelNotices(d, { client, model: "cheap" });
+    await modelNotices(d, { client, model: "cheap", system: "HOP watcher." });
+    expect(systems).toEqual([WATCHER_SYSTEM, "HOP watcher."]);
+  });
+
   test("notices come back typed and clipped; unknown kinds become other; bad JSON or a failure is an empty list; host claims win over the model's", async () => {
     let answer = '{"notices":[{"kind":"rule_miss","text":"The rule says to run bun test before a commit; the turn committed without it."},{"kind":"nonsense","text":"x"},{"kind":"unverified_claim","text":"dup"}]}';
     const seen: string[] = [];

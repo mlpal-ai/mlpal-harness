@@ -23,6 +23,7 @@ import type { Effort, ModelClient } from "../../gateway/client";
 import { EFFORT_LADDER } from "../../gateway/client";
 import type { ModelInfo } from "../../registry/models";
 import { defineTool, type Tool } from "../types";
+import { CODING_ASK_MODEL_CONTEXT, CODING_ASK_MODEL_SYSTEM } from "../../profile/side-prompts";
 
 export interface GatewayToolDeps {
   model_client: ModelClient;
@@ -49,6 +50,10 @@ export interface GatewayToolDeps {
   maxTokensCap?: number;
   /** The key's model policy as the gateway reports it (models hidden from this listing). */
   policyView?: () => { deniedByPolicy: number; policy: { allow?: string[]; deny?: string[] } | null } | undefined;
+  /** AskModel's system when the caller passes none (the HOP's `prompts.side.askModel`); default: the coding text. */
+  defaultSystem?: string;
+  /** The label line before `<conversation>` for context="recent" (`prompts.side.askModelContext`); default: the coding text. */
+  contextLabel?: string;
 }
 
 const META_MODELS: Record<string, string> = {
@@ -238,8 +243,6 @@ function blocksChars(blocks: ContentBlock[]): number {
   return n;
 }
 
-const DEFAULT_SYSTEM =
-  "You are an expert engineer giving an independent, candid second opinion to another AI agent. Be specific and concrete, disagree when warranted, and say what you are unsure about.";
 
 export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore = new ThreadStore()): Tool<AskModelInput> {
   const cap = deps.maxTokensCap ?? 16384;
@@ -316,11 +319,11 @@ export function createAskModelTool(deps: GatewayToolDeps, threads: ThreadStore =
         {
           type: "text",
           text:
-            (contextText ? `Recent conversation between a developer and their coding agent, for context:\n<conversation>\n${contextText}\n</conversation>\n\n` : "") +
+            (contextText ? `${deps.contextLabel ?? CODING_ASK_MODEL_CONTEXT}\n<conversation>\n${contextText}\n</conversation>\n\n` : "") +
             input.prompt,
         },
       ];
-      const system = thread?.system ?? input.system ?? DEFAULT_SYSTEM;
+      const system = thread?.system ?? input.system ?? deps.defaultSystem ?? CODING_ASK_MODEL_SYSTEM;
       if (thread && thread.chars + blocksChars(userBlocks) > THREAD_LIMITS.maxChars) {
         return {
           content: `thread "${threadName}" would exceed its history cap (${THREAD_LIMITS.maxChars} characters incl. attachments). Start a new thread with a summary, or reset this one.`,

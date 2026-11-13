@@ -1,6 +1,8 @@
 import type { Profile } from "../types";
 import { PROFILE_SPEC_ID } from "../types";
 import { CODING_CONDENSER_SYSTEM } from "./coding";
+import { rootOrigins } from "../origins";
+import { ALL_SECTIONS_ON, CODING_SIDE_PROMPTS } from "../side-prompts";
 
 /**
  * The reviewer profile — the generality proof for the engine/profile split. Same engine,
@@ -79,8 +81,10 @@ export const REVIEWER_PROFILE: Profile = {
   modules: {},
   prompts: {
     system: REVIEWER_SYSTEM_PROMPT,
+    floor: "", // the trust rule is a section of REVIEWER_SYSTEM_PROMPT itself
     verifierAgent: REVIEWER_VERIFIER_PROMPT,
     verifierTask: reviewerVerifierTask,
+    side: CODING_SIDE_PROMPTS, // the review loop always made these calls with the coding texts
   },
   loop: {
     taskType: "review",
@@ -138,6 +142,8 @@ export const REVIEWER_PROFILE: Profile = {
       "TaskList", "AskUserQuestion", "Memorize",
     ],
   },
+  sections: ALL_SECTIONS_ON,
+  origins: rootOrigins("reviewer"),
   budgets: { maxTurns: 100 },
   telemetry: { taskType: "review" },
   // Read-only and offline by design: models only.

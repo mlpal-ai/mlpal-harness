@@ -4,6 +4,7 @@ import type { Catalog } from "../src/catalog/catalog";
 import type { ModelClient, ModelRequest, ModelResult } from "../src/gateway/client";
 import type { ModelInfo } from "../src/registry/models";
 import { createAskModelTool, createListModelsTool, type GatewayToolDeps, resolveModelRef } from "../src/tools/builtin/gateway";
+import { CODING_ASK_MODEL_CONTEXT, CODING_ASK_MODEL_SYSTEM } from "../src/profile/side-prompts";
 
 const chat = (tag: string, provider: string, over: Partial<ModelInfo> = {}, caps: Partial<ModelInfo["capabilities"]> = {}): ModelInfo => ({
   tag,
@@ -106,6 +107,19 @@ describe("ListModels", () => {
 });
 
 describe("AskModel", () => {
+  test("the HOP's default system and context label replace coding's; coding's are the defaults", async () => {
+    const client = new FakeClient((req) => reply(req.model, "ok"));
+    const transcript = async () => "user: hi";
+    await createAskModelTool(deps(client, { transcript })).call({ model: "claude-opus-5", prompt: "p", context: "recent" }, ctx);
+    expect(client.seen[0]!.system).toBe(CODING_ASK_MODEL_SYSTEM);
+    expect(((client.seen[0]!.messages[0]!.content as ContentBlock[])[0] as { text: string }).text.startsWith(`${CODING_ASK_MODEL_CONTEXT}\n<conversation>`)).toBe(true);
+    await createAskModelTool(deps(client, { transcript, defaultSystem: "HOP system.", contextLabel: "Talk so far:" })).call({ model: "claude-opus-5", prompt: "p", context: "recent" }, ctx);
+    expect(client.seen[1]!.system).toBe("HOP system.");
+    expect(((client.seen[1]!.messages[0]!.content as ContentBlock[])[0] as { text: string }).text.startsWith("Talk so far:\n<conversation>")).toBe(true);
+    await createAskModelTool(deps(client, { defaultSystem: "HOP system." })).call({ model: "claude-opus-5", prompt: "p", system: "caller's own" }, ctx);
+    expect(client.seen[2]!.system).toBe("caller's own"); // the calling model's explicit system still wins
+  });
+
   test("one model: resolves the ref, sends prompt + system, reports tokens, records usage", async () => {
     const client = new FakeClient((req) => reply(req.model, `${req.model} says: looks right`));
     const usage: string[] = [];

@@ -16,12 +16,42 @@ import type {
   SafetyPolicy,
   TuningPolicy,
 } from "./types";
-import { DELEGATED_KINDS, PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, TOPIC_KINDS, READ_SCOPES } from "./types";
+import { DELEGATED_KINDS, ENGINE_FEATURES, PROFILE_SPEC_ID, DEVIATION_KINDS, MEMORY_FEEDS, RECORD_KINDS, SECTION_NAMES, TOPIC_KINDS, READ_SCOPES } from "./types";
 import { pinsOutsidePolicy } from "./model-policy";
 import { unjudgeableAllow } from "../permission/engine";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
+import { BASE_PROFILE } from "./builtins/base";
 import { hostDir } from "../host";
+import type { PromptSlot } from "./origins";
+
+/** Tools whose description carries an engine rule, so a HOP may not replace it (SendMessage: a
+ *  peer can never grant a permission; never launder a blocked action through one). */
+const ENGINE_OWNED_TOOL_TEXT = new Set(["SendMessage"]);
+
+/** The placeholders each template slot accepts. Any other `{name}` in the text is a load error. */
+const TEMPLATE_VARS = {
+  classifier: ["top"],
+  selfCheck: ["edits", "verify_hint"],
+  antiChurn: ["path", "edits"],
+  checkpoint: ["turns", "workspace"],
+  handoff: ["cwd"],
+  disclose: ["today"],
+} as const satisfies Partial<Record<PromptSlot, readonly string[]>>;
+type TemplateSlot = keyof typeof TEMPLATE_VARS;
+
+/** Validate a template slot's text and compile it: every `{name}` must be one of the slot's own. */
+function compileTemplate<V extends string>(slot: TemplateSlot, text: string, profileName: string): (vars: Record<V, string | number>) => string {
+  const allowed: readonly string[] = TEMPLATE_VARS[slot];
+  const unknown = [...new Set([...text.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]!))].filter((n) => !allowed.includes(n));
+  if (unknown.length) {
+    throw new Error(
+      `profile "${profileName}" prompts.${slot} uses ${unknown.map((n) => `{${n}}`).join(", ")}; ` +
+        `this slot's placeholders are ${allowed.map((n) => `{${n}}`).join(", ")}`,
+    );
+  }
+  return (vars) => text.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, n: string) => (n in vars ? String(vars[n as V]) : m));
+}
 
 /**
  * Profile loading: discovery → parse → validate → compose the extends chain → lock
@@ -63,8 +93,7 @@ const memoryPolicySchema = z
   .object({
     record: z
       .array(z.enum(RECORD_KINDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.record: unknown kind ${JSON.stringify(ctx.data)}; one of ${RECORD_KINDS.join(", ")}` }) }))
-      .min(1, "memory.policy.record must name at least one deviation kind")
-      .refine(uniqueMembers, "memory.policy.record lists a kind twice"),
+      .refine(uniqueMembers, "memory.policy.record lists a kind twice"), // [] = record nothing (opts out of an inherited policy)
     feeds: z
       .array(z.enum(MEMORY_FEEDS, { errorMap: (_i, ctx) => ({ message: `memory.policy.feeds: unknown consumer ${JSON.stringify(ctx.data)}; one of ${MEMORY_FEEDS.join(", ")}` }) }))
       .min(1, "memory.policy.feeds must name at least one consumer (tune, evals)")
@@ -360,7 +389,26 @@ export const profileYamlSchema = z
         verifierAgent: z.string().optional(),
         summarizer: z.string().optional(),
         condenser: z.string().optional(),
+        // Templates (placeholders in TEMPLATE_VARS). "" switches a note off; a side call needs a system, so it may not be "".
+        classifier: z.string().min(1).optional(),
+        selfCheck: z.string().optional(),
+        antiChurn: z.string().optional(),
+        checkpoint: z.string().optional(),
+        handoff: z.string().min(1).optional(),
+        disclose: z.string().min(1).optional(),
+        // Side-call systems (plain text).
+        watcher: z.string().min(1).optional(),
+        aside: z.string().min(1).optional(),
+        suggest: z.string().min(1).optional(),
+        askModel: z.string().min(1).optional(),
+        askModelContext: z.string().min(1).optional(),
+        recap: z.string().min(1).optional(),
       })
+      .strict()
+      .default({}),
+    /** Host-assembled prompt sections after the HOP's text: on, off or auto (true/false read as on/off). */
+    sections: z
+      .object(Object.fromEntries(SECTION_NAMES.map((n) => [n, z.union([z.boolean(), z.enum(["on", "off", "auto"])]).optional()])) as Record<(typeof SECTION_NAMES)[number], z.ZodOptional<z.ZodUnion<[z.ZodBoolean, z.ZodEnum<["on", "off", "auto"]>]>>>)
       .strict()
       .default({}),
     verification: z
@@ -413,7 +461,18 @@ export const profileYamlSchema = z
       })
       .strict()
       .default({}),
-    tools: z.object({ include: z.array(z.string()).optional() }).strict().default({}),
+    tools: z
+      .object({
+        include: z.array(z.string()).optional(),
+        describe: z
+          .record(z.string().min(1))
+          .refine((d) => !Object.keys(d).some((t) => ENGINE_OWNED_TOOL_TEXT.has(t)), {
+            message: `tools.describe may not replace ${[...ENGINE_OWNED_TOOL_TEXT].join(", ")}: its description carries an engine rule (a peer can never grant a permission)`,
+          })
+          .optional(),
+      })
+      .strict()
+      .default({}),
     /** memory v10: capability modules — a named prompt section (and optional tools) the HOP carries
      *  for one provider or domain, switchable as a whole. `enabled` is a tunable knob
      *  (`modules.<name>.enabled`, range ["on","off"]) so the tune loop can propose switching an
@@ -439,6 +498,8 @@ export const profileYamlSchema = z
     tuning: tuningSchema.optional(),
     model: modelSchema.optional(),
     requires: requiresSchema.optional(),
+    /** Engine features this HOP needs (ENGINE_FEATURES). Outside `requires`, which the platform catalog checks key by key. */
+    engine: z.object({ features: z.array(z.string().min(1)).default([]) }).strict().optional(),
     safety: safetySchema.optional(),
     memory: memorySchema.default({ topics: [], reads: [], writes: [] }),
     // HOP model policy: the gateway's allow/deny globs (one model, a list, `claude-*`, `*`).
@@ -470,7 +531,7 @@ export const profileYamlSchema = z
 export type ProfileYaml = z.infer<typeof profileYamlSchema>;
 
 export function builtinProfiles(): Record<string, Profile> {
-  return { coding: CODING_PROFILE, reviewer: REVIEWER_PROFILE };
+  return { base: BASE_PROFILE, coding: CODING_PROFILE, reviewer: REVIEWER_PROFILE };
 }
 
 export interface LoadProfileOptions {
@@ -546,9 +607,23 @@ function presentLeafPaths(obj: Record<string, unknown>, prefix = ""): string[] {
   return out;
 }
 
-function lockViolation(locked: string[], paths: string[]): string | null {
+/** YAML paths that also reach a locked path: "" in a note's text switches the note off, so a lock on
+ *  `verification.selfCheck` (or `.enabled`) binds `prompts.selfCheck` too; likewise anti-churn. */
+const LOCK_ALIASES: Record<string, string[]> = {
+  "prompts.selfCheck": ["verification.selfCheck.enabled"],
+  "prompts.antiChurn": ["verification.antiChurn.enabled"],
+  // switching the verify section is a choice about what counts as verification
+  "sections.verify": ["verification.observe"],
+};
+/** A tool's description is part of the toolset a lock on tools.include guards. */
+const aliasesOf = (p: string): string[] => LOCK_ALIASES[p] ?? (p.startsWith("tools.describe.") ? ["tools.include"] : []);
+
+/** The first YAML path that overrides a locked one, and (for an alias) the locked path it reaches. */
+function lockViolation(locked: string[], paths: string[]): { path: string; reaches?: string } | null {
   for (const p of paths) {
-    if (locked.some((l) => p === l || p.startsWith(`${l}.`))) return p;
+    for (const q of [p, ...aliasesOf(p)]) {
+      if (locked.some((l) => q === l || q.startsWith(`${l}.`))) return q === p ? { path: p } : { path: p, reaches: q };
+    }
   }
   return null;
 }
@@ -757,11 +832,12 @@ function composeBlock<T extends object>(parent: T | undefined, child: T | undefi
 }
 
 /** `include` absent = every registered tool, which already has every module's tools; `[]` = none,
- *  and an enabled module's tools join it as they join a list. */
-function composeTools(include: string[] | undefined, modules: Profile["modules"]): Profile["tools"] {
-  if (include === undefined) return {};
+ *  and an enabled module's tools join it as they join a list. `describe` merges per tool. */
+function composeTools(include: string[] | undefined, modules: Profile["modules"], describe: Record<string, string> | undefined): Profile["tools"] {
+  const d = describe && Object.keys(describe).length ? { describe } : {};
+  if (include === undefined) return d;
   const extra = Object.values(modules).filter((m) => m.enabled).flatMap((m) => m.tools ?? []);
-  return { include: extra.length ? [...new Set([...include, ...extra])] : include };
+  return { include: extra.length ? [...new Set([...include, ...extra])] : include, ...d };
 }
 
 function p4Blocks(parent: Profile, y: ProfileYaml): Pick<Profile, "sandbox" | "workspace" | "processes" | "credentials" | "kubeCredentials"> {
@@ -813,7 +889,9 @@ export function composeProfile(
   const violation = lockViolation(parent.locked, overriddenPaths);
   if (violation) {
     throw new Error(
-      `profile "${y.name}" overrides "${violation}", which is locked by its parent ` +
+      `profile "${y.name}" overrides "${violation.path}"` +
+        (violation.reaches ? `, which reaches "${violation.reaches}"` : "") +
+        `, which is locked by its parent ` +
         `"${parent.name}" — remove the override or extend a profile that does not lock it`,
     );
   }
@@ -900,11 +978,63 @@ export function composeProfile(
     }
   }
 
+  // HOP-owned slots beyond system/verifier/summarizer/condenser: each replaces the parent's or inherits it.
+  const own = (k: keyof ProfileYaml["prompts"]): string | undefined =>
+    y.prompts[k] === undefined ? undefined : resolvePromptText(y.prompts[k]!, dir, `prompts.${k}`, confineTo);
+  const tplOf = <V extends string>(slot: TemplateSlot) => {
+    const text = own(slot);
+    return text === undefined ? undefined : { text, render: compileTemplate<V>(slot, text, y.name) };
+  };
+  const classifierT = tplOf<"top">("classifier");
+  const selfCheckT = tplOf<"edits" | "verify_hint">("selfCheck");
+  const antiChurnT = tplOf<"path" | "edits">("antiChurn");
+  const checkpointT = tplOf<"turns" | "workspace">("checkpoint");
+  const handoffT = tplOf<"cwd">("handoff");
+  const discloseT = tplOf<"today">("disclose");
+  const sections = {
+    ...parent.sections,
+    ...Object.fromEntries(Object.entries(y.sections).filter(([, v]) => v !== undefined).map(([k, v]) => [k, v === true ? "on" : v === false ? "off" : v])),
+  } as Profile["sections"];
+  const describe = { ...(parent.tools.describe ?? {}), ...(y.tools.describe ?? {}) };
+  const origins: Record<string, string> = { ...parent.origins };
+  // system, verifierAgent, summarizer and condenser read "" as "inherit" (load below): only a real text is the child's.
+  const EMPTY_INHERITS = new Set(["system", "verifierAgent", "summarizer", "condenser"]);
+  for (const [k, v] of Object.entries(y.prompts)) if (v !== undefined && !(v === "" && EMPTY_INHERITS.has(k))) origins[`prompts.${k}`] = y.name;
+  if (y.verification.agent.task !== undefined) origins["prompts.verifierTask"] = y.name;
+  for (const [k, v] of Object.entries(y.sections)) if (v !== undefined) origins[`sections.${k}`] = y.name;
+  for (const k of Object.keys(y.tools.describe ?? {})) origins[`tools.describe.${k}`] = y.name;
+  if (y.memory.policy !== undefined) origins["memory.policy"] = y.name;
+
+  // tools.describe: only the HOP's own tools (its include, which has its modules' tools), and an MCP tool only from
+  // a server it declares in requires.mcp. Which texts are append-only is the host's (describedText).
+  const ownDescribe = Object.keys(y.tools.describe ?? {});
+  if (ownDescribe.length) {
+    const include = composeTools(y.tools.include ?? parent.tools.include, modules, undefined).include;
+    if (include === undefined) {
+      throw new Error(`profile "${y.name}" sets tools.describe but no tools.include: describe only tools the HOP includes itself`);
+    }
+    const notIncluded = ownDescribe.filter((t) => !include.includes(t));
+    if (notIncluded.length) {
+      throw new Error(`profile "${y.name}" tools.describe names ${notIncluded.join(", ")}, which its tools.include leaves out`);
+    }
+    const servers = new Set((requires?.mcp ?? []).map((m) => m.name));
+    const undeclared = ownDescribe.filter((t) => t.startsWith("mcp__") && !servers.has(t.split("__")[1] ?? ""));
+    if (undeclared.length) {
+      throw new Error(`profile "${y.name}" tools.describe names ${undeclared.join(", ")} from an MCP server its requires.mcp does not declare`);
+    }
+  }
+  const engineFeatures = [...new Set([...(parent.engine?.features ?? []), ...(y.engine?.features ?? [])])];
+  const missingFeatures = engineFeatures.filter((f) => !(ENGINE_FEATURES as readonly string[]).includes(f));
+  if (missingFeatures.length) {
+    throw new Error(`profile "${y.name}" needs engine feature ${missingFeatures.join(", ")}; this engine has ${ENGINE_FEATURES.join(", ")}`);
+  }
+
   const composed: Profile = {
     spec: PROFILE_SPEC_ID,
     name: y.name,
     version: y.version,
-    description: y.description || parent.description,
+    // base's description describes base, not a HOP built on it
+    description: y.description || (parent.name === "base" && parent.source === "builtin" ? "" : parent.description),
     source,
     dir,
     extendsChain: [...parent.extendsChain, parent.name],
@@ -914,6 +1044,17 @@ export function composeProfile(
         y.prompts.system ? resolvePromptText(y.prompts.system, dir, "prompts.system", confineTo) : parent.prompts.system,
         ...Object.entries(modules).filter(([, m]) => m.enabled).map(([n, m]) => `\n\n<!-- module: ${n} -->\n${m.prompt}`),
       ].join(""),
+      floor: parent.prompts.floor, // set only by a builtin root: no child can drop it
+      side: {
+        watcher: own("watcher") ?? parent.prompts.side.watcher,
+        aside: own("aside") ?? parent.prompts.side.aside,
+        suggest: own("suggest") ?? parent.prompts.side.suggest,
+        askModel: own("askModel") ?? parent.prompts.side.askModel,
+        askModelContext: own("askModelContext") ?? parent.prompts.side.askModelContext,
+        recap: own("recap") ?? parent.prompts.side.recap,
+        handoff: handoffT ? (cwd: string) => handoffT.render({ cwd }) : parent.prompts.side.handoff,
+        disclose: discloseT ? (today: string) => discloseT.render({ today }) : parent.prompts.side.disclose,
+      },
       verifierAgent: y.prompts.verifierAgent
         ? resolvePromptText(y.prompts.verifierAgent, dir, "prompts.verifierAgent", confineTo)
         : parent.prompts.verifierAgent,
@@ -936,6 +1077,17 @@ export function composeProfile(
       condenserSystem: y.prompts.condenser
         ? resolvePromptText(y.prompts.condenser, dir, "prompts.condenser", confineTo)
         : parent.loop.condenserSystem,
+      classifierSystem: classifierT ? (top: number) => classifierT.render({ top }) : parent.loop.classifierSystem,
+      selfCheckNudge: selfCheckT
+        ? (edits: number, verifyHint?: string) => selfCheckT.render({ edits, verify_hint: verifyHint ?? "" })
+        : parent.loop.selfCheckNudge,
+      antiChurnNudge: antiChurnT ? (path: string, edits: number) => antiChurnT.render({ path, edits }) : parent.loop.antiChurnNudge,
+      // "" switches the checkpoint off: no nudge function, so the host wires no periodic trigger.
+      checkpointNudge: checkpointT
+        ? checkpointT.text === ""
+          ? undefined
+          : (turns: number, workspace: string) => checkpointT.render({ turns, workspace })
+        : parent.loop.checkpointNudge,
     },
     verification: {
       observe,
@@ -972,7 +1124,10 @@ export function composeProfile(
       allow: [...parent.permissions.allow, ...(y.permissions.allow ?? [])],
       deny: [...parent.permissions.deny, ...(y.permissions.deny ?? [])],
     },
-    tools: composeTools(y.tools.include ?? parent.tools.include, modules),
+    tools: composeTools(y.tools.include ?? parent.tools.include, modules, describe),
+    sections,
+    origins,
+    ...(engineFeatures.length ? { engine: { features: engineFeatures } } : {}),
     budgets: { maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns },
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
     evals,
@@ -1022,7 +1177,9 @@ function loadFromDir(dir: string, source: ProfileSource, opts: LoadProfileOption
     throw new Error(`profile extends chain deeper than 4 at ${file} — flatten the hierarchy`);
   }
   const parent = resolveProfile(y.extends, opts, depth + 1, dir);
-  return composeProfile(parent, y, dir, source, opts.confineTo);
+  const composed = composeProfile(parent, y, dir, source, opts.confineTo);
+  const saidExtends = typeof parsed === "object" && parsed !== null && "extends" in parsed;
+  return saidExtends ? composed : { ...composed, extendsImplicit: true };
 }
 
 /** Split a named ref into name + optional `@version` pin. Paths and builtins never reach here. */
