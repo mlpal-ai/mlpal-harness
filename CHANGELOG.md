@@ -17,6 +17,10 @@
   conversation with memory on fails closed. A sub-agent whose parent record cannot be read no longer starts as memory
   on (the read error propagates). `memorySection(files, "instructions")` titles the instruction files "Project
   instructions" for an incognito prompt.
+- Review round 2 (R2-2, R2-3): `INCOGNITO_FLOOR` (exported from loop/agent) is the marker mlpal-code-server-base's
+  fetch floor checks for. `fitPromptToIncognito` swaps the coding prompt's peers-and-routines bullet
+  (`CODING_PEERS_HABIT`) for `CODING_PEERS_INCOGNITO`; `renderEvents(events, {incognito})` does not tell an incognito
+  session to answer a peer with SendMessage (the loop passes `cfg.memory === "incognito"`).
 
 ### Protocol 0.26.4: archive and delete a session (2026-11-12)
 

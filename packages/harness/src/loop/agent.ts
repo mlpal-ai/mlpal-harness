@@ -402,8 +402,11 @@ function unansweredToolUses(turn: ConversationEntry[]): PendingCall[] {
 /** What a needs_approval result records of the held call. */
 type PendingApprovalRecord = NonNullable<Extract<EngineEvent, { type: "result" }>["pendingApproval"]>;
 
-/** An approval with no call to settle: nothing is held, the held call was settled or overtaken by a later turn, or the
- *  client named another call than the held one. Nothing was written. */
+/** The incognito engine floor (protocol 0.26.5): mlpal-code-server-base scripts/fetch-sources.sh refuses a harness tree
+ *  without this export, so an image can never pair an incognito engine with a harness that lacks the record's mode and
+ *  SessionMemoryModeError. Bump it only with that check; never remove it. */
+export const INCOGNITO_FLOOR = 1;
+
 /** Protocol 0.26.5: a session recorded incognito was opened by a host that did not build it incognito. Nothing ran. */
 export class SessionMemoryModeError extends Error {
   override name = "SessionMemoryModeError";
@@ -412,6 +415,8 @@ export class SessionMemoryModeError extends Error {
   }
 }
 
+/** An approval with no call to settle: nothing is held, the held call was settled or overtaken by a later turn, or the
+ *  client named another call than the held one. Nothing was written. */
 export class NoHeldCallError extends Error {
   constructor(
     readonly sessionId: string,
@@ -1318,7 +1323,7 @@ export class AgentSession {
           }
           const events = cfg.inbox.drain();
           if (events.length > 0) {
-            const text = renderEvents(events);
+            const text = renderEvents(events, { incognito: cfg.memory === "incognito" });
             const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
             parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
             yield { ...ue, uuid: parent };
@@ -1559,7 +1564,7 @@ export class AgentSession {
       // The model reacts on the very next step — or ignores it and keeps working.
       if (cfg.inbox && cfg.inbox.size() > 0) {
         const events = cfg.inbox.drain();
-        const text = renderEvents(events);
+        const text = renderEvents(events, { incognito: cfg.memory === "incognito" });
         const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
         parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
         yield { ...ue, uuid: parent };

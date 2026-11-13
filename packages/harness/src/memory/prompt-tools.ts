@@ -1,4 +1,4 @@
-import { CODING_MEMORIZE_ALONE, CODING_MEMORIZE_HABIT, CODING_MEMORIZE_SCOPE_NOTE, CODING_PERSON_PREFERENCE_HABIT, CODING_RUNG_MEMORY_PROMPT } from "../profile/builtins/coding";
+import { CODING_MEMORIZE_ALONE, CODING_MEMORIZE_HABIT, CODING_MEMORIZE_SCOPE_NOTE, CODING_PEERS_HABIT, CODING_PEERS_INCOGNITO, CODING_PERSON_PREFERENCE_HABIT, CODING_RUNG_MEMORY_PROMPT } from "../profile/builtins/coding";
 import { MEMORIZE_UPDATE_HINT } from "./derived";
 
 /** What the work-memory module tells the model to call: it is true of a session only when all of them are there. */
@@ -25,6 +25,14 @@ export function fitPromptToMemoryTools(prompt: string, has: HasMemoryTool): stri
   if (!has("memory_write")) out = out.replace(`${CODING_PERSON_PREFERENCE_HABIT}\n`, "");
   if (!has("Memorize")) out = out.replace(`${CODING_MEMORIZE_HABIT}\n`, "").replace(CODING_MEMORIZE_ALONE, "").replace(CODING_MEMORIZE_SCOPE_NOTE, "");
   return out;
+}
+
+/** Protocol 0.26.5: the prompt as it is true of an incognito session. The host's sentence telling the model to message
+ *  other sessions and create routines becomes the incognito one: its SendMessage reaches only its own agents and its
+ *  ScheduleCreate refuses. A prompt without the host's sentence (another HOP) is returned unchanged; the host's
+ *  incognito section says the same for any HOP. */
+export function fitPromptToIncognito(prompt: string): string {
+  return prompt.replace(CODING_PEERS_HABIT, () => CODING_PEERS_INCOGNITO);
 }
 
 /** The same for a memory section, which is stored text: only the host's own hint comes out. Module markers in it are a
