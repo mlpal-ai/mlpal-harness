@@ -173,13 +173,15 @@ export const grepTool = defineTool({
 
     const args = [...baseRgArgs(), "--line-number", "--max-columns", "500"];
     if (input.glob) args.push("-g", input.glob);
-    // --regexp marks the pattern explicitly so a leading '-' isn't parsed as a flag.
-    args.push("--regexp", input.pattern);
+    // --regexp marks the pattern explicitly so a leading '-' isn't parsed as a flag. The path is explicit: with none, rg
+    // searches stdin whenever stdin is readable, and execFile's always is (a pipe), so every call ran to the timeout.
+    args.push("--regexp", input.pattern, "--", ".");
     try {
       const res = await runRg(args, base, SCAN_TIMEOUT_MS);
       if (res) {
         if (res.code === 1) return ok("No matches");
-        const lines = res.stdout.split("\n").filter(Boolean);
+        // The explicit `.` puts `./` before every path; the JS fallback's paths have none.
+        const lines = res.stdout.split("\n").filter(Boolean).map((l) => (l.startsWith("./") ? l.slice(2) : l));
         if (lines.length > MAX_MATCHES) {
           return ok([...lines.slice(0, MAX_MATCHES), `[truncated at ${MAX_MATCHES} matches]`].join("\n"));
         }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Grep with ripgrep on PATH no longer waits on stdin (2026-11-13)
+
+- Grep ran `rg` with no path, and execFile's stdin is always a readable pipe, so rg searched stdin and every call ended
+  at the 20 s timeout as "the tree is too large". It went unseen because no image or laptop had rg on PATH (the JS
+  fallback ran). Grep now names `.` after `--`; the `./` that puts before each path is taken off, so rg's output is the
+  fallback's. Glob (`rg --files`) never read stdin.
+
 ### Protocol 0.26.5: incognito sessions (2026-11-12)
 
 - Capability `incognito`. `run.memory` (`SessionMemoryMode`: `"on"` | `"incognito"`) sets a new session's memory mode;
