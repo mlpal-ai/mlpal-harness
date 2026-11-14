@@ -15,13 +15,16 @@ import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
 
+/** What the person and the model are told a `consequential` park is for (the card's "Safety check: …"). */
+export const CONSEQUENTIAL_DETAIL = "costs money or changes something outside the workspace, so it needs approval";
+
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
 export type SafetyReason =
   | "policy_denied" // a mutative/destructive apply with no reviewed plan artifact — hard deny
   | "out_of_envelope" // outside the account / region / required-tag allowlist
   | "over_ceiling" // exceeds maxResources or the monthly cost ceiling
-  | "needs_approval" // a reviewed destructive plan parked at the approval edge
+  | "needs_approval" // a reviewed destructive or consequential action parked at the approval edge
   | "missing_info"; // required information for the action is absent (needs_clarification)
 
 /** `unknown`: a command matching no toolClasses pattern on a tool without capability tags. The
@@ -29,7 +32,10 @@ export type SafetyReason =
  *  attempt trace labels it honestly instead of as a read. */
 /** `memory`: a write to the HOP's memory server, never an estate change; admitted in every mode;
  *  deny rules and hard denials still apply (§10.2, memory v6 E5). */
-export type SafetyClass = "readOnly" | "memory" | "mutative" | "destructive" | "unknown";
+/** `consequential` (BREAKAGES #67): parks at the approval edge every time, as `destructive` does, but the person is
+ *  told what it is: it costs money or changes something outside the workspace (a create, a deploy, a new credential).
+ *  Nothing is ever classed `consequential` unless the HOP lists it. */
+export type SafetyClass = "readOnly" | "memory" | "mutative" | "consequential" | "destructive" | "unknown";
 export type SafetyOutcome = "allow" | "deny" | "park";
 
 export interface SafetyDisposition {
@@ -86,8 +92,8 @@ function anyMatch(patterns: string[], action: SafetyAction): boolean {
   });
 }
 
-/** Classify an action against the envelope's toolClasses. Precedence destructive > mutative >
- *  readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
+/** Classify an action against the envelope's toolClasses. Precedence destructive > consequential >
+ *  mutative > readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
  *  `destructive` — that must be explicit), everything else to `readOnly`. A `memory`-tagged tool
  *  (a working-memory write, not an estate change) is `memory` unless the HOP lists it
  *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes.
@@ -127,6 +133,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
     }
     if (worst !== null) return worst;
   }
+  if (anyMatch(tc.consequential, action)) return "consequential";
   if (anyMatch(tc.mutative, action)) return "mutative";
   if (anyMatch(tc.readOnly, action)) return "readOnly";
   return defaultClass(action);
@@ -147,7 +154,7 @@ function verbLed(form: string): string | null | "unreadable" {
 }
 
 /** How dangerous a class is, for "the worst command of the line wins". */
-const RANK: Record<SafetyClass, number> = { memory: 0, readOnly: 1, unknown: 2, mutative: 3, destructive: 4 };
+const RANK: Record<SafetyClass, number> = { memory: 0, readOnly: 1, unknown: 2, mutative: 3, consequential: 4, destructive: 5 };
 /** Commands that only set the line's context and run nothing on the estate. */
 const CONTEXT_ONLY = new Set(["cd", "pushd", "popd", "export", "unset", "true", "false", ":", "set"]);
 
@@ -157,8 +164,8 @@ function defaultClass(action: SafetyAction): SafetyClass {
   return action.tags.readOnly ? "readOnly" : "unknown";
 }
 
-/** One simple command's class: the first list (destructive, mutative, readOnly) with an entry matching any of its forms,
- *  else the tool's default. */
+/** One simple command's class: the first list (destructive, consequential, mutative, readOnly) with an entry matching any
+ *  of its forms, else the tool's default. */
 function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[]): SafetyClass {
   const hit = (patterns: string[]) =>
     patterns.some((entry) => {
@@ -167,6 +174,7 @@ function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, fo
       return entry === action.toolName || forms.some((f) => globMatch(entry, f));
     });
   if (hit(tc.destructive)) return "destructive";
+  if (hit(tc.consequential)) return "consequential";
   if (hit(tc.mutative)) return "mutative";
   if (hit(tc.readOnly)) return "readOnly";
   return defaultClass(action);
@@ -217,6 +225,10 @@ export function evaluateSafety(
   // A reviewed destructive plan still stops at the approval edge.
   if (cls === "destructive" && safety.approval.destructive === "always") {
     return { outcome: "park", reason: "needs_approval", detail: "destructive action requires approval" };
+  }
+  // The HOP listed it to be asked every time; the detail is what the person reads on the card.
+  if (cls === "consequential") {
+    return { outcome: "park", reason: "needs_approval", detail: CONSEQUENTIAL_DETAIL };
   }
 
   return { outcome: "allow" };

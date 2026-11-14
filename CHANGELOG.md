@@ -11,6 +11,18 @@
 - The sandbox's Grep (`tools/remote/sandbox-hands.ts`) names `-- .` too and takes off the `./`, so it never depends on
   what stdin the router gives a guest exec (review S3).
 
+### A create is not called destructive: `safety.toolClasses.consequential` (BREAKAGES #67, schema; 2026-11-13)
+
+- A fourth gated class, `consequential`: what the HOP lists there parks at the approval edge every time, as
+  `destructive` does (reason `needs_approval`), with the detail `CONSEQUENTIAL_DETAIL` ("costs money or changes
+  something outside the workspace, so it needs approval") instead of "destructive action requires approval". It is for
+  creates, deploys, schedules and new credentials; deletes, drops and revokes stay `destructive`.
+- Precedence destructive > consequential > mutative > readOnly, per simple command of a Bash line (D-57); the attempt
+  trace's `class` may now be `consequential`. Nothing is classed `consequential` unless the HOP lists it, and the plan
+  gate, blast radius and ceiling checks apply to it as to every gated class. The `SafetyReason` codes are unchanged.
+- Schema: `toolClasses.consequential` defaults to `[]`, so every existing HOP loads unchanged. A HOP that sets it does
+  not load on an engine built before this (the block is strict). Not a wire change: the protocol stays 0.26.5.
+
 ### Protocol 0.26.5: incognito sessions (2026-11-12)
 
 - Capability `incognito`. `run.memory` (`SessionMemoryMode`: `"on"` | `"incognito"`) sets a new session's memory mode;
