@@ -205,6 +205,7 @@ const safetySchema = z
       .object({
         readOnly: z.array(z.string()).default([]),
         mutative: z.array(z.string()).default([]),
+        consequential: z.array(z.string()).default([]),
         destructive: z.array(z.string()).default([]),
       })
       .strict()

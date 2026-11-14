@@ -97,10 +97,10 @@ export interface Tool<I = unknown> {
    *  for verification signals — a capability tag, so profiles with renamed toolsets keep
    *  self-check/anti-churn instead of silently losing them to name matching. */
   executes?: boolean;
-  /** v1.1 — this tool can APPLY real-world/infra changes (mutative or destructive). The safety
-   *  evaluator (§10) gates these; the specific class (mutative vs destructive) of an individual
-   *  call is resolved against the HOP's `safety.toolClasses`, since two tags cannot encode three
-   *  classes. A `readOnly`-role subagent is denied every `applies`-tagged tool. */
+  /** v1.1 — this tool can APPLY real-world/infra changes (mutative, consequential or destructive).
+   *  The safety evaluator (§10) gates these; the specific class of an individual call is resolved
+   *  against the HOP's `safety.toolClasses`, since two tags cannot encode the classes. A
+   *  `readOnly`-role subagent is denied every `applies`-tagged tool. */
   applies?: boolean;
   /** v1.1 — this tool touches cloud/infra control planes (aws/az/gcloud/kubectl/terraform via
    *  Bash, or an infra MCP). Pairs with `applies` for the safety envelope; informational for

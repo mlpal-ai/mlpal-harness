@@ -208,8 +208,10 @@ export interface RequiresPolicy {
  *  the host-owned catastrophic denials stay host-owned and cannot be widened by it. */
 export interface SafetyPolicy {
   /** Per-action class; the harness carries these as capability tags so the gate keys off the
-   *  action class, not a tool name. */
-  toolClasses: { readOnly: string[]; mutative: string[]; destructive: string[] };
+   *  action class, not a tool name. `consequential` (BREAKAGES #67): asks every time like
+   *  `destructive`, but is worded as what it is (it costs money or changes something outside the
+   *  workspace: a create, a deploy, a new credential), so a create is never called destructive. */
+  toolClasses: { readOnly: string[]; mutative: string[]; consequential: string[]; destructive: string[] };
   /** An apply is admitted only if it matches a reviewed plan artifact whose hash covers these
    *  components; enforcing this is stateful (consults the run's own dry-run record). */
   preApply: { requirePlanArtifact: boolean; hash: string[] };
