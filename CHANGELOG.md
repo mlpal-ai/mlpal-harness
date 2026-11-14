@@ -8,6 +8,8 @@
   at the 20 s timeout as "the tree is too large". It went unseen because no image or laptop had rg on PATH (the JS
   fallback ran). Grep now names `.` after `--`; the `./` that puts before each path is taken off, so rg's output is the
   fallback's. Glob (`rg --files`) never read stdin.
+- The sandbox's Grep (`tools/remote/sandbox-hands.ts`) names `-- .` too and takes off the `./`, so it never depends on
+  what stdin the router gives a guest exec (review S3).
 
 ### Protocol 0.26.5: incognito sessions (2026-11-12)
 
