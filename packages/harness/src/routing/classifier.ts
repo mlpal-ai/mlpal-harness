@@ -1,5 +1,5 @@
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import { type ModelClient, SIDE_CALL_EFFORT } from "../gateway/client";
 import { codingClassifierSystem } from "../profile/builtins/coding";
 
 /**
@@ -41,6 +41,7 @@ export async function classifyStartRung(opts: ClassifyStartOptions): Promise<num
       system: (opts.system ?? codingClassifierSystem)(top),
       messages: [{ role: "user", content: `Task:\n${opts.task}` } satisfies Message],
       maxTokens: opts.maxOutputTokens ?? 120,
+      effort: SIDE_CALL_EFFORT,
       signal: opts.signal,
     });
     let r = await gen.next();

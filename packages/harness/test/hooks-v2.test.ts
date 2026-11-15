@@ -78,7 +78,7 @@ describe("hooks v2: kinds, filters, clipping, the plugin api", () => {
     expect(await hook.run({ event: "PreToolUse", toolName: "Bash", input: {} }, ctx)).toEqual({});
   });
 
-  test("a prompt hook asks a cheap model and blocks only on a clear yes; malformed answers are no-ops", async () => {
+  test("a prompt hook asks a cheap model and blocks only on a clear yes; a malformed answer is a no verdict, never an allow", async () => {
     let answer = '{"block": true, "reason": "push to main is forbidden by the rule"}';
     const seen: string[] = [];
     const client: Pick<ModelClient, "stream"> = {
@@ -94,7 +94,7 @@ describe("hooks v2: kinds, filters, clipping, the plugin api", () => {
     answer = '{"block": false}';
     expect(await hook.run({ event: "PreToolUse", toolName: "Bash", input: { command: "ls" } }, ctx)).toEqual({});
     answer = "I am not sure";
-    expect(await hook.run({ event: "PreToolUse", toolName: "Bash", input: { command: "ls" } }, ctx)).toEqual({});
+    expect(await hook.run({ event: "PreToolUse", toolName: "Bash", input: { command: "ls" } }, ctx)).toMatchObject({ noVerdict: { hook: "p", reason: "unparsable" } });
   });
 
   test("the plugin api registers handlers as hooks: on(event) and tool.check", async () => {

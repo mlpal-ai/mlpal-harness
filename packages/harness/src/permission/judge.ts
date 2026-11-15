@@ -1,5 +1,5 @@
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import type { Effort, ModelClient } from "../gateway/client";
 import { callSubject, type PermissionRequest } from "./engine";
 
 /**
@@ -48,6 +48,13 @@ export interface CreateJudgeOptions {
 }
 
 export type PermissionJudge = (req: PermissionRequest) => Promise<JudgeDecision>;
+
+/** The judge reasons, unlike the other side calls (SIDE_CALL_EFFORT, `none`). Every failure it can have is `unsure` and
+ *  reaches the person, but a wrong ALLOW reaches nobody: scope, roots, exfiltration through a pipeline, obfuscation
+ *  and irreversibility are judgments a cheap model gets wrong without reasoning. */
+export const JUDGE_EFFORT: Effort = "low";
+/** Room for `low` reasoning and the one-line verdict; at 200 the reasoning used the whole budget (an empty answer). */
+export const JUDGE_MAX_TOKENS = 1024;
 
 export const JUDGE_SYSTEM = `You are the permission judge for an autonomous software agent running inside a Harness Operating Profile (HOP). The agent wants to perform a tool call that its policy would otherwise stop and ask a human about. Decide for the human.
 
@@ -101,7 +108,8 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
           model: opts.model,
           system: JUDGE_SYSTEM,
           messages: [{ role: "user", content: user } satisfies Message],
-          maxTokens: opts.maxOutputTokens ?? 200,
+          maxTokens: opts.maxOutputTokens ?? JUDGE_MAX_TOKENS,
+          effort: JUDGE_EFFORT,
           signal: ac.signal,
         });
         let r = await gen.next();

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### A prompt hook that gets no verdict is not an allow (2026-11-14)
+
+- A `prompt` hook (a cheap model judging an event against a rule) returned no result, the same as "do not block",
+  whenever its model's answer was empty, cut off, not a verdict, or the call failed (an error, a timeout, a gateway
+  401/429/5xx): a policy check that could not decide let the call run. With `maxTokens: 200` a reasoning model often
+  spent the whole budget reasoning (the gateway counted 57 of 98 gpt-6-luna calls at 200 answering no text in a day).
+- Now a verdict is a JSON object whose `block` is a boolean; anything else is `HookResult.noVerdict`
+  (`{hook, reason: empty | cut_off | unparsable | error}`) with a sentence for the person in `reason`, and one
+  structured warn line, `prompt hook: no verdict` (hook, event, reason, and a gateway failure's status and code;
+  never the answer, the event or an error's text). The hook keeps its own deadline, as the permission judge does.
+- What the loop does with it: on PreToolUse, a call that may change something becomes an ask carrying
+  `AskContext.noVerdict` (the policy's own ask gains the check's reason; a deny stands); with nobody to ask it is
+  denied, the denial naming the check; a read (a read-only tool, a read-only shell line) stays the policy's to decide,
+  so harmless reads never start asking. On UserPromptSubmit the prompt is rejected with the check's reason. On Stop and
+  the observational events it changes nothing (a block there refuses nothing).
+- `personOnlyAsk(ask)`: a §10 safety edge or a no-verdict ask, which no judge, session grant or mode raise may answer
+  for the person.
+- The hook's output budget is 1024 (`PROMPT_HOOK_MAX_TOKENS`), room for a reasoning model to answer; a model that does
+  not reason stops at its answer.
+- Every small side call now sends `effort: "none"` (`SIDE_CALL_EFFORT`): the prompt hook, the compaction summary and
+  condensed tool output, the start-rung classifier, suggestions, asides and the watcher. The
+  gateway reads a missing effort as the model's default, never `none`, so the caller says it. It rides as
+  `output_config.effort` on the gateway's Anthropic wire; the gateway (live `fd421b3`, from `687b79b`) maps it per
+  model: OpenAI `reasoning.effort: none` (gpt-6-luna and gpt-5.6-luna list `none`), Anthropic thinking off where the
+  model has a `none` rung, the lowest rung otherwise (Opus 5.5 `low`, Gemini 3.5 Flash `minimal`), dropped for a model
+  with no lever (Haiku 4.5). The main loop keeps the session's own effort.
+- The permission judge alone reasons: `JUDGE_EFFORT = "low"` with a 1024-token budget (`JUDGE_MAX_TOKENS`, was 200).
+  Its failures already reach the person as `unsure`; a wrong ALLOW reaches nobody, so it gets reasoning, and the room
+  for it (`low` at 200 would be cut off into `unsure`).
+- Doubt is a no verdict too: the hook's prompt asks for `{"block": null}` when the model cannot tell whether the rule
+  applies (it used to say "when in doubt, do not block", a clean allow), read as reason `unsure`. On UserPromptSubmit
+  a doubt does not refuse the person's prompt (it would refuse the same text every time); a failure still does.
+- `hooks.prompt.no_verdict` (PromptHookOptions `metrics`): one count per no verdict, tagged `reason`, `event`, `hook`,
+  and a gateway failure's `status` and `code`.
+- PermissionRequest hooks are told (`noVerdict` on their input), and a park for an undecided check carries the mark and
+  its sentence (`pendingApproval.noVerdict`, `detail`), so the approval card says which check went unchecked.
+- The hook stops with the session's interrupt (`HookContext.signal`), and the loop asks nobody about a turn cancelled
+  while its check ran; a malformed model result is a no verdict, never a throw the engine would drop as no result.
+
+### Protocol 0.26.6: a policy check with no verdict, on the card and on a parked call (2026-11-14)
+
+- `PolicyNoVerdict {hook, reason: empty | cut_off | unparsable | unsure | error}`. `permission_request.noVerdict`: the
+  ask is answered per action, and no client-side session rule may answer it. `pendingApproval.noVerdict` and
+  `pendingApproval.detail` (on the `needs_approval` result and on `PendingApproval`): the held call's undecided check,
+  and why it was held in words. Additive: a 0.26.5 client ignores them.
+
 ### The permission judge reads a listing as a read (BREAKAGES #69, 2026-11-14)
 
 - The judge denied `mlpal mcp keys list` as "credential-store information the HOP explicitly protects": its ALLOW

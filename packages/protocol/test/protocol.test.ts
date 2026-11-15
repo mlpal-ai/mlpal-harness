@@ -20,6 +20,7 @@ import {
   type ModelRefusal,
   type SpendCode,
   type PendingApproval,
+  type PolicyNoVerdict,
   type ResultEvent,
   type SandboxRefusal,
   type ScheduleView,
@@ -223,6 +224,23 @@ describe("0.26.4 (session_archive: archive, restore and delete a session; additi
   });
 });
 
+describe("0.26.6 (a policy check with no verdict, on the card and on a parked call; additive)", () => {
+  test("permission_request and pendingApproval may carry the no-verdict mark; a 0.26.5 frame is still valid", () => {
+    const mark: PolicyNoVerdict = { hook: "cfg:PreToolUse#1", reason: "cut_off" };
+    const card = { type: "permission_request", id: "a1", sessionId: "s1", toolName: "Bash", input: { command: "git push" }, reason: "policy check cfg:PreToolUse#1 reached no verdict", noVerdict: mark } satisfies ServerMessage;
+    const older = { type: "permission_request", id: "a2", sessionId: "s1", toolName: "Bash", input: {} } satisfies ServerMessage;
+    const pending: PendingApproval = { command: "git push", reason: "approval_required", noVerdict: mark, detail: "policy check cfg:PreToolUse#1 reached no verdict" };
+    const result: ResultEvent = { type: "result", subtype: "needs_approval", numTurns: 1, usage: emptyUsage(), ts: "t", pendingApproval: { ...pending } };
+    // @ts-expect-error the reasons are a closed set
+    const other: PolicyNoVerdict = { hook: "h", reason: "maybe" };
+    const back = JSON.parse(JSON.stringify({ card, older, result })) as { card: ServerMessage; older: ServerMessage; result: ResultEvent };
+    expect(back.card.type === "permission_request" && back.card.noVerdict).toEqual(mark);
+    expect(back.older.type === "permission_request" && back.older.noVerdict).toBeUndefined();
+    expect(back.result.pendingApproval?.noVerdict?.reason).toBe("cut_off");
+    expect(other.reason as string).toBe("maybe");
+  });
+});
+
 describe("0.26.5 (incognito: a session with memory off; additive)", () => {
   test("run.memory, SessionSummary.memory, the capability and the refusal codes are typed and survive the wire", () => {
     const modes: SessionMemoryMode[] = ["on", "incognito"];
@@ -260,8 +278,8 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
 
 describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.5");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.5");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.6");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.6");
   });
 
   test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {

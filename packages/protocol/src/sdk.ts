@@ -100,10 +100,23 @@ export interface ResultEvent {
     /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
      *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
     args?: string;
+    /** 0.26.6: the call was held because a policy check reached no verdict on it (its rule was never checked). */
+    noVerdict?: PolicyNoVerdict;
+    /** 0.26.6: why it was held, in words for the person, when `reason` (a code) does not say. */
+    detail?: string;
   };
   /** 0.26.0 (C1 §7.4): the HOP ended a reply with `[[mlpal:abuse reason=…]]` (stripped from the message); recorded on
    *  the turn as data. The host tells its front with an `abuse_flag` frame. */
   abuse?: { reason: string };
+}
+
+/** 0.26.6: a model-judged policy check (a configured `prompt` hook) that reached no verdict on a call: no answer, the
+ *  output budget ran out first, an answer that is not a verdict, a model that could not tell, or a failed call. The ask
+ *  it raises is the person's alone: no session rule, grant or judge may answer it, one action at a time. */
+export interface PolicyNoVerdict {
+  /** The hook's id (`cfg:PreToolUse#1`). */
+  hook: string;
+  reason: "empty" | "cut_off" | "unparsable" | "unsure" | "error";
 }
 
 /**
