@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### A prompt hook that gets no verdict is not an allow (2026-11-14)
+
+- A `prompt` hook (a cheap model judging an event against a rule) returned no result, the same as "do not block",
+  whenever its model's answer was empty, cut off, not a verdict, or the call failed (an error, a timeout, a gateway
+  401/429/5xx): a policy check that could not decide let the call run. With `maxTokens: 200` a reasoning model often
+  spent the whole budget reasoning (the gateway counted 57 of 98 gpt-6-luna calls at 200 answering no text in a day).
+- Now a verdict is a JSON object whose `block` is a boolean; anything else is `HookResult.noVerdict`
+  (`{hook, reason: empty | cut_off | unparsable | error}`) with a sentence for the person in `reason`, and one
+  structured warn line, `prompt hook: no verdict` (hook, event, reason, and a gateway failure's status and code;
+  never the answer, the event or an error's text). The hook keeps its own deadline, as the permission judge does.
+- What the loop does with it: on PreToolUse, a call that may change something becomes an ask carrying
+  `AskContext.noVerdict` (the policy's own ask gains the check's reason; a deny stands); with nobody to ask it is
+  denied, the denial naming the check; a read (a read-only tool, a read-only shell line) stays the policy's to decide,
+  so harmless reads never start asking. On UserPromptSubmit the prompt is rejected with the check's reason. On Stop and
+  the observational events it changes nothing (a block there refuses nothing).
+- `personOnlyAsk(ask)`: a §10 safety edge or a no-verdict ask, which no judge, session grant or mode raise may answer
+  for the person.
+- The hook's output budget is 1024 (`PROMPT_HOOK_MAX_TOKENS`), room for a reasoning model to answer; a model that does
+  not reason stops at its answer.
+
 ### The permission judge reads a listing as a read (BREAKAGES #69, 2026-11-14)
 
 - The judge denied `mlpal mcp keys list` as "credential-store information the HOP explicitly protects": its ALLOW

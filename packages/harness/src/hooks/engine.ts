@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import type { ModelClient } from "../gateway/client";
+import type { ModelClient, ModelResult } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import { isDir } from "../tools/shell-cwd";
-import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
+import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen, NoVerdictReason } from "./types";
 
 /** Hook output past this many characters is cut and marked: a runaway hook never floods a prompt. */
 export const HOOK_OUTPUT_CAP = 16 * 1024;
@@ -251,10 +251,24 @@ const PROMPT_HOOK_SYSTEM =
   "You are a policy check inside an agent harness. You receive a rule and one event as JSON. Decide whether the rule says to BLOCK the event. " +
   'Answer with JSON only: {"block": true|false, "reason": "<one sentence>"}. Block only when the rule clearly applies; when in doubt, do not block.';
 
+/** The answer is a one-line JSON object, but a reasoning model spends output tokens on its reasoning first: at 200,
+ *  gpt-6-luna answered no text on 57 of 98 calls in a day. A model that does not reason stops at its answer, so the
+ *  headroom costs nothing there. */
+export const PROMPT_HOOK_MAX_TOKENS = 1024;
+
+const NO_VERDICT_TEXT: Record<NoVerdictReason, string> = {
+  empty: "its model gave no answer",
+  cut_off: "its model ran out of output before answering",
+  unparsable: "its model's answer was not a verdict",
+  error: "its model call failed",
+};
+
 /**
  * Prompt hook: a cheap model judges the event against a rule written in plain words
- * ("block any git push to main", "flag a Bash command that deletes a volume"). The model's
- * answer is a HookResult; anything but a clear block is a no-op. One bounded call per event.
+ * ("block any git push to main", "flag a Bash command that deletes a volume"). A clear
+ * `block: true` blocks and a clear `block: false` is no result. Anything else is a no verdict
+ * (`HookResult.noVerdict`), never a silent allow: the loop decides what it means for the event.
+ * One bounded call per event.
  */
 export class PromptHook implements Hook {
   private readonly logger: Logger;
@@ -268,28 +282,76 @@ export class PromptHook implements Hook {
   }
 
   async run(input: HookInput, _ctx: HookContext): Promise<HookResult> {
+    const timeoutMs = this.opts.timeoutMs ?? 20_000;
+    const ac = new AbortController();
+    // The clock is ours, not the client's (as the permission judge's): a client that ignores the signal must not hold
+    // the event open.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ac.abort();
+        reject(new Error(`timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    let result: ModelResult;
     try {
-      const gen = this.opts.client.stream({
-        model: this.opts.model,
-        system: PROMPT_HOOK_SYSTEM,
-        messages: [{ role: "user", content: `Rule: ${this.rule}\n\nEvent:\n${JSON.stringify(input).slice(0, 12_000)}` }],
-        maxTokens: 200,
-        signal: AbortSignal.timeout(this.opts.timeoutMs ?? 20_000),
-      });
-      let r = await gen.next();
-      while (!r.done) r = await gen.next();
-      const content = r.value.message.content;
-      const text = typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("");
-      const start = text.indexOf("{");
-      const end = text.lastIndexOf("}");
-      if (start < 0 || end <= start) return {};
-      const parsed = JSON.parse(text.slice(start, end + 1)) as { block?: unknown; reason?: unknown };
-      return parsed.block === true ? { block: true, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 500) : `blocked by rule: ${this.rule}` } : {};
+      result = await Promise.race([this.consult(input, ac.signal), deadline]);
     } catch (e) {
-      this.logger.warn("prompt hook failed; treated as a no-op", { hook: this.id, error: String((e as Error)?.message ?? e) });
-      return {};
+      return this.noVerdict(input, "error", e);
+    } finally {
+      clearTimeout(timer);
+    }
+    const v = readVerdict(result);
+    if (typeof v === "string") return this.noVerdict(input, v);
+    return v.block ? { block: true, reason: v.reason ? v.reason.slice(0, 500) : `blocked by rule: ${this.rule}` } : {};
+  }
+
+  private async consult(input: HookInput, signal: AbortSignal): Promise<ModelResult> {
+    const gen = this.opts.client.stream({
+      model: this.opts.model,
+      system: PROMPT_HOOK_SYSTEM,
+      messages: [{ role: "user", content: `Rule: ${this.rule}\n\nEvent:\n${JSON.stringify(input).slice(0, 12_000)}` }],
+      maxTokens: PROMPT_HOOK_MAX_TOKENS,
+      signal,
+    });
+    let r = await gen.next();
+    while (!r.done) r = await gen.next();
+    return r.value;
+  }
+
+  /** One line per no verdict: the hook, the event and why. Never the answer, the event's content or an error's text
+   *  (a gateway error can echo the request); a gateway failure adds its status and code. */
+  private noVerdict(input: HookInput, reason: NoVerdictReason, error?: unknown): HookResult {
+    const g = (error ?? {}) as { status?: unknown; code?: unknown };
+    this.logger.warn("prompt hook: no verdict", {
+      hook: this.id,
+      event: input.event,
+      reason,
+      ...(typeof g.status === "number" && g.status > 0 ? { status: g.status } : {}),
+      ...(typeof g.code === "string" ? { code: g.code } : {}),
+    });
+    const rule = this.rule.length > 200 ? `${this.rule.slice(0, 200)}…` : this.rule;
+    return { noVerdict: { hook: this.id, reason }, reason: `policy check ${this.id} ("${rule}") reached no verdict: ${NO_VERDICT_TEXT[reason]}` };
+  }
+}
+
+/** The model's verdict, or why there is none. Only a JSON object whose `block` is a boolean is a verdict; a complete
+ *  one counts even when the output was cut off after it. */
+function readVerdict(r: ModelResult): { block: boolean; reason?: string } | NoVerdictReason {
+  const content = r.message.content;
+  const text = (typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("")).trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      const o = JSON.parse(text.slice(start, end + 1)) as { block?: unknown; reason?: unknown } | null;
+      if (o && typeof o.block === "boolean") return { block: o.block, ...(typeof o.reason === "string" && o.reason ? { reason: o.reason } : {}) };
+    } catch {
+      // not JSON: classified below
     }
   }
+  if (r.stopReason === "max_tokens") return "cut_off";
+  return text ? "unparsable" : "empty";
 }
 
 /**

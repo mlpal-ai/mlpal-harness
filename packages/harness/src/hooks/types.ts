@@ -194,6 +194,19 @@ export interface HookResult {
   verdict?: "PASS" | "FAIL" | "PARTIAL";
   /** PermissionRequest: answer in the person's place. */
   decision?: "allow" | "deny";
+  /** A model-judged hook got no verdict from its model; `reason` then says so in words for the person. Never an
+   *  allow: on PreToolUse the call is asked (denied with nobody to ask), on UserPromptSubmit the prompt is rejected;
+   *  where a block cannot refuse anything (Stop, the observational events) it changes nothing. */
+  noVerdict?: HookNoVerdict;
+}
+
+/** Why a model-judged hook has no verdict: no text, the output budget ran out first, text that is not a verdict, or
+ *  the call failed (an error, a timeout, a gateway refusal). */
+export type NoVerdictReason = "empty" | "cut_off" | "unparsable" | "error";
+
+export interface HookNoVerdict {
+  hook: string;
+  reason: NoVerdictReason;
 }
 
 /** A declarative filter on the event input (the `when` of a configured hook): every named field

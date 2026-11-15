@@ -27,7 +27,7 @@ import { maybeCompact, renderTranscript } from "../context/compaction";
 import { type EventInbox, renderEvents, waitForEvent } from "../events/inbox";
 import { type SessionEventBus, type SideEvent, SideQueue } from "../events/session-bus";
 import type { HookEngine } from "../hooks/engine";
-import type { HookContext, SessionEndInput } from "../hooks/types";
+import type { HookContext, HookNoVerdict, HookResult, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
 import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
@@ -37,6 +37,7 @@ import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp
 import { stripInvisible } from "../input/sanitize";
 import { type Metrics, noopMetrics } from "../obs/metrics";
 import { type CanUseTool, canonicalInput, type Decision, filePathOf, type PermissionRequest, undeclaredArgs } from "../permission/engine";
+import { isReadOnlyShell } from "../permission/readonly-shell";
 import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
@@ -296,10 +297,38 @@ export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless
 export interface AskContext {
   reason?: string;
   safetyReason?: SafetyReason;
+  /** A PreToolUse policy hook got no verdict from its model on this call (`reason` names it): its rule was never
+   *  checked, so the ask is the person's (`personOnlyAsk`). */
+  noVerdict?: HookNoVerdict;
   /** The call the ask guards: a host derives a stable ask id from it (P2 1.1, `ask:<toolUseId>`). */
   toolUseId?: string;
   /** The session whose loop asks (a sub-agent's own, when its asks go to its parent's route). */
   sessionId?: string;
+}
+
+/** An ask only the person may answer, one action at a time: a §10 safety edge, or a call a policy hook got no verdict
+ *  on. No judge, session grant, project rule or live-mode raise stands in for the person's answer. */
+export function personOnlyAsk(ask: AskContext | undefined): boolean {
+  return Boolean(ask?.safetyReason || ask?.noVerdict);
+}
+
+/** A PreToolUse policy hook's no verdict on the call: the mark the ask carries and the words the person reads. */
+interface UndecidedCheck {
+  noVerdict: HookNoVerdict;
+  text: string;
+}
+
+function undecidedOf(results: HookResult[]): UndecidedCheck | undefined {
+  const r = results.find((x) => x.noVerdict);
+  return r?.noVerdict ? { noVerdict: r.noVerdict, text: r.reason ?? `policy check ${r.noVerdict.hook} reached no verdict` } : undefined;
+}
+
+/** The policy's decision with an undecided check folded in: an allow becomes the person's ask, an ask gains the
+ *  check's reason, a deny stands. */
+function withUndecided(d: Decision, u: UndecidedCheck | undefined): Decision {
+  if (!u || d.behavior === "deny") return d;
+  if (d.behavior === "allow") return { behavior: "ask", reason: u.text };
+  return { ...d, reason: d.reason ? `${d.reason}; ${u.text}` : u.text };
 }
 
 /** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
@@ -803,7 +832,9 @@ export class AgentSession {
     this.currentRun = runId;
     if (cfg.hooks?.has("UserPromptSubmit")) {
       const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
-      const blocker = results.find((r) => r.block);
+      // A policy check that got no verdict rejects the prompt too: a person who sent it reads why and can send it
+      // again; an unattended prompt is refused, never run unchecked.
+      const blocker = results.find((r) => r.block) ?? results.find((r) => r.noVerdict);
       if (blocker) {
         this.currentRun = previousRun; // a rejected prompt leaves no turn and no run
         unsubscribe?.();
@@ -2062,6 +2093,7 @@ export class AgentSession {
     });
 
     let input = tu.input;
+    let undecided: UndecidedCheck | undefined;
 
     // PreToolUse hooks: may block or rewrite the tool input.
     if (cfg.hooks?.has("PreToolUse")) {
@@ -2081,6 +2113,7 @@ export class AgentSession {
         return make(`Blocked by hook: ${blocker.reason ?? "denied"}`, true);
       }
       for (const r of results) if (r.updatedInput) input = r.updatedInput;
+      undecided = undecidedOf(results);
     }
 
     // D-48 (M4): the person approved the call the park showed; one a PreToolUse hook now rewrites is asked again.
@@ -2105,7 +2138,11 @@ export class AgentSession {
       cwd: cfg.cwd,
       roots: cfg.roots ?? [cfg.cwd],
     };
-    const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at);
+    // A policy hook with no verdict puts a call that may change something before the person; a read stays the
+    // policy's to decide, so a harmless read never starts asking because a check could not decide.
+    const callReadOnly =
+      tool !== undefined && ((tool.isCallReadOnly?.(input) ?? tool.readOnly) || (tu.name === "Bash" && typeof input.command === "string" && isReadOnlyShell(input.command)));
+    const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at, callReadOnly ? undefined : undecided);
     const toolStartMs = Date.now();
 
     let raw: string | ToolResultBlocks;
@@ -2189,8 +2226,8 @@ export class AgentSession {
 
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
    *  the caller after the tool ran, so a tool-boundary refusal can turn it into the effective deny. */
-  private async resolve(req: PermissionRequest, call: CallAt): Promise<{ decision: Decision; via: DecisionVia }> {
-    const d = await this.cfg.canUseTool(req);
+  private async resolve(req: PermissionRequest, call: CallAt, undecided?: UndecidedCheck): Promise<{ decision: Decision; via: DecisionVia }> {
+    const d = withUndecided(await this.cfg.canUseTool(req), undecided);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
     // PermissionRequest: a hook may answer in the person's place (the first answer wins);
     // no answer means the ask proceeds exactly as before.
@@ -2205,7 +2242,7 @@ export class AgentSession {
     if (this.cfg.onAsk) {
       // null = "no answer from this answerer" (a policy file with no matching rule): fall through
       // to the headless handling below, exactly as if no answerer were installed.
-      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason, toolUseId: call.toolUseId, sessionId: this.cfg.sessionId });
+      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason, toolUseId: call.toolUseId, sessionId: this.cfg.sessionId, ...(undecided ? { noVerdict: undecided.noVerdict } : {}) });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
       }
@@ -2218,7 +2255,7 @@ export class AgentSession {
       throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req));
     }
     return {
-      decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),
+      decision: this.observed(req, { behavior: "deny", reason: `approval required but running non-interactively${undecided ? `: ${undecided.text}` : ""}`, source: "mode" }, "headless_refused"),
       via: "headless_refused",
     };
   }
