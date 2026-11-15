@@ -5,9 +5,10 @@ import { join } from "node:path";
 import type { EngineEvent } from "@mlpal/harness-protocol";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { FilteredHook, HookEngine, PromptHook } from "../src/hooks/engine";
-import type { HookResult } from "../src/hooks/types";
+import type { HookInput, HookResult } from "../src/hooks/types";
 import { AgentSession, type AskContext } from "../src/loop/agent";
 import type { Logger } from "../src/obs/logger";
+import type { Metrics } from "../src/obs/metrics";
 import { createPolicy, type PermissionRequest } from "../src/permission/engine";
 import { LocalStore } from "../src/store/local";
 import { defaultRegistry } from "../src/tools";
@@ -50,7 +51,7 @@ function recordingLogger(): Logger & { lines: Array<{ level: string; msg: string
   return logger;
 }
 
-function hookWith(reply: (req: ModelRequest) => Promise<ModelResult> | ModelResult, extra: { timeoutMs?: number } = {}) {
+function hookWith(reply: (req: ModelRequest) => Promise<ModelResult> | ModelResult, extra: { timeoutMs?: number; metrics?: Metrics } = {}) {
   const logger = recordingLogger();
   const seen: ModelRequest[] = [];
   const client: Pick<ModelClient, "stream"> = {
@@ -138,6 +139,52 @@ describe("a prompt hook's model gave no verdict: the hook says so, it never read
       expectOneNoVerdictLine(logger, "error");
       expect(logger.lines.find((l) => l.msg.includes("no verdict"))!.fields.status).toBe(status);
     }
+  });
+
+  test("unsure: the model says it cannot tell (block: null), as the prompt asks it to when in doubt", async () => {
+    const { hook, logger, seen } = hookWith(() => text('{"block": null, "reason": "the rule may or may not cover a force push"}'));
+    const r = await hook.run(pushEvent, ctx);
+    expect(r.block).toBeUndefined();
+    expect(r.noVerdict).toEqual({ hook: "cfg:PreToolUse#1", reason: "unsure" });
+    expect(r.reason).toContain("could not tell");
+    expectOneNoVerdictLine(logger, "unsure");
+    // Doubt is never a clean "do not block": the model is told to answer null.
+    expect(seen[0]!.system).toContain("null: you cannot tell whether it applies");
+    expect(seen[0]!.system).not.toContain("when in doubt, do not block");
+  });
+
+  test("a result with no message is a no verdict, never a throw the engine would drop as no result", async () => {
+    const { hook, logger } = hookWith(() => ({}) as ModelResult);
+    expect((await hook.run(pushEvent, ctx)).noVerdict).toEqual({ hook: "cfg:PreToolUse#1", reason: "error" });
+    expectOneNoVerdictLine(logger, "error");
+  });
+
+  test("the session's interrupt stops the call: the hook returns at once", async () => {
+    const ac = new AbortController();
+    const { hook } = hookWith(() => new Promise<ModelResult>(() => undefined), { timeoutMs: 60_000 });
+    setTimeout(() => ac.abort(), 20);
+    const started = Date.now();
+    expect((await hook.run(pushEvent, { ...ctx, signal: ac.signal })).noVerdict?.reason).toBe("error");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("each no verdict counts once on hooks.prompt.no_verdict, by reason and event; a verdict counts nothing", async () => {
+    const counted: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const metrics: Metrics = { increment: (name, _v, tags) => void counted.push({ name, ...(tags ? { tags } : {}) }), histogram: () => undefined };
+    let reply = "";
+    const { hook } = hookWith(() => text(reply), { metrics });
+    await hook.run(pushEvent, ctx);
+    reply = '{"block": false}';
+    await hook.run(pushEvent, ctx);
+    reply = '{"block": null}';
+    await hook.run({ event: "UserPromptSubmit", prompt: "deploy" }, ctx);
+    expect(counted).toEqual([
+      { name: "hooks.prompt.no_verdict", tags: { reason: "empty", event: "PreToolUse", hook: "cfg:PreToolUse#1" } },
+      { name: "hooks.prompt.no_verdict", tags: { reason: "unsure", event: "UserPromptSubmit", hook: "cfg:PreToolUse#1" } },
+    ]);
+    const throttled = hookWith(() => Promise.reject(new GatewayError("HTTP 429", 429, "http", undefined, "rate_limited")), { metrics });
+    await throttled.hook.run(pushEvent, ctx);
+    expect(counted.at(-1)!.tags).toEqual({ reason: "error", event: "PreToolUse", hook: "cfg:PreToolUse#1", status: "429", code: "rate_limited" });
   });
 
   test("the budget leaves a reasoning model room to answer (200 left none)", async () => {
@@ -252,6 +299,44 @@ describe("the loop: an undecided policy check on a tool call is the person's to 
     const events = await drain(session("s-nv-park", { model, hooks: undecidedHooks(model), parkHeadless: "every_ask" }).run({ text: "go" }));
     expect(existsSync(dir)).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "result", subtype: "needs_approval" });
+    // The approval card says which check went undecided, not only "approval required".
+    const pending = (events.at(-1) as Extract<EngineEvent, { type: "result" }>).pendingApproval!;
+    expect(pending.reason).toBe("approval_required");
+    expect(pending.noVerdict).toEqual({ hook: "cfg:PreToolUse#1", reason: "cut_off" });
+    expect(pending.detail).toContain("cfg:PreToolUse#1");
+    expect(pending.detail).toContain("reached no verdict");
+  });
+
+  test("a PermissionRequest hook is told the call's policy check never ran", async () => {
+    const model = scripted([{ name: "Bash", input: { command: "mkdir told.dir" } }]);
+    const hooks = undecidedHooks(model);
+    const seen: HookInput[] = [];
+    hooks.register({ id: "answerer", events: ["PermissionRequest"], run: async (input): Promise<HookResult> => (seen.push(input), {}) });
+    await drain(session("s-nv-permreq", { model, hooks, onAsk: async () => ({ behavior: "deny", reason: "no" }) }).run({ text: "go" }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ event: "PermissionRequest", toolName: "Bash", noVerdict: { hook: "cfg:PreToolUse#1", reason: "cut_off" } });
+  });
+
+  test("a turn cancelled while the check ran asks nobody and runs nothing", async () => {
+    const dir = join(cwd, "cancelled.dir");
+    const ac = new AbortController();
+    let turn = 0;
+    const model: ModelClient = {
+      async *stream(req): AsyncGenerator<never, ModelResult, void> {
+        if (req.system?.includes("policy check")) {
+          ac.abort(); // the person presses Ctrl-C while the check waits on its model
+          return new Promise<never>(() => undefined);
+        }
+        return turn++ === 0 ? toolUse("Bash", { command: `mkdir ${dir}` }) : text("done");
+      },
+    };
+    const asks: string[] = [];
+    const hooks = new HookEngine();
+    hooks.register(new PromptHook("cfg:PreToolUse#1", ["PreToolUse"], RULE, { client: model, model: "cheap" }));
+    const sess = new AgentSession({ agentId: "ag", sessionId: "s-nv-cancel", workspace: "w", cwd, model: "m", systemPrompt: "t", tools: defaultRegistry(), store: new LocalStore(root), model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), maxTokens: 100, hooks, signal: ac.signal, onAsk: async (req) => (asks.push(req.toolName), { behavior: "allow" }) });
+    await drain(sess.run({ text: "go" }));
+    expect(asks).toEqual([]);
+    expect(existsSync(dir)).toBe(false);
   });
 
   test("a harmless read is never asked because of it: a read-only call runs as the mode decides", async () => {
@@ -290,6 +375,20 @@ describe("the loop: an undecided policy check on the other blocking events", () 
     const events = await drain(session("s-nv-prompt", { model, hooks: undecidedHooks(model, ["UserPromptSubmit"]) }).run({ text: "deploy it" }));
     expect(events.at(-1)).toMatchObject({ type: "result", subtype: "error" });
     expect((events.at(-1) as { reason?: string }).reason).toContain("cfg:UserPromptSubmit#1");
+  });
+
+  test("UserPromptSubmit: a model that could not tell does not refuse the person's prompt (it would refuse it every time)", async () => {
+    let turns = 0;
+    const model: ModelClient = {
+      async *stream(req): AsyncGenerator<never, ModelResult, void> {
+        if (req.system?.includes("policy check")) return text('{"block": null, "reason": "unclear"}');
+        turns += 1;
+        return text("done");
+      },
+    };
+    const events = await drain(session("s-nv-prompt-unsure", { model, hooks: undecidedHooks(model, ["UserPromptSubmit"]) }).run({ text: "deploy it" }));
+    expect(events.at(-1)).toMatchObject({ type: "result", subtype: "success" });
+    expect(turns).toBe(1);
   });
 
   test("Stop: a block there means keep working, so an undecided check lets the run finish (advisory)", async () => {

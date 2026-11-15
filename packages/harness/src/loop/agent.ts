@@ -341,6 +341,8 @@ class SafetyParkSignal extends Error {
     readonly call: CallAt,
     /** What a person is shown of the call (`parkedCall`). */
     readonly shown: { toolName: string; args?: string },
+    /** Held because a policy check reached no verdict: the mark and its words go on the approval card. */
+    readonly undecided?: { noVerdict: HookNoVerdict; detail: string },
   ) {
     super("safety approval edge (headless park)");
     this.name = "SafetyParkSignal";
@@ -834,7 +836,9 @@ export class AgentSession {
       const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
       // A policy check that got no verdict rejects the prompt too: a person who sent it reads why and can send it
       // again; an unattended prompt is refused, never run unchecked.
-      const blocker = results.find((r) => r.block) ?? results.find((r) => r.noVerdict);
+      // A model that said it could not tell (`unsure`) is not one: the prompt is the person's own text, and a doubt about it
+      // would refuse the same prompt every time it is sent.
+      const blocker = results.find((r) => r.block) ?? results.find((r) => r.noVerdict && r.noVerdict.reason !== "unsure");
       if (blocker) {
         this.currentRun = previousRun; // a rejected prompt leaves no turn and no run
         unsubscribe?.();
@@ -1615,7 +1619,7 @@ export class AgentSession {
         outcome = "needs_approval";
         log.info("run parked for approval", { reason: e.reason });
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
-        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index, ...e.shown });
+        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index, ...e.shown, ...(e.undecided ?? {}) });
       } else {
         // A call outside the turn's own model call (the compaction summary) met the same gateway refusal: the run ends
         // as the same typed error. The turn's own call never reaches here typed: it ended above.
@@ -2231,10 +2235,14 @@ export class AgentSession {
   private async resolve(req: PermissionRequest, call: CallAt, undecided?: UndecidedCheck): Promise<{ decision: Decision; via: DecisionVia }> {
     const d = withUndecided(await this.cfg.canUseTool(req), undecided);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
+    // The turn was cancelled while the check ran (it stops with the session): nobody is asked about a cancelled turn.
+    if (undecided && this.cfg.signal?.aborted) {
+      return { decision: this.observed(req, { behavior: "deny", reason: `the turn was cancelled: ${undecided.text}`, source: "mode" }, "policy"), via: "policy" };
+    }
     // PermissionRequest: a hook may answer in the person's place (the first answer wins);
-    // no answer means the ask proceeds exactly as before.
+    // no answer means the ask proceeds exactly as before. It is told when the call's policy check reached no verdict.
     if (this.cfg.hooks?.has("PermissionRequest")) {
-      const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}) }, this.hookCtx());
+      const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}), ...(undecided ? { noVerdict: undecided.noVerdict } : {}) }, this.hookCtx());
       const answer = results.find((r) => r.decision);
       if (answer?.decision) {
         const decided: Decision = answer.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: answer.reason ?? "denied by hook" };
@@ -2254,7 +2262,7 @@ export class AgentSession {
     // proceed past the edge.
     if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
-      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req));
+      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req), undecided ? { noVerdict: undecided.noVerdict, detail: undecided.text } : undefined);
     }
     return {
       decision: this.observed(req, { behavior: "deny", reason: `approval required but running non-interactively${undecided ? `: ${undecided.text}` : ""}`, source: "mode" }, "headless_refused"),

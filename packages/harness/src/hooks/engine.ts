@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { type ModelClient, type ModelResult, SIDE_CALL_EFFORT } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
+import { type Metrics, noopMetrics } from "../obs/metrics";
 import { isDir } from "../tools/shell-cwd";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen, NoVerdictReason } from "./types";
 
@@ -245,11 +246,19 @@ export interface PromptHookOptions {
   model: string;
   timeoutMs?: number;
   logger?: Logger;
+  /** `hooks.prompt.no_verdict`, one per no verdict, tagged `reason` and `event` (and the hook, and a gateway failure's
+   *  `status` and `code`; all bounded): an ask storm (every write asking while the model is throttled or misconfigured)
+   *  shows on a dashboard, not only in the logs. A host whose metrics are log lines passes a silent logger, so the
+   *  metric's line is the one line. */
+  metrics?: Metrics;
 }
 
+/** Doubt is its own answer (`block: null`), never a clean "do not block": an unsure model must not let the event
+ *  through as if the rule had been checked. */
 const PROMPT_HOOK_SYSTEM =
   "You are a policy check inside an agent harness. You receive a rule and one event as JSON. Decide whether the rule says to BLOCK the event. " +
-  'Answer with JSON only: {"block": true|false, "reason": "<one sentence>"}. Block only when the rule clearly applies; when in doubt, do not block.';
+  'Answer with JSON only: {"block": true|false|null, "reason": "<one sentence>"}. ' +
+  "true: the rule applies to this event. false: it clearly does not. null: you cannot tell whether it applies.";
 
 /** The answer is a one-line JSON object, but a reasoning model spends output tokens on its reasoning first: at 200,
  *  gpt-6-luna answered no text on 57 of 98 calls in a day. The call asks for no reasoning (SIDE_CALL_EFFORT); this is
@@ -261,6 +270,7 @@ const NO_VERDICT_TEXT: Record<NoVerdictReason, string> = {
   empty: "its model gave no answer",
   cut_off: "its model ran out of output before answering",
   unparsable: "its model's answer was not a verdict",
+  unsure: "its model could not tell whether the rule applies",
   error: "its model call failed",
 };
 
@@ -273,6 +283,7 @@ const NO_VERDICT_TEXT: Record<NoVerdictReason, string> = {
  */
 export class PromptHook implements Hook {
   private readonly logger: Logger;
+  private readonly metrics: Metrics;
   constructor(
     readonly id: string,
     readonly events: readonly HookEvent[],
@@ -280,11 +291,16 @@ export class PromptHook implements Hook {
     private readonly opts: PromptHookOptions,
   ) {
     this.logger = opts.logger ?? silentLogger;
+    this.metrics = opts.metrics ?? noopMetrics;
   }
 
-  async run(input: HookInput, _ctx: HookContext): Promise<HookResult> {
+  async run(input: HookInput, ctx: HookContext): Promise<HookResult> {
     const timeoutMs = this.opts.timeoutMs ?? 20_000;
     const ac = new AbortController();
+    // The session's interrupt stops the call too (HookContext.signal): a cancelled turn waits on no model.
+    const stop = (): void => ac.abort();
+    if (ctx.signal?.aborted) ac.abort();
+    ctx.signal?.addEventListener("abort", stop, { once: true });
     // The clock is ours, not the client's (as the permission judge's): a client that ignores the signal must not hold
     // the event open.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -294,15 +310,17 @@ export class PromptHook implements Hook {
         reject(new Error(`timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     });
-    let result: ModelResult;
+    const aborted = new Promise<never>((_, reject) => ac.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    let v: ReturnType<typeof readVerdict>;
     try {
-      result = await Promise.race([this.consult(input, ac.signal), deadline]);
+      // Read inside the try: a malformed result is a no verdict here, never a throw the engine would drop as no result.
+      v = readVerdict(await Promise.race([this.consult(input, ac.signal), deadline, aborted]));
     } catch (e) {
       return this.noVerdict(input, "error", e);
     } finally {
       clearTimeout(timer);
+      ctx.signal?.removeEventListener("abort", stop);
     }
-    const v = readVerdict(result);
     if (typeof v === "string") return this.noVerdict(input, v);
     return v.block ? { block: true, reason: v.reason ? v.reason.slice(0, 500) : `blocked by rule: ${this.rule}` } : {};
   }
@@ -325,20 +343,16 @@ export class PromptHook implements Hook {
    *  (a gateway error can echo the request); a gateway failure adds its status and code. */
   private noVerdict(input: HookInput, reason: NoVerdictReason, error?: unknown): HookResult {
     const g = (error ?? {}) as { status?: unknown; code?: unknown };
-    this.logger.warn("prompt hook: no verdict", {
-      hook: this.id,
-      event: input.event,
-      reason,
-      ...(typeof g.status === "number" && g.status > 0 ? { status: g.status } : {}),
-      ...(typeof g.code === "string" ? { code: g.code } : {}),
-    });
+    const failure = { ...(typeof g.status === "number" && g.status > 0 ? { status: String(g.status) } : {}), ...(typeof g.code === "string" ? { code: g.code } : {}) };
+    this.logger.warn("prompt hook: no verdict", { hook: this.id, event: input.event, reason, ...(failure.status ? { status: Number(failure.status) } : {}), ...(failure.code ? { code: failure.code } : {}) });
+    this.metrics.increment("hooks.prompt.no_verdict", 1, { reason, event: input.event, hook: this.id, ...failure });
     const rule = this.rule.length > 200 ? `${this.rule.slice(0, 200)}…` : this.rule;
     return { noVerdict: { hook: this.id, reason }, reason: `policy check ${this.id} ("${rule}") reached no verdict: ${NO_VERDICT_TEXT[reason]}` };
   }
 }
 
 /** The model's verdict, or why there is none. Only a JSON object whose `block` is a boolean is a verdict; a complete
- *  one counts even when the output was cut off after it. */
+ *  one counts even when the output was cut off after it. `block: null` is the model saying it cannot tell. */
 function readVerdict(r: ModelResult): { block: boolean; reason?: string } | NoVerdictReason {
   const content = r.message.content;
   const text = (typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join("")).trim();
@@ -348,6 +362,7 @@ function readVerdict(r: ModelResult): { block: boolean; reason?: string } | NoVe
     try {
       const o = JSON.parse(text.slice(start, end + 1)) as { block?: unknown; reason?: unknown } | null;
       if (o && typeof o.block === "boolean") return { block: o.block, ...(typeof o.reason === "string" && o.reason ? { reason: o.reason } : {}) };
+      if (o && o.block === null) return "unsure";
     } catch {
       // not JSON: classified below
     }

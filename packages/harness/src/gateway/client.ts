@@ -86,13 +86,13 @@ export interface ToolSchema {
 export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LADDER: readonly Effort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/** The effort every small side call sends: a policy check, the permission judge, a summary or condensation, the
- *  classifier, a suggestion, an aside, the watcher. Each answers in a few hundred tokens; with no effort a reasoning
- *  model runs at its default and can spend the whole budget thinking and answer nothing (gpt-6-luna at max_tokens
- *  200: 57 of 98 calls in a day). Unset effort means the model's default at the gateway, never `none`, so the caller
- *  says it. The gateway maps `none` per model: OpenAI `reasoning.effort: none`, Anthropic thinking off, the lowest
- *  rung where a model has no `none` (Gemini `minimal`, Opus `low`), dropped where a model has no lever; the
- *  X-MLPal-Reasoning-Effort header reports what ran. */
+/** The effort every small side call sends: a prompt hook, a summary or condensation, the classifier, a suggestion, an
+ *  aside, the watcher (the permission judge alone reasons: `JUDGE_EFFORT`). Each answers in a few hundred tokens; with
+ *  no effort a reasoning model runs at its default and can spend the whole budget thinking and answer nothing
+ *  (gpt-6-luna at max_tokens 200: 57 of 98 calls in a day). Unset effort means the model's default at the gateway,
+ *  never `none`, so the caller says it. The gateway maps `none` per model: OpenAI `reasoning.effort: none`, Anthropic
+ *  thinking off, the lowest rung where a model has no `none` (Gemini `minimal`, Opus `low`), dropped where a model has
+ *  no lever; the X-MLPal-Reasoning-Effort header reports what ran. */
 export const SIDE_CALL_EFFORT: Effort = "none";
 
 export interface ModelRequest {

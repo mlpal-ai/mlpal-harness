@@ -16,7 +16,7 @@ import { defaultRegistry } from "../src/tools";
 import { modelNotices } from "../src/watcher/watcher";
 
 /**
- * Every small side call asks for no reasoning (`effort: "none"`). The gateway reads a missing effort as the model's
+ * Every small side call but the permission judge asks for no reasoning (`effort: "none"`). The gateway reads a missing effort as the model's
  * default, so a reasoning model at its default can spend a few-hundred-token budget thinking and answer nothing
  * (gpt-6-luna at max_tokens 200: 57 of 98 calls in a day). The main loop's calls keep the session's own effort.
  */
@@ -46,18 +46,18 @@ function recording(reply: (req: ModelRequest) => ModelResult = () => text("{}"))
   return { client, seen };
 }
 
-describe("side calls send effort none", () => {
+describe("side calls send effort none; the judge sends low", () => {
   test("the prompt hook", async () => {
     const { client, seen } = recording(() => text('{"block": false}'));
     await new PromptHook("cfg:PreToolUse#1", ["PreToolUse"], "block any git push to main", { client, model: "cheap" }).run({ event: "PreToolUse", toolName: "Bash", input: { command: "ls" } }, { sessionId: "s", agentId: "a", cwd: "/w" });
     expect(seen.map((r) => r.effort)).toEqual(["none"]);
   });
 
-  test("the cruise permission judge", async () => {
+  test("the cruise permission judge reasons (low, with room for it): its wrong ALLOW is the one side-call error nothing catches", async () => {
     const { client, seen } = recording(() => text('{"verdict":"unsure","reason":"r"}'));
     const judge = createPermissionJudge({ model_client: client, model: "cheap", context: () => ({ hop: "coding", purpose: "p", allow: [], deny: [], roots: ["/w"] }) });
     await judge({ toolName: "Bash", input: { command: "make" }, readOnly: false, isEdit: false, principal: "user" as never });
-    expect(seen.map((r) => r.effort)).toEqual(["none"]);
+    expect(seen.map((r) => [r.effort, r.maxTokens])).toEqual([["low", 1024]]);
   });
 
   test("the start-rung classifier, a suggestion, an aside and the watcher", async () => {

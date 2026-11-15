@@ -1,3 +1,5 @@
+import type { PolicyNoVerdict } from "@mlpal/harness-protocol";
+
 /**
  * Lifecycle hooks — the programmable extension points around the agent loop, and the
  * substrate for the autonomy/verifier loop (a Stop hook can block "done" and force a
@@ -112,6 +114,9 @@ export interface PermissionRequestInput {
   /** The cascade's reason for asking, and the §10 safety reason when the envelope raised it. */
   reason?: string;
   safetyReason?: string;
+  /** A policy check reached no verdict on this call, so its rule was never checked. A hook that answers `allow` here
+   *  answers for the person on a call nothing has judged. */
+  noVerdict?: HookNoVerdict;
 }
 /** Something a person would want to hear about, from the loop's own view: a run parked on an
  *  approval or a question, the turn limit, a cancellation. Observational. */
@@ -200,14 +205,12 @@ export interface HookResult {
   noVerdict?: HookNoVerdict;
 }
 
-/** Why a model-judged hook has no verdict: no text, the output budget ran out first, text that is not a verdict, or
- *  the call failed (an error, a timeout, a gateway refusal). */
-export type NoVerdictReason = "empty" | "cut_off" | "unparsable" | "error";
+/** A model-judged hook's missing verdict (protocol 0.26.6 `PolicyNoVerdict`): the hook's id and why there is none. */
+export type HookNoVerdict = PolicyNoVerdict;
 
-export interface HookNoVerdict {
-  hook: string;
-  reason: NoVerdictReason;
-}
+/** Why a model-judged hook has no verdict: no text, the output budget ran out first, text that is not a verdict, a
+ *  model that said it could not tell (`unsure`), or the call failed (an error, a timeout, a gateway refusal). */
+export type NoVerdictReason = PolicyNoVerdict["reason"];
 
 /** A declarative filter on the event input (the `when` of a configured hook): every named field
  *  must match. `command` and `prompt` are regular expressions over the matching input field. */
