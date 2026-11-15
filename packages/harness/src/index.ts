@@ -107,6 +107,8 @@ export * from "./catalog/catalog";
 export * from "./host";
 export * from "./profile/types";
 export * from "./profile/load";
+export * from "./profile/tool-rules";
+export * from "./tools/tool-name";
 export * from "./telemetry/contract";
 export * from "./telemetry/stamp";
 export { CODING_PROFILE, CODING_SYSTEM_PROMPT } from "./profile/builtins/coding";

