@@ -10,7 +10,7 @@ import { loadProfile } from "../src/profile/load";
 import { toolRuleIssues } from "../src/profile/tool-rules";
 import type { SafetyPolicy } from "../src/profile/types";
 import { ToolRegistry } from "../src/tools/registry";
-import { canonicalToolName, mcpServerCollisions } from "../src/tools/tool-name";
+import { canonicalToolName, mcpServerCollisions, mcpServerNameProblem } from "../src/tools/tool-name";
 
 /**
  * BREAKAGES #72: the engine names a server's tools `mcp__<server>__<tool>` keeping the server's `-`
@@ -44,6 +44,44 @@ describe("canonical tool names", () => {
     expect(mcpServerCollisions(["cascade-planner-tools", "cascade_planner_tools", "other"])).toEqual([["cascade-planner-tools", "cascade_planner_tools"]]);
     expect(mcpServerCollisions(["plugin:a:b", "plugin_a_b"])).toEqual([["plugin:a:b", "plugin_a_b"]]);
     expect(mcpServerCollisions(["a-b", "a-c", "memory"])).toEqual([]);
+    // review S2: `*` is a character a tool name cannot hold, so it reads as `_` in a server NAME (a pattern keeps it)
+    expect(mcpServerCollisions(["a*b", "a_b"])).toEqual([["a*b", "a_b"]]);
+  });
+
+  test("review S1: a server whose canonical name holds __ or starts or ends with _ is ambiguous", () => {
+    for (const name of ["my--tools", "my__tools", "x-_y", "a-", "_a", "plugin::x"]) expect(mcpServerNameProblem(name)).not.toBeNull();
+    for (const name of ["cascade-planner-tools", "memory", "plugin:browser:browser", "s3-tools"]) expect(mcpServerNameProblem(name)).toBeNull();
+  });
+});
+
+/** Review M1: a glob whose `*` spans the server/tool boundary splits the rule and the name differently; on ca7fda9 the
+ *  canonical match alone lost calls the base caught. Every rule that matched on the base still matches. */
+const BASE_MATCHES: [rule: string, tool: string][] = [
+  ["mcp__*send-alert", "mcp__ops__send-alert"],
+  ["mcp__*drop-table", "mcp__db__drop-table"],
+  ["*cascade-planner*", "mcp__cascade-planner-tools__decide_order"],
+  ["*-tools__*", "mcp__s3-tools__put"],
+  ["mcp__s3-*", "mcp__s3-tools__put"],
+];
+
+describe("review M1: a rule never loses a call it matched before", () => {
+  for (const [rule, tool] of BASE_MATCHES) {
+    test(`deny ${rule} still refuses ${tool}, and an approval entry still names it`, async () => {
+      expect(await createPolicy({ mode: "autopilot", deny: [rule] })(call(tool))).toMatchObject({ behavior: "deny", source: "deny_rule" });
+      const entry = parseApprovalEntry(rule)!;
+      expect(ruleMatch(entry.tool, call(tool))).toBe("");
+    });
+  }
+
+  test("a bare mcp__ class glob spanning the boundary classes the call", () => {
+    const s: SafetyPolicy = {
+      toolClasses: { readOnly: [], mutative: [], consequential: [], destructive: ["mcp__*drop-table"] },
+      preApply: { requirePlanArtifact: false, hash: [] },
+      blastRadius: {},
+      approval: { destructive: "always", outOfScope: "always" },
+      identities: { neverSelfGrant: true },
+    };
+    expect(classifyAction(s, { toolName: "mcp__db__drop-table", command: "", tags: {} })).toBe("destructive");
   });
 });
 
@@ -119,10 +157,18 @@ describe("safety.toolClasses", () => {
     });
   }
 
-  test("a Tool(pattern) entry on an MCP tool named with - parses and matches by its command", () => {
-    const s = safety({ destructive: [`${UNDERSCORE}run(drop *)`] });
-    expect(classifyAction(s, action(`${HYPHEN}run`, "drop table orders"))).toBe("destructive");
-    expect(classifyAction(s, action(`${HYPHEN}run`, "select 1"))).toBe("unknown");
+  for (const [label, rule, tool] of SPELLINGS) {
+    test(`${label}: a Tool(pattern) entry on an MCP tool parses and matches by its command`, () => {
+      const s = safety({ destructive: [`${rule}run(drop *)`] });
+      expect(classifyAction(s, action(`${tool}run`, "drop table orders"))).toBe("destructive");
+      expect(classifyAction(s, action(`${tool}run`, "select 1"))).toBe("unknown");
+    });
+  }
+
+  test("a Tool(pattern) entry whose tool part has digits and - parses (review H9)", () => {
+    const s = safety({ destructive: ["mcp__s3-tools__rm(s3://prod/*)"] });
+    expect(classifyAction(s, action("mcp__s3-tools__rm", "s3://prod/logs"))).toBe("destructive");
+    expect(classifyAction(s, action("mcp__s3-tools__rm", "s3://dev/logs"))).toBe("unknown");
   });
 
   test("an mcp__ entry with a wildcard classes every tool of the server", () => {
@@ -146,6 +192,22 @@ describe("McpManager refuses servers that would share tool names", () => {
       expect(reg.list().map((t) => t.name)).toEqual(["mcp__cascade-planner-tools__greet"]);
       // a reconnect of the first is not a collision with itself
       expect(await mcp.connect("cascade-planner-tools", { command: "node", args: [SERVER] }, reg)).toBe(1);
+      // review S6: once the first is disconnected it is forgotten, and the other spelling may connect
+      await mcp.disconnect("cascade-planner-tools", [reg]);
+      expect(await mcp.connect("cascade_planner_tools", { command: "node", args: [SERVER] }, reg)).toBe(1);
+      expect(reg.list().map((t) => t.name)).toEqual(["mcp__cascade_planner_tools__greet"]);
+    } finally {
+      await mcp.close();
+    }
+  }, 20_000);
+
+  test("review S1: a server whose tool names are ambiguous is refused before it connects", async () => {
+    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    try {
+      expect(await mcp.connect("my--tools", { command: "node", args: [SERVER] }, reg)).toBe(0);
+      expect(mcp.status()).toEqual([expect.objectContaining({ server: "my--tools", ok: false, error: expect.stringContaining("ambiguous") })]);
+      expect(reg.list()).toEqual([]);
     } finally {
       await mcp.close();
     }
@@ -184,6 +246,21 @@ describe("the HOP loader", () => {
     expect(load("collision", ["requires: { mcp: [{ name: cascade-planner-tools }] }", "processes: { mcp_stdio: [{ name: cascade_planner_tools, argv: [srv] }] }"])).toThrow(
       /MCP servers "cascade-planner-tools" and "cascade_planner_tools" would share tool names/,
     );
+  });
+
+  test("review S1: a declared server whose tool names are ambiguous fails the load", () => {
+    expect(load("ambiguous", ["requires: { mcp: [{ name: my--tools }] }"])).toThrow(/MCP server "my--tools" reads as "my__tools"/);
+  });
+
+  test("review S5: requires.memory declares the memory server", () => {
+    const p = load("memory-rung", ["requires: { memory: { read: true, write: true } }", "tools: { include: [Read, mcp__memory__memory_notes] }", ...SAFETY("mcp__memory__memory_retract")])();
+    expect(p.warnings ?? []).not.toContainEqual(expect.stringContaining("does not declare"));
+  });
+
+  test("review S7: a Tool(pattern) class entry on an MCP tool is a lint advisory, never a load warning", () => {
+    const p = load("pattern-class", ["requires: { mcp: [{ name: cascade-planner-tools }] }", ...SAFETY(`${HYPHEN}decide_order(*)`)])();
+    expect(p.warnings ?? []).toEqual([]);
+    expect(toolRuleIssues(p)).toEqual([expect.objectContaining({ field: "safety.toolClasses.destructive", advisory: true, failsLoad: false })]);
   });
 
   test("allow, deny and include naming an undeclared server load with a warning each", () => {

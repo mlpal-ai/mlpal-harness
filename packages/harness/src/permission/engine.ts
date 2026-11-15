@@ -200,7 +200,7 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (!m) return false;
   const tool = m[1]!;
   const pattern = m[2];
-  if (canonicalToolName(tool) !== canonicalToolName(req.toolName)) return false;
+  if (tool !== req.toolName && canonicalToolName(tool) !== canonicalToolName(req.toolName)) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
     // Every simple command it runs must match (one of its forms); a line that cannot be decomposed, changes the
@@ -231,12 +231,14 @@ export function unjudgeableAllow(rule: string): boolean {
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
- *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). An MCP server part is
- *  compared canonically (`cascade-planner-tools` and `cascade_planner_tools` are one server: tools/tool-name.ts). */
+ *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). It matches as written,
+ *  or with both MCP server parts canonical (`cascade-planner-tools` and `cascade_planner_tools` are one server:
+ *  tools/tool-name.ts). Either suffices, so a rule only gains calls: a glob whose `*` spans the server/tool boundary
+ *  (`mcp__*send-alert`, `*cascade-planner*`) splits the two names differently, and its canonical form alone would miss
+ *  calls the written one names (review M1). */
 export function toolMatches(tool: string, name: string): boolean {
-  const t = canonicalToolName(tool);
-  const n = canonicalToolName(name);
-  return t.includes("*") ? globMatch(t, n) : t === n;
+  if (tool.includes("*")) return globMatch(tool, name) || globMatch(canonicalToolName(tool), canonicalToolName(name));
+  return tool === name || canonicalToolName(tool) === canonicalToolName(name);
 }
 
 /** A deny rule or an approval entry: its tool part (P7's characters and `*`) and an optional argument pattern. */

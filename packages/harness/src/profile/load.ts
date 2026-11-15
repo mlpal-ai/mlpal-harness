@@ -1002,7 +1002,7 @@ export function composeProfile(
   // #72: a tool rule must be able to match. A safety class naming a server the HOP does not declare (or two declared
   // servers sharing tool names) refuses the load: a class that matches nothing fails open. The rest are warnings
   // here and errors in `yodex hop lint`.
-  const ruleIssues = toolRuleIssues(composed);
+  const ruleIssues = toolRuleIssues(composed).filter((i) => !i.advisory);
   const fatal = ruleIssues.filter((i) => i.failsLoad);
   if (fatal.length) {
     throw new Error(`profile "${composed.name}" ${fatal.map((i) => `${i.field}: ${i.message}`).join("; ")}`);
