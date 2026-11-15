@@ -1,5 +1,5 @@
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import { type ModelClient, SIDE_CALL_EFFORT } from "../gateway/client";
 import { callSubject, type PermissionRequest } from "./engine";
 
 /**
@@ -102,6 +102,7 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
           system: JUDGE_SYSTEM,
           messages: [{ role: "user", content: user } satisfies Message],
           maxTokens: opts.maxOutputTokens ?? 200,
+          effort: SIDE_CALL_EFFORT,
           signal: ac.signal,
         });
         let r = await gen.next();

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ModelClient, ModelResult } from "../gateway/client";
+import { type ModelClient, type ModelResult, SIDE_CALL_EFFORT } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import { isDir } from "../tools/shell-cwd";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen, NoVerdictReason } from "./types";
@@ -252,8 +252,9 @@ const PROMPT_HOOK_SYSTEM =
   'Answer with JSON only: {"block": true|false, "reason": "<one sentence>"}. Block only when the rule clearly applies; when in doubt, do not block.';
 
 /** The answer is a one-line JSON object, but a reasoning model spends output tokens on its reasoning first: at 200,
- *  gpt-6-luna answered no text on 57 of 98 calls in a day. A model that does not reason stops at its answer, so the
- *  headroom costs nothing there. */
+ *  gpt-6-luna answered no text on 57 of 98 calls in a day. The call asks for no reasoning (SIDE_CALL_EFFORT); this is
+ *  the room left for a model the gateway can only lower to its least (Opus `low`, Gemini `minimal`). A model that
+ *  stops at its answer pays nothing for the headroom. */
 export const PROMPT_HOOK_MAX_TOKENS = 1024;
 
 const NO_VERDICT_TEXT: Record<NoVerdictReason, string> = {
@@ -312,6 +313,7 @@ export class PromptHook implements Hook {
       system: PROMPT_HOOK_SYSTEM,
       messages: [{ role: "user", content: `Rule: ${this.rule}\n\nEvent:\n${JSON.stringify(input).slice(0, 12_000)}` }],
       maxTokens: PROMPT_HOOK_MAX_TOKENS,
+      effort: SIDE_CALL_EFFORT,
       signal,
     });
     let r = await gen.next();

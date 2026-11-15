@@ -21,6 +21,13 @@
   for the person.
 - The hook's output budget is 1024 (`PROMPT_HOOK_MAX_TOKENS`), room for a reasoning model to answer; a model that does
   not reason stops at its answer.
+- Every small side call now sends `effort: "none"` (`SIDE_CALL_EFFORT`): the prompt hook, the permission judge, the
+  compaction summary and condensed tool output, the start-rung classifier, suggestions, asides and the watcher. The
+  gateway reads a missing effort as the model's default, never `none`, so the caller says it. It rides as
+  `output_config.effort` on the gateway's Anthropic wire; the gateway (live `fd421b3`, from `687b79b`) maps it per
+  model: OpenAI `reasoning.effort: none` (gpt-6-luna and gpt-5.6-luna list `none`), Anthropic thinking off where the
+  model has a `none` rung, the lowest rung otherwise (Opus 5.5 `low`, Gemini 3.5 Flash `minimal`), dropped for a model
+  with no lever (Haiku 4.5). The main loop keeps the session's own effort.
 
 ### The permission judge reads a listing as a read (BREAKAGES #69, 2026-11-14)
 

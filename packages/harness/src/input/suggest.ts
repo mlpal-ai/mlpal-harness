@@ -1,5 +1,5 @@
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import { type ModelClient, SIDE_CALL_EFFORT } from "../gateway/client";
 
 /**
  * One-shot input autocomplete: given a developer's partial message to the agent and the recent
@@ -52,6 +52,7 @@ export async function suggestCompletion(opts: SuggestOptions): Promise<string | 
         } satisfies Message,
       ],
       maxTokens: opts.maxOutputTokens ?? 40,
+      effort: SIDE_CALL_EFFORT,
       signal: opts.signal,
     });
     let r = await gen.next();

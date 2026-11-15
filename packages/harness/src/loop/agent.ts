@@ -30,7 +30,7 @@ import type { HookEngine } from "../hooks/engine";
 import type { HookContext, HookNoVerdict, HookResult, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
-import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
+import { GatewayError, type ModelClient, type ModelResult, SIDE_CALL_EFFORT } from "../gateway/client";
 import { budgetRefusal, ModelAccessError, modelRefusal, spendRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
@@ -1788,6 +1788,7 @@ export class AgentSession {
         system: (this.cfg.loop ?? CODING_PROFILE.loop).condenserSystem,
         messages: [{ role: "user", content: text }],
         maxTokens: 1024,
+        effort: SIDE_CALL_EFFORT,
         signal: this.cfg.signal,
       });
       let r = await gen.next();
@@ -1820,6 +1821,7 @@ export class AgentSession {
       system: (cfg.loop ?? CODING_PROFILE.loop).summarizerSystem + focus,
       messages: [{ role: "user", content: `Summarize this transcript:\n\n${renderTranscript(older)}` }],
       maxTokens: 1536,
+      effort: SIDE_CALL_EFFORT,
       signal: cfg.signal,
     });
     let r = await gen.next();
