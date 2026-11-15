@@ -3,7 +3,7 @@ import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
-import type { EngineEvent, ModelRefusal, SDKMessage } from "./sdk.js";
+import type { EngineEvent, ModelRefusal, PolicyNoVerdict, SDKMessage } from "./sdk.js";
 import type { Usage } from "./usage.js";
 
 /**
@@ -392,6 +392,10 @@ export interface PendingApproval {
   /** D-48: the park (its needs_approval result entry's uuid; the store's approval park id). An approval_response
    *  echoes it: it binds the answer to the ask the client was shown. */
   parkId?: string;
+  /** 0.26.6: held because a policy check reached no verdict on the call. */
+  noVerdict?: PolicyNoVerdict;
+  /** 0.26.6: why it was held, in words for the person, when `reason` (a code) does not say. */
+  detail?: string;
 }
 
 /** 0.22.5: the session store credential for this message's session (phase 1 token delivery, seam P2); never
@@ -581,6 +585,8 @@ export type ServerMessage =
       /** yodex/2: why the policy asked (a mode rule, or a HOP safety reason code). */
       reason?: string;
       safetyReason?: string;
+      /** 0.26.6: a policy check reached no verdict on this call. Answer it per action: no session rule may. */
+      noVerdict?: PolicyNoVerdict;
     }
   /** yodex/2: the engine asks the person structured questions mid-run. */
   | { type: "question_request"; id: string; sessionId: string; questions: AskQuestion[] }
@@ -798,4 +804,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.5";
+export const HARNESS_PROTOCOL_VERSION = "0.26.6";
