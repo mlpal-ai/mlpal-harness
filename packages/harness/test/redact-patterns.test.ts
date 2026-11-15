@@ -30,6 +30,19 @@ describe("pattern redaction (C8 §8)", () => {
     expect(out).toContain("redis://default:[redacted:db-url-password]@cache:6379");
   });
 
+  test("E4: a delegated runner code (mlpal_rc_ + 43 urlsafe characters) is masked like a key", () => {
+    registerPlatformPatterns();
+    const code = "mlpal_rc_Q2x9-aZ_0b8Kd7LmN3pRs4TuV5wXy6zA1cE2fG3hI4j";
+    const out = redactText(`here is my runner code ${code}, use it`);
+    expect(out).toBe("here is my runner code [redacted:mlpal-key], use it");
+    expect(out).not.toContain("Q2x9");
+    expect(redactResult({ content: [{ type: "text", text: `MLPAL_RUNNER_CODE=${code}` }] }).content).toEqual([
+      { type: "text", text: "MLPAL_RUNNER_CODE=[redacted:mlpal-key]" },
+    ]);
+    // Its display prefix, as any key's, stays readable.
+    expect(redactText("code mlpal_rc_Q2x9-aZ_...")).toBe("code mlpal_rc_Q2x9-aZ_...");
+  });
+
   test("review F1: a key's display prefix (8 characters, C1 §2.4) stays readable; 16 or more is a key", () => {
     registerPlatformPatterns();
     const line = "[[mlpal:reveal kind=api_key key_id=812 key_prefix=mlpal_sk_abcd1234... label=ci handle=rvl_abcdefghijklmnopqrstuvwxyz234567 expires_at=2026-11-04T21:05:00Z]]";
