@@ -12,6 +12,37 @@
 - The module doc states the host contract a served engine now keeps: with a person to ask, a deny is carried to the
   prompt like unsure; the person's answer is final.
 
+### A tool rule cannot silently match nothing: MCP server names are canonical (BREAKAGES #72, 2026-11-14)
+
+- An MCP server's tools are named `mcp__<server>__<tool>` with the server's `-` kept (`mcpToolPrefix`). A HOP that
+  spelled them with `_` (`mcp__cascade_planner_tools__decide_order` for `cascade-planner-tools`) had every
+  tool-specific rule match nothing: deny rules, allow rules, `tools.include`, and the `destructive` class that must
+  ask every time. A tool name now also matches when the canonical forms agree (`tools/tool-name.ts`): in the server
+  part `-` and `_` are one character (and a character a tool name cannot hold reads as `_`, as the prefix writes it).
+  The match as written still counts, so a rule only ever gains calls (a glob whose `*` spans the server/tool
+  boundary, `mcp__*send-alert`, keeps every call it matched). The tool part is never changed. Deny rules, approval
+  entries (P7), allow rules and `safety.toolClasses` all match this way.
+- An allow rule's tool part takes digits, `-`, `.` and `:` (`mcp__s3-tools__list`): before, such a rule did not parse
+  and was inert, so no tool of a hyphenated server could be allowed at all. **Such allow rules, in a HOP or in a
+  person's settings, now admit the calls they name.** Allow rules still name one tool (no `*`). A toolClasses entry
+  `Tool(pattern)` takes the same characters, and a bare `mcp__<server>__*` entry classes every tool of that server.
+- Two servers that would share tool names (`a-b` and `a_b`; `plugin:a:b` and `plugin_a_b`; `a*b` and `a_b`) are
+  refused, and so is a server whose canonical name holds `__` or starts or ends with `_` (`my--tools`, `x-_y`, `a-`):
+  its tools could be read as another server's. `McpManager.connect` refuses it (`mcp server refused: tool names
+  collide`, the status error says why); a disconnected server is forgotten, so the other spelling may connect after
+  it. The loader refuses a HOP declaring such servers. So the equivalence never makes a rule name another server's
+  tools.
+- The loader checks every tool rule against the servers the HOP declares (`requires.mcp`, `processes.mcp_stdio`, and
+  `memory` when it sets `requires.memory`; `toolRuleIssues`, `profile/tool-rules.ts`): a `safety.toolClasses` entry
+  naming an undeclared server refuses the load (a class that matches nothing fails open); an allow/deny/include entry
+  naming one, an allow that cannot parse, or `mcp__<server>` with no tool is a load warning. `yodex hop lint` fails on
+  every one, and warns (an `advisory` issue) on a class `Tool(pattern)` entry on an MCP tool: it reads only the call's
+  `command` or `path`.
+- Compatibility: no load result changes for any `hop.yaml` on any mlpal-hops branch. The infra, infra-ro and status
+  HOPs name `mcp__gmail__*` and `mcp__memory__memory_write` in `permissions.allow` and declare both servers, so they
+  load and lint clean. A HOP whose safety class names an MCP server it does not declare no longer loads. A rule that
+  matched a call before still matches it.
+
 ### Grep with ripgrep on PATH no longer waits on stdin (2026-11-13)
 
 - Grep ran `rg` with no path, and execFile's stdin is always a readable pipe, so rg searched stdin and every call ended

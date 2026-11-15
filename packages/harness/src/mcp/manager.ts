@@ -11,6 +11,7 @@ import { declaredArgsOf, sanitizeJsonSchema, type Tool, type ToolContext, type T
 import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
+import { canonicalMcpServer, mcpServerNameProblem } from "../tools/tool-name";
 import { StoredOAuthProvider } from "./oauth";
 import { type ProcessHost, ProcessHostTransport } from "./process-host";
 import { host } from "../host";
@@ -305,6 +306,15 @@ export class McpManager {
   }
 
   private async connectInner(name: string, config: McpServerConfig, registry: ToolRegistry): Promise<number> {
+    // Rules compare MCP server names canonically (`-` and `_` are one: tools/tool-name.ts), so a second server whose
+    // tools would share those names is refused: a rule written for one must never name the other's tools (#72).
+    const clash = [...this.configByName.keys()].find((other) => other !== name && canonicalMcpServer(other) === canonicalMcpServer(name));
+    const problem = clash !== undefined ? `its tool names (${mcpToolPrefix(name)}*) are the same as server "${clash}"'s once - and _ are read as one: rename one of them` : mcpServerNameProblem(name);
+    if (problem !== null) {
+      this.statuses.set(name, { server: name, ok: false, tools: 0, error: problem });
+      this.logger.error("mcp server refused: tool names collide", { server: name, ...(clash !== undefined ? { collides_with: clash } : { ambiguous: true }) });
+      return 0;
+    }
     this.configByName.set(name, config);
     const prev = this.clientByName.get(name);
     if (prev) {
@@ -440,6 +450,9 @@ export class McpManager {
     const client = this.clientByName.get(name);
     this.clientByName.delete(name);
     this.statuses.delete(name);
+    // Forgotten, so a server whose tool names it would share may connect after it (review S6); reconnectAll reads the
+    // config before it disconnects.
+    this.configByName.delete(name);
     await client?.close().catch(() => undefined);
     const prefix = mcpToolPrefix(name);
     for (const registry of registries) {

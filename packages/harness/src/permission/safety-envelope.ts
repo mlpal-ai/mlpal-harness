@@ -10,7 +10,7 @@
  * terminal outcome (§10.1). `deny` is a hard policy denial. `allow` proceeds inside the envelope.
  */
 import type { SafetyPolicy } from "../profile/types";
-import { globMatch } from "./engine";
+import { globMatch, toolMatches } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
@@ -76,20 +76,35 @@ export interface SafetyEvalState {
   hasRequiredInfo?: boolean;
 }
 
+/** A toolClasses entry's `Tool(pattern)` form. The tool part takes digits and `-` (an MCP server named `my-tools`):
+ *  before #72 such an entry did not parse and was read as a command glob that never matched. */
+const CLASS_TOOL_ENTRY = /^([A-Za-z0-9_:.-]+)\((.*)\)$/;
+
+/** The tool a toolClasses entry names: the tool part of `Tool(pattern)`, or a bare entry that is an MCP tool name or
+ *  pattern (`mcp__<server>__<tool>`, `mcp__<server>__*`). Null for a bare command glob (`kubectl delete*`), which names
+ *  commands, not a tool. */
+export function classEntryTool(entry: string): string | null {
+  const m = CLASS_TOOL_ENTRY.exec(entry);
+  if (m) return m[1]!;
+  return entry.startsWith("mcp__") ? entry : null;
+}
+
+/** Whether one toolClasses entry names this action on some of its forms: `Tool(pattern)` on that tool, a bare entry
+ *  as the tool's own name (an MCP server part compared canonically, `*` a wildcard in an `mcp__` entry), or a bare
+ *  command glob against any form. */
+function entryMatches(entry: string, action: SafetyAction, forms: string[]): boolean {
+  const m = CLASS_TOOL_ENTRY.exec(entry);
+  if (m) return toolMatches(m[1]!, action.toolName) && forms.some((f) => globMatch(m[2]!, f));
+  if (entry.startsWith("mcp__") ? toolMatches(entry, action.toolName) : entry === action.toolName) return true;
+  return forms.some((f) => globMatch(entry, f));
+}
+
 /** Does any entry in a toolClass list match this action? Entries use the permissions rule grammar
  *  `Tool(pattern)` (sub-command aware for Bash) or a bare command/tool glob. */
 function anyMatch(patterns: string[], action: SafetyAction): boolean {
   const subs = splitShellCommands(action.command);
   const cmdParts = subs.length > 0 ? subs : [action.command];
-  return patterns.some((entry) => {
-    const m = entry.match(/^([A-Za-z_]+)\((.*)\)$/);
-    if (m) {
-      if (m[1] !== action.toolName) return false;
-      return cmdParts.some((s) => globMatch(m[2]!, s));
-    }
-    // bare entry: the tool name itself, or a command glob against any sub-command.
-    return entry === action.toolName || cmdParts.some((s) => globMatch(entry, s));
-  });
+  return patterns.some((entry) => entryMatches(entry, action, cmdParts));
 }
 
 /** Classify an action against the envelope's toolClasses. Precedence destructive > consequential >
@@ -167,12 +182,7 @@ function defaultClass(action: SafetyAction): SafetyClass {
 /** One simple command's class: the first list (destructive, consequential, mutative, readOnly) with an entry matching any
  *  of its forms, else the tool's default. */
 function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[]): SafetyClass {
-  const hit = (patterns: string[]) =>
-    patterns.some((entry) => {
-      const m = entry.match(/^([A-Za-z_]+)\((.*)\)$/);
-      if (m) return m[1] === action.toolName && forms.some((f) => globMatch(m[2]!, f));
-      return entry === action.toolName || forms.some((f) => globMatch(entry, f));
-    });
+  const hit = (patterns: string[]) => patterns.some((entry) => entryMatches(entry, action, forms));
   if (hit(tc.destructive)) return "destructive";
   if (hit(tc.consequential)) return "consequential";
   if (hit(tc.mutative)) return "mutative";
