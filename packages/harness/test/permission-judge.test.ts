@@ -106,4 +106,13 @@ describe("what the judge is shown", () => {
   test("a builtin file tool's path", async () => {
     expect(await seenFor("Read", { path: "src/a.ts" })).toContain("Action:\nsrc/a.ts");
   });
+
+  test("BREAKAGES #69: deny rules are named as already enforced, and a listing of keys is a read, not credential access", async () => {
+    const seen: { system?: string; user?: string } = {};
+    const ctx = () => ({ ...context(), deny: ["Bash(*.mlpal/credentials*)"] });
+    await createPermissionJudge({ model_client: fakeModel('{"verdict":"allow","reason":"r"}', seen), model: "m", context: ctx })(bash("mlpal mcp keys list 2>&1 | head -20"));
+    expect(seen.user).toContain("Deny rules (already enforced; this action matched none): Bash(*.mlpal/credentials*)");
+    expect(seen.system).toContain("Listing or showing names, ids, status or help is a read, also for keys, secrets and credentials");
+    expect(seen.system).toContain("only reading or printing a credential's value touches it");
+  });
 });

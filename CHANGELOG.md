@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The permission judge reads a listing as a read (BREAKAGES #69, 2026-11-14)
+
+- The judge denied `mlpal mcp keys list` as "credential-store information the HOP explicitly protects": its ALLOW
+  examples said nothing about listings, and the HOP's deny rules (on the person's `~/.mlpal` sign-in) read as a
+  policy to extend. The system prompt now says listing or showing names, ids, status or help is a read, also for
+  keys, secrets and credentials, and only reading or printing a credential's value touches it; the context names the
+  deny rules as already enforced, with this action matching none.
+- The module doc states the host contract a served engine now keeps: with a person to ask, a deny is carried to the
+  prompt like unsure; the person's answer is final.
+
 ### Grep with ripgrep on PATH no longer waits on stdin (2026-11-13)
 
 - Grep ran `rg` with no path, and execFile's stdin is always a readable pipe, so rg searched stdin and every call ended
