@@ -1,5 +1,6 @@
-import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import type { Message, Usage } from "@mlpal/harness-protocol";
+import { chargedUsage, type ModelClient } from "../gateway/client";
+import type { RunStamp } from "../telemetry/stamp";
 import type { PermissionRequest } from "./engine";
 
 /**
@@ -20,6 +21,8 @@ export interface JudgeDecision {
   reason: string;
   /** Wall time of the consult, for the usage panel. */
   ms: number;
+  /** What the consult was charged, when the model answered (any verdict): the asking turn's spend (E-12). */
+  usage?: Usage;
 }
 
 export interface JudgeContext {
@@ -45,7 +48,9 @@ export interface CreateJudgeOptions {
   maxOutputTokens?: number;
 }
 
-export type PermissionJudge = (req: PermissionRequest) => Promise<JudgeDecision>;
+/** `stamp`: the asking run's (AskContext.stamp), so the gateway attributes the judge's call to its session, run and
+ *  HOP (E-12); without one the call is unstamped. */
+export type PermissionJudge = (req: PermissionRequest, stamp?: RunStamp) => Promise<JudgeDecision>;
 
 export const JUDGE_SYSTEM = `You are the permission judge for an autonomous software agent running inside a Harness Operating Profile (HOP). The agent wants to perform a tool call that its policy would otherwise stop and ask a human about. Decide for the human.
 
@@ -69,8 +74,9 @@ function subjectOf(req: PermissionRequest): string {
 
 export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge {
   const timeoutMs = opts.timeoutMs ?? 15_000;
-  return async (req) => {
+  return async (req, stamp) => {
     const started = Date.now();
+    let usage: Usage | undefined;
     const ctx = opts.context();
     const ac = new AbortController();
     // The clock is ours, not the model client's: a client that ignores the signal must not hold
@@ -103,9 +109,11 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
           messages: [{ role: "user", content: user } satisfies Message],
           maxTokens: opts.maxOutputTokens ?? 200,
           signal: ac.signal,
+          ...(stamp ? { trace: { stamp, callId: `judge:${crypto.randomUUID()}` } } : {}),
         });
         let r = await gen.next();
         while (!r.done) r = await gen.next();
+        usage = chargedUsage(r.value);
         return extractText(r.value.message.content);
       };
       const m = (await Promise.race([consult(), deadline])).match(/\{[\s\S]*\}/);
@@ -113,13 +121,13 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
         const o = JSON.parse(m[0]) as { verdict?: unknown; reason?: unknown };
         const verdict = typeof o.verdict === "string" ? o.verdict.toLowerCase() : "";
         if (verdict === "allow" || verdict === "deny" || verdict === "unsure") {
-          return { verdict, reason: typeof o.reason === "string" && o.reason.trim() ? o.reason.trim() : `judge said ${verdict}`, ms: Date.now() - started };
+          return { verdict, reason: typeof o.reason === "string" && o.reason.trim() ? o.reason.trim() : `judge said ${verdict}`, ms: Date.now() - started, ...(usage ? { usage } : {}) };
         }
       }
-      return { verdict: "unsure", reason: "judge reply was not a verdict", ms: Date.now() - started };
+      return { verdict: "unsure", reason: "judge reply was not a verdict", ms: Date.now() - started, ...(usage ? { usage } : {}) };
     } catch (e) {
       const why = ac.signal.aborted ? `judge timed out after ${Math.round(timeoutMs / 1000)}s` : `judge failed: ${String((e as Error)?.message ?? e)}`;
-      return { verdict: "unsure", reason: why, ms: Date.now() - started };
+      return { verdict: "unsure", reason: why, ms: Date.now() - started, ...(usage ? { usage } : {}) };
     } finally {
       clearTimeout(timer);
     }

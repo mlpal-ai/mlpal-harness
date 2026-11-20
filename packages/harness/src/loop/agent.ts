@@ -31,7 +31,7 @@ import type { HookEngine } from "../hooks/engine";
 import type { HookContext, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
-import { GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
+import { chargedUsage, GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
 import { budgetRefusal, modelRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
@@ -302,6 +302,10 @@ export interface AskContext {
   toolUseId?: string;
   /** The session whose loop asks (a sub-agent's own, when its asks go to its parent's route). */
   sessionId?: string;
+  /** E-12: the asking run's stamp, so an answerer's own model call (the permission judge) is the run's at the gateway. */
+  stamp?: RunStamp;
+  /** E-12: an answerer's model spend, added to the asking turn's usage (its result and run.completed). */
+  spend?: (usage: Usage) => void;
 }
 
 /** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
@@ -823,6 +827,11 @@ export class AgentSession {
 
     // A resumed turn first records what the dead engine left in flight (plan §5). A call the prelude runs may park
     // (an ask nobody answers): the turn then ends there, as needs_approval, below.
+    let totalUsage: Usage = t.usage ?? emptyUsage();
+    // What an ask's answerer spends (the judge's call) is this turn's, prelude included.
+    this.askSpend = (u) => {
+      totalUsage = addUsage(totalUsage, u);
+    };
     let preludePark: SafetyParkSignal | undefined;
     if (t.prelude) {
       try {
@@ -835,7 +844,6 @@ export class AgentSession {
     }
 
     let messages = await loadMessages(this.store, cfg.sessionId);
-    let totalUsage: Usage = t.usage ?? emptyUsage();
     let pendingAnswer = t.answered;
     const toolCalls: Record<string, number> = {}; // d11.7: per-tool call counts, names only
     const providerLabels: Record<string, number> = {}; // d11.8: provider CLI counts from Bash calls
@@ -1106,7 +1114,7 @@ export class AgentSession {
       if (!answered) {
         // The gateway's charge rides with the token counts (protocol 0.17.0): per call on the
         // assistant event, summed on the run's result.
-        const callUsage: Usage = { ...result.usage, ...(result.computeUnits !== undefined ? { compute_units: result.computeUnits } : {}) };
+        const callUsage = chargedUsage(result);
         totalUsage = addUsage(totalUsage, callUsage);
         // Real occupancy of the request just sent (input + cache), the floor for the NEXT
         // turn's compaction check. Cache-read counts against the window too.
@@ -1528,6 +1536,7 @@ export class AgentSession {
         throw e;
       }
     } finally {
+      this.askSpend = null;
       // Finalize on EVERY exit — success, cancel, max-turns, or a thrown model error.
       // Previously only the success branch reset status/head and answered owed handoffs,
       // so a cancelled or errored run left the session advertised "active" forever (a
@@ -2120,7 +2129,15 @@ export class AgentSession {
     if (this.cfg.onAsk) {
       // null = "no answer from this answerer" (a policy file with no matching rule): fall through
       // to the headless handling below, exactly as if no answerer were installed.
-      const answered = await this.cfg.onAsk(req, { reason: d.reason, safetyReason: d.safetyReason, toolUseId: call.toolUseId, sessionId: this.cfg.sessionId });
+      const spend = this.askSpend;
+      const answered = await this.cfg.onAsk(req, {
+        reason: d.reason,
+        safetyReason: d.safetyReason,
+        toolUseId: call.toolUseId,
+        sessionId: this.cfg.sessionId,
+        stamp: this.stamp(),
+        ...(spend ? { spend } : {}),
+      });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
       }
@@ -2190,6 +2207,8 @@ export class AgentSession {
 
   // ---- telemetry v1: the stamp and the event log ----
   private currentRun: string | null = null;
+  /** The running turn's usage sink for an ask's answerer (E-12); null between turns. */
+  private askSpend: ((usage: Usage) => void) | null = null;
   /** C1 §7.4: the reason of the abuse marker this run's model ended a reply with; reported on its result. */
   private abuseReason: string | null = null;
   private currentPrompt: string | null = null;

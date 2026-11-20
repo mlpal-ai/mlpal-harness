@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### The permission judge's call is the asking run's: stamped, and in its usage (E-12, 2026-11-20)
+
+- `AskContext` carries the asking run's `stamp` and a `spend(usage)` sink. `PermissionJudge(req, stamp?)` sends the
+  stamp as the call's trace (W3C `baggage`: session, run, HOP), so the gateway attributes the judge's call to the run,
+  and returns `JudgeDecision.usage` (any verdict the model answered with). A host that adds it through `spend` makes it
+  part of the turn's `result.usage` and run.completed tokens. Before, the judge's call carried no session metadata
+  and was in no run's usage (harness-e2e p2: −14.6 % CU).
+- `chargedUsage(result)`: a model call's usage with its compute units, one definition for the loop and the judge.
+
 ### The bwrap refusal hint scopes the fix to bwrap (E-15, 2026-11-20)
 
 - Where the kernel restricts unprivileged user namespaces (Ubuntu 24.04+:

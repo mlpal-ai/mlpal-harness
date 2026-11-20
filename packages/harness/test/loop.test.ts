@@ -147,6 +147,24 @@ describe("agentic loop", () => {
     expect((await loadMessages(new LocalStore(root), "s1")).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
+  test("E-12: an ask names the run's stamp, and what its answerer spent joins the turn's usage", async () => {
+    let seen: { session?: string; run?: string } | undefined;
+    const model = new ScriptedModel([toolUse("Bash", { command: "mkdir newdir" }), textDone("done")]);
+    const sess = session(model, "cruise", {
+      onAsk: async (_req, ask) => {
+        seen = ask.stamp;
+        ask.spend?.({ input_tokens: 462, output_tokens: 35, compute_units: 6.37e-6 });
+        return { behavior: "allow" };
+      },
+    });
+    const events = await collect(sess.run({ text: "go" }));
+    expect(seen?.session).toBe("s1");
+    expect(seen?.run).not.toBe("none");
+    const result = events.find((e) => e.type === "result") as { usage: { input_tokens: number; output_tokens: number; compute_units?: number } };
+    // the two model calls (10 + 8 in, 5 + 4 out) plus the answerer's call
+    expect(result.usage).toMatchObject({ input_tokens: 10 + 8 + 462, output_tokens: 5 + 4 + 35, compute_units: 6.37e-6 });
+  });
+
   test("E-17: the host's sandbox record rides system/init (streamed and persisted) and the run-outcome", async () => {
     const sandbox = { platform: "seatbelt", filesystem: "workspace", network: "allowlist", required: false } as const;
     const emitted: RunOutcomeEvent[] = [];

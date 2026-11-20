@@ -25,6 +25,35 @@ const bash = (command: string): PermissionRequest => ({ toolName: "Bash", input:
 
 const context = () => ({ hop: "coding", purpose: "software engineering in the repo", allow: ["Bash(git*)"], deny: [], roots: ["/work/repo"], task: "fix the failing test" });
 
+describe("the judge's call is the run's (E-12)", () => {
+  const stamp = { session: "s1", run: "r1", hop: "coding@1.0.0", origin: "local" };
+
+  test("it carries the run's stamp (session, run, HOP baggage) and returns what it was charged", async () => {
+    const asked: Array<Parameters<ModelClient["stream"]>[0]> = [];
+    const client = {
+      async *stream(req: Parameters<ModelClient["stream"]>[0]): AsyncGenerator<never, ModelResult, void> {
+        asked.push(req);
+        return { model: req.model, message: { role: "assistant", content: [{ type: "text", text: '{"verdict":"unsure","reason":"?"}' }] }, usage: { input_tokens: 462, output_tokens: 35 }, computeUnits: 6.37e-6, stopReason: "end_turn" } as ModelResult;
+      },
+    } as unknown as ModelClient;
+    const judge = createPermissionJudge({ model_client: client, model: "cheap", context });
+    const d = await judge(bash("python3 -c 'import os'"), stamp);
+    expect(asked[0]!.trace?.stamp).toEqual(stamp);
+    expect(asked[0]!.trace?.callId).toMatch(/^judge:/);
+    // an unsure verdict was paid for too
+    expect(d).toMatchObject({ verdict: "unsure", usage: { input_tokens: 462, output_tokens: 35, compute_units: 6.37e-6 } });
+  });
+
+  test("without a stamp the call is unstamped, as before; a call that never answered charged nothing here", async () => {
+    const seen: Array<Parameters<ModelClient["stream"]>[0]> = [];
+    const client = { async *stream(req: Parameters<ModelClient["stream"]>[0]) { seen.push(req); return await new Promise<never>(() => undefined); } } as unknown as ModelClient;
+    const d = await createPermissionJudge({ model_client: client, model: "cheap", context, timeoutMs: 30 })(bash("ls"));
+    expect(seen[0]!.trace).toBeUndefined();
+    expect(d.verdict).toBe("unsure");
+    expect(d.usage).toBeUndefined();
+  });
+});
+
 describe("permission judge", () => {
   test("allow / deny / unsure verdicts with the reason, and the HOP context reaches the model", async () => {
     const seen: { system?: string; user?: string } = {};

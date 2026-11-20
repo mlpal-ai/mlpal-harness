@@ -117,6 +117,11 @@ export interface ModelRequest {
   noFallback?: boolean;
 }
 
+/** What a model call cost, as a run counts it: the token usage with the gateway's compute units (header or trailer). */
+export function chargedUsage(r: Pick<ModelResult, "usage" | "computeUnits">): Usage {
+  return { ...r.usage, ...(r.computeUnits !== undefined ? { compute_units: r.computeUnits } : {}) };
+}
+
 export interface ModelResult {
   model: string;
   message: Message; // assistant message (text + tool_use + thinking blocks)

@@ -421,7 +421,8 @@ describe("the ask context (P2 1.1 stable ask ids; N7)", () => {
         },
       }).run({ text: "probe" }),
     );
-    expect(seen).toEqual([{ reason: "needs a person", toolUseId: "tu9", sessionId: "s1" }]);
+    // E-12: the run's stamp (an answerer's own model call is the run's) and the turn's spend sink
+    expect(seen).toEqual([{ reason: "needs a person", toolUseId: "tu9", sessionId: "s1", stamp: expect.objectContaining({ session: "s1", run: expect.any(String) }), spend: expect.any(Function) }]);
   });
 });
 
