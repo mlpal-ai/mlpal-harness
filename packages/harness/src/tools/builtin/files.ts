@@ -82,6 +82,8 @@ export const writeTool = defineTool({
     const r = resolveInRoots(ctx, input.path);
     if ("error" in r) return r.error;
     const file = r.path;
+    const denied = ctx.exec?.writeDenied?.(file);
+    if (denied) return err(denied);
     const before = existsSync(file) ? await readFile(file, "utf8") : "";
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, input.content, "utf8");
@@ -107,6 +109,8 @@ export const editTool = defineTool({
     const r = resolveInRoots(ctx, input.path);
     if ("error" in r) return r.error;
     const file = r.path;
+    const denied = ctx.exec?.writeDenied?.(file);
+    if (denied) return err(denied);
     if (!existsSync(file)) return err(`File not found: ${input.path}`);
     const text = await readFile(file, "utf8");
     const count = text.split(input.old_string).length - 1;

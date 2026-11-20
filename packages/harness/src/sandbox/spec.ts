@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Logger } from "../obs/logger";
 
 /**
@@ -56,6 +56,9 @@ export interface SandboxSpec {
     writable: string[];
     /** Absolute paths (dirs or files) the process may not read. */
     unreadable: string[];
+    /** Absolute paths under the writable roots that stay read-only (ruling R22, `PROTECTED_IN_ROOT`). Empty when
+     *  readOnly. */
+    protected: string[];
   };
   network: {
     mode: NetworkMode;
@@ -111,9 +114,44 @@ export const DEFAULT_WRITABLE_CACHES = [
   "~/Library/Caches",
 ];
 
+/**
+ * Ruling R22: what a confined run may not write under a workspace root, because the harness or git later loads or
+ * runs it with the person's authority: git's config, hooks and attributes (commands git runs: hooks, `core.fsmonitor`,
+ * filter and diff drivers), the harness's own project directory (settings with hooks, a verify command, language and
+ * MCP servers, a status line; workflows, skills, agents), `.claude`, and a project's MCP servers. Everything else in
+ * `.git` stays writable: objects, refs, the index, so commits work. Instruction files (AGENTS.md, CLAUDE.md) are not
+ * here: editing them is sometimes the task.
+ */
+export const PROTECTED_IN_ROOT = [".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json"];
+
+/** The directories strictly between `root` and a protected path under it (`.git`, `.git/info`): moving one aside
+ *  would take the protected path with it, so the platform layer pins them. */
+export function protectedParents(spec: SandboxSpec): string[] {
+  const out = new Set<string>();
+  for (const p of spec.filesystem.protected) {
+    const root = spec.filesystem.writable.filter((w) => p.startsWith(`${w}/`)).sort((a, b) => b.length - a.length)[0];
+    if (!root) continue;
+    for (let dir = dirname(p); dir.length > root.length; dir = dirname(dir)) out.add(dir);
+  }
+  return [...out].sort();
+}
+
+/** The protected path that holds `path` (an absolute, symlink-resolved path), or null. */
+export function protectedBy(spec: SandboxSpec, path: string): string | null {
+  return spec.filesystem.protected.find((p) => path === p || path.startsWith(`${p}/`)) ?? null;
+}
+
 /** Scratch locations every command may write regardless of mode... except readOnly, which
  *  still needs a place for a shell's own temp files, so /tmp stays writable there too. */
 export const SCRATCH_DIRS = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"];
+
+function realOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
 
 export function expandHome(p: string, home = homedir()): string {
   return p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : resolve(p);
@@ -239,8 +277,10 @@ export function resolveSandboxSpec(
           ...DEFAULT_WRITABLE_CACHES.map(ex),
           ...(fs.allowWrite ?? []).map(ex),
         ]);
+  // R22: under each root as given and as the OS resolves it (macOS's /var is /private/var; seatbelt sees the latter)
+  const rootPaths = mode === "readOnly" ? [] : uniq(opts.roots.map(ex).flatMap((r) => [r, realOrSelf(r)]));
   return {
-    filesystem: { mode, writable, unreadable: uniq(unreadable) },
+    filesystem: { mode, writable, unreadable: uniq(unreadable), protected: rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))) },
     network: {
       mode: policy?.network?.mode ?? "all",
       allow: policy?.network?.allow ?? [],

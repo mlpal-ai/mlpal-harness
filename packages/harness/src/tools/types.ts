@@ -35,6 +35,9 @@ export interface ExecPolicy {
   wrap(argv: string[]): string[];
   /** The environment the child sees. */
   env(): Record<string, string>;
+  /** Ruling R22: why the run may not write `path` (absolute), or null. The file tools ask before they write, since
+   *  they run in the engine, outside the OS confinement. Absent = nothing is refused. */
+  writeDenied?(path: string): string | null;
   /** A command's own environment, held for the life of its process: what `env()` gives plus anything granted to this
    *  one command (D-55: a governed kube mutation's one-time capability). The tool calls `release` once the process
    *  exits, however it ends. Absent, every command sees `env()`. */
@@ -199,7 +202,7 @@ export function contextRoots(ctx: ToolContext): string[] {
  *  (`ln -s ~/.ssh link` → `Read("link/id_rsa")` passed the boundary); resolving the real path
  *  of what actually exists on disk closes that escape while still allowing a not-yet-created
  *  file (a Write target) whose parent dir is legitimately inside a root. */
-function realResolve(p: string): string {
+export function realResolve(p: string): string {
   let cur = resolve(p);
   const tail: string[] = [];
   for (let guard = 0; guard < 256; guard++) {

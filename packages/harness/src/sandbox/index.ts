@@ -3,11 +3,12 @@ import { dirname } from "node:path";
 import type { SandboxNoneReason, SandboxRecord } from "@mlpal/harness-protocol";
 import { registerSecrets } from "../obs/redact";
 import type { ExecPolicy } from "../tools/types";
-import { bwrapArgv } from "./bwrap";
+import { bwrapArgv, unprotectedHere } from "./bwrap";
 import { scrubEnv } from "./env";
 import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
-import { type SandboxSpec, unenforcedDeny } from "./spec";
+import { protectedBy, type SandboxSpec, unenforcedDeny } from "./spec";
+import { realResolve } from "../tools/types";
 
 export * from "./spec";
 export { isSecretName, scrubEnv } from "./env";
@@ -196,10 +197,12 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     const denied = spec.network.deny.length
       ? `, ${spec.network.deny.length} governed endpoint(s) refused${gaps.length ? ` (NOT enforced here: ${gaps.join(", ")})` : ""}`
       : "";
+    const open = confined === "bwrap" ? unprotectedHere(spec).length : 0;
+    const kept = confined && spec.filesystem.protected.length ? `, ${spec.filesystem.protected.length} harness and git paths read-only${open ? ` (${open} absent: creating them is NOT prevented here)` : ""}` : "";
     const creds = `${spec.filesystem.unreadable.length} credential paths unreadable`;
     const envs = scrub.scrubbed.length ? `${scrub.scrubbed.length} secret env vars scrubbed` : "no secret env vars";
     const how = confined ? confined : `NOT confined: ${reason}`;
-    return `sandbox: ${how}; ${fs}, ${net}${denied}, ${creds}, ${envs}`;
+    return `sandbox: ${how}; ${fs}${kept}, ${net}${denied}, ${creds}, ${envs}`;
   };
 
   return {
@@ -212,6 +215,11 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     deniedHosts: proxy?.denied ?? [],
     wrap,
     env: () => env,
+    // R22 for the file tools: only where the OS confines too, so a run nothing confines is unchanged
+    writeDenied: (path) => {
+      const held = confined ? protectedBy(spec, realResolve(path)) : null;
+      return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness or git, so it stays read-only here. Ask the user to make the change.` : null;
+    },
     describe,
     close: () => proxy?.close(),
   };

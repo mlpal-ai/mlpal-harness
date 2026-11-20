@@ -1,4 +1,4 @@
-import { isLoopback, type SandboxSpec, splitEndpoint } from "./spec";
+import { isLoopback, protectedParents, type SandboxSpec, splitEndpoint } from "./spec";
 
 /**
  * macOS enforcement: a Seatbelt profile handed to /usr/bin/sandbox-exec. The profile starts
@@ -28,6 +28,11 @@ export function seatbeltProfile(spec: SandboxSpec): string {
   // Process-scoped state: without these, `bash` itself and any `mkdir -p $TMPDIR` fail.
   lines.push('(allow file-write* (regex #"^/private/var/folders/[^/]+/[^/]+/(T|C)/"))');
   lines.push('(allow file-write* (regex #"^/private/var/run/"))');
+
+  // R22: after every allow, so they win (the last matching rule decides): the protected paths themselves, and the
+  // directories above them inside the root as nodes (no rename or removal; what they hold stays writable).
+  for (const p of spec.filesystem.protected) lines.push(`(deny file-write* (literal ${lit(p)}) (subpath ${lit(p)}))`);
+  for (const d of protectedParents(spec)) lines.push(`(deny file-write* (literal ${lit(d)}))`);
 
   for (const u of spec.filesystem.unreadable) lines.push(`(deny file-read* (literal ${lit(u)}) (subpath ${lit(u)}))`);
 

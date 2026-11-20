@@ -42,6 +42,22 @@
   `run.completed`. Telemetry contract d11.9: `payload.sandbox`, verbatim, absent when the host did not say. The
   memory ingest accepts d11.9 (`contract_at_least`) and drops the field until its allowlist names it.
 
+### A confined run cannot write what the harness or git later runs (ruling R22, 2026-11-20)
+
+- A sandboxed agent could write, inside its workspace, files a later session or the person's own git loads or runs
+  with the person's authority. `SandboxSpec.filesystem.protected` now lists, under every writable root
+  (`PROTECTED_IN_ROOT`): `.git/config`, `.git/hooks`, `.git/info/attributes`, `.gitattributes`, `.yodex`, `.claude`,
+  `.mcp.json`. The rest of `.git` stays writable, so add, commit, branch and log work. Empty under a read-only
+  filesystem. Instruction files (AGENTS.md, CLAUDE.md) are not protected: editing them is sometimes the task.
+- seatbelt: each is denied for writing after every allow, and the directories above them inside the root (`.git`,
+  `.git/info`) cannot be renamed or removed. bwrap: one that exists is bound read-only, its parents bound onto
+  themselves so they cannot be moved aside; one that does not exist cannot be mounted over without creating it in the
+  person's workspace, so its creation is not prevented there, and the session notice says how many
+  (`unprotectedHere`).
+- `ExecPolicy.writeDenied(path)`: the Write and Edit tools run in the engine, outside the OS sandbox, so they ask the
+  run's sandbox and refuse a protected path (symlinks resolved). Only where the OS confines; a run nothing confines
+  is unchanged.
+
 ### Helper processes take the run's sandbox (E-54, E-55, ruling R21, 2026-11-20)
 
 - A language server, a command verifier, a local command hook and a stdio MCP server were spawned as plain children
