@@ -165,6 +165,14 @@ describe("bashPatternNotes (for hop lint)", () => {
     ]);
   });
 
+  test("a run context's approvals.require entries are noted as a deny is (P7 grammar)", () => {
+    const notes = bashPatternNotes({ permissions: { allow: [], deny: [] }, approvals: { require: ["Bash(git push origin 'main')", "Bash(git push*)", "Deploy*", "B*(kubectl apply -f '*.yaml')"] } });
+    expect(notes).toEqual([
+      { where: "approvals.require", rule: "Bash(git push origin 'main')", matchedAs: "git push origin main" },
+      { where: "approvals.require", rule: "B*(kubectl apply -f '*.yaml')", matchedAs: "kubectl apply -f *.yaml" },
+    ]);
+  });
+
   test("a HOP without safety or quoted patterns has no notes", () => {
     expect(bashPatternNotes({ permissions: { allow: ["Bash(git*)", "Bash"], deny: ["Bash(*>*)"] } })).toEqual([]);
   });

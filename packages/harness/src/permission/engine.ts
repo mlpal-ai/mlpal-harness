@@ -222,11 +222,13 @@ export interface BashPatternNote {
   literalStar?: true;
 }
 
-/** Every Bash pattern of a HOP's permissions and toolClasses that quoting, escapes or spacing make the matcher read
- *  differently from how it is written (E-11): the author should write the form the matcher sees. */
+/** Every Bash pattern of a HOP's permissions and toolClasses, and of a publication's `approvals.require` (a run
+ *  context's, not a HOP's), that quoting, escapes or spacing make the matcher read differently from how it is written
+ *  (E-11): the author should write the form the matcher sees. */
 export function bashPatternNotes(profile: {
   permissions: { allow: readonly string[]; deny: readonly string[] };
   safety?: { toolClasses: { readOnly: readonly string[]; mutative: readonly string[]; destructive: readonly string[] } };
+  approvals?: { require: readonly string[] };
 }): BashPatternNote[] {
   const notes: BashPatternNote[] = [];
   const check = (where: string, rules: readonly string[], patternOf: (rule: string) => string | undefined, reading: RuleReading = "deny") => {
@@ -245,6 +247,11 @@ export function bashPatternNotes(profile: {
   };
   check("permissions.allow", profile.permissions.allow, ofTool(ALLOW_RULE, (t) => t === "Bash"), "allow");
   check("permissions.deny", profile.permissions.deny, ofTool(DENY_RULE, (t) => toolMatches(t, "Bash")));
+  // an approval entry is matched as a deny is (it only ever asks more), in P7 1.7's grammar
+  check("approvals.require", profile.approvals?.require ?? [], (rule) => {
+    const e = parseApprovalEntry(rule);
+    return e?.pattern !== undefined && toolMatches(e.tool, "Bash") ? e.pattern : undefined;
+  });
   const tc = profile.safety?.toolClasses;
   if (tc) {
     for (const cls of ["readOnly", "mutative", "destructive"] as const) {

@@ -56,7 +56,9 @@
   pattern as written is not also tried. A deny rule, an approval entry and a mutative or destructive class only stop
   more: they match as written or as shell words with every `*` a wildcard. (`?` was never a rule wildcard.)
 - `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them (or whose
-  quoting does not balance), for `yodex hop lint`; `literalStar` marks an allow-side pattern with a literal `*`.
+  quoting does not balance), for `yodex hop lint`; `literalStar` marks an allow-side pattern with a literal `*`. It
+  also takes a run context's `approvals.require` (read as a deny is), which yodex checks where an assignment's
+  approvals enter the engine: a HOP has none for lint to read.
 
 ### The sandbox's credential denials also cover the real home under a throwaway `$HOME` (E-16, 2026-11-20)
 
