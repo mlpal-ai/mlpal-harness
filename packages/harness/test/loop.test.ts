@@ -182,6 +182,24 @@ describe("agentic loop", () => {
     expect("sandbox" in bare[0]!).toBe(false);
   });
 
+  test("R18: the session's record says which sandbox confines its run, and is corrected when a later run's differs", async () => {
+    const seatbelt = { platform: "seatbelt", filesystem: "workspace", network: "allowlist", required: false } as const;
+    const off = { platform: "none", filesystem: null, network: null, required: false, reason: "off" } as const;
+    const record = async (id: string) => (await new LocalStore(root).registry.getSession(id))!;
+    await collect(session(new ScriptedModel([textDone("done")]), "autopilot", { sandbox: seatbelt }).run({ text: "go" }));
+    expect((await record("s1")).sandbox).toBe("seatbelt");
+    // the same session resumed by a host that confines nothing: the record must not keep saying it is confined
+    await collect(session(new ScriptedModel([textDone("done")]), "autopilot", { sandbox: off }).run({ text: "go" }));
+    expect((await record("s1")).sandbox).toBe("none");
+    await collect(session(new ScriptedModel([textDone("done")]), "autopilot", { sandbox: seatbelt }).run({ text: "go" }));
+    expect((await record("s1")).sandbox).toBe("seatbelt");
+    await collect(session(new ScriptedModel([textDone("done")]), "autopilot").run({ text: "go" }));
+    expect((await record("s1")).sandbox).toBe("none");
+    // a session that was never confined carries no field
+    await collect(session(new ScriptedModel([textDone("done")]), "autopilot", { sessionId: "s2" }).run({ text: "go" }));
+    expect("sandbox" in (await record("s2"))).toBe(false);
+  });
+
   test("HOP telemetry: a successful run emits one content-free run-outcome at the finish", async () => {
     const emitted: RunOutcomeEvent[] = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);

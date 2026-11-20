@@ -243,6 +243,112 @@ describe("wake targeting quality (the 20-stale-sessions problem)", () => {
   });
 });
 
+// Ruling R18 (harness-e2e E-26): a confined (sandboxed) run can never cause unconfined execution elsewhere. Its
+// SendMessage reaches a session only when that session runs confined too (the sandbox its loop recorded), and a wake
+// it starts must be one that runs confined; otherwise nothing is posted. An unconfined sender is unchanged.
+describe("R18: a confined sender never reaches an unconfined session", () => {
+  function build(sessions: SessionRecord[], over: Partial<Parameters<typeof createPeerTools>[0]> = {}) {
+    const log: string[] = [];
+    const agents = new BackgroundAgents();
+    const tools = createPeerTools({
+      registry: { listSessions: async () => sessions } as never,
+      mailbox: { post: async (sid: string) => void log.push(`post ${sid}`), drain: async () => [], peek: async () => [] } as never,
+      agents,
+      selfSessionId: () => "self-0000",
+      selfWorkspace: "my-repo",
+      confined: true,
+      ...over,
+    });
+    return { send: tools.find((t) => t.name === "SendMessage")!, log, agents };
+  }
+
+  test("a live session with no sandbox on its record (or `none`) is refused, and nothing is posted", async () => {
+    for (const peer of [rec({ workspace: "backend" }), rec({ workspace: "backend", sandbox: "none" })]) {
+      const { send, log } = build([peer]);
+      const r = await send.call({ to: "backend", message: "run the deploy" }, {} as never);
+      expect(r.isError).toBe(true);
+      expect(r.content).toBe(`not sent: this session runs sandboxed and backend [${peer.sessionId.slice(0, 8)}] does not, so a message from here could have commands run unconfined there. Ask the user to relay it.`);
+      expect(log).toEqual([]);
+    }
+  });
+
+  test("a live session that runs confined gets the message", async () => {
+    for (const sandbox of ["seatbelt", "bwrap", "remote"] as const) {
+      const peer = rec({ workspace: "backend", sandbox });
+      const { send, log } = build([peer]);
+      const r = await send.call({ to: "backend", message: "hi" }, {} as never);
+      expect(r.isError).toBeUndefined();
+      expect(log).toEqual([`post ${peer.sessionId}`]);
+    }
+  });
+
+  test("a session that is not running is woken only by a wake that runs confined, decided before the post", async () => {
+    const dead = rec({ workspace: "backend", status: "idle", sandbox: "seatbelt" });
+    const woken = build([dead], {
+      confinedWake: async (r) => ({
+        start: async () => {
+          woken.log.push(`start ${r.sessionId}`);
+          return "woke it sandboxed (pid 7)";
+        },
+      }),
+      wake: async () => {
+        throw new Error("the unconfined wake must not run for a confined sender");
+      },
+    });
+    const ok = await woken.send.call({ to: "backend", message: "hi" }, {} as never);
+    expect(ok.isError).toBeUndefined();
+    expect(ok.content).toContain("woke it sandboxed (pid 7)");
+    expect(woken.log).toEqual([`post ${dead.sessionId}`, `start ${dead.sessionId}`]);
+
+    const refused = build([dead], { confinedWake: async () => ({ refused: "no sandbox can confine a woken session here" }) });
+    const no = await refused.send.call({ to: "backend", message: "hi" }, {} as never);
+    expect(no.isError).toBe(true);
+    expect(no.content).toBe(`not sent to backend [${dead.sessionId.slice(0, 8)}]: this session runs sandboxed, and no sandbox can confine a woken session here. Ask the user to relay it.`);
+    expect(refused.log).toEqual([]);
+  });
+
+  test("with no confined wake (a woken child, a host without one) nothing is left queued for a later run", async () => {
+    const dead = rec({ workspace: "backend", status: "idle" });
+    const { send, log } = build([dead], {
+      wake: async () => {
+        throw new Error("the unconfined wake must not run for a confined sender");
+      },
+    });
+    const r = await send.call({ to: dead.sessionId, message: "hi" }, {} as never);
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain("it is not running, and a message left for its next run could be read by a run that is not sandboxed");
+    expect(log).toEqual([]);
+  });
+
+  test("its own agents are steered as before (they run under the same sandbox)", async () => {
+    const { send, agents } = build([]);
+    const task = agents.track("a long search");
+    const r = await send.call({ to: task.id, message: "narrow it" }, {} as never);
+    expect(r.isError).toBeUndefined();
+    expect(task.steerQueue).toEqual(["narrow it"]);
+    agents.killAll();
+  });
+
+  test("an unconfined sender behaves exactly as before: live post, post-then-wake, queue with a note", async () => {
+    const live = rec({ workspace: "frontend", cwd: "/w/frontend" });
+    const dead = rec({ workspace: "backend", cwd: "/w/backend", status: "idle" });
+    const never = async () => {
+      throw new Error("the confined wake is a confined sender's");
+    };
+    const a = build([live, dead], { confined: false, confinedWake: never, wake: async () => "woke it (pid 123)" });
+    expect((await a.send.call({ to: "frontend", message: "hi" }, {} as never)).content).toBe(
+      `sent to frontend [${live.sessionId.slice(0, 8)}] — delivered at its next turn boundary (running) or idle wake. A reply, if any, arrives as a background event.`,
+    );
+    expect((await a.send.call({ to: "backend", message: "hi" }, {} as never)).content).toBe(`queued for backend [${dead.sessionId.slice(0, 8)}]; woke it (pid 123)`);
+    expect(a.log).toEqual([`post ${live.sessionId}`, `post ${dead.sessionId}`]);
+    const b = build([dead], { confined: false });
+    expect((await b.send.call({ to: "backend", message: "hi" }, {} as never)).content).toBe(
+      `queued for backend [${dead.sessionId.slice(0, 8)}] — it is not running; the message delivers when that session next runs.`,
+    );
+    expect(b.log).toEqual([`post ${dead.sessionId}`]);
+  });
+});
+
 describe("renderEvents mail framing", () => {
   test("mail batches carry the teammate guidance line; non-mail batches do not", () => {
     const mail: AgentEvent = {

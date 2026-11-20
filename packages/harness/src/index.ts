@@ -116,5 +116,5 @@ export * from "./subagent/task";
 export * from "./subagent/coordination";
 export * from "./subagent/agents";
 export * from "./workflow/index";
-export { createPeerTools, livePeers, resolvePeer, wakeCandidates } from "./tools/builtin/peers";
+export { createPeerTools, livePeers, resolvePeer, runsConfined, wakeCandidates } from "./tools/builtin/peers";
 export { isReadOnlyShell } from "./permission/readonly-shell";

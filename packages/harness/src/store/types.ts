@@ -1,4 +1,4 @@
-import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
+import type { ConversationEntry, PeerMessage, SandboxRecord, SDKMessage } from "@mlpal/harness-protocol";
 
 /**
  * The unified store: one root, bifurcated by concern. Conversation is the model's
@@ -36,6 +36,10 @@ export interface SessionRecord {
   /** The principal that opened the session under a hosted serve (protocol 0.21 `owner`); absent =
    *  a local person's session. Written once, at creation. */
   owner?: string;
+  /** Which sandbox confines the commands of the session's current (else last) run, as its host said (the loop writes
+   *  it from `AgentConfig.sandbox`); absent = none ever did. A confined sender reaches only a session whose record
+   *  names one (ruling R18). */
+  sandbox?: SandboxRecord["platform"];
   /** OS pid of the process that owns this session, when it is a live local presence.
    *  Lets peers distinguish a genuinely live session from the ghost record a killed
    *  process leaves behind (freshness alone has a 120s blind spot). */

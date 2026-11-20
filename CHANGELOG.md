@@ -42,6 +42,19 @@
   `run.completed`. Telemetry contract d11.9: `payload.sandbox`, verbatim, absent when the host did not say. The
   memory ingest accepts d11.9 (`contract_at_least`) and drops the field until its allowlist names it.
 
+### A confined sender never reaches an unconfined session (E-26, ruling R18, 2026-11-20)
+
+- A sandboxed run's `SendMessage` could post to (or wake) a session whose commands nothing confines, which then acted
+  on the message outside the sender's sandbox. Now a host that says its runs are confined (`PeerToolsDeps.confined`)
+  reaches a live session only when that session runs confined too, and a session that is not running only through
+  `PeerToolsDeps.confinedWake` (a resume that must itself run confined, decided before the mail is posted). Otherwise
+  the send is refused with the reason and nothing is posted or left queued. Steering the session's own agents is
+  unchanged, as is every send from an unconfined host.
+- `SessionRecord.sandbox` (`seatbelt`, `bwrap`, `remote` or `none`): which sandbox confines the session's current
+  (else last) run. The loop writes it from `AgentConfig.sandbox` when the session starts and corrects it when a later
+  run's differs; absent means none ever did. `runsConfined(record)` reads it. A store that drops the field makes its
+  sessions unreachable from a confined sender (fail closed).
+
 ### A quoted Bash rule matches the command it names (E-11, 2026-11-20)
 
 - Rules are matched against a command's words with the shell's quotes removed, so a pattern written the way a user

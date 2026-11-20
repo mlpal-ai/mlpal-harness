@@ -618,6 +618,9 @@ export class AgentSession {
       lastSeen: ts,
     });
     const existing = await store.registry.getSession(cfg.sessionId);
+    // R18: the record says whether this run's commands are confined; a session once confined says `none` when a later
+    // run is not, so a sandboxed sender never takes a stale record for a confined peer.
+    const sandbox = cfg.sandbox && cfg.sandbox.platform !== "none" ? cfg.sandbox.platform : undefined;
     if (!existing) {
       // 0.21: a sub-agent belongs to whoever owns its parent (and came to exist the same way), so a
       // principal's listing and guard cover its children; an explicit owner on the child wins.
@@ -633,14 +636,16 @@ export class AgentSession {
         head: null,
         model: cfg.model,
         ...(cfg.stamp?.hop ? { hop: cfg.stamp.hop } : {}),
+        ...(sandbox ? { sandbox } : {}),
         ...(cfg.parent ? { parent: cfg.parent } : {}),
         ...(owner ? { owner } : {}),
         ...(origin ? { origin } : {}),
         createdAt: ts,
         updatedAt: ts,
       });
-    } else if (cfg.stamp?.hop && existing.hop !== cfg.stamp.hop) {
-      await store.registry.patchSession(cfg.sessionId, { hop: cfg.stamp.hop });
+    } else {
+      if (cfg.stamp?.hop && existing.hop !== cfg.stamp.hop) await store.registry.patchSession(cfg.sessionId, { hop: cfg.stamp.hop });
+      if ((existing.sandbox ?? "none") !== (sandbox ?? "none")) await store.registry.patchSession(cfg.sessionId, { sandbox: sandbox ?? "none" });
     }
   }
 

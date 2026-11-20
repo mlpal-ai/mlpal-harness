@@ -30,6 +30,18 @@ export interface PeerToolsDeps {
   /** Spawn a detached resume of a not-running session so it processes its queued mail with
    *  full conversation context, then exits. Returns a human-readable confirmation. */
   wake?: (rec: SessionRecord) => Promise<string>;
+  /** Ruling R18: this host's runs are confined (an OS sandbox, remote hands), so a message from here must never have
+   *  commands run unconfined elsewhere. SendMessage then reaches a live session only when it runs confined too
+   *  (`runsConfined`), and a session that is not running only through `confinedWake`; otherwise nothing is posted. */
+  confined?: boolean;
+  /** How a confined sender wakes a not-running session: a resume that must itself run confined, or why there is none.
+   *  Asked before the mail is posted, so a refusal leaves nothing queued for a later, unconfined run. */
+  confinedWake?: (rec: SessionRecord) => Promise<{ refused: string } | { start: () => Promise<string> }>;
+}
+
+/** Whether a session's commands run confined, by the sandbox its loop recorded for its current (else last) run. */
+export function runsConfined(s: SessionRecord): boolean {
+  return s.sandbox !== undefined && s.sandbox !== "none";
 }
 
 /** A session is addressable while its record is fresher than this. Active runs bump every
@@ -201,6 +213,12 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
           text: message,
         });
       if (peer) {
+        if (deps.confined && !runsConfined(peer)) {
+          return {
+            content: `not sent: this session runs sandboxed and ${peer.workspace} [${peer.sessionId.slice(0, 8)}] does not, so a message from here could have commands run unconfined there. Ask the user to relay it.`,
+            isError: true,
+          };
+        }
         await post(peer.sessionId);
         return {
           content: `sent to ${peer.workspace} [${peer.sessionId.slice(0, 8)}] — delivered at its next turn boundary (running) or idle wake. A reply, if any, arrives as a background event.`,
@@ -239,6 +257,16 @@ export function createPeerTools(deps: PeerToolsDeps): Tool[] {
             };
           }
         }
+      }
+      if (target && deps.confined) {
+        const plan = deps.confinedWake
+          ? await deps.confinedWake(target)
+          : { refused: "it is not running, and a message left for its next run could be read by a run that is not sandboxed" };
+        if ("refused" in plan) {
+          return { content: `not sent to ${target.workspace} [${target.sessionId.slice(0, 8)}]: this session runs sandboxed, and ${plan.refused}. Ask the user to relay it.`, isError: true };
+        }
+        await post(target.sessionId);
+        return { content: `queued for ${target.workspace} [${target.sessionId.slice(0, 8)}]; ${await plan.start()}` };
       }
       if (target && deps.wake) {
         await post(target.sessionId);
