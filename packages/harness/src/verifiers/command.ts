@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
-import { type ExecPolicy, leaseFor, revertedNotice } from "../tools/types";
+import { type ExecPolicy, killProcessGroup, leaseFor, revertedNotice } from "../tools/types";
 
 /**
  * A Stop-hook that runs a verification command (tests, build, lint). Non-zero exit
@@ -26,7 +26,9 @@ function runShell(
   return new Promise((resolve) => {
     const argv = exec ? exec.wrap(["/bin/bash", "-c", command]) : ["/bin/bash", "-c", command];
     const lease = exec ? leaseFor(exec, command) : undefined;
-    const child = spawn(argv[0]!, argv.slice(1), { cwd, ...(lease ? { env: lease.env } : {}) });
+    const ownGroup = exec?.ownGroup === true;
+    const child = spawn(argv[0]!, argv.slice(1), { cwd, ...(ownGroup ? { detached: true } : {}), ...(lease ? { env: lease.env } : {}) });
+    child.once("exit", () => killProcessGroup(ownGroup ? child.pid : undefined));
     let output = "";
     let killed = false;
     const timer = setTimeout(() => {

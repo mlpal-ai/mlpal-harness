@@ -15,7 +15,9 @@ import { gitEntryWritable, type SandboxSpec } from "./spec";
  */
 
 export function bwrapArgv(bwrap: string, spec: SandboxSpec, argv: string[]): string[] {
-  const args = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent"];
+  // --unshare-pid (R22i): the command is the namespace's first process, so everything it left in the background dies
+  // with it, and nothing writes after the checks made at its end.
+  const args = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent", "--unshare-pid"];
   for (const w of spec.filesystem.writable) {
     if (existsSync(w)) args.push("--bind", w, w);
   }

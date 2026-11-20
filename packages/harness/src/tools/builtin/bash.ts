@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { backgroundTasks } from "./background";
 import { backgroundAgents } from "../../subagent/background";
-import { defineTool, err, leaseFor, ok, revertedNotice, type ToolContext } from "../types";
+import { defineTool, err, killProcessGroup, leaseFor, ok, revertedNotice, type ToolContext } from "../types";
 
 const MAX_TIMEOUT = 600_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -49,12 +49,16 @@ function run(
     // command runs as the agent does.
     const argv = ctx.exec ? ctx.exec.wrap(["/bin/bash", "-c", SHELL_PRELUDE + command]) : ["/bin/bash", "-c", SHELL_PRELUDE + command];
     const lease = ctx.exec ? leaseFor(ctx.exec, command) : undefined;
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(lease ? { env: lease.env } : {}) });
+    // R22i: under a sandbox that asks for it, the command is its own process group, killed when it returns
+    const ownGroup = ctx.exec?.ownGroup === true;
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(ownGroup ? { detached: true } : {}), ...(lease ? { env: lease.env } : {}) });
+    const killGroup = () => killProcessGroup(ownGroup ? child.pid : undefined);
     // Held until the process itself exits (adopted or not); a grandchild left running loses what was granted.
     let reverted: string[] = [];
     let adopted: string | undefined;
     if (lease) {
       child.once("exit", () => {
+        killGroup(); // before the checks: what the command left in the background must not write after them
         reverted = lease.release() ?? [];
         // a command adopted as a background task has already answered: its task carries the notice
         if (reverted.length && adopted) backgroundTasks.note(adopted, revertedNotice(reverted));
@@ -102,7 +106,10 @@ function run(
       });
     }, timeoutMs);
 
-    const onAbort = () => child.kill("SIGKILL");
+    const onAbort = () => {
+      child.kill("SIGKILL");
+      killGroup();
+    };
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
 
     const finalize = (code: number | null) => {
@@ -188,9 +195,12 @@ export const bashOutputTool = defineTool({
   schema: z.object({
     id: z.string().describe('shell id from Bash, e.g. "bg1"'),
   }),
-  async call(input) {
+  async call(input, ctx) {
     const task = backgroundTasks.get(input.id);
     if (!task) return err(`no background shell "${input.id}"`);
+    // R22i: a background task writes after the command that started it returned; a read is a point to check
+    const taken = ctx?.exec?.check?.() ?? [];
+    if (taken.length) backgroundTasks.note(task.id, revertedNotice(taken));
     const fresh = task.output.slice(task.readOffset);
     task.readOffset = task.output.length;
     const status =

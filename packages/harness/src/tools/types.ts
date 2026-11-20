@@ -38,6 +38,17 @@ export interface ExecPolicy {
   /** Ruling R22: why the run may not write `path` (absolute), or null. The file tools ask before they write, since
    *  they run in the engine, outside the OS confinement. Absent = nothing is refused. */
   writeDenied?(path: string): string | null;
+  /** Ruling R22i: a foreground command runs in its own process group, which the tool kills when the command returns,
+   *  so nothing it put in the background outlives it and the checks made at its end (seatbelt has no PID namespace
+   *  to do that; bubblewrap's ends with the command). Background tasks are the engine's own feature and keep running. */
+  ownGroup?: boolean;
+  /** Start watching what the sandbox takes back (R22d, R22g) for something that holds no lease (a durable monitor);
+   *  `settle` when it ends answers what was removed. */
+  watch?(): { settle(): string[] };
+  /** Run those checks now, for everything still running under the sandbox (R22i: a background task writes after the
+   *  command that started it returned): before the engine's own git, when a task's output is read, at close.
+   *  Answers what was removed. */
+  check?(): string[];
   /** What to add to a failed command's output when the failure is the sandbox's doing and the OS's message does not
    *  say what to do about it (R22b: a git command that needs `.git/config`). Null when there is nothing to add. */
   explain?(output: string): string | null;
@@ -53,6 +64,17 @@ export interface ExecLease {
   /** Called once the process exits. Answers the paths the sandbox removed because the command created them where it
    *  may not (ruling R22d); the tool reports the command as failed and names them. */
   release(): string[] | void;
+}
+
+/** Kill a command's own process group (R22i: what it left in the background must not outlive it). No-op without a
+ *  pid, or when the group is already gone. */
+export function killProcessGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
 }
 
 /** What a tool appends to a command's output when the sandbox took back what it left behind (R22d: a protected path

@@ -7,7 +7,7 @@ import { bwrapArgv } from "./bwrap";
 import { scrubEnv } from "./env";
 import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
-import { protectedBy, protectedWriteHint, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
+import { type ProtectedSnapshot, protectedBy, protectedWriteHint, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
 import { realResolve } from "../tools/types";
 import { type GitRun, indexDigest, scrubIndex } from "./git-index";
 
@@ -57,6 +57,8 @@ export interface CreateSandboxOptions {
   /** The environment to scrub; default process.env. */
   baseEnv?: NodeJS.ProcessEnv;
   onDeniedHost?: (host: string) => void;
+  /** Called with what the sandbox took back (R22d, R22g) whenever a check finds something: the host's log line. */
+  onReverted?: (removed: string[]) => void;
 }
 
 /** Run one trivial command under bubblewrap with the namespaces the real wrap needs. A kernel or
@@ -206,6 +208,36 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       return removed;
     });
 
+  // What a confined command may leave behind is taken back, and the command reported as failed:
+  // - R22d, bubblewrap only: a protected path it created (bubblewrap cannot stop one that did not exist; seatbelt
+  //   refuses the creation itself). Attributed to what was running: each watch compares with its own snapshot, so a
+  //   path that appears while nothing of ours runs is never touched.
+  // - R22g, both: an index entry naming a path inside `.git`.
+  // R22i: a background task outlives the command that started it, so besides each watch's end the checks run for
+  // every watch still open whenever the host asks (`check`: before its own git, on a task read, at close).
+  const watches = new Set<{ before: ProtectedSnapshot | null }>();
+  const scan = (w: { before: ProtectedSnapshot | null }): string[] => {
+    if (!w.before) return [];
+    const removed = revertCreated(spec, w.before);
+    w.before = snapshotProtected(spec);
+    return removed;
+  };
+  const report = (removed: string[]): string[] => {
+    if (removed.length) opts.onReverted?.(removed);
+    return removed;
+  };
+  const check = (): string[] => report([...[...watches].flatMap(scan), ...scrubIndexes()]);
+  const watch = (): { settle(): string[] } => {
+    const w = { before: confined === "bwrap" ? snapshotProtected(spec) : null };
+    watches.add(w);
+    return {
+      settle: () => {
+        if (!watches.delete(w)) return [];
+        return report([...scan(w), ...scrubIndexes()]);
+      },
+    };
+  };
+
   const describe = () => {
     const fs = spec.filesystem.mode === "readOnly" ? "read-only filesystem" : "writes inside the workspace";
     const net =
@@ -242,19 +274,12 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness, git or one of your tools, so it stays read-only here. The change has to be made outside the sandbox: ask the user to make it, or to start the session with --no-sandbox.` : null;
     },
     explain: (output) => (confined ? protectedWriteHint(spec, output) : null),
-    // What a confined command may leave behind is taken back when it ends, and the command reported as failed:
-    // - R22d, bubblewrap only: a protected path it created (bubblewrap cannot stop one that did not exist; seatbelt
-    //   refuses the creation itself);
-    // - R22g, both: an index entry naming a path inside `.git`.
-    ...(confined
-      ? {
-          lease: () => {
-            const before = confined === "bwrap" ? snapshotProtected(spec) : null;
-            return { env, release: () => [...(before ? revertCreated(spec, before) : []), ...scrubIndexes()] };
-          },
-        }
-      : {}),
+    ...(confined ? { ownGroup: true, watch, check, lease: () => ((w) => ({ env, release: () => w.settle() }))(watch()) } : {}),
     describe,
-    close: () => proxy?.close(),
+    close: () => {
+      // R22i: a last check for whatever is still running under the sandbox when the session ends
+      if (confined) check();
+      proxy?.close();
+    },
   };
 }

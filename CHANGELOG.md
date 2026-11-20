@@ -77,6 +77,13 @@
   was last clean, and rewrites it without the entries `namesDotGit` catches: `.git` in any case, with the characters
   HFS+ ignores, NTFS's trailing dots, spaces and `:stream`, or the short name `git~1` (`sandbox/git-index.ts`). The
   command is reported as failed with the entry named, as for R22d.
+- R22i: a process a confined command put in the background outlived the command and the checks made at its end.
+  bwrap now unshares the PID namespace, so the command's stragglers die with it. Under a sandbox (`ExecPolicy.ownGroup`)
+  Bash, a verifier and a command hook run their command in its own process group and kill the group when it returns
+  (seatbelt has no PID namespace). Background tasks keep running by design, so the R22d and R22g checks also run for
+  everything still running whenever the host asks (`ExecPolicy.check`: on a BashOutput read, before the host's own
+  git, and in `close()`), and a durable monitor is watched from its start (`ExecPolicy.watch`). R22d stays
+  attributed: a protected path that appears while nothing of ours runs is never touched. `onReverted` tells the host.
 - R22f: the code-bearing files of the person's tool homes are protected too (`PROTECTED_IN_HOME`), also where the
   home's cache is writable: gradle's init scripts and `gradle.properties`, Maven's settings and `~/.mvn`, uv's
   installed tools and `~/.local/bin`, the npm, yarn, pnpm, pip and cargo configs, `~/.bunfig.toml`, git's global

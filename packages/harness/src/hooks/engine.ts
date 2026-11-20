@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { type ExecPolicy, leaseFor } from "../tools/types";
+import { type ExecPolicy, killProcessGroup, leaseFor } from "../tools/types";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
@@ -154,7 +154,9 @@ export class CommandHook implements Hook {
     return new Promise((resolve) => {
       const argv = this.exec ? this.exec.wrap(["/bin/bash", "-c", this.command]) : ["/bin/bash", "-c", this.command];
       const lease = this.exec ? leaseFor(this.exec, this.command) : undefined;
-      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(lease ? { env: lease.env } : {}) });
+      const ownGroup = this.exec?.ownGroup === true;
+      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(ownGroup ? { detached: true } : {}), ...(lease ? { env: lease.env } : {}) });
+      child.once("exit", () => killProcessGroup(ownGroup ? child.pid : undefined));
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), this.timeoutMs);

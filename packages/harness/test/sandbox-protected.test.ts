@@ -74,6 +74,8 @@ describe("the spec (R22, R22b)", () => {
     const args = bwrapArgv("/usr/bin/bwrap", spec, ["true"]);
     const at = (flag: string, a: string) => args.findIndex((x, i) => x === flag && args[i + 1] === a && args[i + 2] === a);
     const git = join(root, ".git");
+    // R22i: the command is its PID namespace's first process, so what it backgrounds dies with it
+    expect(args.slice(0, args.indexOf("--bind"))).toEqual(["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent", "--unshare-pid"]);
     expect(at("--bind", git)).toBeGreaterThan(at("--bind", root));
     for (const name of ["config", "hooks", "info", "description"]) expect([name, at("--ro-bind", join(git, name)) > at("--bind", git)]).toEqual([name, true]);
     for (const name of ["objects", "refs", "HEAD"]) expect([name, at("--ro-bind", join(git, name))]).toEqual([name, -1]);
@@ -149,11 +151,14 @@ describe("R22d: on bubblewrap, what a command created where it may not write is 
     expect(lease.release()).toEqual([join(dir, ".git", "commondir")]);
     expect(existsSync(join(dir, ".git", "commondir"))).toBe(false);
     expect(bwrap.describe()).toContain("harness and git paths read-only (one a command creates is removed when it ends)");
-    // seatbelt refuses the creation itself, so its lease takes no path back (it only checks the index, R22g)
+    // seatbelt refuses the creation itself, so its lease takes no path back (it only checks the index, R22g). Only
+    // where seatbelt exists: elsewhere a "darwin" sandbox confines nothing and leases nothing.
     const seatbelt = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { platform: "darwin" });
-    writeFileSync(join(dir, ".git", "commondir"), "../evil\n");
-    expect(seatbelt.lease!("x").release()).toEqual([]);
-    expect(existsSync(join(dir, ".git", "commondir"))).toBe(true);
+    if (seatbelt.available) {
+      writeFileSync(join(dir, ".git", "commondir"), "../evil\n");
+      expect(seatbelt.lease!("x").release()).toEqual([]);
+      expect(existsSync(join(dir, ".git", "commondir"))).toBe(true);
+    } else expect(seatbelt.lease).toBeUndefined();
   });
 
   test("Bash under such a sandbox: the path is gone, the result says what was removed, and the command counts as failed", async () => {
@@ -479,5 +484,103 @@ describe("R22g: the index never names a path inside .git", () => {
     } finally {
       sandbox.close();
     }
+  });
+});
+
+// Ruling R22i: a process a confined command puts in the background outlived the command and the checks made at its
+// end (under bubblewrap a write landed three seconds after a clean check). A foreground command's stragglers are now
+// killed with it; a background task, which keeps running by design, is checked while it runs.
+describe("R22i: nothing writes after the checks", () => {
+  const PATCH = `const {createHash}=require("node:crypto"),fs=require("node:fs");const b=fs.readFileSync(".git/index");const body=Buffer.from(b.subarray(0,b.length-20).toString("latin1").replace("-git/config",".git/config"),"latin1");fs.writeFileSync(".git/index",Buffer.concat([body,createHash("sha1").update(body).digest()]));`;
+  /** A repository with a staged `-git/config` and a script that turns that entry into `.git/config`. */
+  const repo = () => {
+    const dir = join(root, `bg-${crypto.randomUUID().slice(0, 6)}`);
+    mkdirSync(join(dir, "-git"), { recursive: true });
+    expect(sh(["git", "init", "-q"], dir).code).toBe(0);
+    writeFileSync(join(dir, "-git", "config"), "[core]\n");
+    writeFileSync(join(dir, "kept.txt"), "kept\n");
+    writeFileSync(join(dir, "patch.js"), PATCH);
+    expect(sh(["git", "add", "--", "./-git/config", "kept.txt"], dir).code).toBe(0);
+    return dir;
+  };
+  const entries = (dir: string) => sh(["git", "ls-files"], dir).out.trim().split("\n").sort();
+  const later = `(sleep 1; ${JSON.stringify(process.execPath)} patch.js; echo late > late.txt)`;
+
+  test.skipIf(process.platform !== "darwin")("seatbelt: what a foreground command backgrounds is killed when it returns, so the late index write never lands", async () => {
+    const { bashTool } = await import("../src/tools/builtin/bash");
+    const dir = repo();
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }));
+    try {
+      const r = await bashTool.call({ command: `${later} > /dev/null 2>&1 & echo started` }, { cwd: dir, roots: [dir], exec: sandbox } as never);
+      expect([r.isError, String(r.content).trim()]).toEqual([false, "started"]);
+      await Bun.sleep(2500);
+      expect(entries(dir)).toEqual(["-git/config", "kept.txt"]); // never patched
+      expect(existsSync(join(dir, "late.txt"))).toBe(false);
+    } finally {
+      sandbox.close();
+    }
+  }, 30_000);
+
+  test("without a sandbox the same backgrounded work goes on, as it always did", async () => {
+    const { bashTool } = await import("../src/tools/builtin/bash");
+    const dir = repo();
+    const r = await bashTool.call({ command: "(sleep 1; echo late > late.txt) > /dev/null 2>&1 & echo started" }, { cwd: dir, roots: [dir] } as never);
+    expect(String(r.content).trim()).toBe("started");
+    await Bun.sleep(2000);
+    expect(existsSync(join(dir, "late.txt"))).toBe(true);
+  }, 30_000);
+
+  test.skipIf(process.platform !== "darwin")("a background task keeps running; its late index write is caught by the next check, and by the task's own end", async () => {
+    const { backgroundTasks } = await import("../src/tools/builtin/background");
+    const dir = repo();
+    const reverted: string[][] = [];
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { onReverted: (r) => reverted.push(r) });
+    try {
+      const task = backgroundTasks.start(`echo working > work.txt; sleep 1; ${JSON.stringify(process.execPath)} patch.js; sleep 30`, dir, undefined, { exec: sandbox });
+      expect(sandbox.check!()).toEqual([]); // clean while it has not written yet
+      await Bun.sleep(2500);
+      expect(entries(dir)).toContain(".git/config"); // it wrote, long after it was started
+      expect(sandbox.check!()).toEqual([`the index entry ".git/config" of ${dir}`]);
+      expect(entries(dir)).toEqual(["kept.txt"]);
+      expect(reverted).toEqual([[`the index entry ".git/config" of ${dir}`]]);
+      // the task is the engine's own feature: it did its work and is still running
+      expect(readFileSync(join(dir, "work.txt"), "utf8").trim()).toBe("working");
+      expect(backgroundTasks.get(task.id)?.exitCode).toBeNull();
+      backgroundTasks.kill(task.id);
+    } finally {
+      sandbox.close();
+    }
+  }, 30_000);
+
+  test.skipIf(process.platform !== "darwin")("close() makes the last check", () => {
+    const dir = repo();
+    const reverted: string[][] = [];
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { onReverted: (r) => reverted.push(r) });
+    expect(sh([process.execPath, "patch.js"], dir).code).toBe(0); // what something still running left
+    sandbox.close();
+    expect(entries(dir)).toEqual(["kept.txt"]);
+    expect(reverted.length).toBe(1);
+  });
+
+  test("bubblewrap: a check while a watch is open takes back what was created since, a monitor's watch included; with none open nothing is touched", () => {
+    const dir = join(root, `bw-${crypto.randomUUID().slice(0, 6)}`);
+    mkdirSync(join(dir, ".git", "objects"), { recursive: true });
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { platform: "linux", bwrapPath: "/usr/bin/bwrap", bwrapProbe: () => ({ ok: true }) });
+    expect(sandbox.ownGroup).toBe(true);
+    // nothing of ours running: a path that appears is someone else's, and stays
+    mkdirSync(join(dir, ".claude"));
+    expect(sandbox.check!()).toEqual([]);
+    expect(existsSync(join(dir, ".claude"))).toBe(true);
+    // a monitor (it holds no lease) is watched from its start
+    const monitor = sandbox.watch!();
+    writeFileSync(join(dir, ".git", "commondir"), "../evil\n");
+    expect(sandbox.check!()).toEqual([join(dir, ".git", "commondir")]);
+    expect(existsSync(join(dir, ".git", "commondir"))).toBe(false);
+    mkdirSync(join(dir, ".yodex"));
+    expect(monitor.settle()).toEqual([join(dir, ".yodex")]);
+    expect(monitor.settle()).toEqual([]); // once
+    mkdirSync(join(dir, ".yodex"));
+    expect(sandbox.check!()).toEqual([]);
+    expect(existsSync(join(dir, ".yodex"))).toBe(true);
   });
 });

@@ -191,6 +191,10 @@ export class BackgroundTasks {
       });
       closeSync(fd); // the child holds its own copy
       child.unref();
+      // R22i: a monitor holds no lease, but what it leaves behind is checked like any command's: when it ends (if
+      // this process still lives) and whenever the host checks
+      const watching = opts?.exec?.watch?.();
+      if (watching) child.once("exit", () => void (reverted = watching.settle()));
     } else {
       // detached → the task gets its OWN process group, so Kill can signal the whole group
       // and take down grandchildren (the `npm run dev` node server, a piped subprocess) with
