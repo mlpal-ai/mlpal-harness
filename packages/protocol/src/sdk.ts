@@ -21,6 +21,25 @@ export interface SystemInitEvent {
   model: string;
   cwd: string;
   ts: string;
+  /** 0.26.1 (E-17): what confines the commands this session runs, as the host started it. Absent from an older engine
+   *  and from a host that does not say. */
+  sandbox?: SandboxRecord;
+}
+
+/** 0.26.1 (E-17): which sandbox confines a session's commands, machine-readable (before, only a stderr line said). */
+export interface SandboxRecord {
+  /** `seatbelt` (macOS) or `bwrap` (Linux): the local OS sandbox; `remote`: a remote sandbox runs them (a microVM);
+   *  `none`: nothing confines them. */
+  platform: "seatbelt" | "bwrap" | "remote" | "none";
+  /** The local OS sandbox's filesystem and network modes; null unless `platform` is `seatbelt` or `bwrap`. */
+  filesystem: "workspace" | "readOnly" | null;
+  network: "all" | "none" | "allowlist" | null;
+  /** The HOP requires an OS sandbox (a safety block): a host that cannot confine refuses the run instead. */
+  required: boolean;
+  /** `remote`: the sandbox template the commands run in. */
+  template?: string;
+  /** `none`: why. `off` when no sandbox was asked for (settings, `--no-sandbox`), else why it could not start here. */
+  reason?: string;
 }
 
 export interface UserEvent {

@@ -69,7 +69,7 @@ describe("buildRunOutcome", () => {
   test("produces the exact D11.2 wire shape (snake_case, allowlisted, content-free)", () => {
     const ev = buildRunOutcome(baseInput);
     expect(ev).toEqual({
-      contract: "d11.8",
+      contract: "d11.9",
       action_type: "run.completed",
       scope_id: "my-repo",
       occurred_at: "2026-09-01T00:00:00.000Z",
@@ -98,7 +98,7 @@ describe("buildRunOutcome", () => {
 
   test("contract discriminator is the frozen constant", () => {
     expect(buildRunOutcome(baseInput).contract).toBe(TELEMETRY_CONTRACT_VERSION);
-    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.8");
+    expect(TELEMETRY_CONTRACT_VERSION).toBe("d11.9");
   });
 
   test("tier and feedback_outcome are omitted when unset (absent != empty), verdict null kept", () => {
@@ -139,6 +139,12 @@ describe("buildRunOutcome", () => {
     expect("parent_run_id" in buildRunOutcome(baseInput).payload).toBe(false);
   });
 
+  test("d11.9 (E-17): the sandbox record rides on the payload verbatim when given, absent otherwise", () => {
+    const sandbox = { platform: "bwrap", filesystem: "readOnly", network: "none", required: true } as const;
+    expect(buildRunOutcome({ ...baseInput, sandbox }).payload.sandbox).toEqual(sandbox);
+    expect("sandbox" in buildRunOutcome(baseInput).payload).toBe(false);
+  });
+
   test("carries feedback_outcome only when provided", () => {
     const ev = buildRunOutcome({ ...baseInput, feedbackOutcome: "escalated" });
     expect(ev.payload.feedback_outcome).toBe("escalated");
@@ -148,7 +154,7 @@ describe("buildRunOutcome", () => {
     const ev = buildRunOutcome({ ...baseInput, tier: undefined });
     const round = JSON.parse(JSON.stringify(ev));
     expect(round.payload).not.toHaveProperty("tier");
-    expect(round.contract).toBe("d11.8");
+    expect(round.contract).toBe("d11.9");
   });
 });
 

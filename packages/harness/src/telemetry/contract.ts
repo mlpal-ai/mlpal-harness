@@ -1,3 +1,5 @@
+import type { SandboxRecord } from "@mlpal/harness-protocol";
+
 /**
  * HOP telemetry contract (D11.2) — the content-free run-outcome envelope the harness emits
  * for the HOP optimizer's Capture stage. The optimizer distills these into typed observations
@@ -85,8 +87,10 @@ export type FeedbackOutcome = "accepted" | "retried" | "escalated" | "failed";
  *  service gave the run — fact_count, estimated_tokens, truncated — so a report can show how much
  *  memory each run started with. Absent when the run used the local topics (or no memory).
  *  d11.5 adds `memories_injected` (memory v6, E1a): the event_ids of the local memory topics that
- *  were rendered into the run's system prompt — absent on older events, never empty-by-default. */
-export const TELEMETRY_CONTRACT_VERSION = "d11.8" as const;
+ *  were rendered into the run's system prompt — absent on older events, never empty-by-default.
+ *  d11.9 adds `sandbox` (E-17): which sandbox confined the run's commands ({platform, filesystem, network, required},
+ *  plus template or reason), as system/init says. Absent when the host did not say. */
+export const TELEMETRY_CONTRACT_VERSION = "d11.9" as const;
 
 /** d11.8 (memory v10): provider labels — how many Bash calls in the run started with each
  *  infrastructure CLI (aws, az, gcloud, kubectl, helm, terraform, gh, docker). Counts of the first
@@ -158,6 +162,8 @@ export interface RunOutcomePayload {
   tool_calls?: ToolCallCounts;
   /** d11.8: provider CLI → number of Bash calls that started with it. Absent when none did. */
   labels?: ProviderLabels;
+  /** d11.9 (E-17): the sandbox that confined the run's commands. Its keys are single words, so it serializes verbatim. */
+  sandbox?: SandboxRecord;
   task_type: string;
   run_result: RunResult;
   /** null iff run_result === "success"; a FAILURE_CLASS_VOCAB value otherwise. */
@@ -259,6 +265,7 @@ export interface RunOutcomeInput {
   memoryProjection?: MemoryProjectionStat;
   toolCalls?: ToolCallCounts;
   labels?: ProviderLabels;
+  sandbox?: SandboxRecord;
   taskType: string;
   runResult: RunResult;
   failureClass: FailureClass | null;
@@ -299,6 +306,7 @@ export function buildRunOutcome(i: RunOutcomeInput): RunOutcomeEvent {
       ...(i.memoryProjection ? { memory_projection: i.memoryProjection } : {}),
       ...(i.toolCalls ? { tool_calls: i.toolCalls } : {}),
       ...(i.labels && Object.keys(i.labels).length ? { labels: i.labels } : {}),
+      ...(i.sandbox ? { sandbox: i.sandbox } : {}),
       task_type: i.taskType,
       run_result: i.runResult,
       failure_class: i.failureClass,

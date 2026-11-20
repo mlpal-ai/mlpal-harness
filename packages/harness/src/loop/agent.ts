@@ -14,6 +14,7 @@ import {
   type Message,
   type ResultEvent,
   type ModelRefusal,
+  type SandboxRecord,
   type SandboxRefusal,
   type ToolResultBlock,
   type ToolResultBlocks,
@@ -232,6 +233,9 @@ export interface AgentConfig {
    * (pre-split behavior, byte-identical — pinned by golden tests).
    */
   loop?: LoopPolicy;
+  /** E-17: which sandbox confines this session's commands, as the host started it. Carried on `system/init` (and so
+   *  into the conversation) and on run.completed; the engine never derives it. */
+  sandbox?: SandboxRecord;
   /**
    * HOP telemetry sink (D11.2). When set, the loop emits one content-free RunOutcomeEvent at the
    * finish point of every run — the Capture stage of the HOP optimizer. Fire-and-forget: the
@@ -680,6 +684,7 @@ export class AgentSession {
         model: cfg.model,
         cwd: cfg.cwd,
         ts: now(),
+        ...(cfg.sandbox ? { sandbox: cfg.sandbox } : {}),
       };
       const e = await this.store.conversation.append(cfg.sessionId, sys, parent);
       parent = e.uuid;
@@ -1573,6 +1578,7 @@ export class AgentSession {
               memoryProjection: cfg.telemetry.memoryProjection?.(),
               toolCalls,
               labels: providerLabels,
+              sandbox: cfg.sandbox,
               taskType: cfg.telemetry.taskType ?? loop.taskType,
               sourceRef: cfg.telemetry.sourceRef,
               runResult: recorded,

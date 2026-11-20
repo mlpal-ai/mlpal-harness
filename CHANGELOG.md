@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Which sandbox confined a run is on the record; protocol 0.26.1, telemetry d11.9 (E-17, additive, 2026-11-20)
+
+- Protocol: `SandboxRecord {platform: seatbelt|bwrap|remote|none, filesystem, network, required, template?, reason?}`
+  and `SystemInitEvent.sandbox?`. `filesystem`/`network` are the local OS sandbox's modes, null unless it confines;
+  `template` names a remote sandbox's; `reason` says why `none` (`off`, or why it could not start). Before, only the
+  stderr notice said which sandbox ran, so a grader or a parity table had to scrape it.
+- `sandboxRecord(local, remote)` (sandbox module) builds it from the host's sandbox and remote hands.
+- `AgentConfig.sandbox`: the host's record rides the session's `system/init` (streamed and persisted) and
+  `run.completed`. Telemetry contract d11.9: `payload.sandbox`, verbatim, absent when the host did not say. The
+  memory ingest accepts d11.9 (`contract_at_least`) and drops the field until its allowlist names it.
+
 ### A quoted Bash rule matches the command it names (E-11, 2026-11-20)
 
 - Rules are matched against a command's words with the shell's quotes removed, so a pattern written the way a user

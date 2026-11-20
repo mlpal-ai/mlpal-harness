@@ -147,6 +147,23 @@ describe("agentic loop", () => {
     expect((await loadMessages(new LocalStore(root), "s1")).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
+  test("E-17: the host's sandbox record rides system/init (streamed and persisted) and the run-outcome", async () => {
+    const sandbox = { platform: "seatbelt", filesystem: "workspace", network: "allowlist", required: false } as const;
+    const emitted: RunOutcomeEvent[] = [];
+    const sess = session(new ScriptedModel([textDone("done")]), "autopilot", {
+      sandbox,
+      telemetry: { hop: { name: "coding", version: "1.2.3" }, repo: "acme", role: "main", emit: (e) => emitted.push(e) },
+    });
+    const events = await collect(sess.run({ text: "go" }));
+    expect(events[0]).toMatchObject({ type: "system", subtype: "init", sandbox });
+    const stored = await new LocalStore(root).conversation.read("s1");
+    expect(stored[0]!.payload).toMatchObject({ type: "system", subtype: "init", sandbox });
+    expect(emitted[0]!.payload.sandbox).toEqual(sandbox);
+    // a host that names no sandbox: the field is absent, never a guess
+    const bare = await collect(session(new ScriptedModel([textDone("done")]), "autopilot", { sessionId: "s2" }).run({ text: "go" }));
+    expect("sandbox" in bare[0]!).toBe(false);
+  });
+
   test("HOP telemetry: a successful run emits one content-free run-outcome at the finish", async () => {
     const emitted: RunOutcomeEvent[] = [];
     const model = new ScriptedModel([toolUse("Bash", { command: "echo hi" }), textDone("done")]);
@@ -163,7 +180,7 @@ describe("agentic loop", () => {
 
     expect(emitted).toHaveLength(1);
     const ev = emitted[0]!;
-    expect(ev.contract).toBe("d11.8");
+    expect(ev.contract).toBe("d11.9");
     expect(ev.action_type).toBe("run.completed");
     expect(ev.scope_id).toBe("acme");
     expect(ev.payload.hop).toEqual({ name: "coding", version: "1.2.3" });
@@ -365,7 +382,7 @@ describe("agentic loop", () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.payload.run_result).toBe("needs_approval");
     expect(emitted[0]!.payload.failure_class).toBe("approval_pending");
-    expect(emitted[0]!.contract).toBe("d11.8");
+    expect(emitted[0]!.contract).toBe("d11.9");
   });
 
   test("HOP telemetry: no sink wired => no emit, unchanged behaviour", async () => {

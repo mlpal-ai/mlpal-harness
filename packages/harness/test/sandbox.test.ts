@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
+import { createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -110,6 +110,38 @@ describe("sandbox spec under a throwaway $HOME (E-16)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("sandboxRecord (E-17): which sandbox confines a session's commands, for system/init and the run records", () => {
+  const ro = resolveSandboxSpec({ filesystem: { mode: "readOnly" }, network: { mode: "none" } }, { roots: ["/w"], home: "/h", hasSafetyBlock: true });
+  const ws = resolveSandboxSpec({ network: { mode: "allowlist", allow: ["*.mlpal.ai"] } }, { roots: ["/w"], home: "/h" });
+  const bwrapOk = { platform: "linux" as const, bwrapPath: "/usr/bin/bwrap", bwrapProbe: () => ({ ok: true }), baseEnv: {} };
+
+  test("a local OS sandbox: its platform and the spec's modes", () => {
+    const sb = createSandbox(ro, bwrapOk);
+    expect(sandboxRecord(sb, null)).toEqual({ platform: "bwrap", filesystem: "readOnly", network: "none", required: true });
+    sb.close();
+    const mac = createSandbox(ws, { platform: "darwin", baseEnv: {} });
+    if (mac.available) expect(sandboxRecord(mac, null)).toEqual({ platform: "seatbelt", filesystem: "workspace", network: "allowlist", required: false });
+    mac.close();
+  });
+
+  test("a sandbox that cannot start here and is not required: none, with the reason, and no modes claimed", () => {
+    const sb = createSandbox(ws, { platform: "linux", bwrapPath: null, baseEnv: {} });
+    expect(sandboxRecord(sb, null)).toEqual({ platform: "none", filesystem: null, network: null, required: false, reason: "bubblewrap (bwrap) is not installed" });
+    sb.close();
+  });
+
+  test("remote hands run the commands: remote, with the template, the HOP's requirement kept", () => {
+    const sb = createSandbox(ro, bwrapOk);
+    expect(sandboxRecord(sb, { template: "hands" })).toEqual({ platform: "remote", filesystem: null, network: null, required: true, template: "hands" });
+    sb.close();
+    expect(sandboxRecord(undefined, { template: "mlpal" })).toEqual({ platform: "remote", filesystem: null, network: null, required: false, template: "mlpal" });
+  });
+
+  test("no sandbox at all (off by settings or --no-sandbox): none, reason off", () => {
+    expect(sandboxRecord(undefined, null)).toEqual({ platform: "none", filesystem: null, network: null, required: false, reason: "off" });
   });
 });
 

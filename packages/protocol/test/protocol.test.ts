@@ -18,7 +18,9 @@ import {
   type ModelFallbackEvent,
   type ModelRefusal,
   type ResultEvent,
+  type SandboxRecord,
   type SandboxRefusal,
+  type SystemInitEvent,
   type ScheduleView,
   type ServerMessage,
   type SessionStoreGrant,
@@ -210,11 +212,25 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
+describe("0.26.1 (E-17: system/init names the sandbox that confines the session's commands, additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.1");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.1");
   });
+
+  test("sandbox is optional on system/init; local, remote and none records are typed", () => {
+    const local: SandboxRecord = { platform: "bwrap", filesystem: "readOnly", network: "none", required: true };
+    const remote: SandboxRecord = { platform: "remote", filesystem: null, network: null, required: true, template: "hands" };
+    const none: SandboxRecord = { platform: "none", filesystem: null, network: null, required: false, reason: "off" };
+    const init: SystemInitEvent = { type: "system", subtype: "init", sessionId: "s", agentId: "a", model: "m", cwd: "/w", ts: "t", sandbox: local };
+    const before: SystemInitEvent = { type: "system", subtype: "init", sessionId: "s", agentId: "a", model: "m", cwd: "/w", ts: "t" };
+    // @ts-expect-error firecracker is a remote sandbox, recorded as remote with its template
+    const fc: SandboxRecord = { platform: "firecracker", filesystem: null, network: null, required: false };
+    expect([init.sandbox?.platform, remote.template, none.reason, "sandbox" in before, fc.required]).toEqual(["bwrap", "hands", "off", false, false]);
+  });
+});
+
+describe("0.26.0 (C8 delegated credential, C2 page context: additive)", () => {
 
   const cred: DelegatedCredential = { kind: "mlpal_user", token: "eyJh.eyJi.sig", expiresAt: 1_800_000_000_000, subject: "user:42" };
 

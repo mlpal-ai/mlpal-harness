@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { SandboxRecord } from "@mlpal/harness-protocol";
 import { registerSecrets } from "../obs/redact";
 import type { ExecPolicy } from "../tools/types";
 import { bwrapArgv } from "./bwrap";
@@ -74,6 +75,19 @@ export function bwrapHint(detail: string | undefined): string {
   if (/uid map|user namespace|unshare/i.test(detail))
     return " — unprivileged user namespaces are disabled (Ubuntu 24.04: kernel.apparmor_restrict_unprivileged_userns=1); run `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` or install an AppArmor profile for bwrap";
   return "";
+}
+
+/**
+ * Which sandbox confines a session's commands (E-17), for `system/init`, hop-run-result-v1 and run.completed: the
+ * host's `local` sandbox (undefined when it made none) and its remote hands (null when commands run here). Remote
+ * hands run the commands wherever a local sandbox also exists; the local spec's modes are claimed only when it
+ * confines, and a `none` says why.
+ */
+export function sandboxRecord(local: Pick<Sandbox, "platform" | "reason" | "spec"> | undefined, remote: { template: string } | null): SandboxRecord {
+  const required = local?.spec.required ?? false;
+  if (remote) return { platform: "remote", filesystem: null, network: null, required, template: remote.template };
+  if (local?.platform) return { platform: local.platform, filesystem: local.spec.filesystem.mode, network: local.spec.network.mode, required };
+  return { platform: "none", filesystem: null, network: null, required, reason: local ? (local.reason ?? "unavailable") : "off" };
 }
 
 export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}): Sandbox {
