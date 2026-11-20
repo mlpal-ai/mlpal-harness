@@ -212,10 +212,10 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.1 (E-17: system/init names the sandbox that confines the session's commands, additive)", () => {
+describe("0.26.7 (E-17: system/init names the sandbox that confines the session's commands, additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.1");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.1");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.7");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.7");
   });
 
   test("sandbox is optional on system/init; local, remote and none records are typed", () => {

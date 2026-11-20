@@ -21,12 +21,12 @@ export interface SystemInitEvent {
   model: string;
   cwd: string;
   ts: string;
-  /** 0.26.1 (E-17): what confines the commands this session runs, as the host started it. Absent from an older engine
+  /** 0.26.7 (E-17): what confines the commands this session runs, as the host started it. Absent from an older engine
    *  and from a host that does not say. */
   sandbox?: SandboxRecord;
 }
 
-/** 0.26.1 (E-17): which sandbox confines a session's commands, machine-readable (before, only a stderr line said). */
+/** 0.26.7 (E-17): which sandbox confines a session's commands, machine-readable (before, only a stderr line said). */
 export interface SandboxRecord {
   /** `seatbelt` (macOS) or `bwrap` (Linux): the local OS sandbox; `remote`: a remote sandbox runs them (a microVM);
    *  `none`: nothing confines them. */

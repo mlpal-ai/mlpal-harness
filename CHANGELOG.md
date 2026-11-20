@@ -19,8 +19,10 @@
   `userns` to the bwrap it found and nothing else (`bwrapAppArmorProfile`, `bwrapAppArmorInstall`;
   `/etc/apparmor.d/yodex-bwrap`), the profile the harness-e2e workbox runs as `bwrap-e2e`.
 
-### Which sandbox confined a run is on the record; protocol 0.26.1, telemetry d11.9 (E-17, additive, 2026-11-20)
+### Which sandbox confined a run is on the record; protocol 0.26.7, telemetry d11.9 (E-17, additive, 2026-11-20)
 
+- 0.26.7, not the next patch: `next/ws` already numbers 0.26.1–0.26.6 (0.26.1 is a parked call's tool and arguments,
+  5aa0430). Carry this change onto `next/ws` when the lines merge; its numbers stay as they are.
 - Protocol: `SandboxRecord {platform: seatbelt|bwrap|remote|none, filesystem, network, required, template?, reason?}`
   and `SystemInitEvent.sandbox?`. `filesystem`/`network` are the local OS sandbox's modes, null unless it confines;
   `template` names a remote sandbox's; `reason` says why `none` (`off`, or why it could not start). Before, only the
