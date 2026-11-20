@@ -162,6 +162,24 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await store.close();
   });
 
+  test("R18: the record's `sandbox` key rides the `record` event as written and is folded back on a fresh open()", async () => {
+    // The session store keeps an event's `data` as opaque JSON and never reads a `record` (mlpal-harness-stack
+    // session-store: `AppendEvent.data: Box<RawValue>`, `projection::reads_data`), so a key it does not know survives.
+    const first = await openRemote();
+    await first.store.registry.putSession({ ...record, sandbox: "remote" });
+    await first.store.flush();
+    expect(fake.events("s1").map((e) => [e.kind, (e.data as { sandbox?: string }).sandbox])).toEqual([["record", "remote"]]);
+    await first.store.close();
+    const second = await openRemote();
+    expect((await second.store.registry.getSession("s1"))?.sandbox).toBe("remote");
+    await second.store.registry.patchSession("s1", { sandbox: "none" });
+    await second.store.close();
+    expect(fake.events("s1").at(-1)).toMatchObject({ kind: "record", data: { sandbox: "none" } });
+    const third = await openRemote();
+    expect((await third.store.registry.getSession("s1"))?.sandbox).toBe("none");
+    await third.store.close();
+  });
+
   test("reads include what is still queued; tails page by cursor", async () => {
     const { store } = await openRemote();
     const a = await store.conversation.append("s1", { type: "user", message: { role: "user", content: "x" }, author: { type: "human" }, ts: "t" } as SDKMessage, null);
