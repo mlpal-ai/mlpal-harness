@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createSandbox } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 import { seatbeltProfile } from "../src/sandbox/seatbelt";
-import { gitEntryWritable, PROTECTED_IN_ROOT, resolveSandboxSpec, revertCreated, snapshotProtected } from "../src/sandbox/spec";
+import { gitEntryWritable, PROTECTED_IN_HOME, PROTECTED_IN_ROOT, protectedWriteHint, resolveSandboxSpec, revertCreated, snapshotProtected } from "../src/sandbox/spec";
 import { editTool, writeTool } from "../src/tools/builtin/files";
 
 // Ruling R22 (harness-e2e): a confined run cannot write the files the harness or git later loads or runs with
@@ -34,8 +34,12 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("the spec (R22, R22b)", () => {
   test("a workspace sandbox protects the harness's files and each root's .git; a read-only one has nothing writable to protect", () => {
-    const spec = resolveSandboxSpec(undefined, { roots: [root, "/srv/other"] });
-    expect(spec.filesystem.protected).toEqual([...PROTECTED_IN_ROOT.map((p) => join(root, p)), ...PROTECTED_IN_ROOT.map((p) => join("/srv/other", p))]);
+    const spec = resolveSandboxSpec(undefined, { roots: [root, "/srv/other"], home: "/home/me", realHome: null });
+    expect(spec.filesystem.protected).toEqual([
+      ...PROTECTED_IN_ROOT.map((p) => join(root, p)),
+      ...PROTECTED_IN_ROOT.map((p) => join("/srv/other", p)),
+      ...PROTECTED_IN_HOME.map((p) => p.replace("~", "/home/me")),
+    ]);
     expect(spec.filesystem.gitDirs).toEqual([join(root, ".git"), "/srv/other/.git"]);
     expect(PROTECTED_IN_ROOT).toEqual([".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"]);
     const ro = resolveSandboxSpec({ filesystem: { mode: "readOnly" } }, { roots: [root] });
@@ -287,6 +291,109 @@ describe("tool homes (R22e)", () => {
       for (const cache of [".bun/install/cache/pkg", ".cargo/registry/crate", ".local/share/pnpm/store/blob"]) expect([cache, touch(cache)]).toEqual([cache, 0]);
     } finally {
       sandbox.close();
+    }
+  });
+});
+
+// Ruling R22f: a tool home keeps its cache writable, never the files its tool loads or runs the next time the person
+// uses it.
+describe("tool homes' code-bearing files (R22f)", () => {
+  const CODE = [".gradle/init.d", ".gradle/init.gradle", ".gradle/gradle.properties", ".m2/settings.xml", ".mvn", ".local/share/uv/tools", ".local/bin", ".npmrc", ".yarnrc.yml", ".config/pip", ".pypirc", ".cargo/config.toml", ".bunfig.toml", ".gitconfig", ".config/git", ".ssh/config", ".zshrc"];
+  const CACHES = [".gradle/caches", ".m2/repository", ".cache/uv", ".npm", ".local/share/pnpm/store", ".cargo/registry"];
+
+  test("the spec: each is protected under the home (and the real home, when it differs); the caches are not; nothing under a read-only filesystem", () => {
+    const spec = resolveSandboxSpec(undefined, { roots: [root], home: "/home/me", realHome: "/Users/real" });
+    for (const p of CODE) {
+      expect([p, spec.filesystem.protected.includes(`/home/me/${p}`), spec.filesystem.protected.includes(`/Users/real/${p}`)]).toEqual([p, true, true]);
+    }
+    for (const c of CACHES) expect([c, spec.filesystem.protected.some((p) => p === `/home/me/${c}` || `/home/me/${c}`.startsWith(`${p}/`))]).toEqual([c, false]);
+    expect(resolveSandboxSpec({ filesystem: { mode: "readOnly" } }, { roots: [root], home: "/home/me" }).filesystem.protected).toEqual([]);
+  });
+
+  test("seatbelt: each is denied after the allow of the cache that holds it", () => {
+    const lines = seatbeltProfile(resolveSandboxSpec(undefined, { roots: [root], home: "/home/me", realHome: null })).trim().split("\n");
+    for (const [cache, code] of [[".gradle", ".gradle/init.d"], [".m2", ".m2/settings.xml"], [".local/share/uv", ".local/share/uv/tools"]] as const) {
+      const allow = lines.indexOf(`(allow file-write* (subpath "/home/me/${cache}"))`);
+      const deny = lines.indexOf(`(deny file-write* (literal "/home/me/${code}") (subpath "/home/me/${code}"))`);
+      expect([code, allow > 0, deny > allow]).toEqual([code, true, true]);
+    }
+  });
+
+  test("bwrap: one that exists is bound read-only after the cache that holds it; the scan watches only those a command could create", () => {
+    const home = join(root, "bw-home");
+    for (const d of [".gradle/init.d", ".gradle/caches", ".m2/repository", ".local/share/uv/tools"]) mkdirSync(join(home, d), { recursive: true });
+    writeFileSync(join(home, ".m2", "settings.xml"), "<settings/>");
+    writeFileSync(join(home, ".gitconfig"), "[user]\n");
+    const spec = resolveSandboxSpec(undefined, { roots: [join(root, "bw-work")], home, realHome: null });
+    const args = bwrapArgv("/usr/bin/bwrap", spec, ["true"]);
+    const at = (flag: string, a: string) => args.findIndex((x, i) => x === flag && args[i + 1] === a && args[i + 2] === a);
+    for (const [cache, code] of [[".gradle", ".gradle/init.d"], [".m2", ".m2/settings.xml"], [".local/share/uv", ".local/share/uv/tools"]] as const) {
+      expect([code, at("--bind", join(home, cache)) > 0, at("--ro-bind", join(home, code)) > at("--bind", join(home, cache))]).toEqual([code, true, true]);
+    }
+    expect(at("--ro-bind", join(home, ".gitconfig"))).toBeGreaterThan(0);
+    for (const cache of [".gradle/caches", ".m2/repository"]) expect([cache, at("--ro-bind", join(home, cache))]).toEqual([cache, -1]);
+    // the scan: gradle.properties (absent, under the writable ~/.gradle) is watched; ~/.npmrc (the home is not writable) is not
+    const snap = snapshotProtected(spec);
+    expect(snap.absent).toContain(join(home, ".gradle", "gradle.properties"));
+    expect(snap.absent).not.toContain(join(home, ".npmrc"));
+    writeFileSync(join(home, ".gradle", "gradle.properties"), "org.gradle.jvmargs=-javaagent:evil.jar\n");
+    writeFileSync(join(home, ".npmrc"), "the person's own, written meanwhile\n");
+    expect(revertCreated(spec, snap)).toEqual([join(home, ".gradle", "gradle.properties")]);
+    expect(existsSync(join(home, ".npmrc"))).toBe(true);
+  });
+
+  test.skipIf(process.platform !== "darwin")("under the real sandbox the code-bearing files refuse a write and the caches accept one", () => {
+    const home = join(root, "code-home");
+    for (const d of [".gradle/init.d", ".gradle/caches", ".m2/repository", ".local/share/uv/tools/ruff/bin", ".cache/uv"]) mkdirSync(join(home, d), { recursive: true });
+    writeFileSync(join(home, ".m2", "settings.xml"), "<settings/>");
+    const work = join(root, "code-work");
+    mkdirSync(work, { recursive: true });
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [work], home, realHome: null }));
+    try {
+      const write = (p: string) => sh(sandbox.wrap(["/bin/bash", "-c", `echo planted >> "${join(home, p)}"`]), work).code;
+      for (const code of [".gradle/init.d/evil.gradle", ".gradle/init.gradle", ".gradle/gradle.properties", ".m2/settings.xml", ".local/share/uv/tools/ruff/bin/ruff", ".gitconfig", ".npmrc"]) expect([code, write(code) !== 0]).toEqual([code, true]);
+      for (const cache of [".gradle/caches/x", ".m2/repository/x", ".cache/uv/x"]) expect([cache, write(cache)]).toEqual([cache, 0]);
+    } finally {
+      sandbox.close();
+    }
+  });
+});
+
+// Round 10: a git command that R22b makes fail says what to do about it.
+describe("the refusal is actionable", () => {
+  test("protectedWriteHint: a refused write that names a protected path gets the hint; any other failure gets none", () => {
+    const spec = resolveSandboxSpec(undefined, { roots: [root] });
+    const hint = protectedWriteHint(spec, "error: could not lock config file .git/config: Operation not permitted");
+    expect(hint).toContain("It has to run outside the sandbox: ask the user to run it themselves, or to start the session with --no-sandbox.");
+    expect(protectedWriteHint(spec, `fatal: cannot mkdir ${root}/.git/worktrees: Read-only file system`)).toBe(hint);
+    expect(protectedWriteHint(spec, "/bin/bash: .yodex/settings.json: Operation not permitted")).toBe(hint);
+    for (const other of ["cat: nope: No such file or directory", "touch: /etc/hosts: Operation not permitted", "error: pathspec '.git' did not match", "tests failed: 3"]) {
+      expect([other, protectedWriteHint(spec, other)]).toEqual([other, null]);
+    }
+    expect(protectedWriteHint(resolveSandboxSpec({ filesystem: { mode: "readOnly" } }, { roots: [root] }), ".git/config: Operation not permitted")).toBeNull();
+  });
+
+  test.skipIf(process.platform !== "darwin")("Bash in a confined run: git config, remote add, worktree add and init fail with the hint; a commit, and an ordinary failure, carry none", async () => {
+    const { bashTool } = await import("../src/tools/builtin/bash");
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [root] }));
+    const plain = join(root, "not-a-repo");
+    mkdirSync(plain, { recursive: true });
+    const bare = createSandbox(resolveSandboxSpec(undefined, { roots: [plain] }));
+    try {
+      const ctx = { cwd: root, roots: [root], exec: sandbox } as never;
+      for (const command of ["git config user.name agent", "git remote add origin https://example.com/x.git", "git worktree add ../wt-x -b wt-x"]) {
+        const r = await bashTool.call({ command }, ctx);
+        expect([command, r.isError, String(r.content).includes("start the session with --no-sandbox")]).toEqual([command, true, true]);
+      }
+      const init = await bashTool.call({ command: "git init" }, { cwd: plain, roots: [plain], exec: bare } as never);
+      expect([init.isError, String(init.content).includes("It has to run outside the sandbox")]).toEqual([true, true]);
+      const commit = await bashTool.call({ command: "echo c >> hint.txt && git add hint.txt && git -c user.name=t -c user.email=t@example.com commit -qm hint" }, ctx);
+      expect([commit.isError, String(commit.content).includes("[sandbox:")]).toEqual([false, false]);
+      const other = await bashTool.call({ command: "cat no-such-file" }, ctx);
+      expect([other.isError, String(other.content).includes("[sandbox:")]).toEqual([true, false]);
+    } finally {
+      sandbox.close();
+      bare.close();
     }
   });
 });

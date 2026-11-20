@@ -70,6 +70,15 @@
 - R22e: of a tool home only the cache or store is writable (`~/.bun/install/cache`, `~/.cargo/registry`,
   `~/.cargo/git`, `~/.local/share/pnpm/store`), never `~/.bun`, `~/.cargo` or pnpm's home, whose bin directories are
   on the person's PATH. A global install from a confined run fails.
+- R22f: the code-bearing files of the person's tool homes are protected too (`PROTECTED_IN_HOME`), also where the
+  home's cache is writable: gradle's init scripts and `gradle.properties`, Maven's settings and `~/.mvn`, uv's
+  installed tools and `~/.local/bin`, the npm, yarn, pnpm, pip and cargo configs, `~/.bunfig.toml`, git's global
+  config, the ssh, docker, kube and aws configs that name a helper program, and the shell start-up files. Caches stay
+  writable (`~/.gradle/caches`, `~/.m2/repository`, `~/.cache/uv`, the npm and pnpm stores, `~/.cargo/registry`).
+  The R22d scan watches only the paths a command could create (under a writable directory).
+- A command that fails on a path this policy keeps read-only (`git init`, `git config`, `git remote add`, a submodule
+  or worktree command) gets a line saying it has to run outside the sandbox, by the person or with `--no-sandbox`
+  (`ExecPolicy.explain`, `protectedWriteHint`); the Write and Edit refusal says the same.
 - A run nothing confines is unchanged.
 
 ### Helper processes take the run's sandbox (E-54, E-55, ruling R21, 2026-11-20)

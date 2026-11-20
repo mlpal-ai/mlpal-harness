@@ -38,6 +38,9 @@ export interface ExecPolicy {
   /** Ruling R22: why the run may not write `path` (absolute), or null. The file tools ask before they write, since
    *  they run in the engine, outside the OS confinement. Absent = nothing is refused. */
   writeDenied?(path: string): string | null;
+  /** What to add to a failed command's output when the failure is the sandbox's doing and the OS's message does not
+   *  say what to do about it (R22b: a git command that needs `.git/config`). Null when there is nothing to add. */
+  explain?(output: string): string | null;
   /** A command's own environment, held for the life of its process: what `env()` gives plus anything granted to this
    *  one command (D-55: a governed kube mutation's one-time capability). The tool calls `release` once the process
    *  exits, however it ends. Absent, every command sees `env()`. */

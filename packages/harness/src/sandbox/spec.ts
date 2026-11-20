@@ -132,6 +132,57 @@ export const DEFAULT_WRITABLE_CACHES = [
  */
 export const PROTECTED_IN_ROOT = [".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"];
 
+/**
+ * Ruling R22f: the code-bearing files of the person's tool homes, read-only in a confined run even where the home's
+ * cache is writable (`~/.gradle`, `~/.m2`, `~/.local/share/uv`) or a HOP's `allowWrite` or a root reaches them. Each
+ * is loaded or run by a tool on the person's PATH the next time they use it: init scripts and build properties,
+ * repository and registry settings, installed tools and bin directories, shell start-up files, and the configs that
+ * name a helper program (git, ssh, docker, kube, aws).
+ */
+export const PROTECTED_IN_HOME = [
+  "~/.gradle/init.d",
+  "~/.gradle/init.gradle",
+  "~/.gradle/init.gradle.kts",
+  "~/.gradle/gradle.properties",
+  "~/.m2/settings.xml",
+  "~/.m2/settings-security.xml",
+  "~/.mvn",
+  "~/.local/share/uv/tools",
+  "~/.local/bin",
+  "~/.config/uv",
+  "~/.npmrc",
+  "~/.yarnrc",
+  "~/.yarnrc.yml",
+  "~/.config/pnpm",
+  "~/.config/pip",
+  "~/.pip",
+  "~/.pypirc",
+  "~/.cargo/config",
+  "~/.cargo/config.toml",
+  "~/.cargo/bin",
+  "~/.bunfig.toml",
+  "~/.bun/bin",
+  "~/.gitconfig",
+  "~/.config/git",
+  "~/.ssh/config",
+  "~/.docker/config.json",
+  "~/.kube/config",
+  "~/.aws/config",
+  "~/.curlrc",
+  "~/.wgetrc",
+  "~/.gemrc",
+  "~/.bundle/config",
+  "~/.bashrc",
+  "~/.bash_profile",
+  "~/.bash_login",
+  "~/.profile",
+  "~/.zshrc",
+  "~/.zshenv",
+  "~/.zprofile",
+  "~/.zlogin",
+  "~/.config/fish",
+];
+
 /** The directories of `.git` ordinary work writes: objects, refs and their logs, and an operation's own state. */
 export const GIT_WRITABLE_DIRS = ["objects", "refs", "logs", "rebase-merge", "rebase-apply", "sequencer"];
 /** The files of `.git` ordinary work writes, as a pattern over a top-level entry's name: the index (and a stash's
@@ -156,6 +207,22 @@ export function protectedBy(spec: SandboxSpec, path: string): string | null {
   return [...spec.filesystem.protected, ...spec.filesystem.gitDirs].find((p) => folded === p.toLowerCase() || folded.startsWith(`${p.toLowerCase()}/`)) ?? null;
 }
 
+/** The failures a refused write shows as, from the OS under seatbelt and from a read-only mount under bubblewrap. */
+const WRITE_REFUSED = /Operation not permitted|Read-only file system|Permission denied/;
+/** A path this policy keeps read-only inside a workspace, as a command's own error message names it. */
+const NAMES_PROTECTED = /(^|[\s'"`:/])(\.git(\/[\w./-]*)?|\.gitattributes|\.yodex|\.claude|\.mcp\.json|bunfig\.toml)([\s'"`:/]|$)/m;
+
+/**
+ * What to tell the agent when a command failed on a path R22 keeps read-only (`git init`, `git config`,
+ * `git remote add`, a submodule or worktree command, a write under `.yodex`): the OS's own message says only that
+ * the operation is not permitted. Null when the output does not show that.
+ */
+export function protectedWriteHint(spec: SandboxSpec, output: string): string | null {
+  if (spec.filesystem.gitDirs.length + spec.filesystem.protected.length === 0) return null;
+  if (!WRITE_REFUSED.test(output) || !NAMES_PROTECTED.test(output)) return null;
+  return "[sandbox: this command tried to change something a sandboxed session may not write: git's configuration, hooks, remotes, submodules and worktrees (everything in .git except commits, branches, the index and stashes), or the harness's own project files (.yodex, .claude, .mcp.json, .gitattributes, bunfig.toml). It cannot succeed here. It has to run outside the sandbox: ask the user to run it themselves, or to start the session with --no-sandbox.]";
+}
+
 /** What `revertCreated` compares with: the protected paths that did not exist, and each `.git`'s entries. */
 export interface ProtectedSnapshot {
   absent: string[];
@@ -177,7 +244,10 @@ export function snapshotProtected(spec: SandboxSpec): ProtectedSnapshot {
     const names = entriesOf(g);
     if (names) gitEntries.set(g, names);
   }
-  return { absent: [...spec.filesystem.protected, ...spec.filesystem.gitDirs].filter((p) => !present(p)), gitEntries };
+  // only where a command could create it: a protected path outside every writable directory that appears meanwhile
+  // is someone else's doing (the person's `npm login` writing ~/.npmrc), never the command's
+  const creatable = (p: string) => spec.filesystem.writable.some((w) => p.startsWith(`${w}/`));
+  return { absent: [...spec.filesystem.protected, ...spec.filesystem.gitDirs].filter((p) => creatable(p) && !present(p)), gitEntries };
 }
 
 /**
@@ -338,7 +408,7 @@ export function resolveSandboxSpec(
       mode,
       writable,
       unreadable: uniq(unreadable),
-      protected: rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))),
+      protected: uniq([...rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))), ...(mode === "readOnly" ? [] : PROTECTED_IN_HOME.flatMap(denied))]),
       gitDirs: rootPaths.map((r) => join(r, ".git")),
     },
     network: {

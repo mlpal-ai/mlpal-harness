@@ -7,7 +7,7 @@ import { bwrapArgv } from "./bwrap";
 import { scrubEnv } from "./env";
 import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
-import { protectedBy, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
+import { protectedBy, protectedWriteHint, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
 import { realResolve } from "../tools/types";
 
 export * from "./spec";
@@ -218,8 +218,9 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     // R22 for the file tools: only where the OS confines too, so a run nothing confines is unchanged
     writeDenied: (path) => {
       const held = confined ? protectedBy(spec, realResolve(path)) : null;
-      return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness or git, so it stays read-only here. Ask the user to make the change.` : null;
+      return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness, git or one of your tools, so it stays read-only here. The change has to be made outside the sandbox: ask the user to make it, or to start the session with --no-sandbox.` : null;
     },
+    explain: (output) => (confined ? protectedWriteHint(spec, output) : null),
     // R22d: bubblewrap cannot stop a protected path that does not exist from being created, so what a command created
     // is taken back when it ends. Seatbelt refuses the creation itself.
     ...(confined === "bwrap"

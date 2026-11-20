@@ -169,7 +169,9 @@ export const bashTool = defineTool({
       );
     }
     const { output, code } = await run(input.command, ctx, input.timeout ?? DEFAULT_TIMEOUT);
-    const body = output.trim() || "(no output)";
+    // a failure the sandbox caused, where the OS's message does not say what to do (R22b)
+    const hint = code !== 0 ? (ctx.exec?.explain?.(output) ?? null) : null;
+    const body = `${output.trim() || "(no output)"}${hint ? `\n${hint}` : ""}`;
     return {
       content: code === 0 ? body : `[exit ${code}]\n${body}`,
       isError: code !== 0,
