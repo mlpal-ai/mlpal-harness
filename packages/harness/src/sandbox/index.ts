@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import type { SandboxNoneReason, SandboxRecord } from "@mlpal/harness-protocol";
 import { registerSecrets } from "../obs/redact";
 import type { ExecPolicy } from "../tools/types";
@@ -49,6 +50,8 @@ export interface CreateSandboxOptions {
    *  binary is present, every wrapped command dies with "setting up uid map: Permission denied",
    *  and a check on PATH alone reported the sandbox active (memory v13 experiment, F1). */
   bwrapProbe?: (bwrap: string) => { ok: boolean; detail?: string };
+  /** Whether the refusal may offer an AppArmor profile for that bwrap. Default: `bwrapTrust`. */
+  bwrapTrust?: (bwrap: string) => BwrapTrust;
   /** The environment to scrub; default process.env. */
   baseEnv?: NodeJS.ProcessEnv;
   onDeniedHost?: (host: string) => void;
@@ -78,7 +81,9 @@ const BWRAP_APPARMOR_NAME = "yodex-bwrap";
  *  stays on for every other program, which turning the sysctl off would not (E-15; the harness-e2e workbox runs this
  *  profile as /etc/apparmor.d/bwrap-e2e). */
 export function bwrapAppArmorProfile(bwrapPath: string): string {
-  const attach = /\s/.test(bwrapPath) ? `"${bwrapPath}"` : bwrapPath;
+  // AppArmor globs (`*`, `?`, `[…]`, `{…}`, `^`) and its escape and quote are taken literally in the path
+  const escaped = bwrapPath.replace(/[*?[\]{}^\\"]/g, "\\$&");
+  const attach = /\s/.test(bwrapPath) ? `"${escaped}"` : escaped;
   return [
     "abi <abi/4.0>,",
     "include <tunables/global>",
@@ -98,12 +103,40 @@ export function bwrapAppArmorInstall(bwrapPath: string): string {
   return `printf '%s\\n' ${lines.join(" ")} | sudo tee ${file} >/dev/null && sudo apparmor_parser -r ${file}`;
 }
 
-/** The known cause and its fix, when the probe's error names it. */
-export function bwrapHint(detail: string | undefined, bwrapPath = "/usr/bin/bwrap"): string {
-  if (!detail) return "";
-  if (/uid map|user namespace|unshare/i.test(detail))
-    return ` — the kernel refuses bwrap an unprivileged user namespace (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1). Keep that restriction and allow ${bwrapPath} alone with an AppArmor profile: ${bwrapAppArmorInstall(bwrapPath)}`;
-  return "";
+export type BwrapTrust = { trusted: true; real: string } | { trusted: false; why: string };
+
+/** Whether a profile for the bwrap at `path` grants user namespaces to bwrap alone: its real file and that file's
+ *  directory are owned by root, writable by no group or other, and not writable by this process. Otherwise whoever can
+ *  replace the binary inherits the grant, so no profile is offered. Never throws. */
+export function bwrapTrust(path: string): BwrapTrust {
+  try {
+    const real = realpathSync(path);
+    for (const p of [real, dirname(real)]) {
+      const st = statSync(p);
+      if (st.uid !== 0) return { trusted: false, why: `${p} is not owned by root` };
+      if ((st.mode & 0o022) !== 0) return { trusted: false, why: `${p} is writable by its group or others` };
+      let writable = true;
+      try {
+        accessSync(p, constants.W_OK);
+      } catch {
+        writable = false;
+      }
+      if (writable) return { trusted: false, why: `${p} is writable by this user` };
+    }
+    return { trusted: true, real };
+  } catch (e) {
+    return { trusted: false, why: `${path} cannot be checked (${(e as Error).message})` };
+  }
+}
+
+/** The known cause and its fix, when the probe's error names it. The AppArmor profile is offered only for a bwrap
+ *  `trust` accepts, and names its real path. */
+export function bwrapHint(detail: string | undefined, bwrapPath = "/usr/bin/bwrap", trust: (path: string) => BwrapTrust = bwrapTrust): string {
+  if (!detail || !/uid map|user namespace|unshare/i.test(detail)) return "";
+  const cause = " — the kernel refuses bwrap an unprivileged user namespace (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1)";
+  const t = trust(bwrapPath);
+  if (!t.trusted) return `${cause}; no AppArmor profile is offered for this bwrap, since ${t.why}: install the distribution's bwrap (root-owned) and run again`;
+  return `${cause}. Keep that restriction and allow ${t.real} alone with an AppArmor profile: ${bwrapAppArmorInstall(t.real)}`;
 }
 
 /**
@@ -145,7 +178,7 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       if (probe.ok) {
         confined = "bwrap";
         wrap = (argv) => bwrapArgv(bwrap, spec, argv);
-      } else [reason, unavailable] = [`bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail, bwrap)}`, "cannot_confine"];
+      } else [reason, unavailable] = [`bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail, bwrap, opts.bwrapTrust)}`, "cannot_confine"];
     } else [reason, unavailable] = ["bubblewrap (bwrap) is not installed", "missing"];
   } else {
     [reason, unavailable] = [`no sandbox for ${platform}`, "unsupported"];

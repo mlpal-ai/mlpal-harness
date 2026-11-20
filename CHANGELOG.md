@@ -18,6 +18,9 @@
   restriction off for every program (`sysctl …=0`). It gives one line that installs an AppArmor profile granting
   `userns` to the bwrap it found and nothing else (`bwrapAppArmorProfile`, `bwrapAppArmorInstall`;
   `/etc/apparmor.d/yodex-bwrap`), the profile the harness-e2e workbox runs as `bwrap-e2e`.
+- The profile is offered only for a bwrap whose real file and directory are root-owned, writable by no group or other
+  and not by the user (`bwrapTrust`): a grant to a binary the user could replace would be the user's. It names the
+  real path, with AppArmor's glob characters escaped. Otherwise the hint says why no profile is offered.
 
 ### Which sandbox confined a run is on the record; protocol 0.26.7, telemetry d11.9 (E-17, additive, 2026-11-20)
 

@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { bwrapAppArmorInstall, bwrapAppArmorProfile, bwrapHint, createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, lookupPasswdHome, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
+import { bwrapAppArmorInstall, bwrapAppArmorProfile, bwrapHint, bwrapTrust, createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, lookupPasswdHome, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -217,6 +217,9 @@ describe("bwrap blocked by the kernel's user-namespace restriction (E-15): the h
       ["abi <abi/4.0>,", "include <tunables/global>", "", "profile yodex-bwrap /usr/bin/bwrap flags=(unconfined) {", "  userns,", "  include if exists <local/yodex-bwrap>", "}", ""].join("\n"),
     );
     expect(bwrapAppArmorProfile("/opt/my tools/bwrap")).toContain('profile yodex-bwrap "/opt/my tools/bwrap" flags=(unconfined) {');
+    // AppArmor globs in a path are escaped, so the profile attaches to that one file
+    expect(bwrapAppArmorProfile("/opt/b[1]/bw*rap")).toContain("profile yodex-bwrap /opt/b\\[1\\]/bw\\*rap flags=(unconfined) {");
+    expect(bwrapAppArmorProfile("/opt/{a,b} x/?")).toContain('profile yodex-bwrap "/opt/\\{a,b\\} x/\\?" flags=(unconfined) {');
   });
 
   test("the install line writes exactly that profile and loads it", async () => {
@@ -226,8 +229,10 @@ describe("bwrap blocked by the kernel's user-namespace restriction (E-15): the h
     expect((await sh(["/bin/sh", "-c", printf])).out).toBe(bwrapAppArmorProfile("/usr/local/bin/bwrap"));
   });
 
-  test("the hint names the cause and the scoped profile, never the global sysctl", () => {
-    const hint = bwrapHint(denied, "/usr/bin/bwrap");
+  const trusted = (real: string) => () => ({ trusted: true as const, real });
+
+  test("the hint names the cause and the scoped profile for the real bwrap, never the global sysctl", () => {
+    const hint = bwrapHint(denied, "/usr/local/bin/bwrap", trusted("/usr/bin/bwrap"));
     expect(hint).toContain("kernel.apparmor_restrict_unprivileged_userns=1");
     expect(hint).toContain(bwrapAppArmorInstall("/usr/bin/bwrap"));
     expect(hint).not.toContain("sysctl");
@@ -235,8 +240,27 @@ describe("bwrap blocked by the kernel's user-namespace restriction (E-15): the h
     expect(bwrapHint("bwrap: execvp true: No such file", "/usr/bin/bwrap")).toBe("");
   });
 
+  test("no profile is offered for a bwrap the user could replace: the grant would be theirs", () => {
+    const hint = bwrapHint(denied, "/home/u/bin/bwrap", () => ({ trusted: false, why: "/home/u/bin/bwrap is not owned by root" }));
+    expect(hint).toContain("no AppArmor profile is offered for this bwrap, since /home/u/bin/bwrap is not owned by root");
+    expect(hint).not.toContain("apparmor_parser");
+  });
+
+  test("bwrapTrust: a file this user owns is not trusted; a root-owned system binary is, by its real path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sb-trust-"));
+    const mine = join(dir, "bwrap");
+    writeFileSync(mine, "#!/bin/sh\n");
+    try {
+      expect(bwrapTrust(mine).trusted).toBe(false);
+      expect(bwrapTrust(join(dir, "absent"))).toMatchObject({ trusted: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    if (process.getuid?.() !== 0) expect(bwrapTrust("/bin/sh")).toEqual({ trusted: true, real: realpathSync("/bin/sh") });
+  });
+
   test("a sandbox refused by the probe carries the hint for the bwrap it found", () => {
-    const sb = createSandbox(resolveSandboxSpec(undefined, { roots: ["/w"], home: "/h" }), { platform: "linux", bwrapPath: "/usr/local/bin/bwrap", bwrapProbe: () => ({ ok: false, detail: denied }), baseEnv: {} });
+    const sb = createSandbox(resolveSandboxSpec(undefined, { roots: ["/w"], home: "/h" }), { platform: "linux", bwrapPath: "/usr/local/bin/bwrap", bwrapProbe: () => ({ ok: false, detail: denied }), bwrapTrust: trusted("/usr/local/bin/bwrap"), baseEnv: {} });
     expect(sb.reason).toContain("profile yodex-bwrap /usr/local/bin/bwrap");
     expect(sb.describe()).toContain("NOT confined");
     sb.close();
