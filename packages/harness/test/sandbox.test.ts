@@ -185,10 +185,16 @@ describe("sandboxRecord (E-17): which sandbox confines a session's commands, for
     mac.close();
   });
 
-  test("a sandbox that cannot start here and is not required: none, with the reason, and no modes claimed", () => {
-    const sb = createSandbox(ws, { platform: "linux", bwrapPath: null, baseEnv: {} });
-    expect(sandboxRecord(sb, null)).toEqual({ platform: "none", filesystem: null, network: null, required: false, reason: "bubblewrap (bwrap) is not installed" });
-    sb.close();
+  test("a sandbox that cannot start here and is not required: none, a reason code (never the text), no modes claimed", () => {
+    const none = (opts: Parameters<typeof createSandbox>[1]) => {
+      const sb = createSandbox(ws, { baseEnv: {}, ...opts });
+      const r = sandboxRecord(sb, null);
+      sb.close();
+      return r;
+    };
+    expect(none({ platform: "linux", bwrapPath: null })).toEqual({ platform: "none", filesystem: null, network: null, required: false, reason: "missing" });
+    expect(none({ platform: "linux", bwrapPath: "/usr/bin/bwrap", bwrapProbe: () => ({ ok: false, detail: "bwrap: setting up uid map: Permission denied" }) }).reason).toBe("cannot_confine");
+    expect(none({ platform: "win32" }).reason).toBe("unsupported");
   });
 
   test("remote hands run the commands: remote, with the template, the HOP's requirement kept", () => {

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { SandboxRecord } from "@mlpal/harness-protocol";
+import type { SandboxNoneReason, SandboxRecord } from "@mlpal/harness-protocol";
 import { registerSecrets } from "../obs/redact";
 import type { ExecPolicy } from "../tools/types";
 import { bwrapArgv } from "./bwrap";
@@ -26,8 +26,10 @@ export interface Sandbox extends ExecPolicy {
   /** Which OS mechanism confines commands; null when none could. */
   platform: "seatbelt" | "bwrap" | null;
   available: boolean;
-  /** Why `available` is false. */
+  /** Why `available` is false, for a person (the notice, a refusal). */
   reason?: string;
+  /** The same as a code, for the records (E-17: content-free). */
+  unavailable?: Exclude<SandboxNoneReason, "off">;
   /** Environment variable names removed from every command's environment. */
   scrubbed: string[];
   /** Hosts the allowlist proxy refused, in order. Empty unless network.mode is "allowlist". */
@@ -110,11 +112,11 @@ export function bwrapHint(detail: string | undefined, bwrapPath = "/usr/bin/bwra
  * hands run the commands wherever a local sandbox also exists; the local spec's modes are claimed only when it
  * confines, and a `none` says why.
  */
-export function sandboxRecord(local: Pick<Sandbox, "platform" | "reason" | "spec"> | undefined, remote: { template: string } | null): SandboxRecord {
+export function sandboxRecord(local: Pick<Sandbox, "platform" | "unavailable" | "spec"> | undefined, remote: { template: string } | null): SandboxRecord {
   const required = local?.spec.required ?? false;
   if (remote) return { platform: "remote", filesystem: null, network: null, required, template: remote.template };
   if (local?.platform) return { platform: local.platform, filesystem: local.spec.filesystem.mode, network: local.spec.network.mode, required };
-  return { platform: "none", filesystem: null, network: null, required, reason: local ? (local.reason ?? "unavailable") : "off" };
+  return { platform: "none", filesystem: null, network: null, required, reason: local ? (local.unavailable ?? "cannot_confine") : "off" };
 }
 
 export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}): Sandbox {
@@ -130,11 +132,12 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
   let wrap: (argv: string[]) => string[] = (argv) => argv;
   let confined: "seatbelt" | "bwrap" | null = null;
   let reason: string | undefined;
+  let unavailable: Sandbox["unavailable"];
   if (platform === "darwin") {
     if (existsSync(SANDBOX_EXEC)) {
       confined = "seatbelt";
       wrap = (argv) => seatbeltArgv(spec, argv);
-    } else reason = `${SANDBOX_EXEC} is missing`;
+    } else [reason, unavailable] = [`${SANDBOX_EXEC} is missing`, "missing"];
   } else if (platform === "linux") {
     const bwrap = opts.bwrapPath === undefined ? Bun.which("bwrap") : opts.bwrapPath;
     if (bwrap) {
@@ -142,10 +145,10 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       if (probe.ok) {
         confined = "bwrap";
         wrap = (argv) => bwrapArgv(bwrap, spec, argv);
-      } else reason = `bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail, bwrap)}`;
-    } else reason = "bubblewrap (bwrap) is not installed";
+      } else [reason, unavailable] = [`bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail, bwrap)}`, "cannot_confine"];
+    } else [reason, unavailable] = ["bubblewrap (bwrap) is not installed", "missing"];
   } else {
-    reason = `no sandbox for ${platform}`;
+    [reason, unavailable] = [`no sandbox for ${platform}`, "unsupported"];
   }
 
   const describe = () => {
@@ -171,6 +174,7 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     platform: confined,
     available: confined !== null,
     reason,
+    ...(unavailable ? { unavailable } : {}),
     scrubbed: scrub.scrubbed,
     deniedHosts: proxy?.denied ?? [],
     wrap,

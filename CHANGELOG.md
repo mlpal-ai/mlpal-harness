@@ -25,7 +25,8 @@
   5aa0430). Carry this change onto `next/ws` when the lines merge; its numbers stay as they are.
 - Protocol: `SandboxRecord {platform: seatbelt|bwrap|remote|none, filesystem, network, required, template?, reason?}`
   and `SystemInitEvent.sandbox?`. `filesystem`/`network` are the local OS sandbox's modes, null unless it confines;
-  `template` names a remote sandbox's; `reason` says why `none` (`off`, or why it could not start). Before, only the
+  `template` names a remote sandbox's; `reason` says why `none` as a code (`SandboxNoneReason`: `off`, `missing`,
+  `cannot_confine`, `unsupported`; `Sandbox.unavailable` carries it), never the refusal text. Before, only the
   stderr notice said which sandbox ran, so a grader or a parity table had to scrape it.
 - `sandboxRecord(local, remote)` (sandbox module) builds it from the host's sandbox and remote hands.
 - `AgentConfig.sandbox`: the host's record rides the session's `system/init` (streamed and persisted) and

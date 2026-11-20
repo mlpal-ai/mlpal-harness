@@ -18,6 +18,7 @@ import {
   type ModelFallbackEvent,
   type ModelRefusal,
   type ResultEvent,
+  type SandboxNoneReason,
   type SandboxRecord,
   type SandboxRefusal,
   type SystemInitEvent,
@@ -226,6 +227,10 @@ describe("0.26.7 (E-17: system/init names the sandbox that confines the session'
     const before: SystemInitEvent = { type: "system", subtype: "init", sessionId: "s", agentId: "a", model: "m", cwd: "/w", ts: "t" };
     // @ts-expect-error firecracker is a remote sandbox, recorded as remote with its template
     const fc: SandboxRecord = { platform: "firecracker", filesystem: null, network: null, required: false };
+    // @ts-expect-error the reason is a code, never the refusal's text
+    const text: SandboxRecord = { platform: "none", filesystem: null, network: null, required: false, reason: "bubblewrap (bwrap) is not installed" };
+    const codes: SandboxNoneReason[] = ["off", "missing", "cannot_confine", "unsupported"];
+    expect([text.platform, codes.length]).toEqual(["none", 4]);
     expect([init.sandbox?.platform, remote.template, none.reason, "sandbox" in before, fc.required]).toEqual(["bwrap", "hands", "off", false, false]);
   });
 });

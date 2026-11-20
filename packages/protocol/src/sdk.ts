@@ -38,9 +38,14 @@ export interface SandboxRecord {
   required: boolean;
   /** `remote`: the sandbox template the commands run in. */
   template?: string;
-  /** `none`: why. `off` when no sandbox was asked for (settings, `--no-sandbox`), else why it could not start here. */
-  reason?: string;
+  /** `none`: why, as a code (the record is content-free). */
+  reason?: SandboxNoneReason;
 }
+
+/** 0.26.7: why no sandbox confines a session's commands. `off`: none was asked for (settings, `--no-sandbox`);
+ *  `missing`: the platform's mechanism is not installed (bwrap, sandbox-exec); `cannot_confine`: it is installed and
+ *  failed its probe (Ubuntu 24.04's user-namespace restriction); `unsupported`: no mechanism for this platform. */
+export type SandboxNoneReason = "off" | "missing" | "cannot_confine" | "unsupported";
 
 export interface UserEvent {
   type: "user";
