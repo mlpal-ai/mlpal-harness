@@ -46,25 +46,21 @@
 
 - Rules are matched against a command's words with the shell's quotes removed, so a pattern written the way a user
   copies the command (`Bash(python3 -c 'import x')`) matched nothing: a quoted allow fell through to the mode (or the
-  judge), a quoted toolClasses entry left the command `unknown`, and a quoted deny never denied. Allow, deny, approval
-  entries (`ruleMatch`) and toolClasses (`Bash(…)` and bare entries, on a Bash command) now also match the pattern as
-  shell words (`normalizeBashPattern`: the decomposer's own quote removal, single-spaced; `*` stays the wildcard).
-  Every refusal of auto-approval is unchanged.
-- Two readings (controller ruling, review round 2, security-first; `bashRuleMatcher(pattern, "allow" | "deny")`). An
-  allow rule or a readOnly class admits a call, so it never matches more than it names: a `*` the pattern quoted or
-  escaped matches only a literal `*` (`Bash(find . -name '*.py')` is not `find . -name x -delete -name a.py`), and the
-  pattern as written is not also tried. A deny rule, an approval entry and a mutative or destructive class only stop
-  more: they match as written or as shell words with every `*` a wildcard. (`?` was never a rule wildcard.)
-- Round 3 (R14): a command's words had their quotes stripped, so a quoted, literal `*` in an allow still matched a bare
-  `*` the shell expands (`Bash(rm "*")` admitted `rm *`). `DecomposedCommand.marked` now marks what the shell
-  interprets: an unquoted `*` or `?`, a `[…]`, a `{a,b}` (not `{}`), a leading `~`, an expansion's `$` or backtick.
-  An allow (`bashAllowMatcher`, over the marked forms) admits a character only where the command leaves it to the
-  shell exactly as the pattern does: `Bash(rm "*")` admits `rm "*"`, never `rm *`; `Bash(ls a?)` admits `ls a?`. A
-  word or pattern holding a marker-range character (U+E000–U+E07F) admits nothing. Deny keeps the wildcard reading
-  (`bashDenyMatcher`). `literalGlob` replaces `literalStar` on the notes.
-- `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them (or whose
-  quoting does not balance), for `yodex hop lint`; `literalStar` marks an allow-side pattern with a literal `*`. It
-  also takes a run context's `approvals.require` (read as a deny is), which yodex checks where an assignment's
+  judge), a quoted toolClasses entry left the command `unknown`, and a quoted deny never denied.
+- Deny side (a deny rule, an approval entry through `ruleMatch`, a mutative or destructive class): the pattern matches
+  as written or as shell words (`normalizeBashPattern`: the decomposer's own quote removal, single-spaced), every `*`
+  a wildcard (`bashDenyMatcher`). Widening a deny is safe.
+- Allow side (an allow rule, a readOnly class; ruling R19, security-first): a pattern with any quoting (`'`, `"` or a
+  backslash) matches only the command written identically (`bashAllowMatcher`, `bashAsWritten`). The line's text is
+  compared, runs of blanks outside quotes aside; never a dequoted form, with no wildcard, and only when the line runs
+  that one command. So `Bash(rm "*")` admits `rm "*"`, never `rm *`; `Bash(rm 'a b')` never `rm a b`;
+  `Bash(rm -rf "$PWD/dist")` never `rm -rf $PWD/dist`. A miss falls to the mode, as every quoted allow did before. A
+  pattern holding a line break, a substitution, `${…}`, `$'…'` or `$"…"` admits nothing. An allow without quoting is
+  matched as it always was (single-spaced, `*` the wildcard, over the dequoted words). Every refusal of auto-approval
+  is unchanged.
+- `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them, for
+  `yodex hop lint`; `identical` marks an allow-side pattern with quoting, `matchedAs` the one command text it admits.
+  It also takes a run context's `approvals.require` (read as a deny is), which yodex checks where an assignment's
   approvals enter the engine: a HOP has none for lint to read.
 
 ### The sandbox's credential denials also cover the real home under a throwaway `$HOME` (E-16, 2026-11-20)

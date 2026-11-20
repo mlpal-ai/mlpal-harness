@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { HUMAN } from "@mlpal/harness-protocol";
 import { bashPatternNotes, createPolicy, type PermissionMode, type PermissionRequest, ruleMatch } from "../src/permission/engine";
 import { classifyAction } from "../src/permission/safety-envelope";
-import { decomposeBash, normalizeBashPattern, readBashPattern } from "../src/permission/shell-decompose";
+import { bashAsWritten, decomposeBash, normalizeBashPattern } from "../src/permission/shell-decompose";
 import type { SafetyPolicy } from "../src/profile/types";
 
 // E-11 (harness-e2e TERMINAL §8.1): rules are matched against a command's words with the shell's quotes removed, so a
 // pattern written the way a user copies the command (`Bash(python3 -c 'import x')`) matched nothing, and a quoted
-// deny never denied. The pattern goes through the same quote removal before it is matched.
+// deny never denied. Ruling R19: a deny (or an approval entry) goes through the same quote removal before it is
+// matched; an allow with any quoting matches only the command written identically.
 
 const bash = (command: string): PermissionRequest => ({ toolName: "Bash", input: { command }, readOnly: false, isEdit: false, principal: HUMAN });
 const decide = async (mode: PermissionMode, rules: { allow?: string[]; deny?: string[] }, command: string) => createPolicy({ mode, ...rules })(bash(command));
@@ -20,17 +21,6 @@ describe("normalizeBashPattern", () => {
     expect(normalizeBashPattern(`git commit -m "fix: \\"x\\""`)).toBe('git commit -m fix: "x"');
     expect(normalizeBashPattern("grep a\\ b  file")).toBe("grep a b file");
     expect(normalizeBashPattern("  git   status ")).toBe("git status");
-  });
-
-  test("the allow reading: only a bare `*` is a wildcard", () => {
-    const allow = (p: string) => readBashPattern(p)!.allow;
-    expect(allow("find . -name '*.py'").test("find . -name *.py")).toBe(true);
-    expect(allow("find . -name '*.py'").test("find . -name x -delete -name a.py")).toBe(false);
-    expect(allow("find . -name \\*.py").test("find . -name a.py")).toBe(false);
-    expect(allow("echo $(ls *)").test("echo $(ls x)")).toBe(false);
-    expect(allow("git log *").test("git log --oneline -3")).toBe(true);
-    expect(allow("echo a?b").test("echo axb")).toBe(false); // `?` was never a wildcard in a rule
-    expect([readBashPattern("find . -name '*.py'")!.literalGlob, readBashPattern("git log *")!.literalGlob, readBashPattern("rm 'a?'")!.literalGlob]).toEqual([true, false, true]);
   });
 
   test("`*` is kept in the words, quoted or not; operators and expansions are kept as written", () => {
@@ -52,39 +42,24 @@ describe("normalizeBashPattern", () => {
   });
 });
 
-describe("allow rules with quotes", () => {
-  test("the quoted command a user copied into the rule is allowed (cruise asked before)", async () => {
-    expect(await decide("cruise", { allow: [`Bash(${PROBE})`] }, PROBE)).toEqual({ behavior: "allow" });
-    expect(await decide("cruise", { allow: [`Bash(${PROBE})`] }, "python3 -c 'import os'")).toEqual({ behavior: "ask" });
+describe("bashAsWritten (R19): a command or a quoted allow pattern, as written", () => {
+  test("only runs of blanks outside quotes collapse; quotes and backslashes stay", () => {
+    expect(bashAsWritten(`  rm   -rf\t"$PWD/dist"  `)).toBe(`rm -rf "$PWD/dist"`);
+    expect(bashAsWritten(`echo 'a  b'   "c  d"`)).toBe(`echo 'a  b' "c  d"`);
+    expect(bashAsWritten("grep a\\  b")).toBe("grep a\\  b"); // an escaped blank is the word's, the next one separates
+    expect(bashAsWritten(`echo "a \\" b"  c`)).toBe(`echo "a \\" b" c`);
   });
 
-  test("ruling (security-first): a `*` an allow quotes or escapes is literal; only a bare `*` is the wildcard", async () => {
-    // the reviewer's case: the quoted glob is find's own argument, never the rule's wildcard
-    for (const rule of ["Bash(find . -name '*.py')", 'Bash(find . -name "*.py")', "Bash(find . -name \\*.py)"]) {
-      expect(await decide("manual", { allow: [rule] }, "find . -name x -delete -name a.py")).toEqual({ behavior: "ask" });
-      expect(await decide("manual", { allow: [rule] }, "find . -name '*.py'")).toEqual({ behavior: "allow" });
+  test("null when the quoting does not balance, or the text holds what this reading cannot follow", () => {
+    for (const text of ["echo it's", 'echo "a', "echo a\\", "echo 'a'\necho b", "echo \"$(date '+%F')\"", "echo `date`", 'echo "${x:-a  b}"', "echo $'a\\'b'", 'echo $"a"']) {
+      expect([text, bashAsWritten(text)]).toEqual([text, null]);
     }
-    expect(await decide("manual", { allow: [`Bash(git commit -m "*")`] }, `git commit -m "fix: x"`)).toEqual({ behavior: "ask" });
-    expect(await decide("manual", { allow: ["Bash(git commit -m *)"] }, `git commit -m "fix: x"`)).toEqual({ behavior: "allow" });
-    expect(await decide("manual", { allow: ["Bash(git commit -m *)"] }, "git push")).toEqual({ behavior: "ask" });
-  });
-
-  test("an allow is matched as shell words only, never also as written", async () => {
-    // `echo "'x'"` runs echo with the word `'x'`; the written pattern would match that form, the allow reading does not
-    expect(await decide("manual", { allow: ["Bash(echo 'x')"] }, `echo "'x'"`)).toEqual({ behavior: "ask" });
-    expect(await decide("manual", { allow: ["Bash(echo 'x')"] }, "echo x")).toEqual({ behavior: "allow" });
-  });
-
-  test("normalising never loosens the refusals: a chain still needs every command to match", async () => {
-    const allow = [`Bash(python3 -c 'print(1)')`];
-    expect(await decide("manual", { allow }, "python3 -c 'print(1)' && rm notes.txt")).toEqual({ behavior: "ask" });
-    expect(await decide("manual", { allow }, "X=1 python3 -c 'print(1)'")).toEqual({ behavior: "ask" });
   });
 });
 
-describe("round 3 (R14): an allow's literal character never lines up with one the shell interprets", () => {
-  // every pair asks in manual mode, as it did before E-11: the rule names a quoted character, the command leaves it to
-  // the shell (a glob, a brace or tilde expansion, a parameter)
+describe("allow rules with quotes (R19): only the command written identically", () => {
+  // every pair asks in manual mode, as it did before E-11 (a quoted allow matched nothing then): the command is not
+  // written the way the rule is
   const asks: Array<[string, string]> = [
     [`Bash(rm "*")`, "rm *"], // with a planted `-rf` file, rm -rf *
     ["Bash(tar cf b.tar '*')", "tar cf b.tar *"], // the checkpoint-action trick
@@ -95,6 +70,24 @@ describe("round 3 (R14): an allow's literal character never lines up with one th
     ["Bash(cat '~/x')", "cat ~/x"],
     ["Bash(echo '$HOME')", "echo $HOME"],
     ["Bash(rm '*.tmp' x)", "rm *.tmp x"],
+    ["Bash(git commit -m 'wip --amend')", "git commit -m wip --amend"], // one message word, or a second option
+    ["Bash(rm 'a b')", "rm a b"], // one file, or two
+    [`Bash(rm -rf "$PWD/dist")`, "rm -rf $PWD/dist"], // word-split and globbed when unquoted
+    ["Bash(touch 'X=~/y')", "touch X=~/y"],
+    // the same words in other quoting, a wildcard reading, a longer line: none is the command as written
+    [`Bash(rm "*")`, "rm '*'"],
+    [`Bash(rm "*")`, "rm \\*"],
+    ["Bash(echo 'x')", "echo x"],
+    ["Bash(echo 'x')", `echo "'x'"`],
+    ["Bash(find . -name '*.py')", "find . -name x -delete -name a.py"],
+    ['Bash(find . -name "*.py")', "find . -name '*.py'"],
+    ["Bash(find . -name \\*.py)", "find . -name a.py"],
+    [`Bash(git commit -m "*")`, `git commit -m "fix: x"`],
+    ["Bash(python3 -c 'print(1)' *)", "python3 -c 'print(1)' x"], // no wildcard in a quoted allow
+    ["Bash(python3 -c 'print(1)')", "python3 -c 'print(1)' && rm notes.txt"],
+    ["Bash(python3 -c 'print(1)')", "X=1 python3 -c 'print(1)'"],
+    ["Bash(echo 'a  b')", "echo 'a b'"], // blanks inside quotes are the argument's
+    ["Bash(echo it's)", "echo it's"], // unbalanced: it names no command
   ];
   for (const [rule, command] of asks) {
     test(`${rule} asks for ${command}`, async () => {
@@ -102,42 +95,75 @@ describe("round 3 (R14): an allow's literal character never lines up with one th
     });
   }
 
-  test("the same character quoted in the command is admitted, and a bare one where the rule leaves it bare", async () => {
+  test("each quoted pattern allows its identically written command (blanks outside quotes aside)", async () => {
+    const same = [
+      PROBE,
+      `rm "*"`,
+      "tar cf b.tar '*'",
+      "chmod 600 \\*",
+      "rm 'a?'",
+      "rm '[ab]'",
+      "rm '{a,b}'",
+      "cat '~/x'",
+      "echo '$HOME'",
+      "rm '*.tmp' x",
+      "git commit -m 'wip --amend'",
+      "rm 'a b'",
+      `rm -rf "$PWD/dist"`,
+      "touch 'X=~/y'",
+      "find . -name '*.py'",
+    ];
+    for (const command of same) expect([command, await decide("manual", { allow: [`Bash(${command})`] }, command)]).toEqual([command, { behavior: "allow" }]);
+    expect(await decide("manual", { allow: [`Bash(rm  -rf   "$PWD/dist")`] }, ` rm -rf\t"$PWD/dist" `)).toEqual({ behavior: "allow" });
+    expect(await decide("cruise", { allow: [`Bash(${PROBE})`] }, "python3 -c 'import os'")).toEqual({ behavior: "ask" });
+  });
+
+  test("a quoted allow never covers a line that runs more than the one command, however it is written", async () => {
+    for (const command of [`echo "$(rm -rf x)"`, "echo 'a' && rm x", "echo 'a' | sh", "echo 'a' > out.txt", "echo 'a'\nrm x"]) {
+      expect([command, await decide("manual", { allow: [`Bash(${command})`] }, command)]).toEqual([command, { behavior: "ask" }]);
+    }
+  });
+
+  test("an unquoted allow keeps its reading: `*` the wildcard, over the command's words with quotes removed", async () => {
     const allows: Array<[string, string]> = [
-      [`Bash(rm "*")`, `rm "*"`],
-      [`Bash(rm "*")`, "rm '*'"],
-      [`Bash(rm "*")`, "rm \\*"],
-      ["Bash(rm '[ab]')", "rm '[ab]'"],
+      ["Bash(git commit -m *)", `git commit -m "fix: x"`],
+      ["Bash(rm *)", "rm *"],
       ["Bash(ls a?)", "ls a?"],
       ["Bash(echo $HOME)", "echo $HOME"],
-      [`Bash(echo "$HOME")`, `echo "$HOME"`],
-      ["Bash(rm *)", "rm *"], // a bare wildcard over a glob, as before E-11
-      ["Bash(find . -exec cat {} +)", "find . -exec cat {} +"], // `{}` is no brace expansion
-      ["Bash([ -f *)", "[ -f x ]"], // `[` alone is a command, not a bracket expression
+      ["Bash(echo x)", "echo 'x'"],
+      ["Bash(find . -exec cat {} +)", "find . -exec cat {} +"],
+      ["Bash([ -f *)", "[ -f x ]"],
+      ["Bash(uname   -a)", "uname -a"],
     ];
     for (const [rule, command] of allows) expect([rule, command, await decide("manual", { allow: [rule] }, command)]).toEqual([rule, command, { behavior: "allow" }]);
+    expect(await decide("manual", { allow: ["Bash(git commit -m *)"] }, "git push")).toEqual({ behavior: "ask" });
+    expect(await decide("manual", { allow: ["Bash(echo a?b)"] }, "echo axb")).toEqual({ behavior: "ask" }); // `?` was never a rule wildcard
   });
 
-  test("a readOnly class reads the same way: a literal * is not a glob the shell expands", () => {
-    const s: SafetyPolicy = { toolClasses: { readOnly: [`Bash(rm "*")`], mutative: [], destructive: [] }, preApply: { requirePlanArtifact: false, hash: [] }, blastRadius: {}, approval: { destructive: "always", outOfScope: "never" }, identities: { neverSelfGrant: true } };
-    expect(classifyAction(s, { toolName: "Bash", command: "rm *", tags: {} })).toBe("unknown");
-    expect(classifyAction(s, { toolName: "Bash", command: `rm "*"`, tags: {} })).toBe("readOnly");
+  test("a readOnly class reads the same way", () => {
+    const s = (readOnly: string[]): SafetyPolicy => ({ toolClasses: { readOnly, mutative: [], destructive: [] }, preApply: { requirePlanArtifact: false, hash: [] }, blastRadius: {}, approval: { destructive: "always", outOfScope: "never" }, identities: { neverSelfGrant: true } });
+    const cls = (readOnly: string[], command: string) => classifyAction(s(readOnly), { toolName: "Bash", command, tags: {} });
+    for (const entry of [`Bash(cat "$HOME/x")`, `cat "$HOME/x"`]) {
+      expect(cls([entry], "cat $HOME/x")).toBe("unknown");
+      expect(cls([entry], `cat "$HOME/x"`)).toBe("readOnly");
+      expect(cls([entry], `cat "$HOME/x" && cat "$HOME/x"`)).toBe("unknown");
+    }
+    expect(cls([`Bash(rm "*")`], "rm *")).toBe("unknown");
+    expect(cls([`Bash(rm "*")`], `rm "*"`)).toBe("readOnly");
+    expect(cls([`Bash(cd 'a b')`], "cd a b")).toBe("unknown"); // a context-only command, through the whole-line match
+    expect(cls(["Bash(cat *)"], `cat "$HOME/x"`)).toBe("readOnly");
   });
 
-  test("the decomposer marks what the shell interprets; a marker-range character admits nothing", async () => {
-    const marked = (c: string) => decomposeBash(c).commands[0]!.marked;
-    const live = (c: string) => String.fromCharCode(0xe000 + c.charCodeAt(0));
-    expect(marked("rm *")).toEqual([`rm ${live("*")}`]);
-    expect(marked(`rm "*" a?`)).toEqual([`rm * a${live("?")}`]);
-    expect(marked("cat ~/x $HOME [ab] {a,b} {}")).toEqual([`cat ${live("~")}/x ${live("$")}HOME ${live("[")}ab] ${live("{")}a,b} {}`]);
-    expect(marked(`printf '\uE02A'`)).toEqual([]);
-    expect(await decide("manual", { allow: ["Bash(printf *)"] }, `printf '\uE02A'`)).toEqual({ behavior: "ask" });
-    expect(await decide("manual", { allow: [`Bash(echo \uE02A)`] }, "echo *")).toEqual({ behavior: "ask" });
-  });
-
-  test("a deny still reads every * as the wildcard (widening a deny is safe)", async () => {
+  test("a deny still reads every * as the wildcard, quotes removed (widening a deny is safe)", async () => {
     expect(await decide("manual", { deny: [`Bash(rm "*")`] }, "rm *")).toMatchObject({ behavior: "deny" });
     expect(await decide("manual", { deny: [`Bash(rm "*")`] }, "rm -rf build")).toMatchObject({ behavior: "deny" });
+    // the original E-11 bug: a quoted deny never denied (`rm -rf /` itself is the hard deny's before any rule)
+    for (const command of ["rm -rf /srv/x", "rm -rf '/srv/x'", `rm -rf "/srv/x"`]) {
+      expect([command, await decide("autopilot", { deny: ["Bash(rm -rf '/srv/x')"] }, command)]).toMatchObject([command, { behavior: "deny", source: "deny_rule" }]);
+    }
+    for (const command of ["rm -rf /", "rm -rf '/'"]) expect(await decide("autopilot", { deny: ["Bash(rm -rf '/')"] }, command)).toMatchObject({ behavior: "deny" });
+    expect(ruleMatch("Bash(rm -rf '/')", bash("rm -rf /"))).toBe("rm -rf /");
+    expect(ruleMatch("Bash(rm -rf '/')", bash("rm -rf '/'"))).toBe("rm -rf /");
   });
 });
 
@@ -214,12 +240,12 @@ describe("bashPatternNotes (for hop lint)", () => {
       safety: { toolClasses: { readOnly: [`Bash(${PROBE})`, "uname  -a"], mutative: [], destructive: ["Bash(*rm -rf*)"] } },
     });
     expect(notes).toEqual([
-      { where: "permissions.allow", rule: `Bash(${PROBE})`, matchedAs: "python3 -c import numpy,pandas;print(numpy.__version__,pandas.__version__)" },
-      { where: "permissions.allow", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name *.py", literalGlob: true },
+      { where: "permissions.allow", rule: `Bash(${PROBE})`, matchedAs: PROBE, identical: true },
+      { where: "permissions.allow", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name '*.py'", identical: true },
       { where: "permissions.deny", rule: "B*(rm -rf '/srv')", matchedAs: "rm -rf /srv" },
       { where: "permissions.deny", rule: "Bash(echo it's)", matchedAs: null },
       { where: "permissions.deny", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name *.py" },
-      { where: "safety.toolClasses.readOnly", rule: `Bash(${PROBE})`, matchedAs: "python3 -c import numpy,pandas;print(numpy.__version__,pandas.__version__)" },
+      { where: "safety.toolClasses.readOnly", rule: `Bash(${PROBE})`, matchedAs: PROBE, identical: true },
       { where: "safety.toolClasses.readOnly", rule: "uname  -a", matchedAs: "uname -a" },
     ]);
   });

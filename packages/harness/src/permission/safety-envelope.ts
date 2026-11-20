@@ -10,7 +10,7 @@
  * terminal outcome (§10.1). `deny` is a hard policy denial. `allow` proceeds inside the envelope.
  */
 import type { SafetyPolicy } from "../profile/types";
-import { bashAllowMatcher, bashDenyMatcher, globMatch, type RuleReading, TOOL_CLASS_RULE } from "./engine";
+import { bashAllowMatcher, bashDenyMatcher, globMatch, type RuleReading, TOOL_CLASS_RULE, writtenAlone } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
@@ -75,10 +75,9 @@ export interface SafetyEvalState {
 function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading): boolean {
   const subs = splitShellCommands(action.command);
   const cmdParts = subs.length > 0 ? subs : [action.command];
-  // the allow reading of a Bash command needs to know what the shell interprets: its decomposed, marked forms (none when
-  // it cannot be decomposed, so nothing admits it)
-  const marked = reading === "allow" && action.toolName === "Bash" ? bashMarked(action.command) : null;
-  const hits = (pattern: string) => (marked ? bashAllowMatcher(pattern)(marked) : cmdParts.some(entryMatcher(pattern, action)));
+  const allowsBash = reading === "allow" && action.toolName === "Bash";
+  const written = allowsBash ? writtenAlone(decomposeBash(action.command), action.command) : null;
+  const hits = (pattern: string) => (allowsBash ? bashAllowMatcher(pattern)(cmdParts, written) : cmdParts.some(entryMatcher(pattern, action)));
   return patterns.some((entry) => {
     const m = entry.match(TOOL_CLASS_RULE);
     if (m) return m[1] === action.toolName && hits(m[2]!);
@@ -87,14 +86,9 @@ function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading
   });
 }
 
-function bashMarked(command: string): string[] {
-  const d = decomposeBash(command);
-  return d.opaque === null ? d.commands.flatMap((c) => c.marked) : [];
-}
-
-/** A toolClasses pattern against a Bash command is read as shell words, as the permission rules are (E-11): a readOnly
- *  entry admits the call, so it takes the allow reading (`bashAllowMatcher`, over the marked forms); a mutative or
- *  destructive one only gates, the deny reading (this). */
+/** A toolClasses pattern against a Bash command (E-11, R19): a readOnly entry admits the call, so it takes the allow
+ *  reading (`bashAllowMatcher`: one with quoting matches only the command written identically); a mutative or
+ *  destructive one only gates, the deny reading (this: quotes removed, every `*` a wildcard). */
 function entryMatcher(pattern: string, action: SafetyAction): (s: string) => boolean {
   return action.toolName === "Bash" ? bashDenyMatcher(pattern) : (s) => globMatch(pattern, s);
 }
@@ -117,6 +111,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
     const d = decomposeBash(action.command);
     if (d.opaque !== null) return "destructive";
     let worst: SafetyClass | null = null;
+    const written = writtenAlone(d, action.command);
     for (const c of d.commands) {
       const forms = [...c.forms, ...(c.redirected ?? [])];
       if (forms.length === 0 || (c.forms[0] && CONTEXT_ONLY.has(c.forms[0].split(" ")[0]!))) continue;
@@ -135,10 +130,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
         continue;
       }
       if (canon) forms.push(canon);
-      // the readOnly (allow) reading: the marked forms, verb-led the same way
-      const markedCanon = c.marked[0] !== undefined ? verbLed(c.marked[0]) : null;
-      const marked = typeof markedCanon === "string" && markedCanon !== "unreadable" ? [...c.marked, markedCanon] : c.marked;
-      const cls = classifyForms(tc, action, forms, marked);
+      const cls = classifyForms(tc, action, forms, written);
       if (worst === null || RANK[cls] > RANK[worst]) worst = cls;
     }
     if (worst !== null) return worst;
@@ -174,15 +166,15 @@ function defaultClass(action: SafetyAction): SafetyClass {
 }
 
 /** One simple command's class: the first list (destructive, mutative, readOnly) with an entry matching any of its forms,
- *  else the tool's default. */
-function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[], marked: string[]): SafetyClass {
+ *  else the tool's default. `written` is the whole line when this command is all it runs (`writtenAlone`). */
+function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[], written: string | null): SafetyClass {
   const hit = (patterns: string[], reading: RuleReading) =>
     patterns.some((entry) => {
       const m = entry.match(TOOL_CLASS_RULE);
       const pattern = m ? m[2]! : entry;
       if (m && m[1] !== action.toolName) return false;
       if (!m && entry === action.toolName) return true;
-      return reading === "allow" && action.toolName === "Bash" ? bashAllowMatcher(pattern)(marked) : forms.some(entryMatcher(pattern, action));
+      return reading === "allow" && action.toolName === "Bash" ? bashAllowMatcher(pattern)(forms, written) : forms.some(entryMatcher(pattern, action));
     });
   if (hit(tc.destructive, "deny")) return "destructive";
   if (hit(tc.mutative, "deny")) return "mutative";

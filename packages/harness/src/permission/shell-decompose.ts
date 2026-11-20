@@ -44,11 +44,6 @@ export interface DecomposedCommand {
   /** The forms a rule is matched against (any one matching counts): the command name, then its arguments with quotes
    *  removed, single-spaced; for an absolute path, both the basename form and the form as written. */
   forms: string[];
-  /** `forms` with every character the shell interprets marked (`liveCode`): an unquoted `*` or `?`, a `[` or `{` that
-   *  opens a bracket or brace expansion, a leading `~`, an expansion's `$` or backtick. An allow rule reads these
-   *  (E-11 round 3): its literal `*` never lines up with one the shell expands. Empty when a word holds a character
-   *  of the marker range itself: no allow then matches. */
-  marked: string[];
   /** Checked as named; what it runs (a script file's contents) is not inspected. */
   bestEffort?: boolean;
   /** It runs with arguments the matcher cannot see (`xargs <cmd>`): a deny or approval still checks the command, but
@@ -168,66 +163,6 @@ interface Word {
   glob?: boolean;
   /** It starts with an unquoted `~` (tilde expansion). */
   tilde?: boolean;
-  /** Where in `text` an unquoted `*?[]{},` sits (the candidates for a glob or brace expansion). */
-  bare?: number[];
-  /** Where in `text` an expansion (`$…`, a backtick, a process substitution) starts. */
-  exp?: number[];
-}
-
-/** An unquoted character added to a word: its glob, brace and tilde candidates are recorded. The one path for a command
- *  (`decompose`) and a rule's pattern (`readBashPattern`). */
-function bareChar(w: Word, c: string): void {
-  if (c === "~" && w.text === "") w.tilde = true;
-  if ("*?[]{},".includes(c)) (w.bare ??= []).push(w.text.length);
-  w.text += c;
-  if ("*?[{}".includes(c)) w.glob = true;
-}
-
-/** An expansion added to a word from `at` on (`expansion` appended its text): its first character is live. */
-function expanded(w: Word, at: number): void {
-  if (w.text.length > at) (w.exp ??= []).push(at);
-}
-
-/** The positions of `text` the shell interprets: an unquoted `*` or `?`; a `[` with a later `]`; a `{` with a later `}`
- *  and a `,` or `..` between (so `{}` stays literal, as for `find -exec`); a leading `~`; an expansion's first char. */
-function livePositions(w: Word): Set<number> {
-  const live = new Set(w.exp ?? []);
-  if (w.tilde) live.add(0);
-  const bare = w.bare ?? [];
-  const after = (at: number, c: string) => bare.find((b) => b > at && w.text[b] === c);
-  for (const at of bare) {
-    const c = w.text[at];
-    if (c === "*" || c === "?") live.add(at);
-    else if (c === "[" && after(at, "]") !== undefined) live.add(at);
-    else if (c === "{") {
-      const end = after(at, "}");
-      if (end !== undefined && (bare.some((b) => b > at && b < end && w.text[b] === ",") || w.text.slice(at, end).includes(".."))) live.add(at);
-    }
-  }
-  return live;
-}
-
-/** The marker range: a live ASCII character `c` is U+E000 + its code, a character no shell word holds. */
-const MARKER = /[\uE000-\uE07F]/;
-const liveCode = (c: string): string => String.fromCharCode(0xe000 + c.charCodeAt(0));
-
-/** The word with its live characters marked, or null when it holds a marker-range character itself. */
-function markedText(w: Word): string | null {
-  if (MARKER.test(w.text)) return null;
-  const live = livePositions(w);
-  if (live.size === 0) return w.text;
-  let out = "";
-  for (let i = 0; i < w.text.length; i++) out += live.has(i) ? liveCode(w.text[i]!) : w.text[i];
-  return out;
-}
-
-/** The marked forms of `name` and `args` (as `simple` builds its forms), or [] when a word cannot be marked. */
-function markedForms(head: Word, args: Word[], asWrittenToo: boolean): string[] {
-  const words = [head, ...args].map(markedText);
-  if (words.includes(null)) return [];
-  const [mHead, ...mArgs] = words as string[];
-  const join = (h: string) => [h, ...mArgs].join(" ").replace(/\s+/g, " ").trim();
-  return asWrittenToo ? [join(basename(mHead!)), join(mHead!)] : [join(basename(mHead!))];
 }
 
 class Opaque extends Error {
@@ -304,7 +239,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       // a closing word's redirections are its group's; a line of redirections alone is recorded as written
       const to = closed ?? from;
       if (to < out.length) for (const c of out.slice(to)) c.redirected = (c.redirected ?? c.forms).map((f) => `${f} ${redirections.join(" ")}`);
-      else out.push({ forms: [], marked: [], redirected: [[...words.map((w) => w.text), ...redirections].join(" ")] });
+      else out.push({ forms: [], redirected: [[...words.map((w) => w.text), ...redirections].join(" ")] });
     }
     words = [];
     heredoc = false;
@@ -399,10 +334,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       if ((c === "<" || c === ">") && next === "(") {
         const end = close(i + 1);
         inner(command.slice(i + 2, end));
-        const w = cur();
-        const at = w.text.length;
-        w.text += "/dev/fd/0";
-        expanded(w, at);
+        cur().text += "/dev/fd/0";
         i = end;
         continue;
       }
@@ -469,13 +401,13 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       continue;
     }
     if (c === "$" || c === "`") {
-      const w = cur();
-      const at = w.text.length;
-      i = expansion(command, i, w, inner, close, line);
-      expanded(w, at);
+      i = expansion(command, i, cur(), inner, close, line);
       continue;
     }
-    bareChar(cur(), c);
+    const w = cur();
+    if (c === "~" && w.text === "") w.tilde = true;
+    w.text += c;
+    if ("*?[{}".includes(c)) w.glob = true;
   }
   endCommand();
   if (pendingHeredocs.length) throw new Opaque("an unterminated here-doc");
@@ -497,42 +429,22 @@ function quoted(s: string, i: number, w: Word, inner: (cmd: string) => void, clo
     if (d === "\\" && j + 1 < s.length) {
       w.text += s[j + 1];
       j++;
-    } else if (d === "$" || d === "`") {
-      const at = w.text.length;
-      j = expansion(s, j, w, inner, close, line);
-      expanded(w, at);
-    } else w.text += d;
+    } else if (d === "$" || d === "`") j = expansion(s, j, w, inner, close, line);
+    else w.text += d;
   }
   if (j >= s.length) throw new Opaque("unbalanced quotes");
   return j;
 }
 
-/** A rule pattern read as shell words (E-11): `readBashPattern`. */
-export interface BashPatternReading {
-  /** The words single-spaced, each `*` kept: the form `decomposeBash` gives a command's words to the rules. */
-  text: string;
-  /** The allow reading, matched against a command's `marked` forms (E-11 round 3): a `*` the pattern wrote bare is the
-   *  wildcard; every other character must line up with the same character, interpreted by the shell where the
-   *  pattern's is (a bare `?`, `[…]`, `{a,b}`, leading `~` or `$…`) and literal where the pattern's is (quoted or
-   *  escaped). So `Bash(rm "*")` admits `rm "*"`, never `rm *`. */
-  allow: RegExp;
-  /** The pattern quoted or escaped one of `* ? [ { ~ $`: its allow reading admits that character only quoted. */
-  literalGlob: boolean;
-}
-
-const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
-const NEVER = /(?!)/;
-
 /**
  * A rule's argument pattern read the way `decomposeBash` reads a command (E-11), by the same code (`quoted`,
- * `expansion`, `bareChar`, `livePositions`): quotes and backslashes removed, whitespace single-spaced, so
- * `python3 -c 'import x'` reads `python3 -c import x`. Every other character is kept as written (operators, `$…`,
- * `~`): the pattern is never split into commands. Null when its quoting does not balance.
+ * `expansion`): quotes and backslashes removed, whitespace single-spaced, so `python3 -c 'import x'` reads
+ * `python3 -c import x`. Every other character is kept as written (operators, `$…`, `~`, each `*`): the pattern is
+ * never split into commands. Null when its quoting does not balance. This is the widening reading, for a deny rule or
+ * an approval entry only (R19): an allow never matches through it.
  */
-export function readBashPattern(pattern: string): BashPatternReading | null {
-  const words: Word[] = [];
-  /** Per word, the positions the pattern quoted or escaped. */
-  const quotedAt = new Map<Word, Set<number>>();
+export function normalizeBashPattern(pattern: string): string | null {
+  const words: string[] = [];
   let w: Word | null = null;
   const unused: Line = { envChanged: false, writes: [] };
   const ignore = () => {};
@@ -541,16 +453,11 @@ export function readBashPattern(pattern: string): BashPatternReading | null {
     if (end < 0) throw new Opaque("unbalanced parentheses");
     return end;
   };
-  const quotedFrom = (word: Word, from: number) => {
-    const q = quotedAt.get(word) ?? new Set<number>();
-    for (let k = from; k < word.text.length; k++) q.add(k);
-    quotedAt.set(word, q);
-  };
   try {
     for (let i = 0; i < pattern.length; i++) {
       const c = pattern[i]!;
       if (c === " " || c === "\t" || c === "\n") {
-        if (w) words.push(w);
+        if (w) words.push(w.text);
         w = null;
         continue;
       }
@@ -559,54 +466,54 @@ export function readBashPattern(pattern: string): BashPatternReading | null {
         continue;
       }
       w ??= { text: "", expanded: false, literal: true };
-      const from = w.text.length;
       if (c === "\\") {
         if (i + 1 < pattern.length) w.text += pattern[i + 1];
         i++;
-        quotedFrom(w, from);
-      } else if (c === "'" || c === '"') {
-        i = quoted(pattern, i, w, ignore, close, unused);
-        quotedFrom(w, from);
-      } else if (c === "$" || c === "`") {
-        i = expansion(pattern, i, w, ignore, close, unused);
-        expanded(w, from);
-      } else bareChar(w, c);
+      } else if (c === "'" || c === '"') i = quoted(pattern, i, w, ignore, close, unused);
+      else if (c === "$" || c === "`") i = expansion(pattern, i, w, ignore, close, unused);
+      else w.text += c;
     }
   } catch (e) {
     if (e instanceof Opaque) return null;
     throw e;
   }
-  if (w) words.push(w);
-  const flat: Array<{ c: string; wild: boolean; live: boolean; quoted: boolean }> = [];
-  for (const word of words) {
-    flat.push({ c: " ", wild: false, live: false, quoted: false });
-    const live = livePositions(word);
-    const q = quotedAt.get(word);
-    for (let k = 0; k < word.text.length; k++) {
-      const c = word.text[k]!;
-      flat.push({ c, wild: c === "*" && live.has(k), live: live.has(k), quoted: q?.has(k) ?? false });
-    }
-  }
+  if (w) words.push(w.text);
   // single-spaced and trimmed, as a command's forms are (a quoted run of whitespace included)
-  const out: typeof flat = [];
-  for (const k of flat) {
-    const ch = /\s/.test(k.c) ? { c: " ", wild: false, live: false, quoted: false } : k;
-    if (ch.c === " " && (out.length === 0 || out[out.length - 1]!.c === " ")) continue;
-    out.push(ch);
-  }
-  while (out.length && out[out.length - 1]!.c === " ") out.pop();
-  const source = out.map((k) => (k.wild ? ".*" : k.live ? liveCode(k.c) : k.c.replace(REGEX_SPECIAL, "\\$&"))).join("");
-  return {
-    text: out.map((k) => k.c).join(""),
-    // a pattern holding a marker-range character could line up with a live one: it admits nothing
-    allow: MARKER.test(pattern) ? NEVER : new RegExp(`^${source}$`),
-    literalGlob: out.some((k) => k.quoted && "*?[{~$`".includes(k.c)),
-  };
+  return words.join(" ").replace(/\s+/g, " ").trim();
 }
 
-/** `readBashPattern(pattern).text`, or null when the quoting does not balance. */
-export function normalizeBashPattern(pattern: string): string | null {
-  return readBashPattern(pattern)?.text ?? null;
+/** What `bashAsWritten` does not follow: a line break, and the constructs that nest quoting or commands. */
+const NOT_AS_WRITTEN = /[\n\r`]|\$[({'"]/;
+
+/**
+ * A command line, or an allow rule's quoted pattern, as written (ruling R19): only the runs of blanks outside quotes
+ * are collapsed and the ends trimmed. Quotes and backslashes are kept, so two texts are equal here only when the shell
+ * is handed the same quoting. Null when the quoting does not balance, or the text holds a line break, a substitution,
+ * `${…}`, `$'…'` or `$"…"`: an allow then matches nothing, and the call falls to the mode.
+ */
+export function bashAsWritten(text: string): string | null {
+  if (NOT_AS_WRITTEN.test(text)) return null;
+  let out = "";
+  let gap = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === " " || c === "\t") {
+      gap = out !== "";
+      continue;
+    }
+    if (gap) out += " ";
+    gap = false;
+    let end = i;
+    if (c === "\\") end = i + 1;
+    else if (c === "'") end = text.indexOf("'", i + 1);
+    else if (c === '"') {
+      for (end = i + 1; end < text.length && text[end] !== '"'; end++) if (text[end] === "\\") end++;
+    }
+    if (end < 0 || end >= text.length) return null;
+    out += text.slice(i, end + 1);
+    i = end;
+  }
+  return out;
 }
 
 /** An expansion at `i` (`$((…))`, `$(…)`, backticks, `$name`, `${…}`): substitutions decomposed, the word marked.
@@ -852,7 +759,7 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Li
     const rest = afterPrefix("xargs", PREFIXES.xargs!, words.slice(1));
     const from = out.length;
     if (rest && rest.length) simple(rest, depth, out, line, false);
-    else out.push({ forms: ["echo"], marked: ["echo"], argsUnknown: true }); // xargs's default command
+    else out.push({ forms: ["echo"], argsUnknown: true }); // xargs's default command
     for (const c of out.slice(from)) c.argsUnknown = true;
     return;
   }
@@ -868,8 +775,7 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Li
   const relative = head.text.includes("/") && !head.text.startsWith("/");
   // a stripped git global option is matched by a deny, but changes what the allowed form would run
   const gitOptions = args.length < written.length;
-  const marked = markedForms(head, words.slice(1 + written.length - args.length), asWritten !== form);
-  out.push({ forms: asWritten === form ? [form] : [form, asWritten], marked, ...(relative ? { bestEffort: true } : {}), ...(gitOptions ? { envInjected: true } : {}) });
+  out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}), ...(gitOptions ? { envInjected: true } : {}) });
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */
@@ -902,7 +808,7 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
       }
       if (!rest.length) break;
       runs();
-      out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], marked: markedForms(words[0]!, args, false), bestEffort: true });
+      out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
       return;
     }
     if (a.literal && t.startsWith("--")) {
@@ -931,7 +837,7 @@ function shell(name: string, words: Word[], depth: number, out: DecomposedComman
     runs();
     if (command) return script(a, words, depth, out, line);
     // a script file: checked as named, its contents not inspected
-    out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], marked: markedForms(words[0]!, args, false), bestEffort: true });
+    out.push({ forms: [[name, ...args.map((x) => x.text)].join(" ")], bestEffort: true });
     return;
   }
   throw new Opaque(clip(`${text(words)} (a shell reading its script from stdin)`));
