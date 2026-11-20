@@ -126,20 +126,23 @@ describe("R21: a stdio MCP server", () => {
     expect(env).not.toHaveProperty("R21_SCRUBBED"); // only the safe set crosses, as with the SDK's own spawn
   });
 
-  test("a manager given a stdio host starts every stdio server through it; without one, as before", async () => {
+  test("R21a: only a server the host says is defined in the workspace starts through the stdio host; the person's own starts as before", async () => {
     const r = recordingExec();
-    const confined = new McpManager();
-    confined.setStdioHost(localProcessHost(r.exec, root));
-    const reg = new ToolRegistry();
+    const mcp = new McpManager();
+    mcp.setStdioHost(localProcessHost(r.exec, root), (server) => server === "project");
     try {
-      expect(await confined.connectAll({ mock: { command: "node", args: [MCP_SERVER] } }, reg)).toMatchObject({ connected: 1, tools: 1 });
+      // the person's server (user-level config): the SDK's plain child, never the sandbox
+      expect(await mcp.connectAll({ mine: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 1, tools: 1 });
+      expect(r.wraps).toEqual([]);
+      // a server the workspace defines: through the sandbox
+      expect(await mcp.connectAll({ project: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 2 });
       expect(r.wraps).toEqual([["node", MCP_SERVER]]);
     } finally {
-      await confined.close();
+      await mcp.close();
     }
     const plain = new McpManager();
     try {
-      expect(await plain.connectAll({ mock: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 1 });
+      expect(await plain.connectAll({ project: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 1 });
     } finally {
       await plain.close();
     }
@@ -147,9 +150,10 @@ describe("R21: a stdio MCP server", () => {
 
   test("a host that cannot confine starts nothing: the connect fails with its reason", async () => {
     const mcp = new McpManager();
-    mcp.setStdioHost({ spawn: async () => Promise.reject(new Error("not started: nothing here can confine it")) });
+    mcp.setStdioHost({ spawn: async () => Promise.reject(new Error("not started: nothing here can confine it")) }, (server) => server === "project");
     try {
-      expect(await mcp.connectAll({ mock: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 0 });
+      expect(await mcp.connectAll({ project: { command: "node", args: [MCP_SERVER] }, mine: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 1 });
+      expect(mcp.status().map((x) => [x.server, x.ok]).sort()).toEqual([["mine", true], ["project", false]]);
     } finally {
       await mcp.close();
     }

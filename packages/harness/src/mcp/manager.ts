@@ -154,7 +154,7 @@ export class McpManager {
    *  ids it served to which run and joins them with run verdicts later (memory v6, E1b). */
   private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
   private onElicit: ElicitationHandler | null = null;
-  private stdioHost: ProcessHost | undefined;
+  private stdioHost: { host: ProcessHost; applies: (server: string) => boolean } | undefined;
   private maxDescriptionLength = DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
   /** The last config each server connected with, for reconnectAll. */
   private readonly configByName = new Map<string, McpServerConfig>();
@@ -255,10 +255,12 @@ export class McpManager {
     this.maxDescriptionLength = Math.max(64, n);
   }
 
-  /** Ruling R21: where every stdio server without a host of its own is started (a confined run's sandbox,
-   *  `localProcessHost`). Unset = the SDK's plain local child. */
-  setStdioHost(host: ProcessHost): void {
-    this.stdioHost = host;
+  /** Rulings R21 and R21a: where a stdio server that `applies` and has no host of its own is started (a confined
+   *  run's sandbox, `localProcessHost`). The host says which: a server defined in the workspace, where the agent can
+   *  write, runs confined; one the person configured outside it is the person's tool and starts as the SDK's plain
+   *  local child, as does every server when this is unset. */
+  setStdioHost(host: ProcessHost, applies: (server: string) => boolean): void {
+    this.stdioHost = { host, applies };
   }
 
   /** Reconnect every server this manager has connected, with the config it last used. */
@@ -397,7 +399,7 @@ export class McpManager {
       // set (HOME, LOGNAME, PATH, SHELL, TERM, USER). Never our own environment: it holds the
       // gateway key, serve's token and the other servers' credentials.
       const env = config.env ? this.declaredEnv(name, config.env) : undefined;
-      const processHost = config.host ?? this.stdioHost;
+      const processHost = config.host ?? (this.stdioHost?.applies(name) ? this.stdioHost.host : undefined);
       transport = processHost
         ? new ProcessHostTransport(processHost, { argv: [config.command, ...(config.args ?? [])], ...(env ? { env } : {}) })
         : new StdioClientTransport({ command: config.command, args: config.args ?? [], env });

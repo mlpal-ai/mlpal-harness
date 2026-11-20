@@ -66,7 +66,8 @@
   could run its own code unconfined, with the keys the sandbox scrubs.
 - Each now takes the run's `ExecPolicy`, what Bash spawns through: `LspManagerOptions.exec` / `LspClientOptions.exec`,
   `CommandVerifierOptions.exec`, `CommandHookOptions.exec` (a hook run here; a `runner` is unchanged), and
-  `McpManager.setStdioHost(localProcessHost(exec, cwd))` for every stdio server without a host of its own. The child
+  `McpManager.setStdioHost(localProcessHost(exec, cwd), applies)` for the stdio servers the host says are defined in
+  the workspace (ruling R21a: one the person configured outside it is the person's tool and starts as before). The child
   is spawned through the sandbox's wrap with its scrubbed environment; a stdio server keeps the SDK's safe set and
   its declared variables. Without an exec each spawns exactly as before; the host decides (yodex: when the run is
   confined).
