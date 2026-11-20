@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { liveTest } from "./live";
 import { ModelRegistry } from "../src/registry/models";
 
 const SAMPLE = {
@@ -111,7 +112,6 @@ describe("ModelRegistry (mocked)", () => {
   });
 });
 
-const liveTest = process.env.YODEX_API_KEY ? test : test.skip;
 describe("ModelRegistry live", () => {
   liveTest(
     "loads the real catalog",

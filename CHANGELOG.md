@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Live gateway tests run only when asked (E-27, 2026-11-20)
+
+- `test/live.ts`: the two tests that call the real gateway (`GatewayClient live`, `ModelRegistry live`) run only with
+  `YODEX_LIVE_TESTS=1` and a `YODEX_API_KEY`. Before, a key in the shell was enough, so a plain `bun test` in an
+  operator's shell spent on the operator's key.
+
 ### The permission judge's call is the asking run's: stamped, and in its usage (E-12, 2026-11-20)
 
 - `AskContext` carries the asking run's `stamp` and a `spend(usage)` sink. `PermissionJudge(req, stamp?)` sends the

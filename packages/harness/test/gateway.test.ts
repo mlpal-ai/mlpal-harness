@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { liveTest } from "./live";
 import type { StreamDelta, ToolUseBlock } from "@mlpal/harness-protocol";
 import {
   GatewayClient,
@@ -562,7 +563,6 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"upstream str
 });
 
 // Live test against the real gateway — runs only when YODEX_API_KEY is set.
-const liveTest = process.env.YODEX_API_KEY ? test : test.skip;
 describe("GatewayClient live", () => {
   liveTest(
     "calls the real gateway and gets a response",
