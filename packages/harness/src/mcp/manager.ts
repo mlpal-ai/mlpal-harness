@@ -154,6 +154,7 @@ export class McpManager {
    *  ids it served to which run and joins them with run verdicts later (memory v6, E1b). */
   private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
   private onElicit: ElicitationHandler | null = null;
+  private stdioHost: ProcessHost | undefined;
   private maxDescriptionLength = DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
   /** The last config each server connected with, for reconnectAll. */
   private readonly configByName = new Map<string, McpServerConfig>();
@@ -252,6 +253,12 @@ export class McpManager {
 
   setMaxDescriptionLength(n: number): void {
     this.maxDescriptionLength = Math.max(64, n);
+  }
+
+  /** Ruling R21: where every stdio server without a host of its own is started (a confined run's sandbox,
+   *  `localProcessHost`). Unset = the SDK's plain local child. */
+  setStdioHost(host: ProcessHost): void {
+    this.stdioHost = host;
   }
 
   /** Reconnect every server this manager has connected, with the config it last used. */
@@ -390,8 +397,9 @@ export class McpManager {
       // set (HOME, LOGNAME, PATH, SHELL, TERM, USER). Never our own environment: it holds the
       // gateway key, serve's token and the other servers' credentials.
       const env = config.env ? this.declaredEnv(name, config.env) : undefined;
-      transport = config.host
-        ? new ProcessHostTransport(config.host, { argv: [config.command, ...(config.args ?? [])], ...(env ? { env } : {}) })
+      const processHost = config.host ?? this.stdioHost;
+      transport = processHost
+        ? new ProcessHostTransport(processHost, { argv: [config.command, ...(config.args ?? [])], ...(env ? { env } : {}) })
         : new StdioClientTransport({ command: config.command, args: config.args ?? [], env });
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });

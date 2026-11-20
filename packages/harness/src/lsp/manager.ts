@@ -6,6 +6,7 @@
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { type Logger, silentLogger } from "../obs/logger";
+import type { ExecPolicy } from "../tools/types";
 import { LspClient, type LspServerSpec } from "./client";
 
 export interface LspServerConfig {
@@ -58,6 +59,8 @@ export interface LspManagerOptions {
   servers?: Record<string, LspServerConfig>;
   which?: (command: string) => boolean;
   env?: Record<string, string>;
+  /** Ruling R21: the run's sandbox, for every server this manager starts (`LspClientOptions.exec`). */
+  exec?: ExecPolicy;
   requestTimeoutMs?: number;
   logger?: Logger;
 }
@@ -102,7 +105,7 @@ export class LspManager {
       client = undefined;
     }
     if (!client) {
-      client = new LspClient({ spec, rootDir, env: this.opts.env, requestTimeoutMs: this.opts.requestTimeoutMs, logger: this.logger });
+      client = new LspClient({ spec, rootDir, env: this.opts.env, ...(this.opts.exec ? { exec: this.opts.exec } : {}), requestTimeoutMs: this.opts.requestTimeoutMs, logger: this.logger });
       this.clients.set(key, client);
       this.logger.info("language server starting", { command: spec.command, rootDir });
     }

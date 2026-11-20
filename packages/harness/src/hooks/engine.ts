@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { ExecPolicy } from "../tools/types";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
@@ -107,6 +108,9 @@ export interface CommandHookOptions {
   logger?: Logger;
   /** Absent = `/bin/bash -c` here, in the context's cwd. */
   runner?: CommandRunner;
+  /** Ruling R21: the run's sandbox, for a command run here (no `runner`): it goes through the wrap with the scrubbed
+   *  environment, as the agent's own commands do. Absent = a plain spawn with the engine's environment. */
+  exec?: ExecPolicy;
 }
 
 /**
@@ -118,6 +122,7 @@ export class CommandHook implements Hook {
   private readonly timeoutMs: number;
   private readonly logger: Logger;
   private readonly runner: CommandRunner | undefined;
+  private readonly exec: ExecPolicy | undefined;
 
   constructor(
     readonly id: string,
@@ -128,6 +133,7 @@ export class CommandHook implements Hook {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.logger = opts.logger ?? silentLogger;
     this.runner = opts.runner;
+    this.exec = opts.exec;
   }
 
   run(input: HookInput, ctx: HookContext): Promise<HookResult> {
@@ -146,7 +152,8 @@ export class CommandHook implements Hook {
 
   private runLocal(input: HookInput, ctx: HookContext): Promise<HookResult> {
     return new Promise((resolve) => {
-      const child = spawn("/bin/bash", ["-c", this.command], { cwd: ctx.cwd });
+      const argv = this.exec ? this.exec.wrap(["/bin/bash", "-c", this.command]) : ["/bin/bash", "-c", this.command];
+      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(this.exec ? { env: this.exec.env() } : {}) });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), this.timeoutMs);

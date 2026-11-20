@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
+import type { ExecPolicy } from "../tools/types";
 
 /**
  * A Stop-hook that runs a verification command (tests, build, lint). Non-zero exit
@@ -11,15 +12,20 @@ export interface CommandVerifierOptions {
   command: string;
   name?: string;
   timeoutMs?: number;
+  /** Ruling R21: the run's sandbox. The command (tests, a build: code the agent wrote) runs through its wrap with
+   *  its scrubbed environment. Absent = a plain `/bin/bash -c` with the engine's environment. */
+  exec?: ExecPolicy;
 }
 
 function runShell(
   command: string,
   cwd: string,
   timeoutMs: number,
+  exec: ExecPolicy | undefined,
 ): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-c", command], { cwd });
+    const argv = exec ? exec.wrap(["/bin/bash", "-c", command]) : ["/bin/bash", "-c", command];
+    const child = spawn(argv[0]!, argv.slice(1), { cwd, ...(exec ? { env: exec.env() } : {}) });
     let output = "";
     let killed = false;
     const timer = setTimeout(() => {
@@ -41,7 +47,7 @@ function runShell(
 
 export function commandVerifier(opts: CommandVerifierOptions): Hook {
   return new FunctionHook(opts.name ?? `verify:${opts.command}`, ["Stop"], async (_input, ctx) => {
-    const { code, output } = await runShell(opts.command, ctx.cwd, opts.timeoutMs ?? 120_000);
+    const { code, output } = await runShell(opts.command, ctx.cwd, opts.timeoutMs ?? 120_000, opts.exec);
     if (code === 0) return {};
     const tail = output.length > 2000 ? output.slice(-2000) : output;
     return {

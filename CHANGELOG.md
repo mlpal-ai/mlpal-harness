@@ -42,6 +42,19 @@
   `run.completed`. Telemetry contract d11.9: `payload.sandbox`, verbatim, absent when the host did not say. The
   memory ingest accepts d11.9 (`contract_at_least`) and drops the field until its allowlist names it.
 
+### Helper processes take the run's sandbox (E-54, E-55, ruling R21, 2026-11-20)
+
+- A language server, a command verifier, a local command hook and a stdio MCP server were spawned as plain children
+  with the engine's environment, whatever confined the run. Each runs code the agent can write (rust-analyzer runs
+  `build.rs` and proc-macros, a verifier runs the tests, a server is resolved in the workspace), so a sandboxed agent
+  could run its own code unconfined, with the keys the sandbox scrubs.
+- Each now takes the run's `ExecPolicy`, what Bash spawns through: `LspManagerOptions.exec` / `LspClientOptions.exec`,
+  `CommandVerifierOptions.exec`, `CommandHookOptions.exec` (a hook run here; a `runner` is unchanged), and
+  `McpManager.setStdioHost(localProcessHost(exec, cwd))` for every stdio server without a host of its own. The child
+  is spawned through the sandbox's wrap with its scrubbed environment; a stdio server keeps the SDK's safe set and
+  its declared variables. Without an exec each spawns exactly as before; the host decides (yodex: when the run is
+  confined).
+
 ### A confined sender never reaches an unconfined session (E-26, ruling R18, 2026-11-20)
 
 - A sandboxed run's `SendMessage` could post to (or wake) a session whose commands nothing confines, which then acted

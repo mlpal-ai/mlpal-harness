@@ -9,6 +9,7 @@
  * hangs on a crashed process.
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import type { ExecPolicy } from "../tools/types";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { type Logger, silentLogger } from "../obs/logger";
@@ -55,6 +56,9 @@ export interface LspClientOptions {
   spec: LspServerSpec;
   rootDir: string;
   env?: Record<string, string>;
+  /** Ruling R21: the run's sandbox. The server is spawned through its wrap with its scrubbed environment (a language
+   *  server runs the workspace's code: build scripts, proc-macros, a local typescript). Absent = a plain spawn. */
+  exec?: ExecPolicy;
   requestTimeoutMs?: number;
   logger?: Logger;
 }
@@ -101,7 +105,9 @@ export class LspClient {
 
   private async boot(): Promise<void> {
     const { spec, rootDir } = this.opts;
-    const child = spawn(spec.command, spec.args, { cwd: rootDir, env: this.opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
+    const { exec } = this.opts;
+    const argv = exec ? exec.wrap([spec.command, ...spec.args]) : [spec.command, ...spec.args];
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: rootDir, env: exec ? exec.env() : (this.opts.env ?? process.env), stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     child.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
     child.stderr!.on("data", (chunk: Buffer) => this.logger.debug("lsp stderr", { text: chunk.toString().slice(0, 500) }));
