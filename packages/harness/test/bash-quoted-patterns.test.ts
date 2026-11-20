@@ -30,7 +30,7 @@ describe("normalizeBashPattern", () => {
     expect(allow("echo $(ls *)").test("echo $(ls x)")).toBe(false);
     expect(allow("git log *").test("git log --oneline -3")).toBe(true);
     expect(allow("echo a?b").test("echo axb")).toBe(false); // `?` was never a wildcard in a rule
-    expect([readBashPattern("find . -name '*.py'")!.quotedStar, readBashPattern("git log *")!.quotedStar]).toEqual([true, false]);
+    expect([readBashPattern("find . -name '*.py'")!.literalGlob, readBashPattern("git log *")!.literalGlob, readBashPattern("rm 'a?'")!.literalGlob]).toEqual([true, false, true]);
   });
 
   test("`*` is kept in the words, quoted or not; operators and expansions are kept as written", () => {
@@ -79,6 +79,65 @@ describe("allow rules with quotes", () => {
     const allow = [`Bash(python3 -c 'print(1)')`];
     expect(await decide("manual", { allow }, "python3 -c 'print(1)' && rm notes.txt")).toEqual({ behavior: "ask" });
     expect(await decide("manual", { allow }, "X=1 python3 -c 'print(1)'")).toEqual({ behavior: "ask" });
+  });
+});
+
+describe("round 3 (R14): an allow's literal character never lines up with one the shell interprets", () => {
+  // every pair asks in manual mode, as it did before E-11: the rule names a quoted character, the command leaves it to
+  // the shell (a glob, a brace or tilde expansion, a parameter)
+  const asks: Array<[string, string]> = [
+    [`Bash(rm "*")`, "rm *"], // with a planted `-rf` file, rm -rf *
+    ["Bash(tar cf b.tar '*')", "tar cf b.tar *"], // the checkpoint-action trick
+    ["Bash(chmod 600 \\*)", "chmod 600 *"],
+    ["Bash(rm 'a?')", "rm a?"],
+    ["Bash(rm '[ab]')", "rm [ab]"],
+    ["Bash(rm '{a,b}')", "rm {a,b}"],
+    ["Bash(cat '~/x')", "cat ~/x"],
+    ["Bash(echo '$HOME')", "echo $HOME"],
+    ["Bash(rm '*.tmp' x)", "rm *.tmp x"],
+  ];
+  for (const [rule, command] of asks) {
+    test(`${rule} asks for ${command}`, async () => {
+      expect(await decide("manual", { allow: [rule] }, command)).toEqual({ behavior: "ask" });
+    });
+  }
+
+  test("the same character quoted in the command is admitted, and a bare one where the rule leaves it bare", async () => {
+    const allows: Array<[string, string]> = [
+      [`Bash(rm "*")`, `rm "*"`],
+      [`Bash(rm "*")`, "rm '*'"],
+      [`Bash(rm "*")`, "rm \\*"],
+      ["Bash(rm '[ab]')", "rm '[ab]'"],
+      ["Bash(ls a?)", "ls a?"],
+      ["Bash(echo $HOME)", "echo $HOME"],
+      [`Bash(echo "$HOME")`, `echo "$HOME"`],
+      ["Bash(rm *)", "rm *"], // a bare wildcard over a glob, as before E-11
+      ["Bash(find . -exec cat {} +)", "find . -exec cat {} +"], // `{}` is no brace expansion
+      ["Bash([ -f *)", "[ -f x ]"], // `[` alone is a command, not a bracket expression
+    ];
+    for (const [rule, command] of allows) expect([rule, command, await decide("manual", { allow: [rule] }, command)]).toEqual([rule, command, { behavior: "allow" }]);
+  });
+
+  test("a readOnly class reads the same way: a literal * is not a glob the shell expands", () => {
+    const s: SafetyPolicy = { toolClasses: { readOnly: [`Bash(rm "*")`], mutative: [], destructive: [] }, preApply: { requirePlanArtifact: false, hash: [] }, blastRadius: {}, approval: { destructive: "always", outOfScope: "never" }, identities: { neverSelfGrant: true } };
+    expect(classifyAction(s, { toolName: "Bash", command: "rm *", tags: {} })).toBe("unknown");
+    expect(classifyAction(s, { toolName: "Bash", command: `rm "*"`, tags: {} })).toBe("readOnly");
+  });
+
+  test("the decomposer marks what the shell interprets; a marker-range character admits nothing", async () => {
+    const marked = (c: string) => decomposeBash(c).commands[0]!.marked;
+    const live = (c: string) => String.fromCharCode(0xe000 + c.charCodeAt(0));
+    expect(marked("rm *")).toEqual([`rm ${live("*")}`]);
+    expect(marked(`rm "*" a?`)).toEqual([`rm * a${live("?")}`]);
+    expect(marked("cat ~/x $HOME [ab] {a,b} {}")).toEqual([`cat ${live("~")}/x ${live("$")}HOME ${live("[")}ab] ${live("{")}a,b} {}`]);
+    expect(marked(`printf '\uE02A'`)).toEqual([]);
+    expect(await decide("manual", { allow: ["Bash(printf *)"] }, `printf '\uE02A'`)).toEqual({ behavior: "ask" });
+    expect(await decide("manual", { allow: [`Bash(echo \uE02A)`] }, "echo *")).toEqual({ behavior: "ask" });
+  });
+
+  test("a deny still reads every * as the wildcard (widening a deny is safe)", async () => {
+    expect(await decide("manual", { deny: [`Bash(rm "*")`] }, "rm *")).toMatchObject({ behavior: "deny" });
+    expect(await decide("manual", { deny: [`Bash(rm "*")`] }, "rm -rf build")).toMatchObject({ behavior: "deny" });
   });
 });
 
@@ -156,7 +215,7 @@ describe("bashPatternNotes (for hop lint)", () => {
     });
     expect(notes).toEqual([
       { where: "permissions.allow", rule: `Bash(${PROBE})`, matchedAs: "python3 -c import numpy,pandas;print(numpy.__version__,pandas.__version__)" },
-      { where: "permissions.allow", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name *.py", literalStar: true },
+      { where: "permissions.allow", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name *.py", literalGlob: true },
       { where: "permissions.deny", rule: "B*(rm -rf '/srv')", matchedAs: "rm -rf /srv" },
       { where: "permissions.deny", rule: "Bash(echo it's)", matchedAs: null },
       { where: "permissions.deny", rule: "Bash(find . -name '*.py')", matchedAs: "find . -name *.py" },

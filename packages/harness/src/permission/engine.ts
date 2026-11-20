@@ -186,8 +186,8 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
     if (refusesAutoApproval(subjects)) return false;
     // an entry with no forms runs no command (`> /dev/null` alone, `command -v git > /dev/null`)
     const run = subjects.commands.filter((c) => c.forms.length > 0);
-    const matches = bashRuleMatcher(pattern, "allow");
-    return run.length > 0 && run.every((c) => !c.argsUnknown && c.forms.some(matches));
+    const matches = bashAllowMatcher(pattern);
+    return run.length > 0 && run.every((c) => !c.argsUnknown && matches(c.marked));
   }
   return globMatch(pattern, representativeArg(req));
 }
@@ -197,29 +197,36 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
 export type RuleReading = "allow" | "deny";
 
 /**
- * A rule's Bash pattern as a matcher over a command's forms (E-11). Both readings take the pattern as shell words
- * (`Bash(python3 -c 'import x')` names the form `python3 -c import x`), as the decomposer reads commands.
- * - `allow` (controller ruling, security-first): an allow never admits more than it names, so a `*` the pattern quoted
- *   or escaped matches only a literal `*` (`Bash(find . -name '*.py')` is that one command, never `find . -name x
- *   -delete -name a.py`), and the pattern as written is not also tried.
- * - `deny`: as written OR as shell words with every `*` a wildcard. Either suffices: widening a deny is safe.
- * A pattern whose quoting does not balance is matched as written in both readings.
+ * An allow rule's Bash pattern (or a readOnly class's) as a matcher over a command's `marked` forms (E-11; controller
+ * ruling, security-first: an allow never admits more than it names). The pattern is read as shell words, as the
+ * decomposer reads commands, and only a `*` it wrote bare is a wildcard. Every other character must line up with the
+ * same character, interpreted by the shell exactly where the pattern's is: `Bash(rm "*")` admits `rm "*"`, never
+ * `rm *`; `Bash(rm 'a?')` never `rm a?`; `Bash(find . -name '*.py')` never `find . -name x -delete -name a.py`. The
+ * pattern as written is not also tried. One whose quoting does not balance is matched as written, against the marked
+ * forms, so it can never line up with a live character either.
  */
-export function bashRuleMatcher(pattern: string, reading: RuleReading): (form: string) => boolean {
+export function bashAllowMatcher(pattern: string): (marked: readonly string[]) => boolean {
   const r = readBashPattern(pattern);
-  if (r === null) return (f) => globMatch(pattern, f);
-  if (reading === "allow") return (f) => r.allow.test(f);
-  return r.text === pattern ? (f) => globMatch(pattern, f) : (f) => globMatch(pattern, f) || globMatch(r.text, f);
+  if (r === null) return (marked) => marked.some((m) => globMatch(pattern, m));
+  return (marked) => marked.some((m) => r.allow.test(m));
+}
+
+/** A deny rule's Bash pattern (or an approval entry's, a mutative or destructive class's) as a matcher over a command's
+ *  forms (E-11): as written OR as shell words with every `*` a wildcard. Either suffices: widening a deny is safe. */
+export function bashDenyMatcher(pattern: string): (form: string) => boolean {
+  const r = readBashPattern(pattern);
+  if (r === null || r.text === pattern) return (f) => globMatch(pattern, f);
+  return (f) => globMatch(pattern, f) || globMatch(r.text, f);
 }
 
 /** A Bash pattern the matcher reads differently from how it is written, for `hop lint`: `matchedAs` is the shell-word
- *  form, or null when its quoting does not balance (it then matches only as written). `literalStar`: an allow-side
- *  pattern whose quoted or escaped `*` matches only a literal `*`. */
+ *  form, or null when its quoting does not balance (it then matches only as written). `literalGlob`: an allow-side
+ *  pattern that quoted or escaped one of `* ? [ { ~ $`, which it then admits only where the command quotes it too. */
 export interface BashPatternNote {
   where: string;
   rule: string;
   matchedAs: string | null;
-  literalStar?: true;
+  literalGlob?: true;
 }
 
 /** Every Bash pattern of a HOP's permissions and toolClasses, and of a publication's `approvals.require` (a run
@@ -237,7 +244,7 @@ export function bashPatternNotes(profile: {
       if (pattern === undefined) continue;
       const r = readBashPattern(pattern);
       if (r === null) notes.push({ where, rule, matchedAs: null });
-      else if (reading === "allow" && r.quotedStar) notes.push({ where, rule, matchedAs: r.text, literalStar: true });
+      else if (reading === "allow" && r.literalGlob) notes.push({ where, rule, matchedAs: r.text, literalGlob: true });
       else if (r.text !== pattern) notes.push({ where, rule, matchedAs: r.text });
     }
   };
@@ -305,7 +312,7 @@ export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger)
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
   if (pattern === undefined) return commands[0]?.forms[0] ?? "";
-  const matches = bashRuleMatcher(pattern, "deny");
+  const matches = bashDenyMatcher(pattern);
   for (const c of commands) {
     const hit = [...c.forms, ...(c.redirected ?? [])].find(matches);
     if (hit !== undefined) return hit;

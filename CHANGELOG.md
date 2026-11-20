@@ -55,6 +55,13 @@
   escaped matches only a literal `*` (`Bash(find . -name '*.py')` is not `find . -name x -delete -name a.py`), and the
   pattern as written is not also tried. A deny rule, an approval entry and a mutative or destructive class only stop
   more: they match as written or as shell words with every `*` a wildcard. (`?` was never a rule wildcard.)
+- Round 3 (R14): a command's words had their quotes stripped, so a quoted, literal `*` in an allow still matched a bare
+  `*` the shell expands (`Bash(rm "*")` admitted `rm *`). `DecomposedCommand.marked` now marks what the shell
+  interprets: an unquoted `*` or `?`, a `[…]`, a `{a,b}` (not `{}`), a leading `~`, an expansion's `$` or backtick.
+  An allow (`bashAllowMatcher`, over the marked forms) admits a character only where the command leaves it to the
+  shell exactly as the pattern does: `Bash(rm "*")` admits `rm "*"`, never `rm *`; `Bash(ls a?)` admits `ls a?`. A
+  word or pattern holding a marker-range character (U+E000–U+E07F) admits nothing. Deny keeps the wildcard reading
+  (`bashDenyMatcher`). `literalGlob` replaces `literalStar` on the notes.
 - `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them (or whose
   quoting does not balance), for `yodex hop lint`; `literalStar` marks an allow-side pattern with a literal `*`. It
   also takes a run context's `approvals.require` (read as a deny is), which yodex checks where an assignment's
