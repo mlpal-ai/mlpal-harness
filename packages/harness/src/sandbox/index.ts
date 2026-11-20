@@ -9,6 +9,7 @@ import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
 import { protectedBy, protectedWriteHint, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
 import { realResolve } from "../tools/types";
+import { type GitRun, indexDigest, scrubIndex } from "./git-index";
 
 export * from "./spec";
 export { isSecretName, scrubEnv } from "./env";
@@ -185,6 +186,26 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     [reason, unavailable] = [`no sandbox for ${platform}`, "unsupported"];
   }
 
+  /** git, run inside this sandbox with its scrubbed environment (the index is one of the files it may write). */
+  const gitRun: GitRun = (args, o) => {
+    try {
+      const r = Bun.spawnSync(wrap(["git", ...args]), { env: { ...env, ...o?.env }, stdin: o?.stdin ?? "ignore", stdout: "pipe", stderr: "ignore" });
+      return { code: r.exitCode, stdout: Buffer.from(r.stdout) };
+    } catch {
+      return { code: 127, stdout: Buffer.alloc(0) }; // no git, or the wrapper is gone: nothing was read
+    }
+  };
+  /** Per `.git`, the digest of its index when it was last found clean: the scan runs only when the index changed. */
+  const cleanIndex = new Map<string, string | null>();
+  const scrubIndexes = (): string[] =>
+    spec.filesystem.gitDirs.flatMap((g) => {
+      const now = indexDigest(g);
+      if (now === null || cleanIndex.get(g) === now) return [];
+      const removed = scrubIndex(g, gitRun);
+      cleanIndex.set(g, removed.length ? indexDigest(g) : now);
+      return removed;
+    });
+
   const describe = () => {
     const fs = spec.filesystem.mode === "readOnly" ? "read-only filesystem" : "writes inside the workspace";
     const net =
@@ -221,13 +242,15 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness, git or one of your tools, so it stays read-only here. The change has to be made outside the sandbox: ask the user to make it, or to start the session with --no-sandbox.` : null;
     },
     explain: (output) => (confined ? protectedWriteHint(spec, output) : null),
-    // R22d: bubblewrap cannot stop a protected path that does not exist from being created, so what a command created
-    // is taken back when it ends. Seatbelt refuses the creation itself.
-    ...(confined === "bwrap"
+    // What a confined command may leave behind is taken back when it ends, and the command reported as failed:
+    // - R22d, bubblewrap only: a protected path it created (bubblewrap cannot stop one that did not exist; seatbelt
+    //   refuses the creation itself);
+    // - R22g, both: an index entry naming a path inside `.git`.
+    ...(confined
       ? {
           lease: () => {
-            const before = snapshotProtected(spec);
-            return { env, release: () => revertCreated(spec, before) };
+            const before = confined === "bwrap" ? snapshotProtected(spec) : null;
+            return { env, release: () => [...(before ? revertCreated(spec, before) : []), ...scrubIndexes()] };
           },
         }
       : {}),

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createSandbox } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
+import { namesDotGit, scrubIndex } from "../src/sandbox/git-index";
 import { seatbeltProfile } from "../src/sandbox/seatbelt";
 import { gitEntryWritable, PROTECTED_IN_HOME, PROTECTED_IN_ROOT, protectedWriteHint, resolveSandboxSpec, revertCreated, snapshotProtected } from "../src/sandbox/spec";
 import { editTool, writeTool } from "../src/tools/builtin/files";
@@ -147,7 +149,11 @@ describe("R22d: on bubblewrap, what a command created where it may not write is 
     expect(lease.release()).toEqual([join(dir, ".git", "commondir")]);
     expect(existsSync(join(dir, ".git", "commondir"))).toBe(false);
     expect(bwrap.describe()).toContain("harness and git paths read-only (one a command creates is removed when it ends)");
-    expect(createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { platform: "darwin" }).lease).toBeUndefined();
+    // seatbelt refuses the creation itself, so its lease takes no path back (it only checks the index, R22g)
+    const seatbelt = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }), { platform: "darwin" });
+    writeFileSync(join(dir, ".git", "commondir"), "../evil\n");
+    expect(seatbelt.lease!("x").release()).toEqual([]);
+    expect(existsSync(join(dir, ".git", "commondir"))).toBe(true);
   });
 
   test("Bash under such a sandbox: the path is gone, the result says what was removed, and the command counts as failed", async () => {
@@ -394,6 +400,84 @@ describe("the refusal is actionable", () => {
     } finally {
       sandbox.close();
       bare.close();
+    }
+  });
+});
+
+// Ruling R22g: `objects` and `index` are writable, so a confined command could leave an index entry whose path is
+// `.git/config`; git will not add one, but the person's later `git checkout -- .` would write it out. After every
+// confined command the index is read and such entries are removed.
+describe("R22g: the index never names a path inside .git", () => {
+  /** What the reviewer's attack leaves: a blob and an index entry for `.git/config` naming an fsmonitor command. git
+   *  refuses to add that path, so a same-length path is added and the index patched (its checksum redone). */
+  const PATCH = `const {createHash}=require("node:crypto"),fs=require("node:fs");const b=fs.readFileSync(".git/index");const body=Buffer.from(b.subarray(0,b.length-20).toString("latin1").replace("-git/config",".git/config"),"latin1");fs.writeFileSync(".git/index",Buffer.concat([body,createHash("sha1").update(body).digest()]));`;
+  const plant = (dir: string, marker: string) => {
+    mkdirSync(join(dir, "-git"), { recursive: true });
+    writeFileSync(join(dir, "-git", "config"), `[core]\n\trepositoryformatversion = 0\n\tfsmonitor = "touch ${marker} #"\n`);
+    writeFileSync(join(dir, "kept.txt"), "kept\n");
+    expect(sh(["git", "add", "--", "./-git/config", "kept.txt"], dir).code).toBe(0);
+    writeFileSync(join(dir, "patch.js"), PATCH);
+    return `${JSON.stringify(process.execPath)} patch.js`;
+  };
+  const repo = () => {
+    const dir = join(root, `idx-${crypto.randomUUID().slice(0, 6)}`);
+    mkdirSync(dir, { recursive: true });
+    expect(sh(["git", "init", "-q"], dir).code).toBe(0);
+    return dir;
+  };
+  const entries = (dir: string) => sh(["git", "ls-files"], dir).out.trim().split("\n").sort();
+
+  test("namesDotGit: every spelling a filesystem resolves to .git, and none of its neighbours", () => {
+    for (const p of [".git/config", ".GIT/config", "a/.Git/hooks/x", "git~1/config", "GIT~1/config", ".git./config", ".git /x", ".git::$INDEX_ALLOCATION/x", ".g\u200cit/config", "sub\\.git\\config", ".git"]) expect([p, namesDotGit(p)]).toEqual([p, true]);
+    for (const p of [".gitignore", ".github/workflows/ci.yml", ".gitattributes", ".gitmodules", "src/git/x", "a.git/x", "git~x/y", "docs/git.md"]) expect([p, namesDotGit(p)]).toEqual([p, false]);
+  });
+
+  test("without the scan the attack works here (the control): the person's checkout writes .git/config and their status runs it", () => {
+    const dir = repo();
+    const marker = join(dir, "RAN");
+    expect(sh(["/bin/bash", "-c", plant(dir, marker)], dir).code).toBe(0);
+    expect(entries(dir)).toContain(".git/config");
+    sh(["git", "checkout-index", "-a", "-f"], dir);
+    sh(["git", "status", "--short"], dir);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  test("scrubIndex removes the entry and keeps the rest; a clean index is left alone", () => {
+    const dir = repo();
+    expect(sh(["/bin/bash", "-c", plant(dir, join(dir, "RAN"))], dir).code).toBe(0);
+    const git = (args: string[], o?: { stdin?: Buffer; env?: Record<string, string> }) => {
+      const r = Bun.spawnSync(["git", ...args], { env: { PATH: process.env.PATH ?? "", ...o?.env }, stdin: o?.stdin ?? "ignore", stdout: "pipe", stderr: "ignore" });
+      return { code: r.exitCode, stdout: Buffer.from(r.stdout) };
+    };
+    expect(scrubIndex(join(dir, ".git"), git)).toEqual([`the index entry ".git/config" of ${dir}`]);
+    expect(entries(dir)).toEqual(["kept.txt"]);
+    const before = createHash("sha256").update(readFileSync(join(dir, ".git", "index"))).digest("hex");
+    expect(scrubIndex(join(dir, ".git"), git)).toEqual([]);
+    expect(createHash("sha256").update(readFileSync(join(dir, ".git", "index"))).digest("hex")).toBe(before);
+  });
+
+  test.skipIf(process.platform !== "darwin")("Bash in a confined run: the attack fails, the command is reported as failed with the entry named, and the person's checkout and status run nothing", async () => {
+    const { bashTool } = await import("../src/tools/builtin/bash");
+    const dir = repo();
+    const marker = join(dir, "RAN");
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [dir] }));
+    try {
+      const attack = plant(dir, marker);
+      const r = await bashTool.call({ command: attack }, { cwd: dir, roots: [dir], exec: sandbox } as never);
+      expect(r.isError).toBe(true);
+      expect(String(r.content)).toContain(`Removed: the index entry ".git/config" of ${dir}. The command is reported as failed.`);
+      expect(entries(dir)).toEqual(["kept.txt"]);
+      // what the person does next
+      sh(["git", "checkout-index", "-a", "-f"], dir);
+      sh(["git", "checkout", "--", "."], dir);
+      sh(["git", "status", "--short"], dir);
+      expect(existsSync(marker)).toBe(false);
+      expect(readFileSync(join(dir, ".git", "config"), "utf8")).not.toContain("fsmonitor");
+      // ordinary staging and committing in the same sandbox: untouched, and reported as succeeded
+      const ok = await bashTool.call({ command: "echo more > more.txt && git add more.txt kept.txt && git -c user.name=t -c user.email=t@example.com commit -qm work && git ls-files | sort | tr '\\n' ' '" }, { cwd: dir, roots: [dir], exec: sandbox } as never);
+      expect([ok.isError, String(ok.content).trim()]).toEqual([false, "kept.txt more.txt"]);
+    } finally {
+      sandbox.close();
     }
   });
 });

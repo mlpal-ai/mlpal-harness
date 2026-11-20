@@ -55,9 +55,10 @@ export interface ExecLease {
   release(): string[] | void;
 }
 
-/** What a tool appends to a command's output when the sandbox took back what it created (R22d). */
+/** What a tool appends to a command's output when the sandbox took back what it left behind (R22d: a protected path
+ *  it created; R22g: an index entry naming a path inside `.git`). */
 export function revertedNotice(removed: string[]): string {
-  return `[sandbox: this command created ${removed.length === 1 ? "a path" : `${removed.length} paths`} the harness or git would later load or run with your authority, which a sandboxed session may not write. Removed: ${removed.join(", ")}. The command is reported as failed.]`;
+  return `[sandbox: this command left behind ${removed.length === 1 ? "something" : `${removed.length} things`} the harness or git would later load or run with your authority, which a sandboxed session may not create. Removed: ${removed.join(", ")}. The command is reported as failed.]`;
 }
 
 /** The environment for one command under `exec`, and the release the caller owes when the process exits. */

@@ -70,6 +70,13 @@
 - R22e: of a tool home only the cache or store is writable (`~/.bun/install/cache`, `~/.cargo/registry`,
   `~/.cargo/git`, `~/.local/share/pnpm/store`), never `~/.bun`, `~/.cargo` or pnpm's home, whose bin directories are
   on the person's PATH. A global install from a confined run fails.
+- R22g: `objects` and `index` are writable, so a confined command could leave an index entry whose path is
+  `.git/config` (git will not add one, but will check one out: the person's `git checkout -- .` then writes it and
+  their next `git status` runs what it names). After every confined command, on both platforms, the sandbox reads
+  each root's index with git (inside the sandbox, nothing a configuration names enabled) whenever it changed since it
+  was last clean, and rewrites it without the entries `namesDotGit` catches: `.git` in any case, with the characters
+  HFS+ ignores, NTFS's trailing dots, spaces and `:stream`, or the short name `git~1` (`sandbox/git-index.ts`). The
+  command is reported as failed with the entry named, as for R22d.
 - R22f: the code-bearing files of the person's tool homes are protected too (`PROTECTED_IN_HOME`), also where the
   home's cache is writable: gradle's init scripts and `gradle.properties`, Maven's settings and `~/.mvn`, uv's
   installed tools and `~/.local/bin`, the npm, yarn, pnpm, pip and cargo configs, `~/.bunfig.toml`, git's global
