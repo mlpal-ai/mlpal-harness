@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Live gateway tests run only when asked (E-27, carried onto next/ws 2026-11-27)
+
+- `test/live.ts`: the two tests that call the real gateway (`GatewayClient live`, `ModelRegistry live`) run only with
+  `YODEX_LIVE_TESTS=1` and a `YODEX_API_KEY`. Before, a key in the shell was enough, so a plain `bun test` in an
+  operator's shell spent on the operator's key.
+
 ### An agent can show a typed block, with a text fallback always; protocol 0.26.8 (Harness UI Next P1, additive, 2026-11-27)
 
 - 0.26.8 on this line: the next patch after 0.26.6, skipping 0.26.7, which main's E-17 (`SystemInitEvent.sandbox`)
