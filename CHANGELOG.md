@@ -42,22 +42,35 @@
   `run.completed`. Telemetry contract d11.9: `payload.sandbox`, verbatim, absent when the host did not say. The
   memory ingest accepts d11.9 (`contract_at_least`) and drops the field until its allowlist names it.
 
-### A confined run cannot write what the harness or git later runs (ruling R22, 2026-11-20)
+### A confined run cannot write what the harness or git later runs (rulings R22, R22b–R22e, 2026-11-20)
 
 - A sandboxed agent could write, inside its workspace, files a later session or the person's own git loads or runs
-  with the person's authority. `SandboxSpec.filesystem.protected` now lists, under every writable root
-  (`PROTECTED_IN_ROOT`): `.git/config`, `.git/hooks`, `.git/info/attributes`, `.gitattributes`, `.yodex`, `.claude`,
-  `.mcp.json`, `bunfig.toml` (E-56: an engine started from source there runs its `preload`). The rest of `.git` stays
-  writable, so add, commit, branch and log work. Empty under a read-only
-  filesystem. Instruction files (AGENTS.md, CLAUDE.md) are not protected: editing them is sometimes the task.
-- seatbelt: each is denied for writing after every allow, and the directories above them inside the root (`.git`,
-  `.git/info`) cannot be renamed or removed. bwrap: one that exists is bound read-only, its parents bound onto
-  themselves so they cannot be moved aside; one that does not exist cannot be mounted over without creating it in the
-  person's workspace, so its creation is not prevented there, and the session notice says how many
-  (`unprotectedHere`).
-- `ExecPolicy.writeDenied(path)`: the Write and Edit tools run in the engine, outside the OS sandbox, so they ask the
-  run's sandbox and refuse a protected path (symlinks resolved). Only where the OS confines; a run nothing confines
-  is unchanged.
+  with the person's authority. Under every writable root the spec now keeps read-only (empty under a read-only
+  filesystem; instruction files such as AGENTS.md are not included, editing them is sometimes the task):
+  - `SandboxSpec.filesystem.protected` (`PROTECTED_IN_ROOT`): `.gitattributes`, `.yodex`, `.claude`, `.mcp.json`,
+    `bunfig.toml` (E-56: an engine started from source there runs its `preload`).
+  - `SandboxSpec.filesystem.gitDirs` (R22b): `.git` whole, except an allowlist of what ordinary git work writes
+    (`gitEntryWritable`: `objects`, `refs`, `logs`, the index, `packed-refs`, HEAD and the other pseudo-refs and
+    message files, lock files, rebase and sequencer state, gc's own files). A deny list had missed `commondir`, which
+    points git at another directory's config and hooks. `config`, `hooks`, `info`, `commondir`, `modules`,
+    `worktrees` and any name not listed are denied, so add, commit, branch, log, stash, rebase, cherry-pick and gc
+    work, while `git init`, `git config`, `git remote add`, submodules and worktrees do not in a confined run (`gc`
+    warns that it cannot refresh `.git/info/refs`).
+- seatbelt: the denies follow every allow; `.git` is denied whole (the node too), then its allowlist is allowed.
+- bwrap: `.git` is bound onto itself and each entry ordinary work does not write is bound read-only (a `.git` that is
+  a file, read-only whole); an existing protected path is bound read-only.
+- R22d: bubblewrap cannot stop a path that does not exist from being created without creating it in the workspace,
+  so the sandbox leases every command a scan (`snapshotProtected`, `revertCreated`): a protected path, or a `.git`
+  entry ordinary work does not write, that was absent before the command and present after is removed.
+  `ExecLease.release()` answers what was removed; Bash, background tasks and a command verifier report the command
+  as failed and name it (`revertedNotice`), a command hook logs it.
+- R22c: `ExecPolicy.writeDenied(path)` for the Write and Edit tools, which run in the engine: a protected path or
+  anything inside `.git` is refused, symlinks resolved, compared case-folded always (macOS volumes are
+  case-insensitive).
+- R22e: of a tool home only the cache or store is writable (`~/.bun/install/cache`, `~/.cargo/registry`,
+  `~/.cargo/git`, `~/.local/share/pnpm/store`), never `~/.bun`, `~/.cargo` or pnpm's home, whose bin directories are
+  on the person's PATH. A global install from a confined run fails.
+- A run nothing confines is unchanged.
 
 ### Helper processes take the run's sandbox (E-54, E-55, ruling R21, 2026-11-20)
 
@@ -68,7 +81,8 @@
 - Each now takes the run's `ExecPolicy`, what Bash spawns through: `LspManagerOptions.exec` / `LspClientOptions.exec`,
   `CommandVerifierOptions.exec`, `CommandHookOptions.exec` (a hook run here; a `runner` is unchanged), and
   `McpManager.setStdioHost(localProcessHost(exec, cwd), applies)` for the stdio servers the host says are defined in
-  the workspace (ruling R21a: one the person configured outside it is the person's tool and starts as before). The child
+  the workspace (ruling R21a: one the person configured outside it is the person's tool and starts as before; R21b:
+  `setStdioHome` starts such a one in its config file's directory, never the workspace, when the host says so). The child
   is spawned through the sandbox's wrap with its scrubbed environment; a stdio server keeps the SDK's safe set and
   its declared variables. Without an exec each spawns exactly as before; the host decides (yodex: when the run is
   confined).

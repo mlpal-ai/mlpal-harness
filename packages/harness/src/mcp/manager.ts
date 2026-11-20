@@ -155,6 +155,7 @@ export class McpManager {
   private callMeta: ((ctx: ToolContext) => Record<string, unknown>) | null = null;
   private onElicit: ElicitationHandler | null = null;
   private stdioHost: { host: ProcessHost; applies: (server: string) => boolean } | undefined;
+  private stdioHome: ((server: string) => { cwd: string; env: Record<string, string> } | undefined) | undefined;
   private maxDescriptionLength = DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
   /** The last config each server connected with, for reconnectAll. */
   private readonly configByName = new Map<string, McpServerConfig>();
@@ -261,6 +262,14 @@ export class McpManager {
    *  local child, as does every server when this is unset. */
   setStdioHost(host: ProcessHost, applies: (server: string) => boolean): void {
     this.stdioHost = { host, applies };
+  }
+
+  /** Ruling R21b: where a plain local stdio server is started, and what it is told, when the host says so for it (a
+   *  confined run's person-configured server: the directory of the file that defines it, never the workspace, so
+   *  `npx`, `uv run` and a relative path resolve nothing the agent wrote; the workspace is named in its environment).
+   *  Unset, or undefined for a server, = the engine's own directory, as before. */
+  setStdioHome(home: (server: string) => { cwd: string; env: Record<string, string> } | undefined): void {
+    this.stdioHome = home;
   }
 
   /** Reconnect every server this manager has connected, with the config it last used. */
@@ -402,7 +411,7 @@ export class McpManager {
       const processHost = config.host ?? (this.stdioHost?.applies(name) ? this.stdioHost.host : undefined);
       transport = processHost
         ? new ProcessHostTransport(processHost, { argv: [config.command, ...(config.args ?? [])], ...(env ? { env } : {}) })
-        : new StdioClientTransport({ command: config.command, args: config.args ?? [], env });
+        : this.stdioTransport(name, config, env);
     }
     const client = new Client({ name: host().name, version: "0.0.1" }, { capabilities: { elicitation: {} } });
     // Elicitation (gap refresh row 15): a server may ask the person for a value mid-call. The host
@@ -465,6 +474,12 @@ export class McpManager {
    *  A server config with `alwaysLoad` is never deferred. */
   setDeferral(tools: DeferredTools, policy: (server: string, tools: Tool<unknown>[]) => boolean): void {
     this.deferral = { tools, policy };
+  }
+
+  private stdioTransport(name: string, config: StdioServerConfig, env: Record<string, string> | undefined): StdioClientTransport {
+    const home = this.stdioHome?.(name);
+    if (!home) return new StdioClientTransport({ command: config.command, args: config.args ?? [], env });
+    return new StdioClientTransport({ command: config.command, args: config.args ?? [], env: { ...env, ...home.env }, cwd: home.cwd });
   }
 
   async close(): Promise<void> {

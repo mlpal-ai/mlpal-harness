@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandHook } from "../src/hooks/engine";
@@ -143,6 +143,29 @@ describe("R21: a stdio MCP server", () => {
     const plain = new McpManager();
     try {
       expect(await plain.connectAll({ project: { command: "node", args: [MCP_SERVER] } }, new ToolRegistry())).toMatchObject({ connected: 1 });
+    } finally {
+      await plain.close();
+    }
+  });
+
+  test("R21b: in a confined run the person's server starts in its config's directory, told where the workspace is; unset, where the engine is", async () => {
+    const configDir = join(root, "person-config");
+    mkdirSync(configDir, { recursive: true });
+    const seen = join(root, `mcp-cwd-${crypto.randomUUID().slice(0, 6)}`);
+    // the server records where it was started and what it was told, then serves
+    const config = { command: "/bin/sh", args: ["-c", `{ pwd; echo "\${YODEX_WORKSPACE:-unset}"; } > "$0"; exec node "$1"`, seen, MCP_SERVER] };
+    const mcp = new McpManager();
+    mcp.setStdioHome((server) => (server === "mine" ? { cwd: configDir, env: { YODEX_WORKSPACE: "/the/workspace" } } : undefined));
+    try {
+      expect(await mcp.connectAll({ mine: config }, new ToolRegistry())).toMatchObject({ connected: 1, tools: 1 });
+      expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual([realpathSync(configDir), "/the/workspace"]);
+    } finally {
+      await mcp.close();
+    }
+    const plain = new McpManager();
+    try {
+      expect(await plain.connectAll({ mine: config }, new ToolRegistry())).toMatchObject({ connected: 1 });
+      expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual([realpathSync(process.cwd()), "unset"]);
     } finally {
       await plain.close();
     }
