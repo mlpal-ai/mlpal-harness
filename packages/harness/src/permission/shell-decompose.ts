@@ -436,14 +436,28 @@ function quoted(s: string, i: number, w: Word, inner: (cmd: string) => void, clo
   return j;
 }
 
+/** A rule pattern read as shell words (E-11): `readBashPattern`. */
+export interface BashPatternReading {
+  /** The words single-spaced, each `*` kept: the form `decomposeBash` gives a command's words to the rules. */
+  text: string;
+  /** The allow reading: `text` as a pattern in which only a `*` the pattern wrote bare is a wildcard; a quoted or
+   *  escaped one (or one inside `$…`) matches only a literal `*`. */
+  allow: RegExp;
+  /** The pattern quoted or escaped a `*`, so its allow reading is narrower than its deny reading. */
+  quotedStar: boolean;
+}
+
+const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
+
 /**
- * A rule's argument pattern in the form `decomposeBash` gives a command's words to the rules (E-11): quotes and
- * backslashes removed by the same code, whitespace single-spaced, so `python3 -c 'import x'` reads `python3 -c import
- * x`. `*` stays the rule's wildcard, quoted or not. Every other character is kept as written (operators, `$…`, `~`):
- * the pattern is never split into commands. Null when its quoting does not balance.
+ * A rule's argument pattern read the way `decomposeBash` reads a command (E-11): quotes and backslashes removed by the
+ * same code (`quoted`, `expansion`), whitespace single-spaced, so `python3 -c 'import x'` reads `python3 -c import x`.
+ * Every other character is kept as written (operators, `$…`, `~`): the pattern is never split into commands. Null when
+ * its quoting does not balance.
  */
-export function normalizeBashPattern(pattern: string): string | null {
-  const words: string[] = [];
+export function readBashPattern(pattern: string): BashPatternReading | null {
+  /** The pattern's characters as the words hold them, each marked when it is a bare `*`; null between words. */
+  const chars: Array<{ c: string; wild: boolean } | null> = [];
   let w: Word | null = null;
   const unused: Line = { envChanged: false, writes: [] };
   const ignore = () => {};
@@ -452,11 +466,15 @@ export function normalizeBashPattern(pattern: string): string | null {
     if (end < 0) throw new Opaque("unbalanced parentheses");
     return end;
   };
+  /** Moves what the word gained since `from` into `chars`, all of it literal. */
+  const literal = (from: number) => {
+    for (const c of w!.text.slice(from)) chars.push({ c, wild: false });
+  };
   try {
     for (let i = 0; i < pattern.length; i++) {
       const c = pattern[i]!;
       if (c === " " || c === "\t" || c === "\n") {
-        if (w) words.push(w.text);
+        if (w) chars.push(null);
         w = null;
         continue;
       }
@@ -465,19 +483,44 @@ export function normalizeBashPattern(pattern: string): string | null {
         continue;
       }
       w ??= { text: "", expanded: false, literal: true };
+      const from = w.text.length;
       if (c === "\\") {
         if (i + 1 < pattern.length) w.text += pattern[i + 1];
         i++;
-      } else if (c === "'" || c === '"') i = quoted(pattern, i, w, ignore, close, unused);
-      else if (c === "$" || c === "`") i = expansion(pattern, i, w, ignore, close, unused);
-      else w.text += c;
+        literal(from);
+      } else if (c === "'" || c === '"') {
+        i = quoted(pattern, i, w, ignore, close, unused);
+        literal(from);
+      } else if (c === "$" || c === "`") {
+        i = expansion(pattern, i, w, ignore, close, unused);
+        literal(from);
+      } else {
+        w.text += c;
+        chars.push({ c, wild: c === "*" });
+      }
     }
   } catch (e) {
     if (e instanceof Opaque) return null;
     throw e;
   }
-  if (w) words.push((w as Word).text);
-  return words.join(" ").replace(/\s+/g, " ").trim();
+  // single-spaced and trimmed, as a command's forms are
+  const flat: Array<{ c: string; wild: boolean }> = [];
+  for (const ch of chars) {
+    const k = ch === null || /\s/.test(ch.c) ? { c: " ", wild: false } : ch;
+    if (k.c === " " && (flat.length === 0 || flat[flat.length - 1]!.c === " ")) continue;
+    flat.push(k);
+  }
+  while (flat.length && flat[flat.length - 1]!.c === " ") flat.pop();
+  return {
+    text: flat.map((k) => k.c).join(""),
+    allow: new RegExp(`^${flat.map((k) => (k.wild ? ".*" : k.c.replace(REGEX_SPECIAL, "\\$&"))).join("")}$`),
+    quotedStar: flat.some((k) => k.c === "*" && !k.wild),
+  };
+}
+
+/** `readBashPattern(pattern).text`, or null when the quoting does not balance. */
+export function normalizeBashPattern(pattern: string): string | null {
+  return readBashPattern(pattern)?.text ?? null;
 }
 
 /** An expansion at `i` (`$((…))`, `$(…)`, backticks, `$name`, `${…}`): substitutions decomposed, the word marked.

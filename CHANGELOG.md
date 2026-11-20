@@ -37,9 +37,14 @@
   judge), a quoted toolClasses entry left the command `unknown`, and a quoted deny never denied. Allow, deny, approval
   entries (`ruleMatch`) and toolClasses (`Bash(…)` and bare entries, on a Bash command) now also match the pattern as
   shell words (`normalizeBashPattern`: the decomposer's own quote removal, single-spaced; `*` stays the wildcard).
-  The pattern as written still matches too, so a rule only gains calls; every refusal of auto-approval is unchanged.
+  Every refusal of auto-approval is unchanged.
+- Two readings (controller ruling, review round 2, security-first; `bashRuleMatcher(pattern, "allow" | "deny")`). An
+  allow rule or a readOnly class admits a call, so it never matches more than it names: a `*` the pattern quoted or
+  escaped matches only a literal `*` (`Bash(find . -name '*.py')` is not `find . -name x -delete -name a.py`), and the
+  pattern as written is not also tried. A deny rule, an approval entry and a mutative or destructive class only stop
+  more: they match as written or as shell words with every `*` a wildcard. (`?` was never a rule wildcard.)
 - `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them (or whose
-  quoting does not balance), for `yodex hop lint`.
+  quoting does not balance), for `yodex hop lint`; `literalStar` marks an allow-side pattern with a literal `*`.
 
 ### The sandbox's credential denials also cover the real home under a throwaway `$HOME` (E-16, 2026-11-20)
 
