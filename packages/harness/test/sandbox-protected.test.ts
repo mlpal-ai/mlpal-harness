@@ -13,7 +13,7 @@ import { editTool, writeTool } from "../src/tools/builtin/files";
 // `.mcp.json`), so nothing it plants is run by a later, unconfined session or by the person's own git. Ordinary git
 // use keeps working. The repo lives under the home: the temp dir is writable scratch in every mode.
 
-const DENIED = [".git/config", ".git/hooks/pre-commit", ".git/info/attributes", ".gitattributes", ".yodex/settings.json", ".yodex/workflows/x.ts", ".claude/settings.json", ".mcp.json"];
+const DENIED = [".git/config", ".git/hooks/pre-commit", ".git/info/attributes", ".gitattributes", ".yodex/settings.json", ".yodex/workflows/x.ts", ".claude/settings.json", ".mcp.json", "bunfig.toml"];
 let root: string;
 const sh = (argv: string[], cwd = root) => {
   const r = Bun.spawnSync(argv, { cwd, stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1" } });
@@ -36,7 +36,7 @@ describe("the spec (R22)", () => {
   test("a workspace sandbox protects the harness's and git's own files under every root; a read-only one has nothing writable to protect", () => {
     const spec = resolveSandboxSpec(undefined, { roots: [root, "/srv/other"] });
     expect(spec.filesystem.protected).toEqual([...PROTECTED_IN_ROOT.map((p) => join(root, p)), ...PROTECTED_IN_ROOT.map((p) => join("/srv/other", p))]);
-    expect(PROTECTED_IN_ROOT).toEqual([".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json"]);
+    expect(PROTECTED_IN_ROOT).toEqual([".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"]);
     expect(resolveSandboxSpec({ filesystem: { mode: "readOnly" } }, { roots: [root] }).filesystem.protected).toEqual([]);
   });
 

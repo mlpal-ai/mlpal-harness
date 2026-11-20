@@ -118,11 +118,12 @@ export const DEFAULT_WRITABLE_CACHES = [
  * Ruling R22: what a confined run may not write under a workspace root, because the harness or git later loads or
  * runs it with the person's authority: git's config, hooks and attributes (commands git runs: hooks, `core.fsmonitor`,
  * filter and diff drivers), the harness's own project directory (settings with hooks, a verify command, language and
- * MCP servers, a status line; workflows, skills, agents), `.claude`, and a project's MCP servers. Everything else in
+ * MCP servers, a status line; workflows, skills, agents), `.claude`, a project's MCP servers, and `bunfig.toml` (E-56:
+ * an engine started from source in that directory runs its `preload` before any of our code). Everything else in
  * `.git` stays writable: objects, refs, the index, so commits work. Instruction files (AGENTS.md, CLAUDE.md) are not
  * here: editing them is sometimes the task.
  */
-export const PROTECTED_IN_ROOT = [".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json"];
+export const PROTECTED_IN_ROOT = [".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"];
 
 /** The directories strictly between `root` and a protected path under it (`.git`, `.git/info`): moving one aside
  *  would take the protected path with it, so the platform layer pins them. */

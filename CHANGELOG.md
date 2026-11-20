@@ -47,7 +47,8 @@
 - A sandboxed agent could write, inside its workspace, files a later session or the person's own git loads or runs
   with the person's authority. `SandboxSpec.filesystem.protected` now lists, under every writable root
   (`PROTECTED_IN_ROOT`): `.git/config`, `.git/hooks`, `.git/info/attributes`, `.gitattributes`, `.yodex`, `.claude`,
-  `.mcp.json`. The rest of `.git` stays writable, so add, commit, branch and log work. Empty under a read-only
+  `.mcp.json`, `bunfig.toml` (E-56: an engine started from source there runs its `preload`). The rest of `.git` stays
+  writable, so add, commit, branch and log work. Empty under a read-only
   filesystem. Instruction files (AGENTS.md, CLAUDE.md) are not protected: editing them is sometimes the task.
 - seatbelt: each is denied for writing after every allow, and the directories above them inside the root (`.git`,
   `.git/info`) cannot be renamed or removed. bwrap: one that exists is bound read-only, its parents bound onto
