@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ExecPolicy } from "../tools/types";
+import { type ExecPolicy, leaseFor } from "../tools/types";
 import type { ModelClient } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { Hook, HookContext, HookEvent, HookInput, HookResult, HookWhen } from "./types";
@@ -153,7 +153,8 @@ export class CommandHook implements Hook {
   private runLocal(input: HookInput, ctx: HookContext): Promise<HookResult> {
     return new Promise((resolve) => {
       const argv = this.exec ? this.exec.wrap(["/bin/bash", "-c", this.command]) : ["/bin/bash", "-c", this.command];
-      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(this.exec ? { env: this.exec.env() } : {}) });
+      const lease = this.exec ? leaseFor(this.exec, this.command) : undefined;
+      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, ...(lease ? { env: lease.env } : {}) });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), this.timeoutMs);
@@ -162,10 +163,14 @@ export class CommandHook implements Hook {
       child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
       child.on("error", () => {
         clearTimeout(timer);
+        void lease?.release();
         resolve({});
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        // R22d: what the hook created where a sandboxed session may not write is removed, and said in the log
+        const reverted = lease?.release() ?? [];
+        if (reverted.length) this.logger.warn("command hook created protected paths; removed", { hook: this.id, removed: reverted });
         resolve(hookResultOf(code, stdout, stderr));
       });
 

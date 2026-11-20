@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Logger } from "../obs/logger";
 
 /**
@@ -59,6 +59,9 @@ export interface SandboxSpec {
     /** Absolute paths under the writable roots that stay read-only (ruling R22, `PROTECTED_IN_ROOT`). Empty when
      *  readOnly. */
     protected: string[];
+    /** Each root's `.git` (ruling R22b): read-only except what ordinary git work writes (`gitEntryWritable`). Empty
+     *  when readOnly. */
+    gitDirs: string[];
   };
   network: {
     mode: NetworkMode;
@@ -104,42 +107,92 @@ export const DEFAULT_UNREADABLE = [
 export const DEFAULT_WRITABLE_CACHES = [
   "~/.cache",
   "~/.npm",
-  "~/.bun",
-  "~/.cargo",
+  // R22e: a tool home's cache or store, never the home itself: `~/.bun/bin`, `~/.cargo/bin` and pnpm's global bin
+  // are on the person's PATH, so a confined run must not write them (a global install from one fails).
+  "~/.bun/install/cache",
+  "~/.cargo/registry",
+  "~/.cargo/git",
   "~/.gradle",
   "~/.m2",
   "~/.pnpm-store",
   "~/.local/share/uv",
-  "~/.local/share/pnpm",
+  "~/.local/share/pnpm/store",
   "~/Library/Caches",
 ];
 
 /**
- * Ruling R22: what a confined run may not write under a workspace root, because the harness or git later loads or
- * runs it with the person's authority: git's config, hooks and attributes (commands git runs: hooks, `core.fsmonitor`,
- * filter and diff drivers), the harness's own project directory (settings with hooks, a verify command, language and
- * MCP servers, a status line; workflows, skills, agents), `.claude`, a project's MCP servers, and `bunfig.toml` (E-56:
- * an engine started from source in that directory runs its `preload` before any of our code). Everything else in
- * `.git` stays writable: objects, refs, the index, so commits work. Instruction files (AGENTS.md, CLAUDE.md) are not
- * here: editing them is sometimes the task.
+ * Rulings R22 and R22b: what a confined run may not write under a workspace root, because the harness or git later
+ * loads or runs it with the person's authority.
+ * - `PROTECTED_IN_ROOT`: git's attributes file, the harness's own project directory (settings with hooks, a verify
+ *   command, language and MCP servers, a status line; workflows, skills, agents), `.claude`, a project's MCP servers,
+ *   and `bunfig.toml` (E-56: an engine started from source in that directory runs its `preload` before our code).
+ * - `.git` itself is read-only except an allowlist (`gitEntryWritable`): a deny list missed `commondir`, which
+ *   points git at another directory's config and hooks.
+ * Instruction files (AGENTS.md, CLAUDE.md) are not here: editing them is sometimes the task.
  */
-export const PROTECTED_IN_ROOT = [".git/config", ".git/hooks", ".git/info/attributes", ".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"];
+export const PROTECTED_IN_ROOT = [".gitattributes", ".yodex", ".claude", ".mcp.json", "bunfig.toml"];
 
-/** The directories strictly between `root` and a protected path under it (`.git`, `.git/info`): moving one aside
- *  would take the protected path with it, so the platform layer pins them. */
-export function protectedParents(spec: SandboxSpec): string[] {
-  const out = new Set<string>();
-  for (const p of spec.filesystem.protected) {
-    const root = spec.filesystem.writable.filter((w) => p.startsWith(`${w}/`)).sort((a, b) => b.length - a.length)[0];
-    if (!root) continue;
-    for (let dir = dirname(p); dir.length > root.length; dir = dirname(dir)) out.add(dir);
-  }
-  return [...out].sort();
+/** The directories of `.git` ordinary work writes: objects, refs and their logs, and an operation's own state. */
+export const GIT_WRITABLE_DIRS = ["objects", "refs", "logs", "rebase-merge", "rebase-apply", "sequencer"];
+/** The files of `.git` ordinary work writes, as a pattern over a top-level entry's name: the index (and a stash's
+ *  temporary one), packed refs, HEAD and the other pseudo-refs and message files, and any lock file. Named one by one:
+ *  on a case-insensitive volume `CONFIG` is `config`. Plain groups only: the seatbelt profile embeds this source, and
+ *  SBPL's regex has no `(?:…)`. */
+export const GIT_WRITABLE_FILE = /^(index(\.[^/]+)?|packed-refs(\.new)?|gc\.(pid|log)|[^/]+\.lock|HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_[A-Z_]+|COMMIT_EDITMSG|CHERRY_PICK_HEAD|REVERT_HEAD|REBASE_HEAD|AUTO_MERGE|SQUASH_MSG|TAG_EDITMSG|BISECT_[A-Z_]+)$/;
+
+/** Whether a top-level entry of `.git` is one ordinary git work writes (R22b). Everything else is denied: `config`,
+ *  `hooks`, `info`, `commondir`, `modules`, `worktrees`, and any name not listed. */
+export function gitEntryWritable(name: string): boolean {
+  return GIT_WRITABLE_DIRS.includes(name) || GIT_WRITABLE_FILE.test(name);
 }
 
-/** The protected path that holds `path` (an absolute, symlink-resolved path), or null. */
+/**
+ * The protected path that holds `path` (absolute, symlinks resolved), or null: for the file tools, which run in the
+ * engine. Compared case-folded, always (R22c): macOS volumes are case-insensitive, and widening a deny is safe. The
+ * file tools write nothing inside `.git`: git does, through a command.
+ */
 export function protectedBy(spec: SandboxSpec, path: string): string | null {
-  return spec.filesystem.protected.find((p) => path === p || path.startsWith(`${p}/`)) ?? null;
+  const folded = path.toLowerCase();
+  return [...spec.filesystem.protected, ...spec.filesystem.gitDirs].find((p) => folded === p.toLowerCase() || folded.startsWith(`${p.toLowerCase()}/`)) ?? null;
+}
+
+/** What `revertCreated` compares with: the protected paths that did not exist, and each `.git`'s entries. */
+export interface ProtectedSnapshot {
+  absent: string[];
+  gitEntries: Map<string, Set<string>>;
+}
+
+const present = (p: string): boolean => lstatSync(p, { throwIfNoEntry: false }) !== undefined;
+const entriesOf = (dir: string): Set<string> | null => {
+  try {
+    return new Set(readdirSync(dir));
+  } catch {
+    return null; // absent, or a file (a worktree's pointer)
+  }
+};
+
+export function snapshotProtected(spec: SandboxSpec): ProtectedSnapshot {
+  const gitEntries = new Map<string, Set<string>>();
+  for (const g of spec.filesystem.gitDirs) {
+    const names = entriesOf(g);
+    if (names) gitEntries.set(g, names);
+  }
+  return { absent: [...spec.filesystem.protected, ...spec.filesystem.gitDirs].filter((p) => !present(p)), gitEntries };
+}
+
+/**
+ * Ruling R22d: where the platform cannot stop a protected path from being created (bubblewrap cannot mount over a
+ * path that does not exist), what a command created is taken back: a protected path absent in `before` and present
+ * now, and a new entry of `.git` that ordinary work does not write (`commondir`, a first `hooks`). Removes them and
+ * answers what it removed. A path that existed before is never touched.
+ */
+export function revertCreated(spec: SandboxSpec, before: ProtectedSnapshot): string[] {
+  const created = before.absent.filter(present);
+  for (const [g, names] of before.gitEntries) {
+    for (const name of entriesOf(g) ?? []) if (!names.has(name) && !gitEntryWritable(name)) created.push(join(g, name));
+  }
+  for (const p of created) rmSync(p, { recursive: true, force: true });
+  return created;
 }
 
 /** Scratch locations every command may write regardless of mode... except readOnly, which
@@ -281,7 +334,13 @@ export function resolveSandboxSpec(
   // R22: under each root as given and as the OS resolves it (macOS's /var is /private/var; seatbelt sees the latter)
   const rootPaths = mode === "readOnly" ? [] : uniq(opts.roots.map(ex).flatMap((r) => [r, realOrSelf(r)]));
   return {
-    filesystem: { mode, writable, unreadable: uniq(unreadable), protected: rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))) },
+    filesystem: {
+      mode,
+      writable,
+      unreadable: uniq(unreadable),
+      protected: rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))),
+      gitDirs: rootPaths.map((r) => join(r, ".git")),
+    },
     network: {
       mode: policy?.network?.mode ?? "all",
       allow: policy?.network?.allow ?? [],

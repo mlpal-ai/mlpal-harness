@@ -3,11 +3,11 @@ import { dirname } from "node:path";
 import type { SandboxNoneReason, SandboxRecord } from "@mlpal/harness-protocol";
 import { registerSecrets } from "../obs/redact";
 import type { ExecPolicy } from "../tools/types";
-import { bwrapArgv, unprotectedHere } from "./bwrap";
+import { bwrapArgv } from "./bwrap";
 import { scrubEnv } from "./env";
 import { type AllowlistProxy, proxyEnv, startAllowlistProxy } from "./proxy";
 import { SANDBOX_EXEC, seatbeltArgv } from "./seatbelt";
-import { protectedBy, type SandboxSpec, unenforcedDeny } from "./spec";
+import { protectedBy, revertCreated, type SandboxSpec, snapshotProtected, unenforcedDeny } from "./spec";
 import { realResolve } from "../tools/types";
 
 export * from "./spec";
@@ -197,8 +197,8 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
     const denied = spec.network.deny.length
       ? `, ${spec.network.deny.length} governed endpoint(s) refused${gaps.length ? ` (NOT enforced here: ${gaps.join(", ")})` : ""}`
       : "";
-    const open = confined === "bwrap" ? unprotectedHere(spec).length : 0;
-    const kept = confined && spec.filesystem.protected.length ? `, ${spec.filesystem.protected.length} harness and git paths read-only${open ? ` (${open} absent: creating them is NOT prevented here)` : ""}` : "";
+    const paths = spec.filesystem.protected.length + spec.filesystem.gitDirs.length;
+    const kept = confined && paths ? `, ${paths} harness and git paths read-only${confined === "bwrap" ? " (one a command creates is removed when it ends)" : ""}` : "";
     const creds = `${spec.filesystem.unreadable.length} credential paths unreadable`;
     const envs = scrub.scrubbed.length ? `${scrub.scrubbed.length} secret env vars scrubbed` : "no secret env vars";
     const how = confined ? confined : `NOT confined: ${reason}`;
@@ -220,6 +220,16 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       const held = confined ? protectedBy(spec, realResolve(path)) : null;
       return held ? `this sandboxed session cannot write ${path}: ${held} is loaded or run with your authority by the harness or git, so it stays read-only here. Ask the user to make the change.` : null;
     },
+    // R22d: bubblewrap cannot stop a protected path that does not exist from being created, so what a command created
+    // is taken back when it ends. Seatbelt refuses the creation itself.
+    ...(confined === "bwrap"
+      ? {
+          lease: () => {
+            const before = snapshotProtected(spec);
+            return { env, release: () => revertCreated(spec, before) };
+          },
+        }
+      : {}),
     describe,
     close: () => proxy?.close(),
   };

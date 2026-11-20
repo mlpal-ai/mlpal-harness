@@ -1,4 +1,4 @@
-import { isLoopback, protectedParents, type SandboxSpec, splitEndpoint } from "./spec";
+import { GIT_WRITABLE_DIRS, GIT_WRITABLE_FILE, isLoopback, type SandboxSpec, splitEndpoint } from "./spec";
 
 /**
  * macOS enforcement: a Seatbelt profile handed to /usr/bin/sandbox-exec. The profile starts
@@ -16,6 +16,11 @@ function lit(p: string): string {
   return `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** A path as a literal inside an SBPL `#"…"` regex. */
+function regexLit(p: string): string {
+  return p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/"/g, '\\"');
+}
+
 export function seatbeltProfile(spec: SandboxSpec): string {
   const lines: string[] = ["(version 1)", "(allow default)"];
 
@@ -29,10 +34,14 @@ export function seatbeltProfile(spec: SandboxSpec): string {
   lines.push('(allow file-write* (regex #"^/private/var/folders/[^/]+/[^/]+/(T|C)/"))');
   lines.push('(allow file-write* (regex #"^/private/var/run/"))');
 
-  // R22: after every allow, so they win (the last matching rule decides): the protected paths themselves, and the
-  // directories above them inside the root as nodes (no rename or removal; what they hold stays writable).
+  // R22: after every allow, so they win (the last matching rule decides).
   for (const p of spec.filesystem.protected) lines.push(`(deny file-write* (literal ${lit(p)}) (subpath ${lit(p)}))`);
-  for (const d of protectedParents(spec)) lines.push(`(deny file-write* (literal ${lit(d)}))`);
+  // R22b: `.git` whole (the node too: no rename), then only what ordinary git work writes.
+  for (const g of spec.filesystem.gitDirs) {
+    lines.push(`(deny file-write* (literal ${lit(g)}) (subpath ${lit(g)}))`);
+    lines.push(`(allow file-write* ${GIT_WRITABLE_DIRS.map((d) => `(subpath ${lit(`${g}/${d}`)})`).join(" ")})`);
+    lines.push(`(allow file-write* (regex #"^${regexLit(g)}/${GIT_WRITABLE_FILE.source.replace(/^\^/, "")}"))`);
+  }
 
   for (const u of spec.filesystem.unreadable) lines.push(`(deny file-read* (literal ${lit(u)}) (subpath ${lit(u)}))`);
 

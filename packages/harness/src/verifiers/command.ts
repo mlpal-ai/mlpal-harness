@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { FunctionHook } from "../hooks/engine";
 import type { Hook } from "../hooks/types";
-import type { ExecPolicy } from "../tools/types";
+import { type ExecPolicy, leaseFor, revertedNotice } from "../tools/types";
 
 /**
  * A Stop-hook that runs a verification command (tests, build, lint). Non-zero exit
@@ -25,7 +25,8 @@ function runShell(
 ): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     const argv = exec ? exec.wrap(["/bin/bash", "-c", command]) : ["/bin/bash", "-c", command];
-    const child = spawn(argv[0]!, argv.slice(1), { cwd, ...(exec ? { env: exec.env() } : {}) });
+    const lease = exec ? leaseFor(exec, command) : undefined;
+    const child = spawn(argv[0]!, argv.slice(1), { cwd, ...(lease ? { env: lease.env } : {}) });
     let output = "";
     let killed = false;
     const timer = setTimeout(() => {
@@ -36,11 +37,15 @@ function runShell(
     child.stderr.on("data", (d: Buffer) => (output += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);
+      void lease?.release();
       resolve({ code: 127, output: String(e) });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: killed ? 124 : (code ?? 0), output });
+      // R22d: what the command created where a sandboxed session may not write was removed; it counts as failed
+      const reverted = lease?.release() ?? [];
+      if (reverted.length) output += `\n${revertedNotice(reverted)}`;
+      resolve({ code: killed ? 124 : reverted.length && !code ? 1 : (code ?? 0), output });
     });
   });
 }

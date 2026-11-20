@@ -13,7 +13,7 @@ function leasing(): { exec: ExecPolicy; leased: string[]; released: string[] } {
     env: () => base,
     lease: (command) => {
       leased.push(command);
-      return { env: { ...base, GRANT: `for:${command.length}` }, release: () => released.push(command) };
+      return { env: { ...base, GRANT: `for:${command.length}` }, release: () => void released.push(command) };
     },
   };
   return { exec, leased, released };

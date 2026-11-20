@@ -47,7 +47,14 @@ export interface ExecPolicy {
 /** One command's environment and the hold behind it (`ExecPolicy.lease`). */
 export interface ExecLease {
   env: Record<string, string>;
-  release(): void;
+  /** Called once the process exits. Answers the paths the sandbox removed because the command created them where it
+   *  may not (ruling R22d); the tool reports the command as failed and names them. */
+  release(): string[] | void;
+}
+
+/** What a tool appends to a command's output when the sandbox took back what it created (R22d). */
+export function revertedNotice(removed: string[]): string {
+  return `[sandbox: this command created ${removed.length === 1 ? "a path" : `${removed.length} paths`} the harness or git would later load or run with your authority, which a sandboxed session may not write. Removed: ${removed.join(", ")}. The command is reported as failed.]`;
 }
 
 /** The environment for one command under `exec`, and the release the caller owes when the process exits. */

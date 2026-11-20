@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { EventInbox } from "../../events/inbox";
 import { commandLabel } from "../../events/inbox";
 import { hostEnvName } from "../../host";
-import { type ExecPolicy, leaseFor } from "../types";
+import { type ExecPolicy, leaseFor, revertedNotice } from "../types";
 
 /**
  * Background command execution (dev servers, watchers, long builds). Bash with
@@ -170,6 +170,7 @@ export class BackgroundTasks {
     const outFile = durable ? join(this.monitorOutDir!, `${id}-${now}.log`) : undefined;
 
     let child: ChildProcess;
+    let reverted: string[] = [];
     if (durable) {
       // Durable monitor: its own process group (survives our exit), output to a file we poll,
       // and a self-timeout guard INSIDE the shell — so even orphaned, its life is bounded.
@@ -200,8 +201,8 @@ export class BackgroundTasks {
       const lease = opts?.exec ? leaseFor(opts.exec, command) : undefined;
       child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, ...(lease ? { env: lease.env } : {}) });
       if (lease) {
-        child.once("exit", () => lease.release());
-        child.once("error", () => lease.release());
+        child.once("exit", () => void (reverted = lease.release() ?? []));
+        child.once("error", () => void lease.release());
       }
     }
 
@@ -237,7 +238,9 @@ export class BackgroundTasks {
       this.finalize(task);
     });
     child.on("close", (code) => {
-      task.exitCode = code ?? 0;
+      // R22d: what the command created where a sandboxed session may not write was removed; it counts as failed
+      if (reverted.length) this.appendOutput(task, `\n${revertedNotice(reverted)}\n`);
+      task.exitCode = reverted.length && !code ? 1 : (code ?? 0);
       this.finalize(task);
     });
     if (durable) this.startFilePoll(task);
@@ -497,6 +500,12 @@ export class BackgroundTasks {
   /** The inbox of the task's owning session; call only after `routes(t)`. */
   private inboxFor(t: BgTask): EventInbox {
     return this.inboxes.get(t.sessionId!)!;
+  }
+
+  /** Append a line to a task's output (what BashOutput reads): the sandbox's notice for an adopted command. */
+  note(id: string, text: string): void {
+    const task = this.tasks.get(id);
+    if (task) this.appendOutput(task, `\n${text}\n`);
   }
 
   get(id: string): BgTask | undefined {

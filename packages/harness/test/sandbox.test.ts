@@ -382,7 +382,7 @@ describe("bwrap argv", () => {
     mkdirSync(join(dir, "aws"));
     writeFileSync(join(dir, "netrc"), "x");
     const argv = bwrapArgv("/usr/bin/bwrap", {
-      filesystem: { mode: "workspace", writable: [dir, "/nonexistent-root"], unreadable: [join(dir, "aws"), join(dir, "netrc"), "/nonexistent-cred"], protected: [] },
+      filesystem: { mode: "workspace", writable: [dir, "/nonexistent-root"], unreadable: [join(dir, "aws"), join(dir, "netrc"), "/nonexistent-cred"], protected: [], gitDirs: [] },
       network: { mode: "none", allow: [], hostPorts: [], deny: [] },
       env: { keep: [] },
       required: false,
