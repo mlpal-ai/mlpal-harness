@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### The bwrap refusal hint scopes the fix to bwrap (E-15, 2026-11-20)
+
+- Where the kernel restricts unprivileged user namespaces (Ubuntu 24.04+:
+  `kernel.apparmor_restrict_unprivileged_userns=1`), the sandbox's refusal no longer tells the operator to turn the
+  restriction off for every program (`sysctl …=0`). It gives one line that installs an AppArmor profile granting
+  `userns` to the bwrap it found and nothing else (`bwrapAppArmorProfile`, `bwrapAppArmorInstall`;
+  `/etc/apparmor.d/yodex-bwrap`), the profile the harness-e2e workbox runs as `bwrap-e2e`.
+
 ### Which sandbox confined a run is on the record; protocol 0.26.1, telemetry d11.9 (E-17, additive, 2026-11-20)
 
 - Protocol: `SandboxRecord {platform: seatbelt|bwrap|remote|none, filesystem, network, required, template?, reason?}`

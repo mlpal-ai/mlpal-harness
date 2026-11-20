@@ -69,11 +69,38 @@ export function probeBwrap(bwrap: string): { ok: boolean; detail?: string } {
   }
 }
 
+const BWRAP_APPARMOR_NAME = "yodex-bwrap";
+
+/** An AppArmor profile that lets `bwrapPath` alone create the unprivileged user namespace it confines commands in,
+ *  where the kernel restricts them (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1). The restriction
+ *  stays on for every other program, which turning the sysctl off would not (E-15; the harness-e2e workbox runs this
+ *  profile as /etc/apparmor.d/bwrap-e2e). */
+export function bwrapAppArmorProfile(bwrapPath: string): string {
+  const attach = /\s/.test(bwrapPath) ? `"${bwrapPath}"` : bwrapPath;
+  return [
+    "abi <abi/4.0>,",
+    "include <tunables/global>",
+    "",
+    `profile ${BWRAP_APPARMOR_NAME} ${attach} flags=(unconfined) {`,
+    "  userns,",
+    `  include if exists <local/${BWRAP_APPARMOR_NAME}>`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** One shell line that writes that profile and loads it. Undo: `sudo apparmor_parser -R <file> && sudo rm <file>`. */
+export function bwrapAppArmorInstall(bwrapPath: string): string {
+  const file = `/etc/apparmor.d/${BWRAP_APPARMOR_NAME}`;
+  const lines = bwrapAppArmorProfile(bwrapPath).trimEnd().split("\n").map((l) => `'${l.replace(/'/g, "'\\''")}'`);
+  return `printf '%s\\n' ${lines.join(" ")} | sudo tee ${file} >/dev/null && sudo apparmor_parser -r ${file}`;
+}
+
 /** The known cause and its fix, when the probe's error names it. */
-export function bwrapHint(detail: string | undefined): string {
+export function bwrapHint(detail: string | undefined, bwrapPath = "/usr/bin/bwrap"): string {
   if (!detail) return "";
   if (/uid map|user namespace|unshare/i.test(detail))
-    return " — unprivileged user namespaces are disabled (Ubuntu 24.04: kernel.apparmor_restrict_unprivileged_userns=1); run `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` or install an AppArmor profile for bwrap";
+    return ` — the kernel refuses bwrap an unprivileged user namespace (Ubuntu 24.04+: kernel.apparmor_restrict_unprivileged_userns=1). Keep that restriction and allow ${bwrapPath} alone with an AppArmor profile: ${bwrapAppArmorInstall(bwrapPath)}`;
   return "";
 }
 
@@ -115,7 +142,7 @@ export function createSandbox(spec: SandboxSpec, opts: CreateSandboxOptions = {}
       if (probe.ok) {
         confined = "bwrap";
         wrap = (argv) => bwrapArgv(bwrap, spec, argv);
-      } else reason = `bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail)}`;
+      } else reason = `bubblewrap is installed but cannot confine here: ${probe.detail ?? "the probe command failed"}${bwrapHint(probe.detail, bwrap)}`;
     } else reason = "bubblewrap (bwrap) is not installed";
   } else {
     reason = `no sandbox for ${platform}`;

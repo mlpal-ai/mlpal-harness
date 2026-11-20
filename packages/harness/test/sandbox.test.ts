@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
+import { bwrapAppArmorInstall, bwrapAppArmorProfile, bwrapHint, createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -142,6 +142,40 @@ describe("sandboxRecord (E-17): which sandbox confines a session's commands, for
 
   test("no sandbox at all (off by settings or --no-sandbox): none, reason off", () => {
     expect(sandboxRecord(undefined, null)).toEqual({ platform: "none", filesystem: null, network: null, required: false, reason: "off" });
+  });
+});
+
+describe("bwrap blocked by the kernel's user-namespace restriction (E-15): the hint scopes the fix to bwrap", () => {
+  const denied = "bwrap: setting up uid map: Permission denied";
+
+  test("the profile lets the named bwrap alone create user namespaces (the workbox's bwrap-e2e profile, renamed)", () => {
+    expect(bwrapAppArmorProfile("/usr/bin/bwrap")).toBe(
+      ["abi <abi/4.0>,", "include <tunables/global>", "", "profile yodex-bwrap /usr/bin/bwrap flags=(unconfined) {", "  userns,", "  include if exists <local/yodex-bwrap>", "}", ""].join("\n"),
+    );
+    expect(bwrapAppArmorProfile("/opt/my tools/bwrap")).toContain('profile yodex-bwrap "/opt/my tools/bwrap" flags=(unconfined) {');
+  });
+
+  test("the install line writes exactly that profile and loads it", async () => {
+    const install = bwrapAppArmorInstall("/usr/local/bin/bwrap");
+    expect(install.endsWith("| sudo tee /etc/apparmor.d/yodex-bwrap >/dev/null && sudo apparmor_parser -r /etc/apparmor.d/yodex-bwrap")).toBe(true);
+    const printf = install.slice(0, install.indexOf(" | sudo tee"));
+    expect((await sh(["/bin/sh", "-c", printf])).out).toBe(bwrapAppArmorProfile("/usr/local/bin/bwrap"));
+  });
+
+  test("the hint names the cause and the scoped profile, never the global sysctl", () => {
+    const hint = bwrapHint(denied, "/usr/bin/bwrap");
+    expect(hint).toContain("kernel.apparmor_restrict_unprivileged_userns=1");
+    expect(hint).toContain(bwrapAppArmorInstall("/usr/bin/bwrap"));
+    expect(hint).not.toContain("sysctl");
+    expect(hint).not.toContain("=0");
+    expect(bwrapHint("bwrap: execvp true: No such file", "/usr/bin/bwrap")).toBe("");
+  });
+
+  test("a sandbox refused by the probe carries the hint for the bwrap it found", () => {
+    const sb = createSandbox(resolveSandboxSpec(undefined, { roots: ["/w"], home: "/h" }), { platform: "linux", bwrapPath: "/usr/local/bin/bwrap", bwrapProbe: () => ({ ok: false, detail: denied }), baseEnv: {} });
+    expect(sb.reason).toContain("profile yodex-bwrap /usr/local/bin/bwrap");
+    expect(sb.describe()).toContain("NOT confined");
+    sb.close();
   });
 });
 
