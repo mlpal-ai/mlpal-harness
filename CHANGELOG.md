@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### A quoted Bash rule matches the command it names (E-11, 2026-11-20)
+
+- Rules are matched against a command's words with the shell's quotes removed, so a pattern written the way a user
+  copies the command (`Bash(python3 -c 'import x')`) matched nothing: a quoted allow fell through to the mode (or the
+  judge), a quoted toolClasses entry left the command `unknown`, and a quoted deny never denied. Allow, deny, approval
+  entries (`ruleMatch`) and toolClasses (`Bash(…)` and bare entries, on a Bash command) now also match the pattern as
+  shell words (`normalizeBashPattern`: the decomposer's own quote removal, single-spaced; `*` stays the wildcard).
+  The pattern as written still matches too, so a rule only gains calls; every refusal of auto-approval is unchanged.
+- `bashPatternNotes(profile)`: the Bash patterns a HOP writes differently from how the matcher reads them (or whose
+  quoting does not balance), for `yodex hop lint`.
+
 ### The sandbox's credential denials also cover the real home under a throwaway `$HOME` (E-16, 2026-11-20)
 
 - `resolveSandboxSpec` expands every `~`-relative denial (`DEFAULT_UNREADABLE` and a HOP's `denyRead`) against both

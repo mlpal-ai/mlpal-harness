@@ -396,26 +396,8 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       i++;
       continue;
     }
-    if (c === "'") {
-      const end = command.indexOf("'", i + 1);
-      if (end < 0) throw new Opaque("unbalanced quotes");
-      cur().text += command.slice(i + 1, end);
-      i = end;
-      continue;
-    }
-    if (c === '"') {
-      const w = cur();
-      let j = i + 1;
-      for (; j < command.length && command[j] !== '"'; j++) {
-        const d = command[j]!;
-        if (d === "\\" && j + 1 < command.length) {
-          w.text += command[j + 1];
-          j++;
-        } else if (d === "$" || d === "`") j = expansion(command, j, w, inner, close, line);
-        else w.text += d;
-      }
-      if (j >= command.length) throw new Opaque("unbalanced quotes");
-      i = j;
+    if (c === "'" || c === '"') {
+      i = quoted(command, i, cur(), inner, close, line);
       continue;
     }
     if (c === "$" || c === "`") {
@@ -430,6 +412,72 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
   endCommand();
   if (pendingHeredocs.length) throw new Opaque("an unterminated here-doc");
   if (cases.length) throw new Opaque("an unterminated case");
+}
+
+/** A quoted span at `i` (`'…'` or `"…"`) added to the word with its quotes removed, as the command receives it: inside
+ *  double quotes a backslash keeps the next character and `$`/backticks expand. Answers the closing quote's index. */
+function quoted(s: string, i: number, w: Word, inner: (cmd: string) => void, close: (open: number) => number, line: Line): number {
+  if (s[i] === "'") {
+    const end = s.indexOf("'", i + 1);
+    if (end < 0) throw new Opaque("unbalanced quotes");
+    w.text += s.slice(i + 1, end);
+    return end;
+  }
+  let j = i + 1;
+  for (; j < s.length && s[j] !== '"'; j++) {
+    const d = s[j]!;
+    if (d === "\\" && j + 1 < s.length) {
+      w.text += s[j + 1];
+      j++;
+    } else if (d === "$" || d === "`") j = expansion(s, j, w, inner, close, line);
+    else w.text += d;
+  }
+  if (j >= s.length) throw new Opaque("unbalanced quotes");
+  return j;
+}
+
+/**
+ * A rule's argument pattern in the form `decomposeBash` gives a command's words to the rules (E-11): quotes and
+ * backslashes removed by the same code, whitespace single-spaced, so `python3 -c 'import x'` reads `python3 -c import
+ * x`. `*` stays the rule's wildcard, quoted or not. Every other character is kept as written (operators, `$…`, `~`):
+ * the pattern is never split into commands. Null when its quoting does not balance.
+ */
+export function normalizeBashPattern(pattern: string): string | null {
+  const words: string[] = [];
+  let w: Word | null = null;
+  const unused: Line = { envChanged: false, writes: [] };
+  const ignore = () => {};
+  const close = (open: number) => {
+    const end = matchParen(pattern, open);
+    if (end < 0) throw new Opaque("unbalanced parentheses");
+    return end;
+  };
+  try {
+    for (let i = 0; i < pattern.length; i++) {
+      const c = pattern[i]!;
+      if (c === " " || c === "\t" || c === "\n") {
+        if (w) words.push(w.text);
+        w = null;
+        continue;
+      }
+      if (c === "\\" && pattern[i + 1] === "\n") {
+        i++;
+        continue;
+      }
+      w ??= { text: "", expanded: false, literal: true };
+      if (c === "\\") {
+        if (i + 1 < pattern.length) w.text += pattern[i + 1];
+        i++;
+      } else if (c === "'" || c === '"') i = quoted(pattern, i, w, ignore, close, unused);
+      else if (c === "$" || c === "`") i = expansion(pattern, i, w, ignore, close, unused);
+      else w.text += c;
+    }
+  } catch (e) {
+    if (e instanceof Opaque) return null;
+    throw e;
+  }
+  if (w) words.push((w as Word).text);
+  return words.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /** An expansion at `i` (`$((…))`, `$(…)`, backticks, `$name`, `${…}`): substitutions decomposed, the word marked.

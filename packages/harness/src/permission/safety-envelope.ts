@@ -10,7 +10,7 @@
  * terminal outcome (§10.1). `deny` is a hard policy denial. `allow` proceeds inside the envelope.
  */
 import type { SafetyPolicy } from "../profile/types";
-import { globMatch } from "./engine";
+import { bashPatternForms, globAny, TOOL_CLASS_RULE } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
@@ -76,14 +76,21 @@ function anyMatch(patterns: string[], action: SafetyAction): boolean {
   const subs = splitShellCommands(action.command);
   const cmdParts = subs.length > 0 ? subs : [action.command];
   return patterns.some((entry) => {
-    const m = entry.match(/^([A-Za-z_]+)\((.*)\)$/);
+    const m = entry.match(TOOL_CLASS_RULE);
     if (m) {
       if (m[1] !== action.toolName) return false;
-      return cmdParts.some((s) => globMatch(m[2]!, s));
+      const forms = patternForms(m[2]!, action);
+      return cmdParts.some((s) => globAny(forms, s));
     }
     // bare entry: the tool name itself, or a command glob against any sub-command.
-    return entry === action.toolName || cmdParts.some((s) => globMatch(entry, s));
+    const forms = patternForms(entry, action);
+    return entry === action.toolName || cmdParts.some((s) => globAny(forms, s));
   });
+}
+
+/** A toolClasses pattern against a Bash command is also read as shell words, as the permission rules are (E-11). */
+function patternForms(pattern: string, action: SafetyAction): string[] {
+  return action.toolName === "Bash" ? bashPatternForms(pattern) : [pattern];
 }
 
 /** Classify an action against the envelope's toolClasses. Precedence destructive > mutative >
@@ -162,9 +169,9 @@ function defaultClass(action: SafetyAction): SafetyClass {
 function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[]): SafetyClass {
   const hit = (patterns: string[]) =>
     patterns.some((entry) => {
-      const m = entry.match(/^([A-Za-z_]+)\((.*)\)$/);
-      if (m) return m[1] === action.toolName && forms.some((f) => globMatch(m[2]!, f));
-      return entry === action.toolName || forms.some((f) => globMatch(entry, f));
+      const m = entry.match(TOOL_CLASS_RULE);
+      if (m) return m[1] === action.toolName && forms.some((f) => globAny(patternForms(m[2]!, action), f));
+      return entry === action.toolName || forms.some((f) => globAny(patternForms(entry, action), f));
     });
   if (hit(tc.destructive)) return "destructive";
   if (hit(tc.mutative)) return "mutative";
