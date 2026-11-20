@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
 /**
@@ -117,17 +117,36 @@ export function expandHome(p: string, home = homedir()): string {
   return p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : resolve(p);
 }
 
-/** Resolve a HOP's (or the host default) sandbox policy against this run's workspace. */
+const homeRelative = (p: string) => p === "~" || p.startsWith("~/");
+
+/** The invoking user's home from the password database, whatever `$HOME` says; undefined for a uid with no entry (a
+ *  container's arbitrary uid), which has no other home to protect. */
+export function realHomeDir(): string | undefined {
+  try {
+    return userInfo().homedir || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolve a HOP's (or the host default) sandbox policy against this run's workspace.
+ *
+ *  `~` is `home` (`$HOME`), where the run's tools look. A host that runs the engine under a throwaway `$HOME` (an eval
+ *  harness, a wrapper) leaves the operator's credentials where the password database says, so every `~`-relative
+ *  denial also applies under `realHome` (default: `realHomeDir()`). That only narrows a HOP's locked policy: a
+ *  `~`-relative allowRead lifts the run's own path, and only an absolute one lifts the real home's (E-16). */
 export function resolveSandboxSpec(
   policy: SandboxPolicy | undefined,
-  opts: { roots: string[]; scratch?: string[]; home?: string; hasSafetyBlock?: boolean; hostNetwork?: HostNetwork },
+  opts: { roots: string[]; scratch?: string[]; home?: string; realHome?: string; hasSafetyBlock?: boolean; hostNetwork?: HostNetwork },
 ): SandboxSpec {
   const home = opts.home ?? homedir();
   const ex = (p: string) => expandHome(p, home);
+  const homes = uniq([home, opts.realHome ?? realHomeDir() ?? home]);
+  const denied = (p: string) => (homeRelative(p) ? homes.map((h) => expandHome(p, h)) : [ex(p)]);
   const fs = policy?.filesystem ?? {};
   const mode: FilesystemMode = fs.mode ?? "workspace";
   const allowRead = new Set((fs.allowRead ?? []).map(ex));
-  const unreadable = [...DEFAULT_UNREADABLE.map(ex).filter((p) => !allowRead.has(p)), ...(fs.denyRead ?? []).map(ex)];
+  const unreadable = [...DEFAULT_UNREADABLE.flatMap(denied).filter((p) => !allowRead.has(p)), ...(fs.denyRead ?? []).flatMap(denied)];
   const writable =
     mode === "readOnly"
       ? uniq([...SCRATCH_DIRS, ...(opts.scratch ?? []).map(ex)])

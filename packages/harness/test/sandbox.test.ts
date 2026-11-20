@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { createSandbox, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
+import { createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -42,6 +42,78 @@ describe("sandbox spec", () => {
     expect(spec.required).toBe(false);
   });
 
+  test("unchanged when $HOME is the real home: the defaults once each", () => {
+    const spec = resolveSandboxSpec(undefined, { roots: ["/w"], home: "/home/u", realHome: "/home/u" });
+    expect(spec.filesystem.unreadable).toEqual(DEFAULT_UNREADABLE.map((p) => `/home/u/${p.slice(2)}`));
+  });
+});
+
+describe("sandbox spec under a throwaway $HOME (E-16)", () => {
+  const opts = { roots: ["/w"], home: "/tmp/throwaway", realHome: "/home/op" };
+
+  test("the credential defaults are denied under the real home as well as $HOME", () => {
+    const { unreadable } = resolveSandboxSpec(undefined, opts).filesystem;
+    for (const p of DEFAULT_UNREADABLE) {
+      expect(unreadable).toContain(`/tmp/throwaway/${p.slice(2)}`);
+      expect(unreadable).toContain(`/home/op/${p.slice(2)}`);
+    }
+    expect(unreadable).toHaveLength(2 * DEFAULT_UNREADABLE.length);
+  });
+
+  test("a ~-relative allowRead lifts the run's own path only; an absolute one names the real home's", () => {
+    const tilde = resolveSandboxSpec({ filesystem: { allowRead: ["~/.kube"] } }, opts).filesystem.unreadable;
+    expect(tilde).not.toContain("/tmp/throwaway/.kube");
+    expect(tilde).toContain("/home/op/.kube");
+    const absolute = resolveSandboxSpec({ filesystem: { allowRead: ["~/.kube", "/home/op/.kube"] } }, opts).filesystem.unreadable;
+    expect(absolute).not.toContain("/home/op/.kube");
+  });
+
+  test("a ~-relative denyRead is denied under both homes; an absolute one once", () => {
+    const { unreadable } = resolveSandboxSpec({ filesystem: { denyRead: ["~/secrets", "/srv/oracle"] } }, opts).filesystem;
+    expect(unreadable).toContain("/tmp/throwaway/secrets");
+    expect(unreadable).toContain("/home/op/secrets");
+    expect(unreadable.filter((p) => p === "/srv/oracle")).toHaveLength(1);
+  });
+
+  test("writes stay under $HOME: the real home gains no writable cache", () => {
+    const { writable } = resolveSandboxSpec(undefined, opts).filesystem;
+    expect(writable).toContain("/tmp/throwaway/.cache");
+    expect(writable.some((p) => p.startsWith("/home/op"))).toBe(false);
+  });
+
+  test("by default the real home is the password database's, not $HOME", () => {
+    const real = userInfo().homedir;
+    const { unreadable } = resolveSandboxSpec(undefined, { roots: ["/w"], home: "/tmp/throwaway" }).filesystem;
+    expect(unreadable).toContain(join(real, ".aws"));
+    expect(unreadable).toContain("/tmp/throwaway/.aws");
+  });
+
+  test("seatbelt denies reads of the real home's credentials", () => {
+    const p = seatbeltProfile(resolveSandboxSpec(undefined, opts));
+    expect(p).toContain('(deny file-read* (literal "/home/op/.aws") (subpath "/home/op/.aws"))');
+    expect(p).toContain('(deny file-read* (literal "/home/op/.ssh/id_ed25519") (subpath "/home/op/.ssh/id_ed25519"))');
+    expect(p).toContain('(deny file-read* (literal "/tmp/throwaway/.aws") (subpath "/tmp/throwaway/.aws"))');
+  });
+
+  test("bwrap shadows the real home's credential dirs and files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sb-homes-"));
+    const real = join(dir, "real");
+    const throwaway = join(dir, "throwaway");
+    mkdirSync(join(real, ".aws"), { recursive: true });
+    mkdirSync(join(real, ".ssh"), { recursive: true });
+    writeFileSync(join(real, ".ssh", "id_ed25519"), "k");
+    mkdirSync(throwaway);
+    try {
+      const argv = bwrapArgv("/usr/bin/bwrap", resolveSandboxSpec(undefined, { roots: [throwaway], home: throwaway, realHome: real }), ["/bin/true"]).join(" ");
+      expect(argv).toContain(`--tmpfs ${join(real, ".aws")}`);
+      expect(argv).toContain(`--ro-bind /dev/null ${join(real, ".ssh", "id_ed25519")}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("sandbox network matching", () => {
   test("host allowlist: exact and suffix wildcard", () => {
     expect(hostAllowed("api.github.com", ["api.github.com"])).toBe(true);
     expect(hostAllowed("github.com", ["api.github.com"])).toBe(false);
