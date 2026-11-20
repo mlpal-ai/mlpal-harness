@@ -1,5 +1,7 @@
-import { homedir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import type { Logger } from "../obs/logger";
 
 /**
  * Execution sandbox — the SPEC. What a command the agent runs may touch once it runs, as
@@ -119,29 +121,109 @@ export function expandHome(p: string, home = homedir()): string {
 
 const homeRelative = (p: string) => p === "~" || p.startsWith("~/");
 
-/** The invoking user's home from the password database, whatever `$HOME` says; undefined for a uid with no entry (a
- *  container's arbitrary uid), which has no other home to protect. */
-export function realHomeDir(): string | undefined {
+/** The invoking uid's home as the password database records it, or why it could not be read. */
+export type PasswdHome = { home: string } | { error: string };
+
+export interface PasswdLookupDeps {
+  /** Run a command by absolute path with an EMPTY environment; null when it could not run (missing, timed out). */
+  run?: (argv: string[]) => { code: number; out: string } | null;
+  /** The local password file (Linux, when `getent` is absent). */
+  readPasswd?: () => string;
+}
+
+const runCleared = (argv: string[]): { code: number; out: string } | null => {
+  if (!existsSync(argv[0]!)) return null;
   try {
-    return userInfo().homedir || undefined;
+    const r = Bun.spawnSync(argv, { env: {}, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 2000 });
+    return r.exitCode === null ? null : { code: r.exitCode, out: new TextDecoder().decode(r.stdout) };
   } catch {
-    return undefined;
+    return null;
   }
+};
+
+/** The home field of the passwd-format line for `uid` (`name:pw:uid:gid:…:home:shell`, the Linux and the BSD layout). */
+function homeOfEntry(line: string | undefined, uid: number): PasswdHome {
+  const f = (line ?? "").trim().split(":");
+  if (f.length < 7 || f[2] !== String(uid)) return { error: "no password entry for the uid" };
+  const home = f[f.length - 2]!;
+  return isAbsolute(home) ? { home } : { error: `the password entry's home is not absolute: ${JSON.stringify(home)}` };
+}
+
+/**
+ * The invoking uid's home from the password database, read with no environment input: under Bun `os.userInfo()`
+ * answers from `$HOME` and `$USER`, so it cannot see past a throwaway home (E-16 review). darwin: `/usr/bin/id -P <uid>`
+ * (Directory Services); Linux: `getent passwd <uid>` (NSS), else `/etc/passwd`. Every command runs by absolute path
+ * with an empty environment and a 2 s limit. Never throws.
+ */
+export function lookupPasswdHome(uid: number | undefined = process.getuid?.(), platform: NodeJS.Platform = process.platform, deps: PasswdLookupDeps = {}): PasswdHome {
+  if (uid === undefined) return { error: `no uid on ${platform}` };
+  const run = deps.run ?? runCleared;
+  const first = (r: { code: number; out: string } | null) => (r && r.code === 0 ? r.out.split("\n")[0] : undefined);
+  if (platform === "darwin") {
+    const r = run(["/usr/bin/id", "-P", String(uid)]);
+    return r ? homeOfEntry(first(r), uid) : { error: "/usr/bin/id did not run" };
+  }
+  if (platform === "linux") {
+    for (const getent of ["/usr/bin/getent", "/bin/getent"]) {
+      const r = run([getent, "passwd", String(uid)]);
+      if (r) return homeOfEntry(first(r), uid);
+    }
+    try {
+      const passwd = (deps.readPasswd ?? (() => readFileSync("/etc/passwd", "utf8")))();
+      return homeOfEntry(passwd.split("\n").find((l) => l.split(":")[2] === String(uid)), uid);
+    } catch (e) {
+      return { error: `no getent and /etc/passwd unreadable: ${(e as Error).message}` };
+    }
+  }
+  return { error: `no password database lookup on ${platform}` };
+}
+
+let passwdCache: { uid: number | undefined; result: PasswdHome } | undefined;
+/** `lookupPasswdHome()` once per process (per uid): every sandbox of the run shares it. */
+function cachedPasswdHome(): PasswdHome {
+  const uid = process.getuid?.();
+  if (passwdCache === undefined || passwdCache.uid !== uid) passwdCache = { uid, result: lookupPasswdHome(uid) };
+  return passwdCache.result;
+}
+
+/** The other home the `~`-relative denials also cover, or undefined. An explicit `realHome` must be absolute (null:
+ *  none). A failed lookup fails closed to `$HOME` alone and is logged `sandbox.real_home_unknown`, never thrown. */
+function otherHome(opts: { realHome?: string | null; passwd?: () => PasswdHome; logger?: Pick<Logger, "warn"> }): string | undefined {
+  if (opts.realHome === null) return undefined;
+  if (opts.realHome !== undefined) {
+    if (!isAbsolute(opts.realHome)) throw new TypeError(`realHome must be an absolute path, got ${JSON.stringify(opts.realHome)}`);
+    return opts.realHome;
+  }
+  const r = (opts.passwd ?? cachedPasswdHome)();
+  if ("home" in r) return r.home;
+  opts.logger?.warn("sandbox.real_home_unknown", { reason: r.error });
+  return undefined;
 }
 
 /** Resolve a HOP's (or the host default) sandbox policy against this run's workspace.
  *
  *  `~` is `home` (`$HOME`), where the run's tools look. A host that runs the engine under a throwaway `$HOME` (an eval
  *  harness, a wrapper) leaves the operator's credentials where the password database says, so every `~`-relative
- *  denial also applies under `realHome` (default: `realHomeDir()`). That only narrows a HOP's locked policy: a
- *  `~`-relative allowRead lifts the run's own path, and only an absolute one lifts the real home's (E-16). */
+ *  denial also applies under the real home: `realHome`, else `lookupPasswdHome()` (`passwd` replaces it in tests).
+ *  That only narrows a HOP's locked policy: a `~`-relative allowRead lifts the run's own path, and only an absolute one
+ *  lifts the real home's (E-16). */
 export function resolveSandboxSpec(
   policy: SandboxPolicy | undefined,
-  opts: { roots: string[]; scratch?: string[]; home?: string; realHome?: string; hasSafetyBlock?: boolean; hostNetwork?: HostNetwork },
+  opts: {
+    roots: string[];
+    scratch?: string[];
+    home?: string;
+    realHome?: string | null;
+    passwd?: () => PasswdHome;
+    logger?: Pick<Logger, "warn">;
+    hasSafetyBlock?: boolean;
+    hostNetwork?: HostNetwork;
+  },
 ): SandboxSpec {
   const home = opts.home ?? homedir();
   const ex = (p: string) => expandHome(p, home);
-  const homes = uniq([home, opts.realHome ?? realHomeDir() ?? home]);
+  const real = otherHome(opts);
+  const homes = uniq([home, ...(real ? [real] : [])]);
   const denied = (p: string) => (homeRelative(p) ? homes.map((h) => expandHome(p, h)) : [ex(p)]);
   const fs = policy?.filesystem ?? {};
   const mode: FilesystemMode = fs.mode ?? "workspace";

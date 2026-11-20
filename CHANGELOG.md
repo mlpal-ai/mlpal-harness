@@ -44,11 +44,16 @@
 ### The sandbox's credential denials also cover the real home under a throwaway `$HOME` (E-16, 2026-11-20)
 
 - `resolveSandboxSpec` expands every `~`-relative denial (`DEFAULT_UNREADABLE` and a HOP's `denyRead`) against both
-  `$HOME` and the invoking user's password-database home (`os.userInfo().homedir`, new option `realHome`), so a host
+  `$HOME` and the invoking uid's password-database home, so a host
   that runs the engine under a throwaway `$HOME` (an eval harness, a wrapper) no longer leaves the operator's
   `~/.aws`, `~/.kube`, `~/.ssh` keys and the rest readable inside seatbelt or bwrap. A `~`-relative `allowRead` lifts
   the run's own path only; an absolute one lifts the real home's. Writable caches stay under `$HOME`. When the two
   homes are the same nothing changes. Only narrows a HOP's locked policy.
+- The real home is read with no environment input (`lookupPasswdHome`: darwin `/usr/bin/id -P <uid>`, Linux `getent
+  passwd <uid>` else `/etc/passwd`, empty environment, 2 s limit, once per process). Under Bun `os.userInfo()` answers
+  from `$HOME` and `$USER`, so it cannot be used (review round 2). A failed lookup fails closed to `$HOME` alone and is
+  logged `sandbox.real_home_unknown {reason}` through the new `logger` option, never thrown. An explicit `realHome`
+  must be absolute (null: none).
 
 ### A sandboxed Bash that exits non-zero is an error result (2026-11-06)
 

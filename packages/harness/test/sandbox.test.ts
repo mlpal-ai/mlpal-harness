@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearSecrets, redactResult, redactText, registerSecret } from "../src/obs/redact";
-import { bwrapAppArmorInstall, bwrapAppArmorProfile, bwrapHint, createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
+import { bwrapAppArmorInstall, bwrapAppArmorProfile, bwrapHint, createSandbox, DEFAULT_UNREADABLE, endpointDenied, hostAllowed, isSecretName, lookupPasswdHome, resolveSandboxSpec, sandboxRecord, scrubEnv, seatbeltProfile, startAllowlistProxy, unenforcedDeny } from "../src/sandbox";
 import { bwrapArgv } from "../src/sandbox/bwrap";
 
 /** Async on purpose: the allowlist proxy runs on this process's event loop, and a synchronous
@@ -81,11 +81,17 @@ describe("sandbox spec under a throwaway $HOME (E-16)", () => {
     expect(writable.some((p) => p.startsWith("/home/op"))).toBe(false);
   });
 
-  test("by default the real home is the password database's, not $HOME", () => {
-    const real = userInfo().homedir;
-    const { unreadable } = resolveSandboxSpec(undefined, { roots: ["/w"], home: "/tmp/throwaway" }).filesystem;
-    expect(unreadable).toContain(join(real, ".aws"));
-    expect(unreadable).toContain("/tmp/throwaway/.aws");
+  test("a real home must be absolute; null means none", () => {
+    expect(() => resolveSandboxSpec(undefined, { ...opts, realHome: "home/op" })).toThrow(/absolute/);
+    expect(resolveSandboxSpec(undefined, { ...opts, realHome: null }).filesystem.unreadable).toHaveLength(DEFAULT_UNREADABLE.length);
+  });
+
+  test("a failed password lookup fails closed to $HOME alone, logged, never thrown", () => {
+    const warned: Array<[string, unknown]> = [];
+    const logger = { warn: (msg: string, fields?: unknown) => void warned.push([msg, fields]) };
+    const { unreadable } = resolveSandboxSpec(undefined, { roots: ["/w"], home: "/tmp/throwaway", passwd: () => ({ error: "no password entry for the uid" }), logger }).filesystem;
+    expect(unreadable).toEqual(DEFAULT_UNREADABLE.map((p) => `/tmp/throwaway/${p.slice(2)}`));
+    expect(warned).toEqual([["sandbox.real_home_unknown", { reason: "no password entry for the uid" }]]);
   });
 
   test("seatbelt denies reads of the real home's credentials", () => {
@@ -111,6 +117,58 @@ describe("sandbox spec under a throwaway $HOME (E-16)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("lookupPasswdHome: the password database, with no environment input (E-16 review)", () => {
+  const out = (line: string) => () => ({ code: 0, out: `${line}\n` });
+
+  test("darwin reads `id -P <uid>`, Linux `getent passwd <uid>`, each by absolute path", () => {
+    const argvs: string[][] = [];
+    const run = (line: string) => (argv: string[]) => (argvs.push(argv), out(line)());
+    expect(lookupPasswdHome(501, "darwin", { run: run("op:********:501:20::0:0:Op Erator:/Users/op:/bin/zsh") })).toEqual({ home: "/Users/op" });
+    expect(lookupPasswdHome(1001, "linux", { run: run("ubuntu:x:1001:1001:,,,:/home/ubuntu:/bin/bash") })).toEqual({ home: "/home/ubuntu" });
+    expect(argvs).toEqual([["/usr/bin/id", "-P", "501"], ["/usr/bin/getent", "passwd", "1001"]]);
+  });
+
+  test("Linux without getent reads /etc/passwd", () => {
+    const passwd = "root:x:0:0:root:/root:/bin/bash\ne2e:x:1001:1001::/home/e2e:/bin/bash\n";
+    expect(lookupPasswdHome(1001, "linux", { run: () => null, readPasswd: () => passwd })).toEqual({ home: "/home/e2e" });
+  });
+
+  test("every failure is an error value, never a throw and never $HOME", () => {
+    const fail = (deps: Parameters<typeof lookupPasswdHome>[2], uid: number | undefined = 501, platform: NodeJS.Platform = "darwin") => "error" in lookupPasswdHome(uid, platform, deps);
+    expect(fail({ run: () => ({ code: 1, out: "" }) })).toBe(true); // no such user
+    expect(fail({ run: () => null })).toBe(true); // did not run
+    expect(fail({ run: out("op:*:502:20::0:0::/Users/op:/bin/zsh") })).toBe(true); // another uid's entry
+    expect(fail({ run: out("op:*:501:20::0:0::relative/home:/bin/zsh") })).toBe(true); // not absolute
+    expect(fail({ run: () => null, readPasswd: () => { throw new Error("EACCES"); } }, 1001, "linux")).toBe(true);
+    expect(fail({}, undefined, "win32")).toBe(true);
+  });
+
+  test("a child with HOME and USER pointed elsewhere still denies the real home's credentials", async () => {
+    // the real home, read independently of the code under test
+    const name = Bun.spawnSync(["/usr/bin/id", "-un"], { env: {} }).stdout.toString().trim();
+    const expected =
+      process.platform === "darwin"
+        ? /NFSHomeDirectory:\s*(\S+)/.exec(Bun.spawnSync(["/usr/bin/dscl", ".", "-read", `/Users/${name}`, "NFSHomeDirectory"], { env: {} }).stdout.toString())?.[1]
+        : Bun.spawnSync(["getent", "passwd", String(process.getuid!())]).stdout.toString().trim().split(":").at(-2);
+    expect(expected).toMatch(/^\//);
+    const dir = mkdtempSync(join(tmpdir(), "sb-child-"));
+    const throwaway = join(dir, "home");
+    mkdirSync(throwaway);
+    const script = join(dir, "spec.ts");
+    writeFileSync(script, `import { resolveSandboxSpec } from ${JSON.stringify(join(import.meta.dir, "..", "src", "sandbox", "spec.ts"))};\nprocess.stdout.write(JSON.stringify(resolveSandboxSpec(undefined, { roots: ["/w"] }).filesystem.unreadable));\n`);
+    try {
+      const r = await sh([process.execPath, script], { env: { PATH: process.env.PATH ?? "", HOME: throwaway, USER: "nobody", LOGNAME: "nobody" } });
+      const unreadable = JSON.parse(r.out) as string[];
+      expect(unreadable).toContain(join(expected!, ".aws"));
+      expect(unreadable).toContain(join(expected!, ".ssh", "id_ed25519"));
+      expect(unreadable).toContain(join(throwaway, ".aws"));
+      expect(unreadable).toHaveLength(2 * DEFAULT_UNREADABLE.length);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("sandboxRecord (E-17): which sandbox confines a session's commands, for system/init and the run records", () => {
