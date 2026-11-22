@@ -1,6 +1,7 @@
 import type { ConversationEntry, Message } from "@mlpal/harness-protocol";
 import { attachedDocumentName } from "../context/attachments";
 import { EVENTS_HEADER } from "../events/inbox";
+import { redactText } from "../obs/redact";
 import type { SessionRecord, Store } from "./types";
 import { effectiveEntries } from "../loop/messages";
 
@@ -21,11 +22,20 @@ export interface SessionInfo {
 /** How long a title or a reply preview may be (protocol SessionSummary: "trimmed"). */
 const CLIP_CHARS = 72;
 
-/** Whitespace collapsed, cut to CLIP_CHARS with an ellipsis, and well-formed: half a character (a cut inside a surrogate
- *  pair, or a lone one in the text) is JSON no parser after us builds a string of, so the session store would fold the
- *  record that carries it as one without data. */
+/** How much of the text, whitespace collapsed, the redactor reads before the cut: a secret that starts in what is shown
+ *  is masked whole (a JWT cut at 72 characters no longer matches its pattern), and a 90 KB message costs no more. */
+const REDACT_WINDOW = 4096;
+
+/** Control characters other than whitespace (C0, DEL, C1): no listing shows one, and a NUL is JSON the session store's
+ *  jsonb fold refuses (E-30 review R1; the store drops NULs too). */
+const CONTROLS = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g;
+
+/** Text as a listing shows it: controls dropped, whitespace collapsed, the secrets the engine knows masked (`redactText`,
+ *  before the cut), cut to CLIP_CHARS with an ellipsis, and well-formed: half a character (a cut inside a surrogate pair,
+ *  or a lone one in the text) is JSON no parser after us builds a string of, so the session store would fold the record
+ *  that carries it as one without data. */
 function clip(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = redactText(text.replace(CONTROLS, "").replace(/\s+/g, " ").trim().slice(0, REDACT_WINDOW)).trim();
   if (flat.length <= CLIP_CHARS) return flat.toWellFormed();
   const high = flat.charCodeAt(CLIP_CHARS - 1);
   return `${flat.slice(0, high >= 0xd800 && high <= 0xdbff ? CLIP_CHARS - 1 : CLIP_CHARS).toWellFormed()}…`;
@@ -42,14 +52,16 @@ const PAGE_CONTEXT_BLOCK = /<page_context>[\s\S]*?<\/page_context>\n*/g;
  */
 export function userTurnTitle(content: Message["content"]): string {
   if (typeof content === "string") return clip(content.replace(PAGE_CONTEXT_BLOCK, ""));
+  if (!Array.isArray(content)) return "";
   const words: string[] = [];
   const files: string[] = [];
   const kinds = new Set<string>();
   for (const b of content) {
-    if (b.type !== "text") {
-      kinds.add(b.type);
+    if (b?.type !== "text") {
+      if (typeof b?.type === "string") kinds.add(b.type);
       continue;
     }
+    if (typeof b.text !== "string") continue;
     const file = attachedDocumentName(b.text);
     if (file === undefined) words.push(b.text.replace(PAGE_CONTEXT_BLOCK, ""));
     else if (file) files.push(file);
@@ -60,7 +72,9 @@ export function userTurnTitle(content: Message["content"]): string {
 
 /** An assistant reply as a listing previews it: its text, trimmed; "" for a reply of tool calls alone. */
 export function replyPreview(content: Message["content"]): string {
-  return clip(typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join(" "));
+  if (typeof content === "string") return clip(content);
+  if (!Array.isArray(content)) return "";
+  return clip(content.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join(" "));
 }
 
 /** What a listing shows of a session's conversation: the first user turn's title (undefined before there is one, ""
@@ -82,7 +96,8 @@ export function summarizeConversation(entries: ConversationEntry[]): Conversatio
 /**
  * The summary once `entry` is appended, incrementally: `entries` is the whole log with `entry` already in it, read only
  * when a rewind changes what is effective. The same answer as summarizeConversation over that log. An entry read from a
- * remote log without a payload or a message (another writer's) changes nothing: opening the session never fails on it.
+ * remote log that is not one this engine writes (no payload, no message, content that is no string or list of blocks,
+ * a text block without text) changes nothing, so opening the session never fails on it.
  */
 export function summaryAfter(s: ConversationSummary, entry: ConversationEntry, entries: ConversationEntry[]): ConversationSummary {
   const p = entry.payload as ConversationEntry["payload"] | undefined;

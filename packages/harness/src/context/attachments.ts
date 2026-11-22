@@ -31,19 +31,21 @@ const PDF_MAX = 20 * 1024 * 1024;
 const DOCX_TEXT_MAX = 80_000;
 
 /** A text file in a turn: its own text block, wrapped so the model knows where it starts and ends. The hosted UI's
- *  composer wraps a text file the same way (harness-ui composer/attachments.ts). */
+ *  composer wraps a text file the same way (harness-ui composer/attachments.ts `textBlock`), its name's `"` as `'` and,
+ *  here, its line breaks as spaces, so the name never ends the attribute or the opening line. */
 export function attachedDocumentBlock(name: string, text: string): ContentBlock {
-  return { type: "text", text: `${ATTACHED_OPEN(name)}${text}${ATTACHED_CLOSE}` };
+  return { type: "text", text: `${ATTACHED_OPEN(name.replace(/"/g, "'").replace(/[\r\n]+/g, " "))}${text}${ATTACHED_CLOSE}` };
 }
 
-/** The file's name when a whole text block is an attached document; undefined for anything else (the person's words). */
+/** The file's name when a whole text block is an attached document; undefined for anything else (the person's words).
+ *  A name written before it was sanitized may hold a `"`: the name runs to the opening line's `">`. */
 export function attachedDocumentName(text: string): string | undefined {
   if (!text.endsWith(ATTACHED_CLOSE)) return undefined;
   return ATTACHED_OPEN_RE.exec(text)?.[1];
 }
 
 const ATTACHED_OPEN = (name: string) => `<attached-document name="${name}">\n`;
-const ATTACHED_OPEN_RE = /^<attached-document name="([^"]*)">\n/;
+const ATTACHED_OPEN_RE = /^<attached-document name="([^\n]*?)">\n/;
 const ATTACHED_CLOSE = "\n</attached-document>";
 
 export type AttachmentKind = "image" | "pdf" | "docx";

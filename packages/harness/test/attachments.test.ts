@@ -193,3 +193,16 @@ describe("an attached text document's wrapper (E-23: a file is never the person'
     expect(attachedDocumentName('see <attached-document name="x">\nbody\n</attached-document>')).toBeUndefined();
   });
 });
+
+describe("an attached document's name never ends the wrapper (E-30 review L3)", () => {
+  test("a quote in the name is written as an apostrophe and a line break as a space, as the hosted composer does", () => {
+    const block = attachedDocumentBlock('a"b\nc.docx', "the document's opening text") as { text: string };
+    expect(block.text.startsWith("<attached-document name=\"a'b c.docx\">\n")).toBe(true);
+    expect(attachedDocumentName(block.text)).toBe("a'b c.docx");
+  });
+
+  test("a name written before it was sanitized, with a quote in it, is still the file's name, never its contents", () => {
+    const legacy = '<attached-document name="a"b.docx">\nthe document\'s opening text\n</attached-document>';
+    expect(attachedDocumentName(legacy)).toBe('a"b.docx');
+  });
+});

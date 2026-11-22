@@ -82,6 +82,8 @@ export class RemoteStore implements Store {
   private record: SessionRecord | null = null;
   /** The summary of `entries`, kept as they change. */
   private summary: ConversationSummary = EMPTY_SUMMARY;
+  /** Whether this holding has sent the store the whole summary yet (writeSummary). */
+  private summarySent = false;
   private readonly agents = new Map<string, AgentRecord>();
   private readonly stored: StoredEvent[] = [];
   private openedAtSeq = 0;
@@ -296,15 +298,23 @@ export class RemoteStore implements Store {
     this.summary = summarizeConversation(this.entries);
   }
 
-  /** Writes the record's summary fields that differ from the conversation's, as one `record` patch; nothing before the
-   *  session has a record (the loop writes it before the first turn). */
+  /**
+   * Writes the record's summary fields that differ from the conversation's, as one `record` patch; nothing before the
+   * session has a record (the loop writes it before the first turn). Once per holding, as soon as there is a title, the
+   * whole summary goes, model included, changed or not: the store's copy converges on the session's next turn whatever
+   * it missed (a store before E-30 that ignored a patch, a replica that dropped one, a session whose summary the store
+   * never had, whose model it then learns: E-30 adds no refold, review R3).
+   */
   private async writeSummary(): Promise<void> {
     if (!this.record) return;
+    const whole = !this.summarySent && this.summary.title !== undefined;
     const patch: Partial<SessionRecord> = {};
     const title = this.summary.title ?? "";
-    if (title !== (this.record.title ?? "")) patch.title = title;
-    if (this.summary.lastReply !== (this.record.lastMessagePreview ?? "")) patch.lastMessagePreview = this.summary.lastReply;
+    if (whole || title !== (this.record.title ?? "")) patch.title = title;
+    if (whole || this.summary.lastReply !== (this.record.lastMessagePreview ?? "")) patch.lastMessagePreview = this.summary.lastReply;
+    if (whole && this.record.model) patch.model = this.record.model;
     if (Object.keys(patch).length === 0) return;
+    if (whole) this.summarySent = true;
     await this.write("record", { ...patch, updatedAt: this.iso() }, (snap) => this.foldRecord(snap));
   }
 

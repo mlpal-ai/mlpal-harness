@@ -157,13 +157,14 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await script(store);
     await store.flush();
     const kinds = fake.events("s1").map((e) => e.kind);
-    // The `record` after the first `user` is its title (the listing summary); nothing else in the script changes it.
+    // The `record` after the first `user` is the listing summary, whole (once per holding, with the model); nothing else
+    // in the script changes it.
     expect(kinds).toEqual(["record", "log", "system", "user", "record", "log", "assistant", "log", "tool_result", "result", "record", "record", "log", "rewind", "compact", "subagent", "user", "record"]);
     const user = fake.events("s1")[3]!.data as { uuid: string; parentUuid: string; payload: { type: string } };
     expect(user.payload.type).toBe("user");
     expect(user.parentUuid).toBe((fake.events("s1")[2]!.data as { uuid: string }).uuid);
     expect(fake.events("s1")[1]!.data).toMatchObject({ channel: "events", record: { kind: "run.start", run: "r1" } });
-    expect(fake.events("s1")[4]!.data).toEqual({ title: "hi", updatedAt: expect.any(String) });
+    expect(fake.events("s1")[4]!.data).toEqual({ title: "hi", lastMessagePreview: "", model: "m", updatedAt: expect.any(String) });
     expect(fake.events("s1")[10]!.data).toMatchObject({ status: "idle", name: "named" });
     expect(fake.events("s1")[10]!.data).not.toHaveProperty("sessionId");
     await store.close();
@@ -470,8 +471,9 @@ describe("the listing summary on the record (E-30): what the session store lists
     const { store } = await openRemote();
     await turns(store);
     await store.flush();
-    // A reply of tool calls alone, and the second turn, change nothing: no record for them.
-    expect(summaries()).toEqual([{ title: "plan the migration" }, { lastMessagePreview: "Here is the plan." }, { lastMessagePreview: "Step two is done." }]);
+    // The first is the whole summary (once per holding); after it, only what changed: a reply of tool calls alone and the
+    // second turn's user entry change nothing.
+    expect(summaries()).toEqual([{ title: "plan the migration", lastMessagePreview: "" }, { lastMessagePreview: "Here is the plan." }, { lastMessagePreview: "Step two is done." }]);
     expect(await store.registry.getSession("s1")).toMatchObject({ title: "plan the migration", lastMessagePreview: "Step two is done.", model: "m" });
     await store.close();
     const { store: reopened } = await openRemote();
@@ -500,7 +502,38 @@ describe("the listing summary on the record (E-30): what the session store lists
     await store.conversation.append("s1", human("a later question"), "a1");
     await store.flush();
     expect(summaries()).toEqual([{ title: "the first question", lastMessagePreview: "the first answer" }]);
+    // With the model the record named at creation: the store, which never refolds for E-30, learns it here.
+    expect(fake.events("s1").at(-1)!.data).toMatchObject({ model: "m" });
     await store.close();
+  });
+
+  test("each holding sends the whole summary once, model included, so the store's copy converges whatever it missed; after it only changes", async () => {
+    const first = await openRemote();
+    await first.store.registry.putSession(record);
+    const u = await first.store.conversation.append("s1", human("plan the migration"), null);
+    await first.store.conversation.append("s1", reply("Here is the plan."), u.uuid);
+    await first.store.close();
+    const second = await openRemote();
+    const head = await second.store.conversation.head("s1");
+    const u2 = await second.store.conversation.append("s1", human("again"), head);
+    await second.store.conversation.append("s1", reply("Done again."), u2.uuid);
+    await second.store.close();
+    const records = fake.events("s1").filter((e) => e.kind === "record").map(({ data }) => { const { updatedAt: _u, ...d } = data as Record<string, unknown>; return d; });
+    expect(records).toEqual([
+      expect.objectContaining({ sessionId: "s1", model: "m" }),
+      { title: "plan the migration", lastMessagePreview: "", model: "m" },
+      { lastMessagePreview: "Here is the plan." },
+      { title: "plan the migration", lastMessagePreview: "Here is the plan.", model: "m" },
+      { lastMessagePreview: "Done again." },
+    ]);
+  });
+
+  test("control characters never reach the record: a NUL (jsonb refuses it in the store's fold) and the rest of C0 and C1 go", async () => {
+    const title = (await titleOf("fix\u0000 the\u0007 build\u009b now"))!;
+    expect(title).toBe("fix the build now");
+    const raw = fake.events("s1").filter((e) => e.kind === "record").map((e) => JSON.stringify(e.data)).join("");
+    expect(raw).not.toContain("\\u0000");
+    expect(raw).toContain('"title":"fix the build now"');
   });
 
   test("a very long first message is titled by its first 72 characters and an ellipsis, in a small record, and never by half a character", async () => {

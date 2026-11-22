@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { HUMAN } from "@mlpal/harness-protocol";
+import { clearSecrets, registerPlatformPatterns, registerSecret } from "../src/obs/redact";
 import { mostRecentSessionId, recentSessions } from "../src/store/sessions";
 import { LocalStore } from "../src/store/local";
 
@@ -133,5 +134,47 @@ describe("the one title rule, on the file backend too (E-30, E-23)", () => {
     const t = await title("long");
     expect(t).toBe(`${"x".repeat(71)}…`);
     expect(t.isWellFormed()).toBe(true);
+  });
+});
+
+describe("what a listing shows passes the engine's redactor first (E-30 review L1)", () => {
+  afterEach(() => clearSecrets());
+  const reply = (text: string) =>
+    ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "m", ts: "2026-06-27T10:01:00Z" }) as never;
+
+  test("an echoed key-like string never reaches the listing; a JWT the cut would split is masked whole; a known value too", async () => {
+    registerPlatformPatterns();
+    registerSecret("gateway-key", "gw-known-value-123456");
+    await seed("s1", "/proj/a", "2026-06-27T10:00:00Z", "my key is mlpal_sk_abcdefghijklmnopqrstuvwx, store it");
+    await store.conversation.append("s1", reply("Stored. The gateway key is gw-known-value-123456."), await store.conversation.head("s1"));
+    // The JWT starts inside the 72 characters shown and runs past them: cut first, its head would match no pattern.
+    const jwt = `eyJ${"a".repeat(40)}.eyJ${"b".repeat(40)}.${"c".repeat(40)}`;
+    await seed("s2", "/proj/b", "2026-06-27T11:00:00Z", "decode this");
+    await store.conversation.append("s2", reply(`Here is the token, as the service minted it: ${jwt}`), await store.conversation.head("s2"));
+    const rows = await recentSessions(store);
+    const s1 = rows.find((r) => r.record.sessionId === "s1")!;
+    const s2 = rows.find((r) => r.record.sessionId === "s2")!;
+    expect(s1.preview).toBe("my key is [redacted:mlpal-key], store it");
+    expect(s1.lastReply).toBe("Stored. The gateway key is [redacted:gateway-key].");
+    expect(s2.lastReply).toBe("Here is the token, as the service minted it: [redacted:jwt]");
+    for (const t of [s1.preview, s1.lastReply, s2.lastReply]) {
+      expect(t).not.toContain("mlpal_sk_abcdefgh");
+      expect(t).not.toContain("gw-known");
+      expect(t).not.toContain("eyJ");
+    }
+  });
+
+  test("control characters other than whitespace are dropped", async () => {
+    await seed("s1", "/proj/a", "2026-06-27T10:00:00Z", "a\u0000b\u0007c\u009bd\te");
+    expect((await recentSessions(store))[0]!.preview).toBe("abcd e");
+  });
+});
+
+describe("a title from an attached document named with a quote (E-30 review L3)", () => {
+  test("is the name, never the document's opening text", async () => {
+    const legacy = { type: "text", text: '<attached-document name="a"b.docx">\nthe document\'s opening text\n</attached-document>' };
+    await store.registry.putSession({ sessionId: "q", agentId: "a", workspace: "w", cwd: "/w", status: "idle", head: null, model: "m", createdAt: "t", updatedAt: "t" });
+    await store.conversation.append("q", { type: "user", message: { role: "user", content: [legacy] }, author: HUMAN, ts: "t" } as never, null);
+    expect((await recentSessions(store))[0]!.preview).toBe('a"b.docx');
   });
 });
