@@ -113,6 +113,22 @@ describe("SessionStoreClient over P1", () => {
     expect("inbox" in (await c.projection("s1"))).toBe(false);
   });
 
+  test("E-30: the projection's created_at, origin and summary are carried in the engine's names; a store before them answers without them, and so does list", async () => {
+    const wire = (extra: Record<string, unknown>) => ({ sid: "s1", owner: "o", unit: "u", publication: "p", hop: { name: "h", version: "1", digest: null }, status: "idle", parks: [], refusal: null,
+      usage: { input_tokens: 0, output_tokens: 0, cost_cu: 0 }, lease: null, last_seq: 9, updated_at: 5_000, ...extra });
+    let body: unknown;
+    const { c } = client({ fetch: async () => Response.json(body) });
+    body = wire({ created_at: 1_000, origin: "api", summary: { title: "plan the migration", last_message_preview: "Step two is done.", model: "mlpal" } });
+    expect(await c.projection("s1")).toMatchObject({ updatedAt: 5_000, createdAt: 1_000, origin: "api", summary: { title: "plan the migration", lastMessagePreview: "Step two is done.", model: "mlpal" } });
+    body = wire({ created_at: 1_000, origin: "ui", summary: {} });
+    expect((await c.projection("s1")).summary).toEqual({});
+    body = wire({});
+    const older = await c.projection("s1");
+    for (const k of ["createdAt", "origin", "summary"]) expect(k in older).toBe(false);
+    body = { sessions: [wire({ created_at: 1_000, origin: "schedule:nightly", summary: { title: "t" } }), wire({})], next_after_id: null };
+    expect((await c.list()).sessions.map((p) => [p.createdAt, p.origin, p.summary])).toEqual([[1_000, "schedule:nightly", { title: "t" }], [undefined, undefined, undefined]]);
+  });
+
   test("readAll of an empty session asks once, at 0; it never asks past the head", async () => {
     store.createSession("empty");
     const urls: string[] = [];

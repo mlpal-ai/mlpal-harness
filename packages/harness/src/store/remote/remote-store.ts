@@ -11,6 +11,11 @@
  * On the wire: a conversation entry is kind = `payload.type`, data = the entry; a log record is
  * kind `log`, data `{channel, record}`; a registry write is kind `record`, data = the record or
  * the patch (folded as merges, as the store folds them); anything else is the host's own kind.
+ *
+ * The record carries the conversation's listing summary (`title`, `lastMessagePreview`; sessions.ts's rule): after an
+ * entry is appended, a change to it is written as a `record` patch, which the store folds into its projection, so a
+ * listing reads no session's log (E-30). A record written before has none; the first entry this engine appends to it
+ * writes the summary of the whole log, read at open.
  */
 import { join } from "node:path";
 import type { ConversationEntry, PeerMessage, SDKMessage } from "@mlpal/harness-protocol";
@@ -18,6 +23,7 @@ import type { Logger } from "../../obs/logger";
 import { silentLogger } from "../../obs/logger";
 import type { AgentRecord, ConversationStore, InboxConsume, InboxItem, LogChannel, LogStore, Mailbox, MemoryStore, Registry, SessionRecord, Store } from "../types";
 import { EventTooLargeError } from "../errors";
+import { type ConversationSummary, EMPTY_SUMMARY, summarizeConversation, summaryAfter } from "../sessions";
 import { AppendBatcher } from "./batcher";
 import { encodeEvent, type SessionStoreClient, type StoredEvent } from "./client";
 import type { LeaseKeeper } from "./lease";
@@ -74,6 +80,8 @@ export class RemoteStore implements Store {
   private readonly entries: ConversationEntry[] = [];
   private readonly logRecords = new Map<LogChannel, Record<string, unknown>[]>();
   private record: SessionRecord | null = null;
+  /** The summary of `entries`, kept as they change. */
+  private summary: ConversationSummary = EMPTY_SUMMARY;
   private readonly agents = new Map<string, AgentRecord>();
   private readonly stored: StoredEvent[] = [];
   private openedAtSeq = 0;
@@ -94,9 +102,10 @@ export class RemoteStore implements Store {
         await self.write(
           payload.type,
           entry,
-          (snap) => self.entries.push(snap),
-          (snap) => remove(self.entries, snap),
+          (snap) => self.addEntry(snap),
+          (snap) => self.dropEntry(snap),
         );
+        await self.writeSummary();
         return entry;
       },
       async read(sessionId: string) {
@@ -237,6 +246,7 @@ export class RemoteStore implements Store {
     const encoded = events.map((e) => encodeEvent(e.kind, e.data, this.now()));
     const seqs = await this.writer().consume(encoded, consumes);
     encoded.forEach((e, i) => this.fold({ seq: seqs[i]!, kind: e.kind, data: JSON.parse(e.json), ts_ms: e.ts_ms }));
+    await this.writeSummary();
     return seqs;
   }
 
@@ -267,13 +277,35 @@ export class RemoteStore implements Store {
 
   private fold(e: StoredEvent): void {
     const data = e.data as Record<string, unknown> | null;
-    if (ENTRY_KINDS.has(e.kind) && typeof data?.uuid === "string") this.entries.push(data as unknown as ConversationEntry);
+    if (ENTRY_KINDS.has(e.kind) && typeof data?.uuid === "string") this.addEntry(data as unknown as ConversationEntry);
     else if (e.kind === "log" && data) this.channel(data.channel as LogChannel).push(data.record as Record<string, unknown>);
     else if (e.kind === "record" && data) this.foldRecord(data as Partial<SessionRecord>);
   }
 
   private foldRecord(data: Partial<SessionRecord>): void {
     this.record = { ...this.record, ...data } as SessionRecord;
+  }
+
+  private addEntry(entry: ConversationEntry): void {
+    this.entries.push(entry);
+    this.summary = summaryAfter(this.summary, entry, this.entries);
+  }
+
+  private dropEntry(entry: ConversationEntry): void {
+    remove(this.entries, entry);
+    this.summary = summarizeConversation(this.entries);
+  }
+
+  /** Writes the record's summary fields that differ from the conversation's, as one `record` patch; nothing before the
+   *  session has a record (the loop writes it before the first turn). */
+  private async writeSummary(): Promise<void> {
+    if (!this.record) return;
+    const patch: Partial<SessionRecord> = {};
+    const title = this.summary.title ?? "";
+    if (title !== (this.record.title ?? "")) patch.title = title;
+    if (this.summary.lastReply !== (this.record.lastMessagePreview ?? "")) patch.lastMessagePreview = this.summary.lastReply;
+    if (Object.keys(patch).length === 0) return;
+    await this.write("record", { ...patch, updatedAt: this.iso() }, (snap) => this.foldRecord(snap));
   }
 
   private channel(channel: LogChannel): Record<string, unknown>[] {

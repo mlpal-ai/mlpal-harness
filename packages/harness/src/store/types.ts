@@ -49,6 +49,11 @@ export interface SessionRecord {
   parent?: { sessionId: string; toolUseId: string };
   head: string | null;
   model: string;
+  /** The first user turn's title and the last reply's preview (sessions.ts `summarizeConversation`), kept on the
+   *  record by the remote backend as entries are appended, so the session store lists them without reading a log.
+   *  The file backend leaves them out: its listing reads them from the log. Absent on a remote record written before. */
+  title?: string;
+  lastMessagePreview?: string;
   createdAt: string;
   updatedAt: string;
 }

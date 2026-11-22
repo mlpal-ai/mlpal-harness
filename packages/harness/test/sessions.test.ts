@@ -6,6 +6,9 @@ import { HUMAN } from "@mlpal/harness-protocol";
 import { mostRecentSessionId, recentSessions } from "../src/store/sessions";
 import { LocalStore } from "../src/store/local";
 
+/** A text file in a turn as the hosted composer and context/attachments.ts both write it, spelled out: the wire format. */
+const attached = (name: string, body: string) => ({ type: "text", text: `<attached-document name="${name}">\n${body}\n</attached-document>` });
+
 let root: string;
 let store: LocalStore;
 
@@ -97,5 +100,38 @@ describe("session titles with attachments (gap 14)", () => {
     expect(title("t1")).toBe("what is in this screenshot?");
     expect(title("t2")).toBe("[image]");
     expect(title("t3")).toBe("[image, document]");
+  });
+});
+
+describe("the one title rule, on the file backend too (E-30, E-23)", () => {
+  const seedBlocks = async (id: string, content: unknown) => {
+    await store.registry.putSession({ sessionId: id, agentId: "a", workspace: "w", cwd: "/w", status: "idle", head: null, model: "m", createdAt: "2026-06-27T10:00:00Z", updatedAt: "2026-06-27T10:00:00Z" });
+    await store.conversation.append(id, { type: "user", message: { role: "user", content }, author: HUMAN, ts: "2026-06-27T10:00:00Z" } as never, null);
+  };
+  const title = async (id: string) => (await recentSessions(store)).find((r) => r.record.sessionId === id)!.preview;
+
+  test("a text file attached alone titles the session by its name, never its contents; with words, the words", async () => {
+    const csv = attached("rows.csv", "id,amount\n7,19.99\n".repeat(5_000));
+    await seedBlocks("alone", [csv]);
+    await seedBlocks("worded", [csv, { type: "text", text: "  what changed in these rows? " }]);
+    await seedBlocks("two", [csv, attached("notes.md", "# notes")]);
+    expect(await title("alone")).toBe("rows.csv");
+    expect(await title("worded")).toBe("what changed in these rows?");
+    expect(await title("two")).toBe("rows.csv, notes.md");
+  });
+
+  test("the hosted serve's page-context block is the browser's data, never the title", async () => {
+    const page = '<page_context>\nThe user\'s browser describes the page they are on.\n{"routeId":"usage"}\n</page_context>';
+    await seedBlocks("own-block", [{ type: "text", text: page }, { type: "text", text: "why did usage spike?" }]);
+    await seedBlocks("in-prompt", `${page}\nwhy did usage spike?`);
+    expect(await title("own-block")).toBe("why did usage spike?");
+    expect(await title("in-prompt")).toBe("why did usage spike?");
+  });
+
+  test("a long first message is cut at 72 characters with an ellipsis, never inside a surrogate pair", async () => {
+    await seedBlocks("long", "x".repeat(71) + "😀".repeat(10));
+    const t = await title("long");
+    expect(t).toBe(`${"x".repeat(71)}…`);
+    expect(t.isWellFormed()).toBe(true);
   });
 });

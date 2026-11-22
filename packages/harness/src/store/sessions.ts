@@ -1,3 +1,5 @@
+import type { ConversationEntry, Message } from "@mlpal/harness-protocol";
+import { attachedDocumentName } from "../context/attachments";
 import { EVENTS_HEADER } from "../events/inbox";
 import type { SessionRecord, Store } from "./types";
 import { effectiveEntries } from "../loop/messages";
@@ -16,36 +18,87 @@ export interface SessionInfo {
   lastReply: string;
 }
 
+/** How long a title or a reply preview may be (protocol SessionSummary: "trimmed"). */
+const CLIP_CHARS = 72;
+
+/** Whitespace collapsed, cut to CLIP_CHARS with an ellipsis, and well-formed: half a character (a cut inside a surrogate
+ *  pair, or a lone one in the text) is JSON no parser after us builds a string of, so the session store would fold the
+ *  record that carries it as one without data. */
 function clip(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
+  if (flat.length <= CLIP_CHARS) return flat.toWellFormed();
+  const high = flat.charCodeAt(CLIP_CHARS - 1);
+  return `${flat.slice(0, high >= 0xd800 && high <= 0xdbff ? CLIP_CHARS - 1 : CLIP_CHARS).toWellFormed()}…`;
+}
+
+/** The page-context data block a hosted serve puts ahead of a prompt (yodex page-context.ts, protocol 0.26.0 C2): what
+ *  the browser said about the page, never the person's words. */
+const PAGE_CONTEXT_BLOCK = /<page_context>[\s\S]*?<\/page_context>\n*/g;
+
+/**
+ * A user turn as a listing titles it: the person's words, trimmed, without the page-context block or the text files
+ * attached to the turn (E-23: a file is not a title); else the names of those files; else what an attachment-only turn
+ * holds (`[image, document]`). "" for a turn with nothing in it.
+ */
+export function userTurnTitle(content: Message["content"]): string {
+  if (typeof content === "string") return clip(content.replace(PAGE_CONTEXT_BLOCK, ""));
+  const words: string[] = [];
+  const files: string[] = [];
+  const kinds = new Set<string>();
+  for (const b of content) {
+    if (b.type !== "text") {
+      kinds.add(b.type);
+      continue;
+    }
+    const file = attachedDocumentName(b.text);
+    if (file === undefined) words.push(b.text.replace(PAGE_CONTEXT_BLOCK, ""));
+    else if (file) files.push(file);
+    else kinds.add("document");
+  }
+  return clip(words.join(" ")) || clip(files.join(", ")) || (kinds.size ? `[${[...kinds].join(", ")}]` : "");
+}
+
+/** An assistant reply as a listing previews it: its text, trimmed; "" for a reply of tool calls alone. */
+export function replyPreview(content: Message["content"]): string {
+  return clip(typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join(" "));
+}
+
+/** What a listing shows of a session's conversation: the first user turn's title (undefined before there is one, ""
+ *  when it held nothing) and the last assistant reply that has text ("" before one). */
+export interface ConversationSummary {
+  title: string | undefined;
+  lastReply: string;
+}
+
+export const EMPTY_SUMMARY: ConversationSummary = { title: undefined, lastReply: "" };
+
+/** The summary of a conversation's effective entries (a rewind takes back what it rewound). */
+export function summarizeConversation(entries: ConversationEntry[]): ConversationSummary {
+  let s = EMPTY_SUMMARY;
+  for (const e of effectiveEntries(entries)) s = summaryAfter(s, e, entries);
+  return s;
+}
+
+/**
+ * The summary once `entry` is appended, incrementally: `entries` is the whole log with `entry` already in it, read only
+ * when a rewind changes what is effective. The same answer as summarizeConversation over that log. An entry read from a
+ * remote log without a payload or a message (another writer's) changes nothing: opening the session never fails on it.
+ */
+export function summaryAfter(s: ConversationSummary, entry: ConversationEntry, entries: ConversationEntry[]): ConversationSummary {
+  const p = entry.payload as ConversationEntry["payload"] | undefined;
+  if (p?.type === "rewind") return summarizeConversation(entries);
+  if (p?.type === "user" && p.message && s.title === undefined) return { ...s, title: userTurnTitle(p.message.content) };
+  if (p?.type === "assistant" && p.message) {
+    const reply = replyPreview(p.message.content);
+    if (reply) return { ...s, lastReply: reply };
+  }
+  return s;
 }
 
 /** A session's first user message and last assistant reply, trimmed: its title and what it is up to. */
 export async function sessionPreviews(store: Store, sessionId: string): Promise<{ first: string; last: string }> {
-  const entries = effectiveEntries(await store.conversation.read(sessionId));
-  const turn = entries.find((e) => e.payload.type === "user");
-  let first = "(empty)";
-  if (turn && turn.payload.type === "user") {
-    const content = turn.payload.message.content;
-    if (typeof content === "string") first = clip(content) || "(empty)";
-    else {
-      // A turn with attachments: its text names it; an attachment-only turn says what it holds.
-      const text = content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
-      const kinds = content.filter((b) => b.type !== "text").map((b) => (b.type === "image" ? "image" : b.type === "document" ? "document" : b.type));
-      first = clip(text) || (kinds.length ? `[${[...new Set(kinds)].join(", ")}]` : "(empty)");
-    }
-  }
-  let last = "";
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const p = entries[i]!.payload;
-    if (p.type !== "assistant") continue;
-    const content = p.message.content;
-    const text = typeof content === "string" ? content : content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
-    last = clip(text);
-    if (last) break;
-  }
-  return { first, last };
+  const s = summarizeConversation(await store.conversation.read(sessionId));
+  return { first: s.title || "(empty)", last: s.lastReply };
 }
 
 export async function recentSessions(

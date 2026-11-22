@@ -7,12 +7,16 @@ import { JsonLogger } from "../src/obs/logger";
 import { BLOB_THRESHOLD } from "../src/store/blobs";
 import { LocalStore } from "../src/store/local";
 import { EventTooLargeError } from "../src/store/remote/batcher";
-import { LeaseLostError, SeqConflictError, SessionStoreClient } from "../src/store/remote/client";
+import { type EncodedEvent, type InboxConsume, LeaseLostError, SeqConflictError, SessionStoreClient } from "../src/store/remote/client";
 import { LeaseKeeper } from "../src/store/remote/lease";
 import { MailboxUnavailableError, RemoteStore, type RemoteStoreOptions, SessionMismatchError } from "../src/store/remote/remote-store";
+import { sessionPreviews } from "../src/store/sessions";
 import type { LogChannel, MemoryStore, SessionRecord, Store } from "../src/store/types";
 import { FakeClock } from "./fake-clock";
 import { type FakeSessionStore, startFakeSessionStore } from "./fake-session-store";
+
+/** A text file in a turn as the hosted composer and context/attachments.ts both write it, spelled out: the wire format. */
+const attached = (name: string, body: string) => ({ type: "text", text: `<attached-document name="${name}">\n${body}\n</attached-document>` });
 
 let fake: FakeSessionStore;
 let root: string;
@@ -90,14 +94,15 @@ async function script(store: Store): Promise<void> {
   await store.registry.patchSession("s1", { head: withImage.uuid });
 }
 
-/** The backend-neutral view: entry ids become positions, wall-clock stamps are dropped. */
+/** The backend-neutral view: entry ids become positions, wall-clock stamps are dropped, and so is the listing summary the
+ *  remote backend keeps on the record (the file backend reads it from the log; "the listing summary" below). */
 async function views(store: Store) {
   const entries = await store.conversation.read("s1");
   const at = new Map(entries.map((e, i) => [e.uuid, i]));
   const logs: Record<string, unknown[]> = {};
   for (const c of CHANNELS) logs[c] = (await store.logs.read("s1", c)).map(({ ts, ...r }) => (expect(typeof ts).toBe("string"), r));
   const session = await store.registry.getSession("s1");
-  const { updatedAt, ...rest } = session!;
+  const { updatedAt, title, lastMessagePreview, ...rest } = session!;
   const sessionView = { ...rest, head: rest.head === null ? null : at.get(rest.head) };
   return {
     conversation: entries.map((e) => ({
@@ -152,19 +157,22 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await script(store);
     await store.flush();
     const kinds = fake.events("s1").map((e) => e.kind);
-    expect(kinds).toEqual(["record", "log", "system", "user", "log", "assistant", "log", "tool_result", "result", "record", "record", "log", "rewind", "compact", "subagent", "user", "record"]);
+    // The `record` after the first `user` is its title (the listing summary); nothing else in the script changes it.
+    expect(kinds).toEqual(["record", "log", "system", "user", "record", "log", "assistant", "log", "tool_result", "result", "record", "record", "log", "rewind", "compact", "subagent", "user", "record"]);
     const user = fake.events("s1")[3]!.data as { uuid: string; parentUuid: string; payload: { type: string } };
     expect(user.payload.type).toBe("user");
     expect(user.parentUuid).toBe((fake.events("s1")[2]!.data as { uuid: string }).uuid);
     expect(fake.events("s1")[1]!.data).toMatchObject({ channel: "events", record: { kind: "run.start", run: "r1" } });
-    expect(fake.events("s1")[9]!.data).toMatchObject({ status: "idle", name: "named" });
-    expect(fake.events("s1")[9]!.data).not.toHaveProperty("sessionId");
+    expect(fake.events("s1")[4]!.data).toEqual({ title: "hi", updatedAt: expect.any(String) });
+    expect(fake.events("s1")[10]!.data).toMatchObject({ status: "idle", name: "named" });
+    expect(fake.events("s1")[10]!.data).not.toHaveProperty("sessionId");
     await store.close();
   });
 
   test("R18: the record's `sandbox` key rides the `record` event as written and is folded back on a fresh open()", async () => {
-    // The session store keeps an event's `data` as opaque JSON and never reads a `record` (mlpal-harness-stack
-    // session-store: `AppendEvent.data: Box<RawValue>`, `projection::reads_data`), so a key it does not know survives.
+    // The session store keeps an event's `data` byte for byte (mlpal-harness-stack session-store: `AppendEvent.data:
+    // Box<RawValue>`); its fold reads only a record's title, lastMessagePreview and model (E-30), so a key it does not
+    // know survives.
     const first = await openRemote();
     await first.store.registry.putSession({ ...record, sandbox: "remote" });
     await first.store.flush();
@@ -421,5 +429,137 @@ describe("RemoteStore: the contract with LocalStore", () => {
     await expect(store.close()).rejects.toBeInstanceOf(SeqConflictError);
     expect(fake.lease("s1")).toBeNull(); // released all the same
     expect(fake.events("s1")).toEqual([]);
+  });
+});
+
+describe("the listing summary on the record (E-30): what the session store lists without reading a log", () => {
+  const human = (content: unknown) => ({ type: "user", message: { role: "user", content }, author: { type: "human" }, ts: "t" }) as SDKMessage;
+  const reply = (text: string) =>
+    ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "end_turn", model: "m", ts: "t" }) as SDKMessage;
+  const toolCall = { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: {} }] }, usage: { input_tokens: 1, output_tokens: 1 }, stopReason: "tool_use", model: "m", ts: "t" } as SDKMessage;
+  /** The summary fields each `record` event the store holds carries, in order; records without any are left out. */
+  const summaries = () =>
+    fake
+      .events("s1")
+      .filter((e) => e.kind === "record")
+      .map((e) => e.data as Record<string, unknown>)
+      .filter((d) => "title" in d || "lastMessagePreview" in d)
+      .map((d) => ({ ...("title" in d ? { title: d.title } : {}), ...("lastMessagePreview" in d ? { lastMessagePreview: d.lastMessagePreview } : {}) }));
+  /** The title a first turn of `content` gives a session, on a fresh store. */
+  const titleOf = async (content: unknown): Promise<string | undefined> => {
+    await fake.stop();
+    fake = startFakeSessionStore();
+    fake.createSession("s1");
+    const { store } = await openRemote();
+    await store.registry.putSession(record);
+    await store.conversation.append("s1", human(content), null);
+    const title = (await store.registry.getSession("s1"))?.title;
+    await store.close();
+    return title;
+  };
+
+  test("two turns: the first turn titles the session, each reply with text moves the preview, a fresh open() folds them back, and the file backend's listing reads the same from its log", async () => {
+    const turns = async (store: Store) => {
+      await store.registry.putSession(record);
+      const u1 = await store.conversation.append("s1", human("plan the   migration"), null);
+      const t = await store.conversation.append("s1", toolCall, u1.uuid);
+      const a1 = await store.conversation.append("s1", reply("Here is the plan."), t.uuid);
+      const u2 = await store.conversation.append("s1", human("now do step two"), a1.uuid);
+      await store.conversation.append("s1", reply("Step two is done."), u2.uuid);
+    };
+    const { store } = await openRemote();
+    await turns(store);
+    await store.flush();
+    // A reply of tool calls alone, and the second turn, change nothing: no record for them.
+    expect(summaries()).toEqual([{ title: "plan the migration" }, { lastMessagePreview: "Here is the plan." }, { lastMessagePreview: "Step two is done." }]);
+    expect(await store.registry.getSession("s1")).toMatchObject({ title: "plan the migration", lastMessagePreview: "Step two is done.", model: "m" });
+    await store.close();
+    const { store: reopened } = await openRemote();
+    expect(await reopened.registry.getSession("s1")).toMatchObject({ title: "plan the migration", lastMessagePreview: "Step two is done." });
+    await reopened.close();
+    const local = new LocalStore(join(root, "local"));
+    await turns(local);
+    expect(await sessionPreviews(local, "s1")).toEqual({ first: "plan the migration", last: "Step two is done." });
+  });
+
+  test("a record written before the summary existed: open() writes nothing, and the first entry appended writes the whole log's summary, titled by the first turn", async () => {
+    const older = await openRemote();
+    await older.store.appendEvent("s1", "record", record);
+    await older.store.appendEvent("s1", "user", { uuid: "u1", parentUuid: null, ts: "t", payload: human("the first question") });
+    await older.store.appendEvent("s1", "assistant", { uuid: "a1", parentUuid: "u1", ts: "t", payload: reply("the first answer") });
+    await older.store.close();
+    const { store } = await openRemote();
+    const legacy = await store.registry.getSession("s1");
+    expect(legacy).not.toHaveProperty("title");
+    expect(legacy).not.toHaveProperty("lastMessagePreview");
+    const before = fake.events("s1").length;
+    await store.conversation.read("s1");
+    await store.registry.listSessions();
+    await store.flush();
+    expect(fake.events("s1")).toHaveLength(before);
+    await store.conversation.append("s1", human("a later question"), "a1");
+    await store.flush();
+    expect(summaries()).toEqual([{ title: "the first question", lastMessagePreview: "the first answer" }]);
+    await store.close();
+  });
+
+  test("a very long first message is titled by its first 72 characters and an ellipsis, in a small record, and never by half a character", async () => {
+    const long = `${"migrate the billing tables to the new schema ".repeat(2000)}`;
+    expect(await titleOf(long)).toBe(`${long.replace(/\s+/g, " ").slice(0, 72)}…`);
+    const titleRecord = fake.events("s1").find((e) => e.kind === "record" && "title" in (e.data as object))!;
+    expect(JSON.stringify(titleRecord.data).length).toBeLessThan(200);
+    // The 72nd character is the first half of an emoji: the cut keeps it whole by leaving it out.
+    const emoji = `${"a".repeat(71)}😀 and more words after it`;
+    const title = (await titleOf(emoji))!;
+    expect(title).toBe(`${"a".repeat(71)}…`);
+    expect(title.isWellFormed()).toBe(true);
+    // A lone half in the person's own words is replaced, never written.
+    expect(await titleOf("fix the \ud83d build")).toBe("fix the \ufffd build");
+  });
+
+  test("an attachment-only first message is titled by the file's name, never its contents (E-23); the person's words win; the page-context block is never words", async () => {
+    const csv = attached("rows.csv", "id,amount\n".concat("7,19.99\n".repeat(10_000)));
+    expect(await titleOf([csv])).toBe("rows.csv");
+    const page = { type: "text", text: '<page_context>\nThe user\'s browser describes the page they are on.\n{"routeId":"usage"}\n</page_context>' };
+    expect(await titleOf([page, csv, { type: "text", text: "what changed in these rows?" }])).toBe("what changed in these rows?");
+    expect(await titleOf([{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }])).toBe("[image]");
+  });
+
+  test("a rewind to before the first turn clears the title and the preview; nothing is written before the session has a record", async () => {
+    const { store } = await openRemote();
+    const u = await store.conversation.append("s1", human("before the record"), null);
+    await store.flush();
+    expect(summaries()).toEqual([]);
+    await store.registry.putSession(record);
+    const a = await store.conversation.append("s1", reply("an answer"), u.uuid);
+    await store.conversation.append("s1", { type: "rewind", toUuid: null, turn: 1, ts: "t" }, a.uuid);
+    await store.flush();
+    expect(summaries()).toEqual([{ title: "before the record", lastMessagePreview: "an answer" }, { title: "", lastMessagePreview: "" }]);
+    await store.close();
+  });
+
+  test("an inbox turn's user entry, appended by consume() (P1 1.2), titles the session once the store acknowledged it", async () => {
+    const sent: Array<{ kinds: string[]; data: unknown[]; consumes?: InboxConsume }> = [];
+    let last = 0;
+    const client = {
+      readAll: async () => ({ events: [], lastSeq: 0 }),
+      appendEncoded: async (_sid: string, req: { afterSeq: number; events: EncodedEvent[]; consumes?: InboxConsume }) => {
+        sent.push({ kinds: req.events.map((e) => e.kind), data: req.events.map((e) => JSON.parse(e.json)), ...(req.consumes ? { consumes: req.consumes } : {}) });
+        const first = last + 1;
+        last += req.events.length;
+        return { firstSeq: first, lastSeq: last };
+      },
+    };
+    const lease = new LeaseKeeper({ client: new SessionStoreClient({ baseUrl: "http://x/v1", tokenProvider: () => "t" }), sid: "s1", ttlS: 60 });
+    lease.adopt({ leaseId: "L" });
+    const store = new RemoteStore({ client, sid: "s1", lease, memory, artifactsDir: root });
+    await store.open();
+    await store.registry.putSession(record);
+    await store.consume("s1", { requestId: "rq-1", outcome: "turn" }, [{ kind: "user", data: { uuid: "u1", parentUuid: null, ts: "t", payload: human("queued from the API") } }]);
+    await store.flush();
+    expect(sent.map((b) => b.kinds)).toEqual([["record"], ["user"], ["record"]]);
+    expect(sent[1]!.consumes).toEqual({ requestId: "rq-1", outcome: "turn" });
+    expect(sent[2]!.data[0]).toMatchObject({ title: "queued from the API" });
+    await store.close().catch(() => undefined);
   });
 });

@@ -30,6 +30,22 @@ const IMAGE_MAX = 5 * 1024 * 1024;
 const PDF_MAX = 20 * 1024 * 1024;
 const DOCX_TEXT_MAX = 80_000;
 
+/** A text file in a turn: its own text block, wrapped so the model knows where it starts and ends. The hosted UI's
+ *  composer wraps a text file the same way (harness-ui composer/attachments.ts). */
+export function attachedDocumentBlock(name: string, text: string): ContentBlock {
+  return { type: "text", text: `${ATTACHED_OPEN(name)}${text}${ATTACHED_CLOSE}` };
+}
+
+/** The file's name when a whole text block is an attached document; undefined for anything else (the person's words). */
+export function attachedDocumentName(text: string): string | undefined {
+  if (!text.endsWith(ATTACHED_CLOSE)) return undefined;
+  return ATTACHED_OPEN_RE.exec(text)?.[1];
+}
+
+const ATTACHED_OPEN = (name: string) => `<attached-document name="${name}">\n`;
+const ATTACHED_OPEN_RE = /^<attached-document name="([^"]*)">\n/;
+const ATTACHED_CLOSE = "\n</attached-document>";
+
 export type AttachmentKind = "image" | "pdf" | "docx";
 
 export interface Attachment {
@@ -166,12 +182,7 @@ async function toAttachment(path: string, cwd: string): Promise<Attachment | nul
     // docx → extracted text block (no provider supports docx natively)
     let text = await docxToText(abs);
     if (text.length > DOCX_TEXT_MAX) text = `${text.slice(0, DOCX_TEXT_MAX)}\n\n[truncated]`;
-    return {
-      path: abs,
-      name,
-      kind,
-      block: { type: "text", text: `<attached-document name="${name}">\n${text}\n</attached-document>` },
-    };
+    return { path: abs, name, kind, block: attachedDocumentBlock(name, text) };
   } catch (e) {
     return { path: abs, name, kind, skipped: (e as Error).message };
   }

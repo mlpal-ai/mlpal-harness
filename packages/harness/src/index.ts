@@ -27,6 +27,7 @@ export {
   type LeaseGrant,
   type SessionPark,
   type SessionProjection,
+  type SessionProjectionSummary,
   type SessionStoreClientOptions,
   type StoreEvent,
   type StoredEvent,

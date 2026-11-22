@@ -71,10 +71,24 @@ export interface SessionProjection {
   /** The live lease. Control is shown its id too (P1 1.1), an engine its holder, a reader only when it expires. */
   lease: { leaseId?: string; holder?: string; expiresAt: number } | null;
   lastSeq: number;
+  /** The last append, any kind. */
   updatedAt: number;
+  /** When the session was created. Absent from a store before E-30. */
+  createdAt?: number;
+  /** How the session came to exist (`ui`, `api`, `schedule:<id>`), as its create named it. Absent from a store before E-30. */
+  origin?: string;
+  /** What the engine's `record` events last said of the session's title, last reply and model (each absent until one
+   *  does). Absent from a store before E-30. */
+  summary?: SessionProjectionSummary;
   /** P1 1.2: present only while an open turn with no lease waits out its spent resume budget (`blocked`), until
    *  `untilMs`; the scheduler resumes it then. Absent on stores without the inbox and when nothing is blocked. */
   inbox?: { blocked: { reason: string; untilMs: number } };
+}
+
+export interface SessionProjectionSummary {
+  title?: string;
+  lastMessagePreview?: string;
+  model?: string;
 }
 
 export type StoreFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -661,6 +675,9 @@ interface WireProjection {
   lease: { lease_id?: string; holder?: string; expires_at: number } | null;
   last_seq: number;
   updated_at: number;
+  created_at?: number;
+  origin?: string;
+  summary?: { title?: string; last_message_preview?: string; model?: string };
   inbox?: { blocked?: { reason: string; until_ms: number } };
 }
 
@@ -680,7 +697,18 @@ function projectionOf(b: WireProjection): SessionProjection {
     lease: b.lease ? { ...(b.lease.lease_id !== undefined ? { leaseId: b.lease.lease_id } : {}), ...(b.lease.holder !== undefined ? { holder: b.lease.holder } : {}), expiresAt: b.lease.expires_at } : null,
     lastSeq: b.last_seq,
     updatedAt: b.updated_at,
+    ...(b.created_at !== undefined ? { createdAt: b.created_at } : {}),
+    ...(b.origin !== undefined ? { origin: b.origin } : {}),
+    ...(b.summary ? { summary: summaryOf(b.summary) } : {}),
     ...(b.inbox?.blocked ? { inbox: { blocked: { reason: b.inbox.blocked.reason, untilMs: b.inbox.blocked.until_ms } } } : {}),
+  };
+}
+
+function summaryOf(b: NonNullable<WireProjection["summary"]>): SessionProjectionSummary {
+  return {
+    ...(b.title !== undefined ? { title: b.title } : {}),
+    ...(b.last_message_preview !== undefined ? { lastMessagePreview: b.last_message_preview } : {}),
+    ...(b.model !== undefined ? { model: b.model } : {}),
   };
 }
 

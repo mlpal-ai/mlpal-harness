@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  attachedDocumentBlock,
+  attachedDocumentName,
   collectAttachments,
   collectAttachmentsForPaths,
   detectImagePaths,
@@ -177,5 +179,17 @@ describe("detectImageSpans performance bound", () => {
     expect(found.length).toBe(1);
     expect(found[0]!.path).toBe(img);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("an attached text document's wrapper (E-23: a file is never the person's words)", () => {
+  test("the block names its file and holds the text whole; only a whole wrapped block is a document", () => {
+    const block = attachedDocumentBlock("rows.csv", "id,amount\n7,19.99");
+    expect(block).toEqual({ type: "text", text: '<attached-document name="rows.csv">\nid,amount\n7,19.99\n</attached-document>' });
+    expect(attachedDocumentName((block as { text: string }).text)).toBe("rows.csv");
+    expect(attachedDocumentName((attachedDocumentBlock("empty.txt", "") as { text: string }).text)).toBe("empty.txt");
+    expect(attachedDocumentName("what changed in these rows?")).toBeUndefined();
+    expect(attachedDocumentName('<attached-document name="rows.csv">\nthe file, then the person: what changed?')).toBeUndefined();
+    expect(attachedDocumentName('see <attached-document name="x">\nbody\n</attached-document>')).toBeUndefined();
   });
 });
