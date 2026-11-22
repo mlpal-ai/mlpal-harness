@@ -571,6 +571,42 @@ describe("the listing summary on the record (E-30): what the session store lists
     await store.close();
   });
 
+  test("open() summarizes the log once, looking into the first user turn and the last reply only, and a malformed turn in it never fails the open (review round 2)", async () => {
+    const read = new Set<string>();
+    const entry = (seq: number, type: "user" | "assistant", content: unknown) => {
+      const uuid = `e${seq}`;
+      const payload = { type, author: { type: "human" }, ts: "t" } as Record<string, unknown>;
+      Object.defineProperty(payload, "message", { enumerable: true, get: () => (read.add(uuid), { role: type, content }) });
+      return { seq, kind: type, data: { uuid, parentUuid: null, ts: "t", payload }, ts_ms: seq };
+    };
+    const events = [
+      { seq: 1, kind: "record", data: record, ts_ms: 1 },
+      entry(2, "user", {}),
+      ...Array.from({ length: 1000 }, (_, i) => entry(3 + i, "assistant", [{ type: "text", text: `reply ${i}` }])),
+    ];
+    const sent: unknown[][] = [];
+    let last = events.length;
+    const client = {
+      readAll: async () => ({ events, lastSeq: last }),
+      appendEncoded: async (_sid: string, req: { events: EncodedEvent[] }) => {
+        sent.push(req.events.map((e) => JSON.parse(e.json)));
+        const first = last + 1;
+        last += req.events.length;
+        return { firstSeq: first, lastSeq: last };
+      },
+    };
+    const lease = new LeaseKeeper({ client: new SessionStoreClient({ baseUrl: "http://x/v1", tokenProvider: () => "t" }), sid: "s1", ttlS: 60 });
+    lease.adopt({ leaseId: "L" });
+    const store = new RemoteStore({ client, sid: "s1", lease, memory, artifactsDir: root });
+    await store.open();
+    expect([...read]).toEqual(["e2", "e1002"]);
+    // The malformed first turn titles nothing; the next append sends that, the last reply and the model.
+    await store.conversation.append("s1", human("next"), "e1002");
+    await store.flush();
+    expect(sent.flat().find((d) => (d as { title?: string }).title !== undefined)).toMatchObject({ title: "", lastMessagePreview: "reply 999", model: "m" });
+    await store.close().catch(() => undefined);
+  });
+
   test("an inbox turn's user entry, appended by consume() (P1 1.2), titles the session once the store acknowledged it", async () => {
     const sent: Array<{ kinds: string[]; data: unknown[]; consumes?: InboxConsume }> = [];
     let last = 0;

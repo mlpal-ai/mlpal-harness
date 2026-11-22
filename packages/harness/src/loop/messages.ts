@@ -18,7 +18,8 @@ import type { Store } from "../store/types";
 export function effectiveEntries(entries: ConversationEntry[]): ConversationEntry[] {
   const out: ConversationEntry[] = [];
   for (const e of entries) {
-    if (e.payload.type !== "rewind") {
+    // An entry from a remote log without a payload (another writer's) is no rewind: opening the session never fails on it.
+    if (e.payload?.type !== "rewind") {
       out.push(e);
       continue;
     }

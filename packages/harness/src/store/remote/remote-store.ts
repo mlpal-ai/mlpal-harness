@@ -190,7 +190,9 @@ export class RemoteStore implements Store {
   /** Reads the session's whole log into memory and starts the writer after its last seq. */
   async open(): Promise<void> {
     const { events, lastSeq } = await this.opts.client.readAll(this.sid);
-    for (const e of events) this.fold(e);
+    for (const e of events) this.fold(e, false);
+    // Once, over the whole log: it previews one reply, never every one (review round 2).
+    this.summary = summarizeConversation(this.entries);
     this.stored.push(...events);
     this.openedAtSeq = lastSeq;
     this.batcher = new AppendBatcher({
@@ -247,7 +249,7 @@ export class RemoteStore implements Store {
     this.writable();
     const encoded = events.map((e) => encodeEvent(e.kind, e.data, this.now()));
     const seqs = await this.writer().consume(encoded, consumes);
-    encoded.forEach((e, i) => this.fold({ seq: seqs[i]!, kind: e.kind, data: JSON.parse(e.json), ts_ms: e.ts_ms }));
+    encoded.forEach((e, i) => this.fold({ seq: seqs[i]!, kind: e.kind, data: JSON.parse(e.json), ts_ms: e.ts_ms }, true));
     await this.writeSummary();
     return seqs;
   }
@@ -277,9 +279,13 @@ export class RemoteStore implements Store {
     }
   }
 
-  private fold(e: StoredEvent): void {
+  /** `summarize`: keep the summary as each entry arrives (an append); open() summarizes the whole log once instead. */
+  private fold(e: StoredEvent, summarize: boolean): void {
     const data = e.data as Record<string, unknown> | null;
-    if (ENTRY_KINDS.has(e.kind) && typeof data?.uuid === "string") this.addEntry(data as unknown as ConversationEntry);
+    if (ENTRY_KINDS.has(e.kind) && typeof data?.uuid === "string") {
+      if (summarize) this.addEntry(data as unknown as ConversationEntry);
+      else this.entries.push(data as unknown as ConversationEntry);
+    }
     else if (e.kind === "log" && data) this.channel(data.channel as LogChannel).push(data.record as Record<string, unknown>);
     else if (e.kind === "record" && data) this.foldRecord(data as Partial<SessionRecord>);
   }

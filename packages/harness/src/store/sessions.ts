@@ -22,20 +22,26 @@ export interface SessionInfo {
 /** How long a title or a reply preview may be (protocol SessionSummary: "trimmed"). */
 const CLIP_CHARS = 72;
 
-/** How much of the text, whitespace collapsed, the redactor reads before the cut: a secret that starts in what is shown
- *  is masked whole (a JWT cut at 72 characters no longer matches its pattern), and a 90 KB message costs no more. */
-const REDACT_WINDOW = 4096;
+/** How much of the text, whitespace collapsed, the redactor reads before the cut to CLIP_CHARS: a secret that starts in
+ *  what is shown is masked whole while it is shorter than this (an 8 KB JWT), where cut at 72 characters it would no
+ *  longer match its pattern. */
+const REDACT_WINDOW = 8192;
+
+/** How much of the raw text anything here reads (review round 2): every pass runs over this bound, never a whole 1 MB
+ *  reply, and it leaves REDACT_WINDOW characters after controls and runs of whitespace go, short of text that is mostly
+ *  either. */
+const RAW_WINDOW = 4 * REDACT_WINDOW;
 
 /** Control characters other than whitespace (C0, DEL, C1): no listing shows one, and a NUL is JSON the session store's
  *  jsonb fold refuses (E-30 review R1; the store drops NULs too). */
 const CONTROLS = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g;
 
-/** Text as a listing shows it: controls dropped, whitespace collapsed, the secrets the engine knows masked (`redactText`,
- *  before the cut), cut to CLIP_CHARS with an ellipsis, and well-formed: half a character (a cut inside a surrogate pair,
- *  or a lone one in the text) is JSON no parser after us builds a string of, so the session store would fold the record
- *  that carries it as one without data. */
+/** Text as a listing shows it: its first RAW_WINDOW characters, controls dropped, whitespace collapsed, the secrets the
+ *  engine knows masked (`redactText`, over REDACT_WINDOW, before the cut), cut to CLIP_CHARS with an ellipsis, and
+ *  well-formed: half a character (a cut inside a surrogate pair, or a lone one in the text) is JSON no parser after us
+ *  builds a string of, so the session store would fold the record that carries it as one without data. */
 function clip(text: string): string {
-  const flat = redactText(text.replace(CONTROLS, "").replace(/\s+/g, " ").trim().slice(0, REDACT_WINDOW)).trim();
+  const flat = redactText(text.slice(0, RAW_WINDOW).replace(CONTROLS, "").replace(/\s+/g, " ").trim().slice(0, REDACT_WINDOW)).trim();
   if (flat.length <= CLIP_CHARS) return flat.toWellFormed();
   const high = flat.charCodeAt(CLIP_CHARS - 1);
   return `${flat.slice(0, high >= 0xd800 && high <= 0xdbff ? CLIP_CHARS - 1 : CLIP_CHARS).toWellFormed()}…`;
@@ -51,7 +57,7 @@ const PAGE_CONTEXT_BLOCK = /<page_context>[\s\S]*?<\/page_context>\n*/g;
  * holds (`[image, document]`). "" for a turn with nothing in it.
  */
 export function userTurnTitle(content: Message["content"]): string {
-  if (typeof content === "string") return clip(content.replace(PAGE_CONTEXT_BLOCK, ""));
+  if (typeof content === "string") return clip(content.slice(0, RAW_WINDOW).replace(PAGE_CONTEXT_BLOCK, ""));
   if (!Array.isArray(content)) return "";
   const words: string[] = [];
   const files: string[] = [];
@@ -63,7 +69,7 @@ export function userTurnTitle(content: Message["content"]): string {
     }
     if (typeof b.text !== "string") continue;
     const file = attachedDocumentName(b.text);
-    if (file === undefined) words.push(b.text.replace(PAGE_CONTEXT_BLOCK, ""));
+    if (file === undefined) words.push(b.text.slice(0, RAW_WINDOW).replace(PAGE_CONTEXT_BLOCK, ""));
     else if (file) files.push(file);
     else kinds.add("document");
   }
@@ -74,7 +80,7 @@ export function userTurnTitle(content: Message["content"]): string {
 export function replyPreview(content: Message["content"]): string {
   if (typeof content === "string") return clip(content);
   if (!Array.isArray(content)) return "";
-  return clip(content.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join(" "));
+  return clip(content.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text.slice(0, RAW_WINDOW) : "")).join(" "));
 }
 
 /** What a listing shows of a session's conversation: the first user turn's title (undefined before there is one, ""
@@ -86,11 +92,25 @@ export interface ConversationSummary {
 
 export const EMPTY_SUMMARY: ConversationSummary = { title: undefined, lastReply: "" };
 
-/** The summary of a conversation's effective entries (a rewind takes back what it rewound). */
+/** The summary of a conversation's effective entries (a rewind takes back what it rewound): the first user turn read
+ *  from the start, the last reply that has text from the end, so a long session previews one reply, not every one. The
+ *  same answer as summaryAfter over the log, entry by entry. */
 export function summarizeConversation(entries: ConversationEntry[]): ConversationSummary {
-  let s = EMPTY_SUMMARY;
-  for (const e of effectiveEntries(entries)) s = summaryAfter(s, e, entries);
-  return s;
+  const effective = effectiveEntries(entries);
+  let title: string | undefined;
+  for (const e of effective) {
+    const p = e.payload as ConversationEntry["payload"] | undefined;
+    if (p?.type === "user" && p.message) {
+      title = userTurnTitle(p.message.content);
+      break;
+    }
+  }
+  let lastReply = "";
+  for (let i = effective.length - 1; i >= 0 && !lastReply; i--) {
+    const p = effective[i]!.payload as ConversationEntry["payload"] | undefined;
+    if (p?.type === "assistant" && p.message) lastReply = replyPreview(p.message.content);
+  }
+  return { title, lastReply };
 }
 
 /**

@@ -2,9 +2,9 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { HUMAN } from "@mlpal/harness-protocol";
+import { type ConversationEntry, HUMAN } from "@mlpal/harness-protocol";
 import { clearSecrets, registerPlatformPatterns, registerSecret } from "../src/obs/redact";
-import { mostRecentSessionId, recentSessions } from "../src/store/sessions";
+import { mostRecentSessionId, recentSessions, replyPreview, summarizeConversation, userTurnTitle } from "../src/store/sessions";
 import { LocalStore } from "../src/store/local";
 
 /** A text file in a turn as the hosted composer and context/attachments.ts both write it, spelled out: the wire format. */
@@ -176,5 +176,73 @@ describe("a title from an attached document named with a quote (E-30 review L3)"
     await store.registry.putSession({ sessionId: "q", agentId: "a", workspace: "w", cwd: "/w", status: "idle", head: null, model: "m", createdAt: "t", updatedAt: "t" });
     await store.conversation.append("q", { type: "user", message: { role: "user", content: [legacy] }, author: HUMAN, ts: "t" } as never, null);
     expect((await recentSessions(store))[0]!.preview).toBe('a"b.docx');
+  });
+});
+
+describe("the summary's cost is bounded (review round 2)", () => {
+  afterEach(() => clearSecrets());
+  /** An entry whose `message` notes it was read: the entries summarizing looked into. */
+  function counted(type: "user" | "assistant", content: unknown, read: Set<string>): ConversationEntry {
+    const uuid = crypto.randomUUID();
+    const payload = { type, author: HUMAN, ts: "t" } as Record<string, unknown>;
+    Object.defineProperty(payload, "message", { enumerable: true, get: () => (read.add(uuid), { role: type, content }) });
+    return { uuid, parentUuid: null, ts: "t", payload } as unknown as ConversationEntry;
+  }
+
+  test("a long session previews one reply: the first user turn from the start, the last reply with text from the end", () => {
+    const read = new Set<string>();
+    const text = "word ".repeat(1600);
+    const entries = [counted("user", "plan the migration", read), ...Array.from({ length: 2000 }, (_, i) => counted("assistant", [{ type: "text", text: `${i} ${text}` }], read))];
+    entries.push(counted("assistant", [{ type: "tool_use", id: "t", name: "Bash", input: {} }], read));
+    const s = summarizeConversation(entries);
+    expect(s.title).toBe("plan the migration");
+    expect(s.lastReply.startsWith("1999 word word")).toBe(true);
+    // The user turn, the trailing tool-only reply, the last reply with text: never the 1,999 before it.
+    expect([...read]).toEqual([entries[0]!.uuid, entries[2001]!.uuid, entries[2000]!.uuid]);
+  });
+
+  test("2,000 replies of 8 KB with the platform patterns and ten known values summarize in well under the 237 ms the review measured", () => {
+    registerPlatformPatterns();
+    for (let i = 0; i < 10; i++) registerSecret(`k${i}`, `known-value-${i}-abcdefgh`);
+    const read = new Set<string>();
+    const text = "word ".repeat(1600);
+    const entries = [counted("user", "hi", read), ...Array.from({ length: 2000 }, () => counted("assistant", [{ type: "text", text }], read))];
+    const t0 = performance.now();
+    for (let r = 0; r < 5; r++) summarizeConversation(entries);
+    expect((performance.now() - t0) / 5).toBeLessThan(50);
+  });
+
+  test("a JWT longer than 4 KB, straddling the cut at the head of a 1 MB reply, is masked whole: the text is cut generously, redacted, then cut to 72", () => {
+    registerPlatformPatterns();
+    const jwt = `eyJ${"a".repeat(3000)}.eyJ${"b".repeat(3000)}.${"c".repeat(100)}`;
+    const reply = `Token: ${jwt} ${"x ".repeat(500_000)}`;
+    const t0 = performance.now();
+    const preview = replyPreview(reply);
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(preview.startsWith("Token: [redacted:jwt] x x")).toBe(true);
+    expect(preview).not.toContain("eyJ");
+    expect(preview.length).toBe(73);
+    // A key at the start of a user turn's words, the same way.
+    expect(userTurnTitle(`mlpal_sk_${"k".repeat(40)} ${"y".repeat(1_000_000)}`)).toBe(`[redacted:mlpal-key] ${"y".repeat(51)}…`);
+  });
+});
+
+describe("content that is not what this engine writes titles and previews as nothing (review round 2, L7)", () => {
+  test("an object, a number, null blocks and text blocks without text", () => {
+    for (const content of [{}, 7, null, undefined, true] as unknown[]) {
+      expect(userTurnTitle(content as never)).toBe("");
+      expect(replyPreview(content as never)).toBe("");
+    }
+    const blocks = [null, 7, { type: "text" }, { type: "text", text: 5 }, { text: "no type" }] as never;
+    expect(userTurnTitle(blocks)).toBe("");
+    expect(replyPreview(blocks)).toBe("");
+    // Beside real words, the malformed blocks are skipped.
+    expect(userTurnTitle([null, { type: "text" }, { type: "text", text: "the words" }] as never)).toBe("the words");
+  });
+
+  test("a log holding such a turn summarizes without throwing", () => {
+    const entry = (payload: unknown) => ({ uuid: crypto.randomUUID(), parentUuid: null, ts: "t", payload }) as unknown as ConversationEntry;
+    const s = summarizeConversation([entry({ type: "user", message: { role: "user", content: {} } }), entry(undefined), entry({ type: "assistant", message: { role: "assistant", content: 7 } }), entry({ type: "assistant", message: { role: "assistant", content: "ok" } })]);
+    expect(s).toEqual({ title: "", lastReply: "ok" });
   });
 });
