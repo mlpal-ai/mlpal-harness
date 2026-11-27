@@ -1,6 +1,1150 @@
 {
- "_comment": "chartCost vectors (UI reviews R2 and N2): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0; expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
+ "_comment": "chartCost vectors (UI reviews R2 and N2, review 5): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0, and {\"$rows\": n, \"$shape\": \"iabc\"} for n rows {i, a: i, b: n - 1 - i, c: i % 7}; expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
  "refused": [
+  {
+   "name": "review 5 aggCiChain: twenty chained ci aggregates over 5,000 groups (24.8 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la0"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha0"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb0"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb0"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc0"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc0"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la1"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha1"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb1"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb1"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc1"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc1"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la2"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha2"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb2"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb2"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc2"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc2"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la3"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha3"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb3"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb3"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc3"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc3"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la4"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha4"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb4"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb4"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc4"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc4"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la5"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha5"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb5"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb5"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc5"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc5"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la6"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha6"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb6"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb6"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc6"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc6"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la7"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha7"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb7"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb7"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc7"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc7"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la8"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha8"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb8"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb8"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc8"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc8"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la9"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha9"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb9"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb9"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc9"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc9"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la10"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha10"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb10"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb10"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc10"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc10"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la11"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha11"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb11"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb11"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc11"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc11"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la12"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha12"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb12"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb12"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc12"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc12"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la13"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha13"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb13"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb13"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc13"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc13"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la14"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha14"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb14"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb14"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc14"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc14"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la15"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha15"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb15"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb15"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc15"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc15"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la16"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha16"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb16"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb16"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc16"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc16"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la17"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha17"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb17"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb17"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc17"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc17"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la18"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha18"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb18"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb18"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc18"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc18"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la19"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha19"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb19"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb19"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc19"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc19"
+        }
+       ],
+       "groupby": [
+        "i",
+        "a",
+        "b",
+        "c"
+       ]
+      }
+     ],
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "la0",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 5 aggCi20: one aggregate of 8 ci ops over 4 fields, by i (1.8 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la0"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha0"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb0"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb0"
+        },
+        {
+         "op": "ci0",
+         "field": "c",
+         "as": "lc0"
+        },
+        {
+         "op": "ci1",
+         "field": "c",
+         "as": "hc0"
+        },
+        {
+         "op": "ci0",
+         "field": "i",
+         "as": "li0"
+        },
+        {
+         "op": "ci1",
+         "field": "i",
+         "as": "hi0"
+        }
+       ],
+       "groupby": [
+        "i"
+       ]
+      }
+     ],
+     "mark": "point",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "la0",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 5 encCiTooltip: a ci channel aggregate and six ci tooltips (1.3 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "a",
+       "aggregate": "ci0",
+       "type": "quantitative"
+      },
+      "tooltip": [
+       {
+        "field": "a",
+        "aggregate": "ci0",
+        "type": "quantitative"
+       },
+       {
+        "field": "a",
+        "aggregate": "ci1",
+        "type": "quantitative"
+       },
+       {
+        "field": "b",
+        "aggregate": "ci0",
+        "type": "quantitative"
+       },
+       {
+        "field": "b",
+        "aggregate": "ci1",
+        "type": "quantitative"
+       },
+       {
+        "field": "c",
+        "aggregate": "ci0",
+        "type": "quantitative"
+       },
+       {
+        "field": "c",
+        "aggregate": "ci1",
+        "type": "quantitative"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "review 5 errorbandCi8: eight errorband/errorbar layers with extent ci (1.7 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "layer": [
+      {
+       "mark": {
+        "type": "errorband",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "a",
+         "type": "quantitative",
+         "title": "t0"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorbar",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "b",
+         "type": "quantitative",
+         "title": "t1"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorband",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "c",
+         "type": "quantitative",
+         "title": "t2"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorbar",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "a",
+         "type": "quantitative",
+         "title": "t3"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorband",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "b",
+         "type": "quantitative",
+         "title": "t4"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorbar",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "c",
+         "type": "quantitative",
+         "title": "t5"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorband",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "a",
+         "type": "quantitative",
+         "title": "t6"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "errorbar",
+        "extent": "ci"
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "b",
+         "type": "quantitative",
+         "title": "t7"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "review 5 errorbandCi1: one errorband with extent ci over 5,000 x values (0.5 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "mark": {
+      "type": "errorband",
+      "extent": "ci"
+     },
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "a",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
   {
    "name": "3,000 points with tooltips in 5 layers: within the mark cap, over the budget",
    "code": "TOO_COSTLY",
@@ -1172,6 +2316,95 @@
   }
  ],
  "accepted": [
+  {
+   "name": "review 5 honestBarLabels: 5,000 rows summed into 7 bars with labels",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "aggregate": [
+        {
+         "op": "sum",
+         "field": "a",
+         "as": "s"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      }
+     ],
+     "layer": [
+      {
+       "mark": "bar",
+       "encoding": {
+        "x": {
+         "field": "c",
+         "type": "ordinal"
+        },
+        "y": {
+         "field": "s",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "text",
+        "dy": -6
+       },
+       "encoding": {
+        "x": {
+         "field": "c",
+         "type": "ordinal"
+        },
+        "y": {
+         "field": "s",
+         "type": "quantitative"
+        },
+        "text": {
+         "field": "s",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "an errorband with extent ci by 7 categories over 5,000 rows",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "mark": {
+      "type": "errorband",
+      "extent": "ci"
+     },
+     "encoding": {
+      "x": {
+       "field": "c",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "a",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
   {
    "name": "ci0, ci1, median and q1 over the whole partition of 5,000 rows, drawn as a line",
    "spec": {
