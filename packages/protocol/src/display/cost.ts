@@ -9,25 +9,32 @@ import { displayPath } from "./errors.js";
  *
  * Calibrated with the Vega 6.4.0 and Vega-Lite 6.5.0 the web UI ships, in Bun (milliseconds; 5,000 rows unless said;
  * the report has the tables): a chart's compile and parse about 50; incremental window ops (sum, mean, count, rank...)
- * about 0.0025 per row per op; median, quartiles and distinct windows over the whole partition about 0.003 per row,
- * ci0/ci1 windows about 0.015; min and max rescan their frame when a value leaves it, about 0.00015 per row x span, and
- * are incremental when the frame's start is open; an aggregate op about 0.0005 per input row (20 aggregates x 9 median,
- * q1 and distinct ops: 358); a ci0/ci1 bootstrap outside a window (an aggregate, a channel's aggregate, a sort op, an
- * errorband or errorbar with extent "ci") about 0.12 per group per field (one field over 5,000 groups: 529-589; twenty
- * chained aggregates of three: 24,800); filter, bin, timeUnit and stack about 0.0005 per row; drawing about 0.025 per
- * point-like mark, 0.07 per bar, 0.01 per line or area vertex, 0.002 per row an errorband, errorbar or boxplot reads.
- * A line or area splits into a path per value of a grouping channel (color, opacity, size, strokeDash, detail, and
- * order on an area), about 0.05 per path (2,000 paths: 163); a stacked one (every area, a line with `stack`) imputes
- * every x value for every path, about 0.005 per imputed row (500 paths x 500 x values: 1,178; 2,000 x 2,000:
- * 18,949), so an area's vertices are its x values x paths. Each path counts as a mark.
- * Rows are counted after every fold; an aggregate reduces them to its groups (1 without groupby, else the product of
- * its groupby fields' distinct values in the inline data, when every field is there; otherwise not reduced), and a
- * channel aggregate reduces the marks drawn the same way. Conservative by construction (review 6): once any
- * transform but a filter has run, nothing the inline data said about fields is used again (a window, bin, timeUnit or
- * stack may write over a field), so groups count as rows; rows never shrink unless an aggregate provably groups them.
+ * about 0.0025 per row per op; median, quartiles and distinct windows over the whole partition about 0.003 per row;
+ * min and max rescan their frame when a value leaves it, about 0.00015 per row x span, and are incremental when the
+ * frame's start is open; an aggregate op (or a sort by a field) about 0.0005 per input row; filter, bin, timeUnit and
+ * stack about 0.0005 per row; drawing about 0.025 per point-like mark, 0.07 per bar, 0.01 per line or area vertex;
+ * an errorband, errorbar or boxplot reads every row (0.002) and draws its groups (and a boxplot its outliers) as
+ * points. A line or area splits into a path per value of a grouping channel (color, opacity, size, strokeDash,
+ * detail, and order on an area), about 0.05 per path (2,000 paths: 163); a stacked one (every area, a line with
+ * `stack`) imputes every x value for every path (500 paths x 500 x values: 1,178; 2,000 x 2,000: 18,949), so its
+ * vertices are its x values x paths. Each path counts as a mark.
+ *
+ * The walker never infers a reduction (review 7 ruling: every hole in reviews 5 to 7 was one). Rows and marks are
+ * the input rows times every multiplier (a fold's width, each view), except through this whitelist, each tested:
+ *   W1 an aggregate transform: its groups, the product of its groupby fields' distinct values in the inline data
+ *      (1 without groupby), when every groupby field is plain: still the inline data's (no transform but a filter
+ *      has run) or a fold's key;
+ *   W2 a channel aggregate, and the implicit one of an errorband, errorbar or boxplot: its groups, the product of
+ *      the other field channels' distinct values (a binned one counts its maxbins + 2), when every one of them is a
+ *      plain field ({field, type} with only timeUnit, bin, sort, title, axis, scale, legend, format, formatType or
+ *      bandPosition beside) and no channel has a condition;
+ *   W3 the paths a line or area splits into, and the x values it imputes: the distinct values of plain grouping and
+ *      positional fields, under the same rule;
+ *   W4 a fold's key has exactly as many values as the fold has fields.
+ * Nothing else reduces anything: not a filter, a sort, a bin, a timeUnit or a condition.
  *
  * Rules, in the order a fault is reported:
- * 1. median, q1, q3, ci0, ci1 and distinct windows run over the whole partition only: frame [null, null];
+ * 1. median, q1, q3 and distinct windows run over the whole partition only: frame [null, null];
  * 2. a frame whose start is bounded: rows x span (an open end counts to the partition's edge) <= chartWindowRowsTimesSpan;
  * 3. every window of the chart, every view counted: rows x ops <= chartWindowOpRows;
  * 4. point-like marks and paths drawn (rows x views that draw them) <= chartMarks;
@@ -48,10 +55,8 @@ const MS = {
   chart: 50,
   incremental: 0.0025,
   sortWhole: 0.003,
-  bootstrapWindow: 0.015,
   rescan: 0.00015,
   aggregateOp: 0.0005,
-  bootstrapGroupField: 0.12,
   linearTransform: 0.0005,
   pointMark: 0.025,
   bar: 0.07,
@@ -61,22 +66,20 @@ const MS = {
 } as const;
 
 /** Every window op's cost class (the table test holds this to the grammar's list). */
-export const WINDOW_OP_COST: Readonly<Record<string, "incremental" | "sort" | "bootstrap" | "rescan">> = {
+export const WINDOW_OP_COST: Readonly<Record<string, "incremental" | "sort" | "rescan">> = {
   row_number: "incremental", rank: "incremental", dense_rank: "incremental", percent_rank: "incremental",
   cume_dist: "incremental", ntile: "incremental", lag: "incremental", lead: "incremental", first_value: "incremental",
   last_value: "incremental", nth_value: "incremental", count: "incremental", valid: "incremental",
   missing: "incremental", sum: "incremental", product: "incremental", mean: "incremental", average: "incremental",
   variance: "incremental", variancep: "incremental", stdev: "incremental", stdevp: "incremental", stderr: "incremental",
-  median: "sort", q1: "sort", q3: "sort", distinct: "sort", ci0: "bootstrap", ci1: "bootstrap", min: "rescan",
-  max: "rescan",
+  median: "sort", q1: "sort", q3: "sort", distinct: "sort", min: "rescan", max: "rescan",
 };
 
-/** Every aggregate op's cost class (in an aggregate transform, a channel's aggregate or a sort op). */
-export const AGGREGATE_OP_COST: Readonly<Record<string, "linear" | "bootstrap">> = {
+/** Every aggregate op's cost class (in an aggregate transform or a channel's aggregate). */
+export const AGGREGATE_OP_COST: Readonly<Record<string, "linear">> = {
   count: "linear", valid: "linear", missing: "linear", distinct: "linear", sum: "linear", product: "linear",
   mean: "linear", average: "linear", variance: "linear", variancep: "linear", stdev: "linear", stdevp: "linear",
-  stderr: "linear", median: "linear", q1: "linear", q3: "linear", ci0: "bootstrap", ci1: "bootstrap", min: "linear",
-  max: "linear",
+  stderr: "linear", median: "linear", q1: "linear", q3: "linear", min: "linear", max: "linear",
 };
 
 /** Every transform's cost: a window and an aggregate are costed by their ops, a fold multiplies rows. */
@@ -173,30 +176,23 @@ function windowCost(t: Obj, at: Seg[], rows: Rows, acc: Acc): void {
   }
   for (const op of ops) {
     const cls = WINDOW_OP_COST[op];
-    if (cls === "bootstrap") acc.ms += n * MS.bootstrapWindow;
-    else if (cls === "sort") acc.ms += n * MS.sortWhole;
+    if (cls === "sort") acc.ms += n * MS.sortWhole;
     else if (cls === "rescan" && span) acc.ms += n * span * MS.rescan;
     else acc.ms += n * MS.incremental;
   }
 }
 
-/** The fields an aggregate-op list bootstraps (ci0 and ci1 of one field share one bootstrap). */
-function bootstrapFields(ops: Array<{ op: string; field: unknown; at: Seg[] }>): Set<string> {
-  const fields = new Set<string>();
-  for (const { op, field, at } of ops) {
-    if (!has(AGGREGATE_OP_COST, op)) unknownCost(at, `the aggregate op "${op}"`);
-    if (AGGREGATE_OP_COST[op] === "bootstrap") fields.add(String(field));
-  }
-  return fields;
+function checkOp(op: unknown, at: Seg[]): void {
+  if (typeof op !== "string" || !has(AGGREGATE_OP_COST, op)) unknownCost(at, `the aggregate op "${String(op)}"`);
 }
 
+/** W1: an aggregate transform hands on its groups. */
 function aggregateCost(t: Obj, at: Seg[], rows: Rows, acc: Acc): Rows {
   if (!Array.isArray(t.aggregate)) unknownCost(at, "an aggregate without ops");
-  const ops = (t.aggregate as unknown[]).map((x, j) => ({ op: isObj(x) ? String(x.op) : "", field: isObj(x) ? x.field : undefined, at: [...at, "aggregate", j, "op"] }));
+  (t.aggregate as unknown[]).forEach((x, j) => checkOp(isObj(x) ? x.op : undefined, [...at, "aggregate", j, "op"]));
   const by = Array.isArray(t.groupby) ? (t.groupby as unknown[]).map(String) : [];
-  const g = groups(rows, by);
-  acc.ms += rows.n * ops.length * MS.aggregateOp + g * bootstrapFields(ops).size * MS.bootstrapGroupField;
-  return { n: g, data: null };
+  acc.ms += rows.n * (t.aggregate as unknown[]).length * MS.aggregateOp;
+  return { n: groups(rows, by), data: null };
 }
 
 /** Rows a view's transforms hand on, every transform costed. */
@@ -236,6 +232,21 @@ function channelDefs(enc: Obj): Array<{ ch: string; def: Obj; at: Seg[] }> {
   return out;
 }
 
+/** Properties that leave a field channel a plain grouping dimension (Vega-Lite groups by the field alone; measured
+ *  for sort, a tooltip list and a value condition, but a condition blocks W2 by the ruling). */
+const PLAIN_KEYS: ReadonlySet<string> = new Set(["field", "type", "timeUnit", "bin", "sort", "title", "axis", "scale", "legend", "format", "formatType", "bandPosition"]);
+const isPlain = (def: Obj): boolean => typeof def.field === "string" && Object.keys(def).every((k) => PLAIN_KEYS.has(k));
+
+/** W2 and W3: how many groups `dims` make, provably, or else every row. */
+function dimGroups(rows: Rows, dims: Obj[], conditioned: boolean): number {
+  if (dims.length === 0) return conditioned ? rows.n : 1;
+  if (conditioned || !dims.every(isPlain)) return rows.n;
+  const counted = (d: Obj) => d.bin !== undefined && d.bin !== false && d.bin !== "binned" && !(isObj(d.bin) && d.bin.binned === true);
+  const bins = dims.filter(counted).reduce((p, d) => p * ((isObj(d.bin) && typeof d.bin.maxbins === "number" ? d.bin.maxbins : 10) + 2), 1);
+  const fields = dims.filter((d) => !counted(d)).map((d) => String(d.field));
+  return Math.min(rows.n, groups(rows, [...new Set(fields)]) * bins);
+}
+
 /** Channels by which Vega-Lite splits a line or area into paths (pathGroupingFields; order too, on an area). */
 const PATH_GROUPING: ReadonlySet<string> = new Set(["color", "opacity", "size", "strokeDash", "detail"]);
 
@@ -246,42 +257,48 @@ function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc, enc: Obj): void {
   if (!has(MARK_COST, type)) unknownCost([...at, "mark"], `the mark "${type}"`);
   const cls = MARK_COST[type]!;
   const defs = channelDefs(enc);
-  // channel aggregates and sort ops: their bootstraps, and the groups that remain
-  const aggOps = defs.flatMap(({ def, at: a }) => [
-    ...(typeof def.aggregate === "string" ? [{ op: def.aggregate, field: def.field, at: [...at, "encoding", ...a, "aggregate"] }] : []),
-    ...(isObj(def.sort) && typeof def.sort.op === "string" ? [{ op: def.sort.op, field: def.sort.field, at: [...at, "encoding", ...a, "sort", "op"] }] : []),
-  ]);
-  const ciFields = bootstrapFields(aggOps);
-  // a binned channel groups into at most its maxbins (10 by default); the other plain fields group by their values
-  // `bin: "binned"` means the data is already binned: it groups by its values, so it stays a plain field
-  const binned = defs.filter(({ def }) => typeof def.field === "string" && def.bin !== undefined && def.bin !== false && def.bin !== "binned");
-  const bins = binned.reduce((p, { def }) => p * (isObj(def.bin) && typeof def.bin.maxbins === "number" ? def.bin.maxbins : 10), 1);
-  const plain = defs.filter(({ def }) => typeof def.field === "string" && typeof def.aggregate !== "string" && !binned.some((b) => b.def === def)).map(({ def }) => String(def.field));
-  let drawn = aggOps.length ? Math.min(rows.n, groups(rows, [...new Set(plain)]) * bins) : rows.n;
-  if (cls === "composite") {
-    // a composite mark aggregates its continuous channel by the other positional one
-    const x = isObj(enc.x) ? enc.x : null;
-    const y = isObj(enc.y) ? enc.y : null;
-    const field = (d: Obj | null) => (d && typeof d.field === "string" ? [d.field] : []);
-    const qx = x?.type === "quantitative";
-    const qy = y?.type === "quantitative";
-    drawn = qy && !qx ? groups(rows, field(x)) : qx && !qy ? groups(rows, field(y)) : Math.max(groups(rows, field(x)), groups(rows, field(y)));
-    if (isObj(mark) && mark.extent === "ci") for (const f of [...field(qy ? y : x)]) ciFields.add(f);
-    acc.ms += rows.n * MS.aggregatedRow;
+  // what the grammar cut (review 7 ruling) has no cost here either, so the walker alone still fails closed
+  if (isObj(mark) && mark.extent === "ci") unknownCost([...at, "mark", "extent"], 'extent "ci"');
+  for (const { def, at: a } of defs) {
+    if (isObj(def.sort) && has(def.sort, "op")) unknownCost([...at, "encoding", ...a, "sort", "op"], "a sort by an aggregate op");
+    const conds = Array.isArray(def.condition) ? def.condition : [def.condition];
+    if (conds.some((c) => isObj(c) && has(c, "field"))) unknownCost([...at, "encoding", ...a, "condition"], "a condition with a field");
   }
-  acc.ms += drawn * ciFields.size * MS.bootstrapGroupField + (aggOps.length ? rows.n * aggOps.length * MS.aggregateOp : 0);
+  const conditioned = defs.some(({ def }) => has(def, "condition"));
+  const aggregated = defs.filter(({ def }) => typeof def.aggregate === "string");
+  aggregated.forEach(({ def, at: a }) => checkOp(def.aggregate, [...at, "encoding", ...a, "aggregate"]));
+  const dims = defs.filter(({ def }) => typeof def.field === "string" && typeof def.aggregate !== "string");
+  // a sort by a field aggregates it once more for the domain; it reduces nothing
+  const sorts = defs.filter(({ def }) => isObj(def.sort) && typeof def.sort.field === "string").length;
+  acc.ms += rows.n * (aggregated.length + sorts) * MS.aggregateOp;
+  let drawn = aggregated.length ? dimGroups(rows, dims.map((d) => d.def), conditioned) : rows.n;
+  let counted = 0;
+  if (cls === "composite") {
+    // a composite aggregates its one quantitative positional channel by the other field channels
+    const quant = (["x", "y"] as const).filter((c) => isObj(enc[c]) && (enc[c] as Obj).type === "quantitative");
+    const others = quant.length === 1 ? dims.filter(({ def }) => def !== enc[quant[0]!]).map((d) => d.def) : null;
+    drawn = others ? dimGroups(rows, others, conditioned) : rows.n;
+    const outliers = type === "boxplot" && !(isObj(mark) && mark.extent === "min-max") ? rows.n : 0;
+    counted = drawn + outliers;
+    acc.ms += rows.n * MS.aggregatedRow + counted * MS.pointMark;
+  }
   const withPoints = isObj(mark) && (mark.point === true || isObj(mark.point) || mark.point === "transparent");
   let paths = 0;
   if (cls === "path") {
-    const grouping = defs.filter(({ ch, def }) => PATH_GROUPING.has(ch) || (ch === "order" && type === "area")).filter(({ def }) => typeof def.field === "string" && typeof def.aggregate !== "string").map(({ def }) => String(def.field));
-    paths = grouping.length ? Math.min(drawn, groups(rows, [...new Set(grouping)])) : 1;
+    const grouping = dims.filter(({ ch }) => PATH_GROUPING.has(ch) || (ch === "order" && type === "area")).map((d) => d.def);
+    paths = Math.min(drawn, grouping.length || conditioned ? dimGroups(rows, grouping, conditioned) : 1);
     const stacked = type === "area" || defs.some(({ def }) => def.stack !== undefined && def.stack !== null && def.stack !== false);
     if (stacked && paths > 1) {
-      const positional = (["x", "y"] as const).map((c) => (isObj(enc[c]) && typeof (enc[c] as Obj).field === "string" ? groups(rows, [String((enc[c] as Obj).field)]) : 1));
-      drawn = Math.max(drawn, Math.max(...positional) * paths);
+      // the impute key is the positional channel that is not the stacked measure; when that is unclear, either one
+      const stackedOn = (c: "x" | "y") => isObj(enc[c]) && (((enc[c] as Obj).stack ?? null) !== null && (enc[c] as Obj).stack !== false);
+      const quant = (c: "x" | "y") => isObj(enc[c]) && (enc[c] as Obj).type === "quantitative";
+      const measure = stackedOn("y") || (quant("y") && !quant("x")) ? "y" : stackedOn("x") || (quant("x") && !quant("y")) ? "x" : null;
+      const keys = (["x", "y"] as const).filter((c) => c !== measure);
+      const values = keys.map((c) => (isObj(enc[c]) && typeof (enc[c] as Obj).field === "string" ? dimGroups(rows, [enc[c] as Obj], conditioned) : 1));
+      drawn = Math.max(drawn, Math.max(...values) * paths);
     }
   }
-  const counted = (cls === "point" || cls === "bar" ? drawn : 0) + (withPoints ? drawn : 0) + paths;
+  counted += (cls === "point" || cls === "bar" ? drawn : 0) + (withPoints ? drawn : 0) + paths;
   if (counted) {
     acc.marks += counted;
     if (acc.marks > DISPLAY_LIMITS.chartMarks) {

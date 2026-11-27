@@ -99,6 +99,17 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- The cost walker never infers a reduction (review 7 ruling; every hole in reviews 5 to 7 was one). Rows and marks
+  are the input rows times every multiplier, except through a whitelist stated in `cost.ts`, each with its vectors:
+  W1 an aggregate transform grouped by plain fields, W2 a channel aggregate (and a composite mark's implicit one)
+  when every other field channel is plain and no channel has a condition, W3 path and impute counts from plain
+  fields, W4 a fold's key. A boxplot's outliers count as points.
+- Cut from the chart grammar, each refused in one line that says what to do instead: `ci0` and `ci1` everywhere
+  (window, aggregate, channel aggregate) and `extent: "ci"` (compute the interval upstream and draw its low and
+  high fields: an errorband with y and y2); a `sort` with an `op` (sort by a channel, `"-y"`, or by
+  `{field, order}`); a `field` in a `condition` (encode the field on the channel; a condition sets a value).
+  `DISPLAY_LIMITS.chartWholeFrameOps` loses ci0 and ci1. The grammar the model reads says so.
+- The property test's generator emits sorts, value conditions, tooltip lists and up to 2 x 8 layered views.
 - chartCost costs the channel options that change how many marks are drawn (review 6, R1, found by the property
   test's grammar): a line or area splits into a path per value of color, opacity, size, strokeDash or detail (order
   on an area), each path a mark; a stacked area or line imputes every x value per path (an area split by a

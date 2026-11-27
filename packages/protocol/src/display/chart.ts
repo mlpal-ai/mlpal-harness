@@ -139,8 +139,16 @@ const REFUSED_MARKS = new Set(["image", "geoshape", "arc", "trail"]);
 const CHANNELS = ["x", "y", "x2", "y2", "color", "opacity", "size", "shape", "strokeDash", "text", "tooltip", "detail", "order"];
 const SERIES_CHANNELS = ["color", "strokeDash", "shape", "detail"] as const;
 const TYPES = enumOf("quantitative", "temporal", "ordinal", "nominal");
-const AGG_OPS = ["count", "valid", "missing", "distinct", "sum", "product", "mean", "average", "variance", "variancep", "stdev", "stdevp", "stderr", "median", "q1", "q3", "ci0", "ci1", "min", "max"];
+const AGG_OPS = ["count", "valid", "missing", "distinct", "sum", "product", "mean", "average", "variance", "variancep", "stdev", "stdevp", "stderr", "median", "q1", "q3", "min", "max"];
 const WINDOW_OPS = ["row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead", "first_value", "last_value", "nth_value", ...AGG_OPS];
+/** Cut (review 7 ruling): a bootstrap per group or per row is too slow to draw, and its cost cannot be bounded. */
+const CI_HINT = "compute the interval upstream and pass its low and high fields (y and y2, or an errorband over them)";
+const cutCi = (rule: Rule): Rule => (v, p, w) => {
+  if (v === "ci0" || v === "ci1" || v === "ci") fail("VALIDATION_FAILED", p, `${JSON.stringify(v)} is not drawn`, CI_HINT);
+  rule(v, p, w);
+};
+const AGG_OP = cutCi(enumOf(...AGG_OPS));
+const WINDOW_OP = cutCi(enumOf(...WINDOW_OPS));
 const TIME_UNIT: Rule = (v, p) => {
   if (typeof v !== "string" || v.length > 40 || !/^(utc)?(year|quarter|month|week|day|dayofyear|date|hours|minutes|seconds|milliseconds)+$/.test(v)) {
     fail("VALIDATION_FAILED", p, "a time unit such as year, yearmonth, yearweek, monthdate, hours");
@@ -226,7 +234,11 @@ const SORT = byType({
   null: nul,
   string: enumOf("ascending", "descending", ...CHANNELS.flatMap((c) => [c, `-${c}`])),
   array: arr(scalar, 100),
-  object: obj({ field, op: enumOf(...AGG_OPS), order: ORDER, encoding: enumOf(...CHANNELS) }),
+  object: (v, p, w) => {
+    // cut (review 7 ruling): a sort op aggregates a second field for the domain
+    if (isObj(v) && has(v, "op")) fail("VALIDATION_FAILED", [...p, "op"], "sorting by an aggregate op is not allowed", 'sort by a channel ("-y") or by a field with an order: {"field": "units", "order": "descending"}');
+    obj({ field, order: ORDER, encoding: enumOf(...CHANNELS) })(v, p, w);
+  },
 });
 
 /** A predicate: a field test, a selection, or and/or/not of predicates. */
@@ -242,14 +254,16 @@ const PREDICATE: Rule = (v, p, w) => {
 };
 
 const CONDITION: Rule = (v, p, w) => {
-  obj({ param: TOKEN, test: PREDICATE, empty: bool, value: byType({ string: str(200), number: num(-1e15, 1e15), boolean: bool, null: nul, array: arr(num(0, 100), 8) }), field, type: TYPES, title: TITLE })(v, p, w);
+  // cut (review 7 ruling): a field in a condition is a hidden grouping dimension
+  if (isObj(v) && has(v, "field")) fail("VALIDATION_FAILED", [...p, "field"], "a condition sets a value, not a field", 'encode the field on the channel itself; a condition is { "param" or "test", "value" }');
+  obj({ param: TOKEN, test: PREDICATE, empty: bool, value: byType({ string: str(200), number: num(-1e15, 1e15), boolean: bool, null: nul, array: arr(num(0, 100), 8) }) })(v, p, w);
   if (has(v as Obj, "param") === has(v as Obj, "test")) fail("VALIDATION_FAILED", p, "a condition has exactly one of param or test");
 };
 
 const CHANNEL_DEF = obj({
   field,
   type: TYPES,
-  aggregate: enumOf(...AGG_OPS),
+  aggregate: AGG_OP,
   bin: BIN,
   timeUnit: TIME_UNIT,
   title: TITLE,
@@ -304,7 +318,7 @@ const MARK_DEF = obj(
     text: str(200),
     cornerRadius: num(0, 100),
     thickness: num(0, 100),
-    extent: byType({ string: enumOf("ci", "stderr", "stdev", "iqr", "min-max"), number: num(0, 10) }),
+    extent: byType({ string: cutCi(enumOf("stderr", "stdev", "iqr", "min-max")), number: num(0, 10) }),
     clip: bool,
     binSpacing: num(0, 100),
   },
@@ -333,10 +347,10 @@ const GROUPBY = arr(field, 20, 1);
 /** Each transform: its one op key and the keys that op takes. */
 const TRANSFORMS: Record<string, Rule> = {
   filter: obj({ filter: PREDICATE }, ["filter"]),
-  aggregate: obj({ aggregate: arr(obj({ op: enumOf(...AGG_OPS), field, as: output }, ["op", "as"]), 20, 1), groupby: GROUPBY }, ["aggregate"]),
+  aggregate: obj({ aggregate: arr(obj({ op: AGG_OP, field, as: output }, ["op", "as"]), 20, 1), groupby: GROUPBY }, ["aggregate"]),
   bin: obj({ bin: byType({ boolean: enumOf(true), object: BIN_PARAMS }), field, as: outputs(2) }, ["bin", "field", "as"]),
   timeUnit: obj({ timeUnit: TIME_UNIT, field, as: output }, ["timeUnit", "field", "as"]),
-  window: obj({ window: arr(obj({ op: enumOf(...WINDOW_OPS), field, param: int(0, 1_000), as: output }, ["op", "as"]), 20, 1), frame: arr(byType({ number: int(-10_000, 10_000), null: nul }), 2, 2), groupby: GROUPBY, sort: SORT_LIST, ignorePeers: bool }, ["window"]),
+  window: obj({ window: arr(obj({ op: WINDOW_OP, field, param: int(0, 1_000), as: output }, ["op", "as"]), 20, 1), frame: arr(byType({ number: int(-10_000, 10_000), null: nul }), 2, 2), groupby: GROUPBY, sort: SORT_LIST, ignorePeers: bool }, ["window"]),
   fold: obj({ fold: arr(field, 50, 1), as: arr(output, 2, 2) }, ["fold"]),
   stack: obj({ stack: field, groupby: arr(field, 20), as: outputs(2), offset: enumOf("zero", "center", "normalize"), sort: SORT_LIST }, ["stack", "groupby", "as"]),
 };
