@@ -88,7 +88,9 @@ const common = {
 };
 
 /** The fallback alone. `repairing`: the block failed validation and the model has one repair; `fallback_only`: the
- *  repair failed too, and this text is what stays. */
+ *  repair failed (the engine writes it whenever a second attempt fails, on the last valid fallback or a plain
+ *  sentence), and this text is what stays. A `repairing` envelope still the block's latest once its run has ended (the
+ *  model never retried) is final: draw it as `fallback_only`. */
 export const textDisplaySchema = z.object({ ...common, level: z.literal("text"), status: z.enum(["repairing", "fallback_only"]) }).strict();
 
 const block = <K extends BlockKind, S extends z.ZodTypeAny>(kind: K, spec: S) =>

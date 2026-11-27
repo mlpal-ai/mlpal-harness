@@ -52,7 +52,9 @@
   on the canvas.`); the step's `content` is that line and the complete fallback, so a pinned UI and the terminal show
   the fallback. A refusal is a tool error `{error, block_id, path, message, hint, attempt}`; while the model repairs,
   the person sees the fallback (a `text` envelope, `repairing`). A second failure of a block in a turn is
-  `RETRY_EXHAUSTED` (`fallback_only`); a third call is refused unseen. Revisions are folded from the store at each call (after rewinds), so they survive a new engine;
+  `RETRY_EXHAUSTED` and always ends the block `fallback_only`, on that attempt's fallback, else the last valid one of
+  the turn, else a plain sentence that it could not be shown; a third call is refused unseen. A `repairing` envelope
+  still latest once its run has ended is final (documented on `textDisplaySchema`). Revisions are folded from the store at each call (after rewinds), so they survive a new engine;
   the envelope is persisted with the tool result and replayed by `load_session` unchanged; the model's replay never
   carries it.
 - `ToolResult.meta.display` and `meta.displayText` (the step's display string when it is not what the model reads).
