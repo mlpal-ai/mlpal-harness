@@ -106,6 +106,9 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- Axis labels are costed (review 8): a nominal or ordinal x or y axis charges 0.015 ms per label (its distinct values)
+  in each view that draws one. 7 independent ordinal axes of 5,000 labels (0.8 s) and 5,000 labelled bands are now
+  over budget.
 - A row that lacks a field counts as one more value of it when the walker counts groups (review 8: Vega groups it
   under undefined; 12 sparse fields made 2,500 groups the walker saw as 1, and 128 views took 16.6 s). The
   property test's generator emits sparse rows and groupings over them.

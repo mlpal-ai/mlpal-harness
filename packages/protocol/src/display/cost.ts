@@ -17,7 +17,9 @@ import { displayPath } from "./errors.js";
  * points. A line or area splits into a path per value of a grouping channel (color, opacity, size, strokeDash,
  * detail, and order on an area), about 0.05 per path (2,000 paths: 163); a stacked one (every area, a line with
  * `stack`) imputes every x value for every path (500 paths x 500 x values: 1,178; 2,000 x 2,000: 18,949), so its
- * vertices are its x values x paths. Each path counts as a mark.
+ * vertices are its x values x paths. Each path counts as a mark. A nominal or ordinal x or y axis draws a label per
+ * value, about 0.012 per label (an ordinal line of 5,000: +50; 7 such axes: about 800), charged in every view that
+ * draws one (a layer's shared axis is charged in each of its views, so this errs high).
  *
  * The walker never infers a reduction (review 7 ruling: every hole in reviews 5 to 7 was one). Rows and marks are
  * the input rows times every multiplier (a fold's width, each view), except through this whitelist, each tested:
@@ -62,6 +64,7 @@ const MS = {
   bar: 0.07,
   vertex: 0.01,
   path: 0.06,
+  axisLabel: 0.015,
   aggregatedRow: 0.002,
 } as const;
 
@@ -304,6 +307,10 @@ function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc, enc: Obj): void {
     if (acc.marks > DISPLAY_LIMITS.chartMarks) {
       throw new TooCostly([...at, "mark"], `${acc.marks} marks drawn (rows x views); a chart draws at most ${DISPLAY_LIMITS.chartMarks}`, "aggregate or sample the rows, or draw them in fewer layers");
     }
+  }
+  for (const c of ["x", "y"] as const) {
+    const def = enc[c];
+    if (isObj(def) && typeof def.field === "string" && (def.type === "nominal" || def.type === "ordinal")) acc.ms += dimGroups(rows, [def], false) * MS.axisLabel;
   }
   if (cls === "point") acc.ms += drawn * MS.pointMark;
   else if (cls === "bar") acc.ms += drawn * MS.bar;
