@@ -34,7 +34,7 @@ function tool(caps: DisplayCaps = WEB, h: DisplayHistory = history()) {
   const metrics = new MemoryMetrics();
   const lines: string[] = [];
   const logger = new JsonLogger({ level: "debug", sink: (l) => lines.push(l) });
-  const show = createShowTool({ policy: resolveDisplay(caps), history: async () => h, logger, metrics });
+  const show = createShowTool({ policy: resolveDisplay(caps)!, history: async () => h, logger, metrics });
   const call = (input: unknown, runId = "run-1") => show.call(input, { cwd: "/w", runId });
   return { show, call, metrics, lines };
 }
@@ -209,42 +209,29 @@ describe("Show: refusal and the one repair", () => {
   });
 });
 
-describe("Show: a text client", () => {
-  test("gets the fallback as the step's visible result and no envelope", async () => {
-    const { call, metrics } = tool(CLI);
-    const r = await call(chart());
-    expect(r.isError).toBeUndefined();
-    expect(r.meta).toEqual({ displayText: `[shown fig-1 · text]\n${FALLBACK}` });
-    expect(modelText(r)).toBe("Shown fig-1 as text: this client draws text only, so the person reads your fallback.");
-    expect(metrics.counters.get("display.fallback_shown{reason=client_level}")).toBe(1);
-  });
-
-  test("a refusal still shows the fallback as text, with no envelope", async () => {
-    const r = await tool(CLI).call(badChart());
-    expect([r.isError, r.meta]).toEqual([true, { displayText: `[display fig-1 · repairing]\n${FALLBACK}` }]);
-  });
-
-  test("a client that declares blocks without the catalog, or none of its kinds, is a text client", () => {
-    expect(resolveDisplay({ ...WEB, catalogs: [] }).levels.has("block")).toBe(false);
-    expect(resolveDisplay({ ...WEB, kinds: ["sankey"] }).levels.has("block")).toBe(false);
-    expect([...resolveDisplay({ ...WEB, kinds: ["grid", "kpis"] }).kinds]).toEqual(["kpis", "grid"]);
+describe("which clients get a display policy", () => {
+  test("only one that declares the block level and catalog harness.v1/1 and draws one of its kinds", () => {
+    expect(resolveDisplay(CLI)).toBeNull();
+    expect(resolveDisplay({ ...WEB, levels: ["text"] })).toBeNull();
+    expect(resolveDisplay({ ...WEB, catalogs: [] })).toBeNull();
+    expect(resolveDisplay({ ...WEB, kinds: ["sankey"] })).toBeNull();
+    expect([...resolveDisplay({ ...WEB, kinds: ["grid", "kpis"] })!.kinds]).toEqual(["kpis", "grid"]);
   });
 });
 
 describe("the display section of the system prompt", () => {
-  test("only for a client that draws blocks, naming only the kinds it draws", () => {
-    expect(displayInstructions(resolveDisplay(CLI))).toBeNull();
-    const all = displayInstructions(resolveDisplay(WEB))!;
+  test("names only the kinds the client draws", () => {
+    const all = displayInstructions(resolveDisplay(WEB)!);
     expect(all).toContain("# Showing results");
     for (const k of ["- chart:", "- kpis:", "- grid:"]) expect(all).toContain(k);
-    const grid = displayInstructions(resolveDisplay({ ...WEB, kinds: ["grid"] }))!;
+    const grid = displayInstructions(resolveDisplay({ ...WEB, kinds: ["grid"] })!);
     expect([grid.includes("- grid:"), grid.includes("- chart:"), grid.includes("- kpis:")]).toEqual([true, false, false]);
     expect(all).not.toContain("on a phone");
-    expect(displayInstructions(resolveDisplay({ ...WEB, viewport: "phone" }))).toContain("on a phone");
+    expect(displayInstructions(resolveDisplay({ ...WEB, viewport: "phone" })!)).toContain("on a phone");
   });
 
   test("the same declaration always gives the same section (the prompt cache holds)", () => {
-    expect(displayInstructions(resolveDisplay(WEB))).toBe(displayInstructions(resolveDisplay(structuredClone(WEB))));
+    expect(displayInstructions(resolveDisplay(WEB)!)).toBe(displayInstructions(resolveDisplay(structuredClone(WEB))!));
   });
 });
 
@@ -329,13 +316,15 @@ describe("capability gating in the engine", () => {
     expect([r!.isError, r!.content, "display" in r!]).toEqual([true, "Unknown tool: Show", false]);
   });
 
-  test("a text client: Show is offered without the catalog; its result is the fallback, with no display", async () => {
+  test("a text client: no Show, the host's prompt, and a Show call is an unknown tool (the ruling of review 1)", async () => {
     const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
-    const events = await run(session(model, { display: CLI }));
-    expect(toolNames(model.seen[0]!)).toContain("Show");
+    const events = await run(session(model, { display: CLI, canUseTool: createPolicy({ mode: "autopilot" }) }));
+    const silent = new Scripted([done("ok")]);
+    await run(session(silent, { sessionId: "s2" }));
+    expect(model.seen[0]!.tools).toEqual(silent.seen[0]!.tools);
     expect(model.seen[0]!.system).toBe("You are a test.");
     const [r] = toolResults(events);
-    expect([r!.isError, r!.content, "display" in r!]).toEqual([false, `[shown fig-1 · text]\n${FALLBACK}`, false]);
+    expect([r!.isError, r!.content, "display" in r!]).toEqual([true, "Unknown tool: Show", false]);
   });
 
   test("a client that draws blocks: Show and the catalog; the result carries the envelope; the model reads one line", async () => {
@@ -350,13 +339,13 @@ describe("capability gating in the engine", () => {
     expect(sent[0]).toMatchObject({ type: "tool_result", content: [{ type: "text", text: "Shown fig-1 r1 (chart) in the thread." }] });
   });
 
-  test("Show's schema tells the model what is required, and is the same for every client that declares display", async () => {
+  test("Show's schema tells the model what is required, and is the same for every client that draws blocks", async () => {
     const schema = (caps: DisplayCaps) => {
       const m = new Scripted([done("ok")]);
       return run(session(m, { display: caps })).then(() => m.seen[0]!.tools!.find((t) => t.name === "Show")!);
     };
     const web = await schema(WEB);
-    expect(await schema(CLI)).toEqual(web);
+    expect(await schema({ ...WEB, client: "mobile", viewport: "phone", kinds: ["grid"] })).toEqual(web);
     expect((web.input_schema as { required: string[] }).required.sort()).toEqual(["block_id", "fallback", "kind", "spec"]);
   });
 

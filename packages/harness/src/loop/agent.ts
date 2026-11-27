@@ -239,8 +239,16 @@ export interface AgentConfig {
    */
   loop?: LoopPolicy;
   /** 0.27.0 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
-   *  parseDisplayCaps). Set: the Show tool is offered, and when the client draws blocks the catalog's grammar joins the
-   *  system prompt. Absent: the run is exactly as before, no Show and no display on any event. */
+   *  parseDisplayCaps). When it declares the block level and draws a kind of catalog `harness.v1/1`, the Show tool is
+   *  offered and the catalog's grammar joins the system prompt. Any other declaration, and none, is served exactly as
+   *  before: no Show, no display on any event. Showing a block later, on another surface, for a session a text client
+   *  started is out of scope for v0.
+   *
+   *  For the host: tools and prompt are fixed when the session is built, so rebuild it when the declaration changes.
+   *  The section differs by viewport (a phone hint), and a run without Show after one with it changes the tool list:
+   *  both start the prompt cache afresh, and a model that calls Show again there gets "Unknown tool". Show is added
+   *  after the host's tool filter (a HOP's allowlist does not remove it; a deny rule refuses it) until the HOP `ui:`
+   *  slice lets an author narrow display. */
   display?: DisplayCaps;
   /**
    * HOP telemetry sink (D11.2). When set, the loop emits one content-free RunOutcomeEvent at the
@@ -682,8 +690,7 @@ export class AgentSession {
     this.maxTurns = cfg.maxTurns ?? 50;
     const policy = cfg.display ? resolveDisplay(cfg.display) : null;
     this.tools = policy ? this.withShow(policy) : cfg.tools;
-    const section = policy && displayInstructions(policy);
-    this.systemPrompt = section ? `${cfg.systemPrompt}\n\n${section}` : cfg.systemPrompt;
+    this.systemPrompt = policy ? `${cfg.systemPrompt}\n\n${displayInstructions(policy)}` : cfg.systemPrompt;
     // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
     // transcript-only char/4 estimate never sees (easily 5-15k tokens). ~1200 tokens fixed
     // request overhead on top.

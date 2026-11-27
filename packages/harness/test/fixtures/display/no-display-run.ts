@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { EngineEvent } from "@mlpal/harness-protocol";
+import type { DisplayCaps, EngineEvent } from "@mlpal/harness-protocol";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../../../src/gateway/client";
 import { AgentSession } from "../../../src/loop/agent";
 import { createPolicy } from "../../../src/permission/engine";
@@ -38,7 +38,8 @@ function normalize(x: unknown, root: string): unknown {
   return JSON.parse(JSON.stringify(x).split(root).join("<root>").replace(UUID, "<uuid>").replace(ISO, "<ts>"));
 }
 
-export async function recordNoDisplayRun(root: string): Promise<NoDisplayRecording> {
+/** `display`: what the client declares; one that does not declare the block level must record exactly the golden. */
+export async function recordNoDisplayRun(root: string, display?: DisplayCaps): Promise<NoDisplayRecording> {
   const cwd = join(root, "work");
   await mkdir(cwd, { recursive: true });
   await writeFile(join(cwd, "stock.csv"), "week,onhand\n2026-11-30,2140\n2026-12-07,1340\n");
@@ -67,6 +68,7 @@ export async function recordNoDisplayRun(root: string): Promise<NoDisplayRecordi
     store: new LocalStore(root),
     model_client: model,
     canUseTool: createPolicy({ mode: "autopilot" }),
+    ...(display ? { display } : {}),
   });
   const events: EngineEvent[] = [];
   for await (const e of session.run({ text: "How fast is stock falling?" })) events.push(e);

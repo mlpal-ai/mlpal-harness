@@ -27,24 +27,25 @@
 - Vectors per validator (`test/fixtures/display/*.vectors.json`), each refusal naming its code and path. A golden
   per first-wave block (`test/fixtures/display/golden/`: the Show input, the envelope the engine emits, the fallback
   as a markdown snapshot), the chart being prototype 11's Ridgeline 2P projection.
-- Engine: `AgentConfig.display?: DisplayCaps` (the host passes `run.display`). Set, the session offers the builtin
+- Engine: `AgentConfig.display?: DisplayCaps` (the host passes `run.display`). When the client draws blocks (level
+  `block`, catalog `harness.v1/1`, one of its kinds: `resolveDisplay` gives a policy), the session offers the builtin
   `Show` tool (hands `pure`, read-only) on a view of the host's registry (`ToolRegistry.withTools`: the host's
-  registry is unchanged, its late tools, deferral and hands restriction hold through the view); when the client draws
-  blocks (level `block`, catalog `harness.v1/1`, one of its kinds) the catalog's grammar for those kinds joins the
-  system prompt (`displayInstructions`). Absent, the run is byte for byte as before (a golden recorded on 9ede1ea).
+  registry is unchanged, its late tools, deferral and hands restriction hold through the view), and the catalog's
+  grammar for those kinds joins the system prompt (`displayInstructions`). Any other declaration (text only, the
+  terminal's text and file) and none are byte for byte as before (a golden recorded on 9ede1ea). Showing a block
+  later, on another surface, for a session a text client started is out of scope for v0.
 - `Show` checks its input with `checkShowInput`, then that cited tool calls exist in the session (`SOURCE_UNKNOWN`),
   12 blocks a turn and 200 revisions a block (`TOO_MANY_BLOCKS`). The model reads one line (`Shown fig-2 r1 (chart)
   on the canvas.`); the step's `content` is that line and the complete fallback, so a pinned UI and the terminal show
   the fallback. A refusal is a tool error `{error, block_id, path, message, hint, attempt}`; while the model repairs,
   the person sees the fallback (a `text` envelope, `repairing`). A second failure of a block in a turn is
-  `RETRY_EXHAUSTED` (`fallback_only`); a third call is refused unseen. A text client gets the fallback as the result
-  and no envelope. Revisions are folded from the store at each call (after rewinds), so they survive a new engine;
+  `RETRY_EXHAUSTED` (`fallback_only`); a third call is refused unseen. Revisions are folded from the store at each call (after rewinds), so they survive a new engine;
   the envelope is persisted with the tool result and replayed by `load_session` unchanged; the model's replay never
   carries it.
 - `ToolResult.meta.display` and `meta.displayText` (the step's display string when it is not what the model reads).
   Both pass the secret redactor like the rest of a result: the display string, and every string in an envelope.
 - Telemetry, content-free: counters `display.emitted {level, kind, source}`, `display.validation_errors {code, kind}`,
-  `display.repair {outcome: attempted|repaired|exhausted}`, `display.fallback_shown {reason: client_level|validation}`,
+  `display.repair {outcome: attempted|repaired|exhausted}`, `display.fallback_shown {reason: validation}`,
   histogram `display.bytes {level, kind}`; log lines `display shown` / `display refused` with id, kind, level,
   revision, bytes, code and attempt only. A kind outside the catalog is labelled `other`.
 
