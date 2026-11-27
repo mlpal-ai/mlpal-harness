@@ -186,8 +186,8 @@ describe("names every JavaScript object inherits are never rules, and never cras
     };
     expect(fault(enc({ x: { field: "week", constructor: { anything: [1, 2] } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.x.constructor");
     expect(fault(enc({ constructor: { field: "onhand" } }))).toBe("VALIDATION_FAILED spec.vl.encoding.constructor");
-    expect(fault(line(rows(2), { transform: [{ toString: { a: 1 } }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0]");
-    expect(fault(line(rows(2), { transform: [{ valueOf: 1 }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0]");
+    expect(fault(line(rows(2), { transform: [{ toString: { a: 1 } }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0].toString");
+    expect(fault(line(rows(2), { transform: [{ valueOf: 1 }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0].valueOf");
     expect(fault(enc({ x: { field: "week", type: "ordinal", axis: { hasOwnProperty: "x" } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.x.axis.hasOwnProperty");
   });
 
@@ -478,6 +478,20 @@ describe("protocol-relative links and invisible direction marks (review 3, optio
     }
     // emoji and scripts that need joiners still pass
     expect(checkShowInput(show({ fallback: { text: `${FALLBACK} 👩\u200d💻 \u200c` } })).ok).toBe(true);
+  });
+});
+
+describe("names on Object.prototype are never data fields, column keys or transform outputs (review 3, optional 1)", () => {
+  test("refused as a data row's field, a grid column key, an encoding field and a transform's as", () => {
+    const fault = (kind: BlockKind, spec: unknown) => {
+      const r = validateBlock(kind, spec);
+      return r.ok ? "ok" : `${r.error.code} ${r.error.path}`;
+    };
+    expect(fault("chart", line([{ week: "w", onhand: 1, hasOwnProperty: "s" }]))).toBe("VALIDATION_FAILED spec.vl.data.values[0].hasOwnProperty");
+    expect(fault("grid", { columns: [{ key: "__proto__", label: "P", type: "text" }], rows: [], row_key: "__proto__" })).toBe("VALIDATION_FAILED spec.columns[0].key");
+    expect(fault("grid", { columns: [{ key: "toString", label: "T", type: "text" }], rows: [], row_key: "toString" })).toBe("VALIDATION_FAILED spec.columns[0].key");
+    expect(fault("chart", line(rows(2), { encoding: { x: { field: "valueOf", type: "ordinal" }, y: { field: "onhand", type: "quantitative" } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.x.field");
+    expect(fault("chart", line(rows(2), { transform: [{ window: [{ op: "rank", as: "__proto__" }] }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0].window[0].as");
   });
 });
 

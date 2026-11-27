@@ -1,4 +1,5 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
+import { isReservedName } from "./bounds.js";
 import { fail } from "./errors.js";
 import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./blocks.js";
@@ -117,11 +118,13 @@ const obj = (fields: Record<string, Rule>, required: string[] = []): Rule => {
 /** A field name an encoding, predicate, sort or transform reads: checked against the data at the end. */
 const field: Rule = (v, p, w) => {
   str(128)(v, p, w);
+  if (isReservedName(v as string)) fail("VALIDATION_FAILED", p, `"${v as string}" is a name every object has, never a field`, "rename the field");
   w.uses.push({ field: v as string, path: p });
 };
 /** A field name a transform makes. */
 const output: Rule = (v, p, w) => {
   str(128)(v, p, w);
+  if (isReservedName(v as string)) fail("VALIDATION_FAILED", p, `"${v as string}" is a name every object has, never a field`, "rename the field");
   w.fields.add(v as string);
 };
 const outputs = (max: number): Rule => byType({ string: output, array: arr(output, max, 1) });
