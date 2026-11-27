@@ -94,6 +94,8 @@
   subpath as a re-export of the root bundle's validation names (read from `validate.ts`, so it cannot drift);
   declarations still come from tsc. `test/build.test.ts` runs the build into a fresh directory and imports both
   entries in a plain Node process, checking they give the same functions.
+- Revisions stay unique across a restart (review 6): `foldDisplayHistory` also reads the displays settled on run
+  results, so the next Show of a block settled `fallback_only` takes the revision after it.
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath

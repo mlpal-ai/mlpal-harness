@@ -680,6 +680,13 @@ describe("E3: a block left repairing when its run ends is settled fallback_only"
     expect("display" in (later.find((e) => e.type === "result") as object)).toBe(false);
   });
 
+  test("after a restart the next Show continues past the settled revision (review 6, R3)", async () => {
+    await run(session(new Scripted([use("toolu_1", "Show", badChart()), done("I could not draw it.")]), { display: WEB }));
+    // a new engine on the same session, as after a restart: fig-1 r1 was repairing, r2 settled on the run's result
+    const later = await run(session(new Scripted([use("toolu_2", "Show", chart()), done("ok")]), { display: WEB }), "again");
+    expect(toolResults(later)[0]!.display?.[0]).toMatchObject({ block_id: "fig-1", revision: 3, status: "ok" });
+  });
+
   test("a repaired or exhausted block is not settled again", async () => {
     const model = new Scripted([use("toolu_1", "Show", badChart()), use("toolu_2", "Show", chart()), done("ok")]);
     const events = await run(session(model, { display: WEB }));

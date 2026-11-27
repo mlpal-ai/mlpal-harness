@@ -3,8 +3,8 @@ import type { ConversationEntry } from "@mlpal/harness-protocol";
 /** Show's own name (show.ts imports this module, so the name is repeated here rather than imported). */
 const SHOW_TOOL_NAME = "Show";
 
-/** What Show needs from the session's record: each block's last revision and every tool call made, folded from the
- *  store (not the model's compacted context), after rewinds (pass effective entries). */
+/** What Show needs from the session's record: each block's last revision (from tool results and from the displays
+ *  settled on run results) and every tool call made, folded from the store (not the model's compacted context), after rewinds (pass effective entries). */
 export interface DisplayHistory {
   revisions: ReadonlyMap<string, number>;
   toolUseIds: ReadonlySet<string>;
@@ -24,6 +24,9 @@ export function foldDisplayHistory(entries: ConversationEntry[], showToolUseId?:
   const verifiableIds = new Set<string>();
   let recentCalls: Array<{ id: string; name: string }> = [];
   let frozen = false;
+  const seen = (displays: ReadonlyArray<{ block_id: string; revision: number }> | undefined) => {
+    for (const d of displays ?? []) revisions.set(d.block_id, Math.max(revisions.get(d.block_id) ?? 0, d.revision));
+  };
   for (const { payload } of entries) {
     if (payload.type === "assistant") {
       const content = payload.message.content;
@@ -36,8 +39,11 @@ export function foldDisplayHistory(entries: ConversationEntry[], showToolUseId?:
       }
     } else if (payload.type === "user") {
       if (!frozen && payload.author?.type !== "system") recentCalls = [];
+    } else if (payload.type === "result") {
+      // a block settled at a run's end took a revision too; a later engine must not reuse it
+      seen(payload.display);
     } else if (payload.type === "tool_result") {
-      for (const d of payload.display ?? []) revisions.set(d.block_id, Math.max(revisions.get(d.block_id) ?? 0, d.revision));
+      seen(payload.display);
       const name = names.get(payload.toolUseId);
       if (frozen || payload.isError || name === undefined) continue;
       verifiableIds.add(payload.toolUseId);
