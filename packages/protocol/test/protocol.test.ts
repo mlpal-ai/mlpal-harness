@@ -5,6 +5,8 @@ import {
   HARNESS_PROTOCOL_VERSION,
   type ClientMessage,
   type DelegatedCredential,
+  type DisplayCaps,
+  type DisplayEnvelope,
   type PageContextV1,
   type ErrorCode,
   type ErrorEvent,
@@ -276,12 +278,26 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
+describe("0.26.8 (display protocol: tool_result.display, run.display, capability display; additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.6");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.6");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.8");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.8");
   });
 
+  test("display is optional on tool_result and on run; the capability is named", () => {
+    const envelope: DisplayEnvelope = { v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "text", fallback: { text: "Runs out on 17 Dec, four days before PO 4471." }, source: { by: "model" }, status: "repairing" };
+    const shown: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Show", content: "c", display: [envelope], isError: false, ts: "t" };
+    const before: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Read", content: "c", isError: false, ts: "t" };
+    const caps: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], viewport: "desktop", theme: "light", locale: "en-US", timeZone: "UTC" };
+    const run = { type: "run", requestId: "r", prompt: "p", display: caps } satisfies ClientMessage;
+    const cap: ServerCapability = "display";
+    // @ts-expect-error a text envelope carries no kind
+    const kinded: DisplayEnvelope = { ...envelope, kind: "chart" };
+    expect([shown.display?.length, "display" in before, run.display.client, cap, kinded.level]).toEqual([1, false, "web", "display", "text"]);
+  });
+});
+
+describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
   test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {
     const codes: SpendCode[] = ["budget_exceeded", "wallet_empty", "budget_unavailable", "billing_unavailable"];
     const refusals: ModelRefusal[] = codes.map((code) => ({ code, model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "m" }));

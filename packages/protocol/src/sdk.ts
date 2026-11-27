@@ -1,5 +1,6 @@
 import type { Author } from "./author.js";
 import type { ToolResultBlocks } from "./content.js";
+import type { DisplayEnvelope } from "./display/envelope.js";
 import type { Message, StopReason } from "./message.js";
 import type { Usage } from "./usage.js";
 
@@ -66,6 +67,10 @@ export interface ToolResultEvent {
   refusal?: ModelRefusal;
   /** 0.22.4: the step's remote sandbox refused for lack of capacity. */
   sandboxRefusal?: SandboxRefusal;
+  /** 0.27.0 (capability "display"): what the step showed the person, on a run whose client declared `run.display`.
+   *  Render-only, like `diff`: the model reads a short line, and `content` carries the line and the fallback, which is
+   *  what a client that draws no display shows. Absent on every other run. */
+  display?: DisplayEnvelope[];
   isError: boolean;
   ts: string;
 }

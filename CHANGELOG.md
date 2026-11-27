@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### An agent can show a typed block, with a text fallback always; protocol 0.27.0 (Harness UI Next P1, additive, 2026-11-27)
+
+- 0.27.0, not the next patch, for the reason 0.26.7 gives: `next/ws` numbers 0.26.1–0.26.6. Carry this onto `next/ws`
+  when the lines merge.
+- Protocol (`display/`, DISPLAY-PROTOCOL-v0 §2–5): `DisplayEnvelope` (a `TextDisplay` or a `ChartDisplay` /
+  `KpisDisplay` / `GridDisplay` block of catalog `harness.v1/1`), its zod schema `displayEnvelopeSchema`, and
+  `ToolResultEvent.display?`: render-only like `diff`. Every envelope carries a complete `fallback.text`.
+  `DisplayCaps` on `run.display?` (`parseDisplayCaps` at the server's edge; unknown fields dropped) and the
+  capability `display`. A run without `run.display` is served exactly as before.
+- `checkShowInput(raw, {kinds})`: the `Show` tool's input, checked before any client sees it; every refusal is a
+  `DisplayError {code, path, message, hint}` (`DisplayErrorCode`: `FALLBACK_MISSING`, `FALLBACK_TOO_LONG`,
+  `FALLBACK_UNINFORMATIVE`, `KIND_UNKNOWN`, `KIND_NOT_ALLOWED`, `HOST_OWNED_KIND`, `VALIDATION_FAILED`,
+  `URL_NOT_ALLOWED`, `EXPRESSION_NOT_ALLOWED`, `SPEC_TOO_LARGE`, `ROWS_OVER_LIMIT`, `TOO_MANY_BLOCKS`,
+  `SOURCE_UNKNOWN`, `RETRY_EXHAUSTED`). A refusal after the fallback passed carries the fallback, so it can be shown
+  while the model repairs.
+- `validateBlock(kind, spec)`, the check engine and client share: `chart` on the §5.2 Vega-Lite subset (inline
+  `data.values` only; no URL anywhere, data included; no `calculate`, expression filter, `test` string, `expr` or
+  `signal`; marks, channels and transforms by allowlist; `layer` ≤ 8, top-level `vconcat` ≤ 2; 5,000 rows after
+  `fold`, 50,000 cells, 12 series; the top-level `$schema`, `config` and `usermeta` dropped), `kpis` (≤ 8 tiles),
+  `grid` (≤ 2,000 inline rows, typed columns, a unique `row_key`). Notes (`source`, `assumption`, `caveat`) ride the
+  envelope. The fallback is 40–8,000 characters of plain GFM that does not only point at the block and, for these
+  kinds, states a number; `fallback.table {from: "rows"}` appends up to 20 rows as a GFM table.
+- Vectors per validator (`test/fixtures/display/*.vectors.json`), each refusal naming its code and path.
+
+### Live gateway tests run only when asked (E-27, 2026-11-20)
 ### A prompt hook that gets no verdict is not an allow (2026-11-14)
 
 - A `prompt` hook (a cheap model judging an event against a rule) returned no result, the same as "do not block",

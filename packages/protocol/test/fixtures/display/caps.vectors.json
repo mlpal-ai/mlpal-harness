@@ -1,0 +1,188 @@
+{
+ "_comment": "parseDisplayCaps vectors (DISPLAY-PROTOCOL-v0 §4.2). Unknown fields are dropped, not refused, so a newer client still parses.",
+ "valid": [
+  {
+   "name": "web on a desktop",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "terminal",
+   "caps": {
+    "v": 1,
+    "client": "cli",
+    "levels": [
+     "text",
+     "file"
+    ],
+    "catalogs": [],
+    "viewport": "desktop",
+    "theme": "dark",
+    "locale": "en-GB",
+    "timeZone": "Europe/London"
+   }
+  },
+  {
+   "name": "a kinds subset and a2ui",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York",
+    "kinds": [
+     "chart",
+     "grid"
+    ],
+    "a2ui": "1.0"
+   }
+  },
+  {
+   "name": "a field from a newer client",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York",
+    "gestures": [
+     "point"
+    ]
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "version 2",
+   "code": "VALIDATION_FAILED",
+   "path": "display.v",
+   "caps": {
+    "v": 2,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "an unknown client",
+   "code": "VALIDATION_FAILED",
+   "path": "display.client",
+   "caps": {
+    "v": 1,
+    "client": "tv",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "an unknown level",
+   "code": "VALIDATION_FAILED",
+   "path": "display.levels[1]",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "hologram"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "no viewport",
+   "code": "VALIDATION_FAILED",
+   "path": "display.viewport",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "not an object",
+   "code": "VALIDATION_FAILED",
+   "path": "display",
+   "caps": "web"
+  }
+ ]
+}

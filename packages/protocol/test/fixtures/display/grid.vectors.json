@@ -1,0 +1,661 @@
+{
+ "_comment": "validateBlock('grid', spec) vectors. Paths start at the Show input root. The 2,000-row limit is generated in the test.",
+ "valid": [
+  {
+   "name": "stock by DC",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Reno",
+      "onhand": 3400,
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "nulls in typed cells",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": null,
+      "dc": "Reno",
+      "onhand": null,
+      "cover": null,
+      "state": null
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "empty grid",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "numeric row_key",
+   "spec": {
+    "columns": [
+     {
+      "key": "n",
+      "label": "N",
+      "type": "num"
+     }
+    ],
+    "rows": [
+     {
+      "n": 1
+     },
+     {
+      "n": 2
+     }
+    ],
+    "row_key": "n"
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "row_key not a column",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.row_key",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Reno",
+      "onhand": 3400,
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "warehouse"
+   }
+  },
+  {
+   "name": "a cell for a column that does not exist",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[0].region",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short",
+      "region": "east"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a text in a num column",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[1].onhand",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Reno",
+      "onhand": "3,400",
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a number in a state column",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[0].state",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": 1
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a boolean in a code column",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[0].sku",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": true,
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a duplicate row_key value",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[1].dc",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 3400,
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a row without its key",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[0].dc",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a column key used twice",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.columns[1].key",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "sku",
+      "label": "Distribution centre",
+      "type": "text"
+     }
+    ],
+    "rows": [],
+    "row_key": "sku"
+   }
+  },
+  {
+   "name": "an editable column (arrives with display actions)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.columns[0].type",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "edit"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Reno",
+      "onhand": 3400,
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "rows from a file (arrive with the file route)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "data": {
+     "file": "stock.csv"
+    },
+    "row_key": "dc",
+    "rows": []
+   }
+  },
+  {
+   "name": "no columns",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.columns",
+   "spec": {
+    "columns": [],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": "Columbus",
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     },
+     {
+      "sku": "KO-2104",
+      "dc": "Reno",
+      "onhand": 3400,
+      "cover": 8.1,
+      "state": "ok"
+     }
+    ],
+    "row_key": "dc"
+   }
+  },
+  {
+   "name": "a nested cell",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.rows[0].dc",
+   "spec": {
+    "columns": [
+     {
+      "key": "sku",
+      "label": "SKU",
+      "type": "code"
+     },
+     {
+      "key": "dc",
+      "label": "Distribution centre",
+      "type": "text"
+     },
+     {
+      "key": "onhand",
+      "label": "On hand",
+      "type": "num"
+     },
+     {
+      "key": "cover",
+      "label": "Weeks of cover",
+      "type": "bar"
+     },
+     {
+      "key": "state",
+      "label": "State",
+      "type": "state"
+     }
+    ],
+    "rows": [
+     {
+      "sku": "KO-2104",
+      "dc": {
+       "name": "Columbus"
+      },
+      "onhand": 460,
+      "cover": 0.6,
+      "state": "short"
+     }
+    ],
+    "row_key": "dc"
+   }
+  }
+ ]
+}

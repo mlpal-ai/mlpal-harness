@@ -1,6 +1,7 @@
 import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
+import type { DisplayCaps } from "./display/caps.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, ModelRefusal, PolicyNoVerdict, SDKMessage } from "./sdk.js";
@@ -97,7 +98,8 @@ export type ServerCapability =
   | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
   | "concurrent_runs" // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
   | "session_archive" // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
-  | "incognito"; // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
+  | "incognito" // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
+  | "display"; // 0.26.8: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -492,6 +494,9 @@ export type ClientMessage =
        *  memory off refuses "incognito" with `incognito_unavailable`; nothing runs and no session is created. A client
        *  sends "incognito" only to a server that lists the capability. */
       memory?: SessionMemoryMode;
+      /** 0.26.8 (capability "display"): what this client draws, sent with every run. Absent: the run is served exactly
+       *  as before. An invalid one (parseDisplayCaps) is dropped, never the run. */
+      display?: DisplayCaps;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -804,4 +809,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.6";
+export const HARNESS_PROTOCOL_VERSION = "0.26.8";
