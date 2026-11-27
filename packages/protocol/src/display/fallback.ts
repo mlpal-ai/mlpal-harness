@@ -29,9 +29,36 @@ export type FallbackInput = z.infer<typeof fallbackInputSchema>;
 type Path = ReadonlyArray<string | number>;
 
 const REFERENCE_ONLY = /^(see|shown|as shown)\b/i;
-const HTML = /<\/?[a-z][a-z0-9-]*(\s[^>]*)?>|<!--/i;
-const IMAGE = /!\[[^\]]*\]\(/;
+/** Anything that could open HTML: a tag (whatever follows its name), a closing tag, a comment, CDATA, a processing
+ *  instruction, an autolink. */
+const HTML = /<[A-Za-z!/?]/;
+/** Any image: inline, reference, collapsed or shortcut. */
+const IMAGE = /!\[/;
 const FENCE = /^\s*(```|~~~)/m;
+/** A link destination that may stay a link: http(s), or a relative path with no scheme and no entity. */
+const SAFE_DEST = /^(?:<?https?:\/\/|[A-Za-z0-9._~/#?=%+-]*(?:[)\s>]|$))/i;
+const INLINE_LINK = /\]\(\s*/g;
+const REF_DEF = /^( {0,3})\[([^\]\n]+)\]:[ \t]*/gm;
+
+function unsafeLinks(text: string): boolean {
+  for (const m of text.matchAll(INLINE_LINK)) if (!SAFE_DEST.test(text.slice(m.index! + m[0].length))) return true;
+  for (const m of text.matchAll(REF_DEF)) if (!SAFE_DEST.test(text.slice(m.index! + m[0].length))) return true;
+  return false;
+}
+
+/**
+ * The fallback as stored and sent: inert in a markdown renderer by construction, whatever the checks above miss.
+ * Every `<` becomes `&lt;` (so nothing opens a tag or an autolink, whatever follows), every `![` starts with `&#33;`
+ * (so no image, of any form), and a link or a reference definition whose destination is not http(s) or a relative path
+ * loses its link syntax. Entities, not backslashes: a backslash the model wrote before them cannot undo them. A client
+ * that shows the fallback as plain text may see these entities.
+ */
+export function inertFallbackText(text: string): string {
+  let out = text.replace(/</g, "&lt;").replace(/!\[/g, "&#33;[");
+  out = out.replace(INLINE_LINK, (m, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `]&#40;${m.slice(2)}`));
+  out = out.replace(REF_DEF, (m, indent: string, label: string, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `${indent}&#91;${label}]:${m.slice(indent.length + label.length + 3)}`));
+  return out;
+}
 
 /** The fallback as the model sent it, checked. A bare string is taken as its text (models flatten small objects).
  *  `kind`, when it is a block kind, adds the rule that a chart, kpis or grid fallback states a number. */
@@ -48,11 +75,12 @@ export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): Fal
   if (chars < DISPLAY_LIMITS.fallbackMinChars) fail("FALLBACK_UNINFORMATIVE", at, `${chars} characters; a fallback is at least ${DISPLAY_LIMITS.fallbackMinChars}`, "a person who cannot see the block reads only this: state the conclusion and the key numbers");
   if (REFERENCE_ONLY.test(text)) fail("FALLBACK_UNINFORMATIVE", at, "the fallback only points at the block", "say what the block shows, not where to look");
   if (typeof kind === "string" && isBlockKind(kind) && !/\d/.test(text)) fail("FALLBACK_UNINFORMATIVE", at, `a ${kind} fallback states at least one number`, "give the key numbers the block shows");
-  if (HTML.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no HTML", "write it as text and GFM tables");
+  if (HTML.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no HTML, no autolinks", 'write "less than" for a bare <, and links as [text](https://...)');
   if (IMAGE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no images", "describe what the image would show");
   if (FENCE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no code fences");
   if (CONTROL.test(text)) fail("VALIDATION_FAILED", at, "the fallback has a control character (a terminal escape)", "write plain text; tabs and newlines are fine");
-  return { ...input, text };
+  if (unsafeLinks(text)) fail("VALIDATION_FAILED", at, "a link in the fallback goes to http(s) or a relative path only", "drop the link or use its https address");
+  return { ...input, text: inertFallbackText(text) };
 }
 
 const ANSI = /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|.)/g;

