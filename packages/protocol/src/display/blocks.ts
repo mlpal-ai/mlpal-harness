@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
+import { checkBounds } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
 import { checked, fail, type DisplayCheck } from "./errors.js";
 import { plainText } from "./fields.js";
@@ -145,7 +146,10 @@ export function checkBlockSpec(kind: BlockKind, spec: unknown, path: Path): Bloc
 /** A block's spec against its kind: the spec as it is drawn (a chart's `$schema`, `config` and `usermeta` removed), or
  *  the first fault. Errors' paths start at `spec`. */
 export function validateBlock(kind: BlockKind, spec: unknown): DisplayCheck<BlockSpec> {
-  return checked(() => checkBlockSpec(kind, spec, ["spec"]));
+  return checked(() => {
+    checkBounds(spec, ["spec"]);
+    return checkBlockSpec(kind, spec, ["spec"]);
+  });
 }
 
 /** The rows a fallback table is made from: a grid's rows, a chart's first inline data (top level, else the first

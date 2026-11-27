@@ -69,8 +69,14 @@ function lenientInput(raw: unknown): unknown {
   const parse = (k: string, openers: RegExp) => {
     const v = out[k];
     if (typeof v !== "string" || !openers.test(v)) return;
-    const parsed = parseJsonLenient(v);
-    if (parsed.ok) out[k] = parsed.value;
+    // A string the reader cannot take (a stack overflow on a pathological nesting included) stays a string, which the
+    // check then refuses with a typed code.
+    try {
+      const parsed = parseJsonLenient(v);
+      if (parsed.ok) out[k] = parsed.value;
+    } catch {
+      return;
+    }
   };
   for (const k of NESTED) parse(k, /^\s*[[{]/);
   parse("fallback", /^\s*\{/);

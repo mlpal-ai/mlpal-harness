@@ -26,6 +26,10 @@ export const BLOCK_ID = /^[a-z][a-z0-9-]{0,39}$/;
 export const DISPLAY_LIMITS = {
   /** The Show input as compact UTF-8 JSON. */
   inputBytes: 256 * 1024,
+  /** Nesting of the Show input (or a spec), its root at 0. */
+  inputDepth: 32,
+  /** Values in the Show input (or a spec): every object, array and scalar counts one. */
+  inputNodes: 100_000,
   fallbackMinChars: 40,
   fallbackMaxChars: 8_000,
   /** Rows the engine appends to a fallback as a text table. */

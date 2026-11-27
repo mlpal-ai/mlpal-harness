@@ -24,6 +24,9 @@
   `grid` (≤ 2,000 inline rows, typed columns, a unique `row_key`). Notes (`source`, `assumption`, `caveat`) ride the
   envelope. The fallback is 40–8,000 characters of plain GFM that does not only point at the block and, for these
   kinds, states a number; `fallback.table {from: "rows"}` appends up to 20 rows as a GFM table.
+- Bounds before any walk (`checkBounds`, iterative): a Show input or a spec is at most 32 levels deep and 100,000
+  values, else `SPEC_TOO_LARGE` with the path; checked after the block_id and the fallback, so the fallback is shown
+  and the repair counted. A 100,000-deep input is a typed refusal, never a stack overflow.
 - Vectors per validator (`test/fixtures/display/*.vectors.json`), each refusal naming its code and path. A golden
   per first-wave block (`test/fixtures/display/golden/`: the Show input, the envelope the engine emits, the fallback
   as a markdown snapshot), the chart being prototype 11's Ridgeline 2P projection.

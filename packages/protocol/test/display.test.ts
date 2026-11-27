@@ -82,6 +82,43 @@ describe("chart limits", () => {
   });
 });
 
+describe("input bounds: depth and size are checked without recursion, before any walk", () => {
+  /** An empty array wrapped in `n` more, built without recursion: n + 1 levels. */
+  const nested = (n: number): unknown[] => {
+    let v: unknown[] = [];
+    for (let i = 0; i < n; i++) v = [v];
+    return v;
+  };
+  const deepChart = (n: number) => line(rows(2), { encoding: { x: { field: "week", type: "ordinal", axis: { values: nested(n) } }, y: { field: "onhand", type: "quantitative" } } });
+  const fault = (r: { ok: boolean; error?: { code: string; path?: string } }) => (r.ok ? "ok" : `${r.error!.code} ${r.error!.path ?? ""}`);
+
+  test("12,000 and 100,000 deep: SPEC_TOO_LARGE at the first value past 32, never a thrown RangeError", () => {
+    for (const n of [12_000, 100_000]) {
+      const r = validateBlock("chart", deepChart(n));
+      expect(r.ok ? "ok" : r.error.code).toBe("SPEC_TOO_LARGE");
+      expect(r.ok ? "" : r.error.path).toBe(`spec.vl.encoding.x.axis.values${"[0]".repeat(DISPLAY_LIMITS.inputDepth - 4)}`);
+      const s = checkShowInput(show({ spec: deepChart(n) }));
+      expect(s.ok ? null : [s.error.code, s.block_id, s.fallback]).toEqual(["SPEC_TOO_LARGE", "fig-1", FALLBACK]);
+    }
+  });
+
+  test("a value at depth 32 is within bounds", () => {
+    // spec(0) vl(1) encoding(2) x(3) axis(4) values(5): 27 arrays inside it reach 32
+    const r = validateBlock("chart", deepChart(DISPLAY_LIMITS.inputDepth - 5));
+    expect(r.ok ? "ok" : r.error.code).not.toBe("SPEC_TOO_LARGE");
+    expect(fault(validateBlock("chart", deepChart(DISPLAY_LIMITS.inputDepth - 4)))).toMatch(/^SPEC_TOO_LARGE /);
+  });
+
+  test("a wide input at the node limit is not refused for size; one value more is", () => {
+    // spec, vl, data, values: 4 values, then the elements
+    const wide = (n: number) => ({ vl: { data: { values: Array.from({ length: n }, () => 0) } } });
+    expect(fault(validateBlock("chart", wide(DISPLAY_LIMITS.inputNodes - 4)))).not.toMatch(/^SPEC_TOO_LARGE/);
+    expect(fault(validateBlock("chart", wide(DISPLAY_LIMITS.inputNodes - 3)))).toBe("SPEC_TOO_LARGE spec");
+    const s = checkShowInput(show({ spec: wide(DISPLAY_LIMITS.inputNodes) }));
+    expect(s.ok ? null : [s.error.code, s.fallback]).toEqual(["SPEC_TOO_LARGE", FALLBACK]);
+  });
+});
+
 describe("grid limits", () => {
   test("2,000 inline rows pass, 2,001 are ROWS_OVER_LIMIT", () => {
     const grid = (n: number) => ({ columns: [{ key: "id", label: "Id", type: "num" }], rows: Array.from({ length: n }, (_, i) => ({ id: i })), row_key: "id" });
@@ -143,9 +180,9 @@ describe("checkShowInput", () => {
     for (const x of [null, "show", 3, [show()]]) expect(fault(x)).toEqual({ code: "VALIDATION_FAILED", path: undefined, block_id: undefined, fallback: undefined });
   });
 
-  test("over 256 KiB of JSON is SPEC_TOO_LARGE before anything else is looked at", () => {
-    const big = show({ spec: { vl: { data: { values: [{ blob: "x".repeat(DISPLAY_LIMITS.inputBytes) }] } } }, block_id: "NOT VALID" });
-    expect(fault(big)?.code).toBe("SPEC_TOO_LARGE");
+  test("over 256 KiB of JSON is SPEC_TOO_LARGE, after the id and the fallback so the fallback can be shown", () => {
+    const big = show({ spec: { vl: { data: { values: [{ blob: "x".repeat(DISPLAY_LIMITS.inputBytes) }] } } } });
+    expect(fault(big)).toEqual({ code: "SPEC_TOO_LARGE", path: undefined, block_id: "fig-1", fallback: FALLBACK });
   });
 
   test("an invalid block_id: no id, so nothing can be shown", () => {
