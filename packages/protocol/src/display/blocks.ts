@@ -3,7 +3,7 @@ import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 import { checkBounds } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
 import { checked, fail, type DisplayCheck } from "./errors.js";
-import { plainText } from "./fields.js";
+import { CONTROL, plainText } from "./fields.js";
 
 /**
  * 0.27.0 display protocol: the first-wave block specs of `harness.v1/1` (DISPLAY-PROTOCOL-v0 §5.1). zod states each
@@ -120,6 +120,7 @@ function checkGrid(spec: unknown, path: Path): GridSpec {
     for (const [k, v] of Object.entries(row)) {
       const col = columns.get(k);
       if (!col) fail("VALIDATION_FAILED", [...path, "rows", i, k], `"${k}" is not a column key`, `column keys: ${[...columns.keys()].join(", ")}`);
+      if (typeof v === "string" && CONTROL.test(v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], "a cell has a control character (a terminal escape)");
       if (!CELL_TYPE[col.type](v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], `a ${col.type} cell is ${col.type === "state" ? "a string" : col.type === "code" ? "a string or a number" : "a number"} or null`);
     }
     const key = row[grid.row_key];

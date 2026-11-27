@@ -29,6 +29,11 @@
   `grid` (≤ 2,000 inline rows, typed columns, a unique `row_key`). Notes (`source`, `assumption`, `caveat`) ride the
   envelope. The fallback is 40–8,000 characters of plain GFM that does not only point at the block and, for these
   kinds, states a number; `fallback.table {from: "rows"}` appends up to 20 rows as a GFM table.
+- What reaches a terminal or a markdown renderer from block data is inert: control characters (terminal escapes)
+  are refused in the fallback text, in grid cells and in every chart string and field name; each appended table cell
+  is stripped of escapes and controls, cut at 120 characters, every markdown- and HTML-active character
+  backslash-escaped and autolinks broken, so a cell is never an image, a link, HTML or an escape. A refusal's
+  message, hint and path, which quote the model's names, are made inert the same way.
 - Bounds before any walk (`checkBounds`, iterative): a Show input or a spec is at most 32 levels deep and 100,000
   values, else `SPEC_TOO_LARGE` with the path; checked after the block_id and the fallback, so the fallback is shown
   and the repair counted. A 100,000-deep input is a typed refusal, never a stack overflow.
