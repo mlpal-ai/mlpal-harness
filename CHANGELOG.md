@@ -83,6 +83,9 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Every stage in the first refusal (real-model run): the fallback's table is checked against the rows even when its
+  text is refused, and the engine's block limits (TOO_MANY_BLOCKS) join the input's faults, so a later stage's fault
+  never first appears on the retry.
 - Arguments as JSON strings (real-model run, E4): Show parses an object-typed argument sent as a JSON string once
   (spec, spec.vl, fallback, notes, placement, sources; each at most the input's byte limit). A string that is not
   valid JSON is refused saying so and where it breaks ("spec arrived as a string that is not valid JSON (expected ','

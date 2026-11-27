@@ -4,7 +4,7 @@ import { checkBounds } from "./bounds.js";
 import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";
 import { asDisplayError, attempt, collectFaults, fail, report, type DisplayError } from "./errors.js";
-import { checkFallbackInput, completeFallback, fallbackInputSchema } from "./fallback.js";
+import { checkFallbackText, completeFallback, fallbackInputSchema, parseFallbackShape } from "./fallback.js";
 import { plainText } from "./fields.js";
 
 /**
@@ -87,7 +87,8 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     blockId = raw.block_id;
     // The fallback's check reads fixed fields only, so it is safe before the bounds; checking it first lets the
     // fallback be shown whatever is wrong with the rest.
-    const fb = attempt(() => checkFallbackInput(raw.fallback, raw.kind, ["fallback"]));
+    const shape = attempt(() => parseFallbackShape(raw.fallback, ["fallback"]));
+    const fb = shape ? attempt(() => checkFallbackText(shape, raw.kind, ["fallback"])) : undefined;
     fallback = fb?.text;
     // Fatal: nothing below may walk an unbounded input.
     checkBounds(raw, []);
@@ -98,8 +99,10 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     const { kind: _k, spec: _s, fallback: _f, ...others } = raw;
     const input = attempt(() => parseShape(otherFieldsSchema, others, []));
     const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"])) : undefined;
-    const complete = fb && kind && spec ? attempt(() => completeFallback(fb, kind, spec, ["fallback"])) : undefined;
-    if (!input || !kind || !spec || complete === undefined) return undefined;
+    // the table is checked against the rows even when the text itself was refused, so both faults come together
+    const tabled = fb ?? shape;
+    const complete = tabled && kind && spec ? attempt(() => completeFallback(tabled, kind, spec, ["fallback"])) : undefined;
+    if (!fb || !input || !kind || !spec || complete === undefined) return undefined;
     const { block_id, title, caption, sources, as_of, placement, notes } = input;
     const optional = { title, caption, sources, as_of, placement, notes };
     for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];

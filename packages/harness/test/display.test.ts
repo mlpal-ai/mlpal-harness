@@ -410,6 +410,20 @@ describe("Show: refusal and the one repair", () => {
     expect(fixed.meta?.display?.[0]).toMatchObject({ level: "block", revision: 2, status: "ok" });
   });
 
+  test("every stage reports in the first refusal: the fallback's text and its table together", async () => {
+    const r = await tool().call(chart({ fallback: { text: "See the chart.", table: { from: "rows", columns: ["week", "units"] } } }));
+    const body = errorOf(r) as unknown as { faults: Array<{ code: string; path: string }> };
+    expect(body.faults.map((f) => `${f.code} ${f.path}`)).toEqual(["FALLBACK_UNINFORMATIVE fallback.text", "VALIDATION_FAILED fallback.table.columns[1]"]);
+  });
+
+  test("every stage reports in the first refusal: the engine's block limits join the input's faults", async () => {
+    const { call } = tool();
+    for (let i = 0; i < 12; i++) await call(chart({ block_id: `b-${i}` }));
+    const r = await call(badChart({ block_id: "b-12" }));
+    const body = errorOf(r) as unknown as { faults: Array<{ code: string; path: string }> };
+    expect(body.faults.map((f) => `${f.code} ${f.path}`)).toEqual(["VALIDATION_FAILED spec.vl.mark", "TOO_MANY_BLOCKS block_id"]);
+  });
+
   test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {
     const r = await tool({ ...WEB, kinds: ["grid"] }).call(chart());
     expect([errorOf(r).error, errorOf(r).path]).toEqual(["KIND_NOT_ALLOWED", "kind"]);

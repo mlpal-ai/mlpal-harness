@@ -71,10 +71,20 @@ export function inertFallbackText(text: string): string {
 /** The fallback as the model sent it, checked. A bare string is taken as its text (models flatten small objects).
  *  `kind`, when it is a block kind, adds the rule that a chart, kpis or grid fallback states a number. */
 export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): FallbackInput {
+  return checkFallbackText(parseFallbackShape(raw, path), kind, path);
+}
+
+/** The fallback's shape: present, with text, its table well formed. Checked apart from the text's rules, so a table
+ *  fault and a text fault are reported together. */
+export function parseFallbackShape(raw: unknown, path: Path): FallbackInput {
   if (raw === undefined || raw === null) fail("FALLBACK_MISSING", path, "every Show needs a fallback", '"fallback": { "text": "the conclusion and the key numbers" }');
   const obj = typeof raw === "string" ? { text: raw } : raw;
   if (typeof obj === "object" && !Array.isArray(obj) && (obj as { text?: unknown }).text === undefined) fail("FALLBACK_MISSING", [...path, "text"], "the fallback has no text", '"fallback": { "text": "the conclusion and the key numbers" }');
-  const input = parseShape(fallbackInputSchema, obj, path);
+  return parseShape(fallbackInputSchema, obj, path);
+}
+
+/** The fallback text's rules, on a well-formed fallback; the text comes back trimmed and neutralised. */
+export function checkFallbackText(input: FallbackInput, kind: unknown, path: Path): FallbackInput {
   const text = input.text.trim();
   const at = [...path, "text"];
   if (!text) fail("FALLBACK_MISSING", at, "the fallback text is empty", "state the conclusion and the key numbers");
