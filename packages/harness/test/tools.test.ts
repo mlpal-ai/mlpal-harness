@@ -102,6 +102,44 @@ describe("registry", () => {
     const nope = await runTool(r, "Nope", {}, ctx);
     expect(nope.isError).toBe(true);
   });
+
+  test("withTools: a view that adds tools without touching the host's registry, and sees what the host adds later", async () => {
+    const { ToolRegistry } = await import("../src/tools/registry");
+    const { defineTool } = await import("../src/tools/types");
+    const { z } = await import("zod");
+    const tool = (name: string, content: string) => defineTool({ name, description: "t", hands: "pure", readOnly: true, schema: z.object({}), call: async () => ({ content }) });
+    const host = new ToolRegistry();
+    host.register(tool("Read", "host read") as never);
+    const view = host.withTools([tool("Show", "shown") as never]);
+    expect(host.get("Show")).toBeUndefined();
+    expect(view.schemas().map((s) => s.name)).toEqual(["Read", "Show"]);
+    host.register(tool("mcp__x__ping", "pong") as never);
+    expect(view.schemas().map((s) => s.name)).toEqual(["Read", "mcp__x__ping", "Show"]);
+    expect((await runTool(view, "Show", {}, ctx)).content).toBe("shown");
+    expect((await runTool(view, "mcp__x__ping", {}, ctx)).content).toBe("pong");
+    // the host's late resolution and deferral reach through the view
+    host.setLateResolver(async (name) => {
+      if (name === "mcp__y__late") host.register(tool("mcp__y__late", "late") as never);
+    });
+    expect((await runTool(view, "mcp__y__late", {}, ctx)).content).toBe("late");
+    host.setLateResolver(async (name) => {
+      if (name === "mcp__z__later") host.register(tool("mcp__z__later", "later") as never);
+    });
+    expect((await runTool(view.filter((t) => t.name.startsWith("mcp__")), "mcp__z__later", {}, ctx)).content).toBe("later");
+    host.setSchemaFilter((t) => t.name !== "mcp__x__ping");
+    expect(view.schemas().map((s) => s.name)).toEqual(["Read", "mcp__y__late", "mcp__z__later", "Show"]);
+    expect((await runTool(view, "mcp__x__ping", {}, ctx)).isError).toBe(true);
+    // a view's own tool shadows the host's of the same name, in the view only
+    const shadow = host.withTools([tool("Read", "view read") as never]);
+    expect((await runTool(shadow, "Read", {}, ctx)).content).toBe("view read");
+    expect((await runTool(host, "Read", {}, ctx)).content).toBe("host read");
+    expect(shadow.schemas().filter((s) => s.name === "Read")).toHaveLength(1);
+    // the host's hands restriction holds for the view's tools
+    const pod = new ToolRegistry();
+    pod.restrictHands(["pure"]);
+    const local = defineTool({ name: "Local", description: "t", hands: "local", readOnly: true, schema: z.object({}), call: async () => ({ content: "x" }) });
+    expect(pod.withTools([local as never]).get("Local")).toBeUndefined();
+  });
 });
 
 describe("file tools", () => {

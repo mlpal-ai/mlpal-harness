@@ -9,6 +9,22 @@ export class ToolRegistry {
   /** Which registered tools the model is shown (tool deferral); default: all. */
   private schemaFilter: (t: Tool<unknown>) => boolean = () => true;
   private hands: { allowed: readonly ToolHands[]; onRefused?: (t: Tool<unknown>) => void; refused: Set<string> } | null = null;
+  /** Set on a view made by withTools(): the host registry it reads through. */
+  private base: ToolRegistry | null = null;
+
+  /**
+   * A view of this registry with `tools` added: whatever this registry holds, comes to hold (a late MCP server) or
+   * hides (deferral) is seen through it, and `tools` never reach this registry. A tool of the view shadows one of the
+   * same name here, in the view only, and is always shown. How the engine adds a session's own tools (Show) to the
+   * host's registry without changing it for anyone else.
+   */
+  withTools(tools: Tool<unknown>[]): ToolRegistry {
+    const view = new ToolRegistry();
+    view.base = this;
+    view.hands = this.hands;
+    for (const t of tools) view.register(t);
+    return view;
+  }
 
   /**
    * From now on admit only tools whose `hands` class is in `allowed` (an unclassified tool is refused), and drop the
@@ -45,6 +61,7 @@ export class ToolRegistry {
 
   /** Whether the model currently sees this tool's schema. */
   shown(t: Tool<unknown>): boolean {
+    if (this.base && this.map.get(t.name) !== t) return this.base.shown(t);
     return this.schemaFilter(t);
   }
 
@@ -58,7 +75,7 @@ export class ToolRegistry {
   }
 
   get(name: string): Tool<unknown> | undefined {
-    return this.map.get(name);
+    return this.map.get(name) ?? this.base?.get(name);
   }
 
   /**
@@ -74,13 +91,15 @@ export class ToolRegistry {
   /** Get a tool, giving the late-resolver one chance to make it appear. */
   async resolve(name: string): Promise<Tool<unknown> | undefined> {
     const tool = this.map.get(name);
+    if (!tool && this.base) return this.base.resolve(name);
     if (tool || !this.lateResolver) return tool;
     await this.lateResolver(name).catch(() => {});
     return this.map.get(name);
   }
 
   list(): Tool<unknown>[] {
-    return [...this.map.values()];
+    const own = [...this.map.values()];
+    return this.base ? [...this.base.list().filter((t) => !this.map.has(t.name)), ...own] : own;
   }
 
   /**
@@ -94,11 +113,12 @@ export class ToolRegistry {
     // The same restriction, its refused names included: a child never reports a name its parent already refused.
     out.hands = this.hands;
     for (const t of this.list()) if (pred(t)) out.register(t);
-    const late = this.lateResolver;
+    // A view resolves late through its host registry.
+    const late = this.lateResolver ?? (this.base ? async (name: string) => void (await this.base!.resolve(name)) : undefined);
     if (late) {
       out.setLateResolver(async (name) => {
         await late(name);
-        const t = this.map.get(name);
+        const t = this.get(name);
         if (t && pred(t)) out.register(t);
       });
     }
@@ -107,7 +127,7 @@ export class ToolRegistry {
 
   /** The tool definitions handed to the model as `tools`. */
   schemas(): ToolSchema[] {
-    return this.list().filter(this.schemaFilter).map((t) => ({
+    return this.list().filter((t) => this.shown(t)).map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.jsonSchema,
