@@ -125,8 +125,9 @@ interface Rows {
   known?: ReadonlyMap<string, number>;
 }
 
-/** How many groups `fields` make: the product of their distinct values in the data, at most the rows; the rows when
- *  any field is not in the data. */
+/** How many groups `fields` make: the product of their distinct values in the data, a row that lacks a field counting
+ *  as one more value (Vega groups it under undefined, review 8), at most the rows; the rows when any field is in no
+ *  row at all. */
 function groups(rows: Rows, fields: string[]): number {
   if (fields.length === 0) return 1;
   if (!rows.data) {
@@ -137,14 +138,13 @@ function groups(rows: Rows, fields: string[]): number {
   let product = 1;
   for (const f of fields) {
     const seen = new Set<string>();
-    let present = false;
+    let missing = false;
     for (const r of rows.data) {
-      if (!has(r, f)) continue;
-      present = true;
-      seen.add(JSON.stringify(r[f]));
+      if (has(r, f)) seen.add(JSON.stringify(r[f]));
+      else missing = true;
     }
-    if (!present) return rows.n;
-    product *= seen.size;
+    if (seen.size === 0) return rows.n;
+    product *= seen.size + (missing ? 1 : 0);
     if (product >= rows.n) return rows.n;
   }
   return Math.max(1, Math.min(product, rows.n));
