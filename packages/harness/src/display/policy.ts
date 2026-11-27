@@ -1,31 +1,24 @@
 import { BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, type BlockKind, type DisplayCaps } from "@mlpal/harness-protocol";
 
 /**
- * What this engine shows a run's client (DISPLAY-PROTOCOL-v0 §4.2): the levels it writes that the client declared,
- * and the kinds. A client that declares `block` but not catalog `harness.v1/1`, or none of its kinds, is a text
- * client here. The HOP's `ui:` narrowing and the hosting tier's policy join this with their slices.
+ * What this engine shows a run's client (DISPLAY-PROTOCOL-v0 §4.2): the block kinds it draws. Only a client that
+ * declares the `block` level and catalog `harness.v1/1`, and draws at least one of its kinds, gets a policy; any other
+ * declaration (text only, the terminal's text and file, another catalog) is served exactly as a client that declared
+ * nothing: no Show, no catalog in the prompt. The HOP's `ui:` narrowing and the hosting tier's policy join this with
+ * their slices.
  */
 export interface DisplayPolicy {
   client: DisplayCaps["client"];
   viewport: DisplayCaps["viewport"];
-  /** `text` always; `block` when blocks are drawn. */
-  levels: ReadonlySet<"text" | "block">;
-  /** The kinds Show may emit; empty for a text client. */
+  /** The kinds Show may emit; never empty. */
   kinds: ReadonlySet<BlockKind>;
 }
 
-export function resolveDisplay(caps: DisplayCaps): DisplayPolicy {
+export function resolveDisplay(caps: DisplayCaps): DisplayPolicy | null {
   const kinds = new Set(BLOCK_KINDS.filter((k) => !caps.kinds || caps.kinds.includes(k)));
-  const blocks = caps.levels.includes("block") && caps.catalogs.includes(DISPLAY_CATALOG) && kinds.size > 0;
-  return {
-    client: caps.client,
-    viewport: caps.viewport,
-    levels: new Set(blocks ? ["text", "block"] : ["text"]),
-    kinds: blocks ? kinds : new Set(),
-  };
+  if (!caps.levels.includes("block") || !caps.catalogs.includes(DISPLAY_CATALOG) || kinds.size === 0) return null;
+  return { client: caps.client, viewport: caps.viewport, kinds };
 }
-
-export const drawsBlocks = (p: DisplayPolicy): boolean => p.levels.has("block");
 
 const KIND_GRAMMAR: Record<BlockKind, string> = {
   chart:
@@ -42,11 +35,10 @@ const KIND_GRAMMAR: Record<BlockKind, string> = {
     "num and bar cells are numbers, state cells a status word; row_key names the column whose values identify rows, each unique.",
 };
 
-/** The system section a run gets when its client draws blocks (null otherwise): when to Show, the fallback's rules,
- *  and the grammar of the kinds this client draws. Stable for a given client, so the prompt cache holds across its
- *  runs. */
-export function displayInstructions(p: DisplayPolicy): string | null {
-  if (!drawsBlocks(p)) return null;
+/** The system section a run gets when its client draws blocks: when to Show, the fallback's rules, and the grammar of
+ *  the kinds this client draws. Stable for a given declaration, so the prompt cache holds across its runs (the phone
+ *  hint makes it differ by viewport). */
+export function displayInstructions(p: DisplayPolicy): string {
   return [
     "# Showing results",
     "",

@@ -20,14 +20,14 @@ import type { Metrics } from "../obs/metrics";
 import { parseJsonLenient } from "../tools/json";
 import { defineTool, sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import type { DisplayHistory } from "./history";
-import { drawsBlocks, type DisplayPolicy } from "./policy";
+import type { DisplayPolicy } from "./policy";
 
 /**
  * Show (DISPLAY-PROTOCOL-v0 §3): the engine's tool for putting one typed block in front of the person. Its input is
  * checked before any client sees it; a refusal is a tool error carrying the code, path and hint the model repairs
  * from, and while it repairs the person sees the fallback (a `text` envelope, `repairing`). Each block gets one
  * repair a turn: a second failure is RETRY_EXHAUSTED and the fallback stays (`fallback_only`); a third call is refused
- * unseen. A text client gets the fallback as the step's visible result and no envelope.
+ * unseen. Only a client that draws blocks is offered Show (resolveDisplay).
  *
  * The model reads one short line; the step's `content` (what a client that draws nothing else shows) is that line
  * and the complete fallback. Nothing the model wrote is logged: counters and log lines carry the id, kind, level,
@@ -188,20 +188,11 @@ const result = (model: string, shown: string, display?: DisplayEnvelope[], isErr
 export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
   const { policy, logger: log, metrics } = deps;
   const state = new ShowState();
-  const blocks = drawsBlocks(policy);
 
   function shown(show: ValidShow, notes: Note[] | undefined, history: DisplayHistory): ToolResult {
     const repaired = state.failuresOf(show.block_id) > 0;
     state.succeed(show.block_id);
     if (repaired) metrics.increment("display.repair", 1, { outcome: "repaired" });
-    if (!blocks) {
-      metrics.increment("display.fallback_shown", 1, { reason: "client_level" });
-      log.info("display shown as text", { block_id: show.block_id, kind: show.kind, client: policy.client });
-      return result(
-        `Shown ${show.block_id} as text: this client draws text only, so the person reads your fallback.`,
-        `[shown ${show.block_id} · text]\n${show.fallback}`,
-      );
-    }
     const revision = state.nextRevision(show.block_id, history);
     const envelope = blockEnvelope(show, notes, revision);
     const bytes = Buffer.byteLength(JSON.stringify(envelope));
@@ -223,11 +214,9 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
     let display: TextDisplay[] | undefined;
     if (visible) {
       metrics.increment("display.fallback_shown", 1, { reason: "validation" });
-      if (blocks) {
-        const revision = state.nextRevision(visible.id, history);
-        display = [{ v: 1, block_id: visible.id, revision, op: "snapshot", level: "text", fallback: { text: visible.text }, source: { by: "model" }, status }];
-        metrics.increment("display.emitted", 1, { level: "text", kind: "none", source: "model" });
-      }
+      const revision = state.nextRevision(visible.id, history);
+      display = [{ v: 1, block_id: visible.id, revision, op: "snapshot", level: "text", fallback: { text: visible.text }, source: { by: "model" }, status }];
+      metrics.increment("display.emitted", 1, { level: "text", kind: "none", source: "model" });
     }
     log.warn("display refused", { code: error.code, ...(o.block_id ? { block_id: o.block_id } : {}), kind, attempt, fallback_shown: visible !== undefined });
     const body = exhausted && o.block_id ? { error: "RETRY_EXHAUSTED", block_id: o.block_id, cause: error, attempt } : { error: error.code, ...(o.block_id ? { block_id: o.block_id } : {}), ...withoutCode(error), attempt };
@@ -256,7 +245,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
         log.warn("display refused", { code: "RETRY_EXHAUSTED", block_id: id, kind, attempt: state.failuresOf(id) + 1, fallback_shown: false });
         return { content: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id })}\n${id} failed twice this turn; the person sees its fallback. Do not call Show for it again this turn.`, isError: true };
       }
-      const check = checkShowInput(input, blocks ? { kinds: policy.kinds } : {});
+      const check = checkShowInput(input, { kinds: policy.kinds });
       const history = await deps.history();
       const outcome: Outcome = check.ok ? checkSession(check.show, history, state) : check;
       return outcome.ok ? shown(outcome.show, outcome.notes, history) : refused(outcome, kind, history);
