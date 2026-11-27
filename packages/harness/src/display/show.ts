@@ -70,11 +70,9 @@ const SHOW_JSON_SCHEMA = (() => {
 })();
 
 const DESCRIPTION =
-  "Show the person one typed block (a chart, summary tiles or a data grid) beside your answer, when it makes the answer clearer than prose. " +
-  "Your instructions list the kinds this client draws and each kind's spec. fallback.text is required: the conclusion and the key numbers in plain markdown, " +
-  "which is all a person who cannot see the block reads. Name sources in words (which tool or data, as of when); a tool call id only if you have it verbatim. " +
-  "Show again with the same block_id to replace a block. A refusal names a code, a path and a hint: " +
-  "fix it and call Show once more with the same block_id.";
+  "Show the person one block beside your answer: kpis for 2 to 6 headline numbers, grid for rows they will scan or sort, chart for a trend or a comparison. " +
+  "Write the answer's sentence first and do not repeat the block's table in prose. fallback.text is required: the conclusion and the key numbers. " +
+  "Your instructions give each kind's smallest spec. Name sources in words. A refusal lists every fault: fix them all and Show again once with the same block_id.";
 
 /** Object-typed arguments models hand over as JSON strings (E4): parsed once, each at most the input's byte limit; a
  *  fallback is text in its own right, so only an object-looking one is parsed. `spec.vl` too. What did not parse is

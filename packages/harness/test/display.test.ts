@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ConversationEntry, DisplayCaps, DisplayEnvelope, EngineEvent, ToolResultEvent } from "@mlpal/harness-protocol";
-import { DISPLAY_LIMITS } from "@mlpal/harness-protocol";
-import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, type DisplayHistory } from "../src/display";
+import { DISPLAY_LIMITS, validateBlock } from "@mlpal/harness-protocol";
+import { createShowTool, displayInstructions, foldDisplayHistory, KIND_EXAMPLES, resolveDisplay, type DisplayHistory } from "../src/display";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { AgentSession, type AgentConfig } from "../src/loop/agent";
 import { JsonLogger } from "../src/obs/logger";
@@ -476,6 +476,17 @@ describe("the display section of the system prompt", () => {
     expect([grid.includes("- grid:"), grid.includes("- chart:"), grid.includes("- kpis:")]).toEqual([true, false, false]);
     expect(all).not.toContain("on a phone");
     expect(displayInstructions(resolveDisplay({ ...WEB, viewport: "phone" })!)).toContain("on a phone");
+  });
+
+  test("each kind's smallest spec in the section is valid, and is shown with when to pick it", () => {
+    const section = displayInstructions(resolveDisplay(WEB)!);
+    for (const [kind, spec] of Object.entries(KIND_EXAMPLES)) {
+      expect([kind, validateBlock(kind as "chart", spec).ok]).toEqual([kind, true]);
+      expect(section).toContain(JSON.stringify(spec));
+    }
+    expect(section.indexOf("- kpis:")).toBeLessThan(section.indexOf("- grid:"));
+    expect(section).toContain("Write the answer's sentence first");
+    expect(section).toContain("do not repeat the block's table in prose");
   });
 
   test("the same declaration always gives the same section (the prompt cache holds)", () => {
