@@ -82,12 +82,12 @@ export function completeFallback(input: FallbackInput, kind: BlockKind, spec: Bl
     if (!known.includes(c)) fail("VALIDATION_FAILED", [...at, "columns", i], `"${c}" is not a field of the rows`, `fields: ${known.join(", ")}`);
   });
   const labels = kind === "grid" ? new Map((spec as GridSpec).columns.map((c) => [c.key, c.label])) : new Map<string, string>();
-  const shown = rows.slice(0, input.table.max_rows ?? DISPLAY_LIMITS.fallbackTableRows);
-  const numeric = (c: string) => shown.some((r) => typeof r[c] === "number") && shown.every((r) => r[c] === null || r[c] === undefined || typeof r[c] === "number");
+  const shown = rows.slice(0, input.table.max_rows ?? DISPLAY_LIMITS.fallbackTableRows).map((r) => (c: string) => (Object.hasOwn(r, c) ? r[c] : undefined));
+  const numeric = (c: string) => shown.some((r) => typeof r(c) === "number") && shown.every((r) => r(c) === null || r(c) === undefined || typeof r(c) === "number");
   const lines = [
     `| ${columns.map((c) => cell(labels.get(c) ?? c)).join(" | ")} |`,
     `| ${columns.map((c) => (numeric(c) ? "---:" : "---")).join(" | ")} |`,
-    ...shown.map((r) => `| ${columns.map((c) => cell(r[c])).join(" | ")} |`),
+    ...shown.map((r) => `| ${columns.map((c) => cell(r(c))).join(" | ")} |`),
   ];
   const more = rows.length - shown.length;
   return `${input.text}\n\n${lines.join("\n")}${more > 0 ? `\n\n${more} more row${more === 1 ? "" : "s"} not shown.` : ""}`;

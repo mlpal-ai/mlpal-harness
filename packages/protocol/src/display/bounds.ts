@@ -20,8 +20,12 @@ function segments(f: Frame): Array<string | number> {
  * A model-written value must fit before anything walks it recursively or serialises it: at most 32 levels deep and
  * 100,000 values (every object, array and scalar counts one). Checked with an explicit stack, so no input can overflow
  * the call stack here; the path of an offending value is built only when it is refused. Every recursive check after
- * this one is bounded by it.
+ * this one is bounded by it. The same walk refuses the keys `__proto__`, `constructor` and `prototype` anywhere, data
+ * rows included.
  */
+/** Names that change an object's prototype or its constructor when a consumer assigns them: never a key. */
+const RESERVED: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
 export function checkBounds(value: unknown, path: Path): void {
   const stack: Frame[] = [{ value, depth: 0, parent: null, key: null }];
   let nodes = 0;
@@ -34,6 +38,7 @@ export function checkBounds(value: unknown, path: Path): void {
       for (let i = v.length - 1; i >= 0; i--) stack.push({ value: v[i], depth: f.depth + 1, parent: f, key: i });
     } else if (typeof v === "object" && v !== null) {
       const keys = Object.keys(v);
+      for (const k of keys) if (RESERVED.has(k)) fail("VALIDATION_FAILED", [...path, ...segments(f), k], `"${k}" is a reserved name and never a key`, "rename the field");
       for (let i = keys.length - 1; i >= 0; i--) stack.push({ value: (v as Record<string, unknown>)[keys[i]!], depth: f.depth + 1, parent: f, key: keys[i]! });
     }
   }

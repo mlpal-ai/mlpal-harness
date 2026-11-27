@@ -123,7 +123,7 @@ function checkGrid(spec: unknown, path: Path): GridSpec {
       if (typeof v === "string" && CONTROL.test(v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], "a cell has a control character (a terminal escape)");
       if (!CELL_TYPE[col.type](v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], `a ${col.type} cell is ${col.type === "state" ? "a string" : col.type === "code" ? "a string or a number" : "a number"} or null`);
     }
-    const key = row[grid.row_key];
+    const key = Object.hasOwn(row, grid.row_key) ? row[grid.row_key] : undefined;
     if (key === undefined || key === null) fail("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], "every row has a row_key value");
     const id = JSON.stringify(key);
     if (seen.has(id)) fail("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], `row_key value ${id} is used twice`);

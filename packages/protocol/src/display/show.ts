@@ -3,7 +3,7 @@ import { checkBlockSpec, parseShape, type BlockSpec } from "./blocks.js";
 import { checkBounds } from "./bounds.js";
 import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";
-import { DisplayRefusal, fail, type DisplayError } from "./errors.js";
+import { asDisplayError, fail, type DisplayError } from "./errors.js";
 import { checkFallbackInput, completeFallback, fallbackInputSchema } from "./fallback.js";
 import { plainText } from "./fields.js";
 
@@ -84,7 +84,7 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     if (HOST_OWNED_KINDS.has(kind)) fail("HOST_OWNED_KIND", ["kind"], `${kind} blocks are drawn by the host, never by Show`, kind === "approval" ? "call the tool that needs approval; the host asks the person" : undefined);
     if (!isBlockKind(kind)) fail("KIND_UNKNOWN", ["kind"], `"${kind}" is not a kind of this catalog`, `kinds: ${BLOCK_KINDS.join(", ")}`);
     if (opts.kinds && !opts.kinds.has(kind)) fail("KIND_NOT_ALLOWED", ["kind"], `this client does not draw ${kind} blocks`, `it draws: ${[...opts.kinds].join(", ") || "none"}`);
-    if (!("spec" in raw)) fail("VALIDATION_FAILED", ["spec"], `a ${kind} block needs its spec`);
+    if (!Object.hasOwn(raw, "spec")) fail("VALIDATION_FAILED", ["spec"], `a ${kind} block needs its spec`);
     const input = parseShape(showInputSchema, { ...raw, fallback: fb }, []);
     const spec = checkBlockSpec(kind, input.spec, ["spec"]);
     const complete = completeFallback(fb, kind, spec, ["fallback"]);
@@ -93,7 +93,7 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];
     return { ok: true, show: { block_id, kind, spec, fallback: complete, ...optional } };
   } catch (e) {
-    if (!(e instanceof DisplayRefusal)) throw e;
-    return { ok: false, error: e.error, ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };
+    // A refusal, or (typed VALIDATION_INTERNAL) anything else the checks threw: never an exception for the caller.
+    return { ok: false, error: asDisplayError(e), ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };
   }
 }

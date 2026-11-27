@@ -222,6 +222,35 @@ describe("Show: refusal and the one repair", () => {
     }
   });
 
+  test("a JSON-parsed __proto__ after a repairing block is a typed second failure, never 'Show threw' (review 2)", async () => {
+    const { call, metrics } = tool();
+    await call(badChart());
+    const spec = JSON.parse('{"vl":{"data":{"values":[{"week":"2026-11-30","onhand":1}]},"mark":{"type":"line","__proto__":{"polluted":1}}}}');
+    const r = await call(chart({ spec }));
+    expect([r.isError, errorOf(r).error, errorOf(r).cause?.code]).toEqual([true, "RETRY_EXHAUSTED", "VALIDATION_FAILED"]);
+    expect(r.meta?.display?.[0]).toMatchObject({ revision: 2, level: "text", status: "fallback_only" });
+    expect(metrics.counters.get("display.repair{outcome=exhausted}")).toBe(1);
+  });
+
+  test("a store that fails during the call is VALIDATION_INTERNAL: the fallback is shown and the attempt counted", async () => {
+    const metrics = new MemoryMetrics();
+    const lines: string[] = [];
+    const show = createShowTool({
+      policy: resolveDisplay(WEB)!,
+      history: async () => {
+        throw new Error("session s1 was deleted: secret detail");
+      },
+      logger: new JsonLogger({ level: "debug", sink: (l) => lines.push(l) }),
+      metrics,
+    });
+    const r = await show.call(chart(), { cwd: "/w", runId: "run-1" });
+    expect([r.isError, errorOf(r).error, errorOf(r).attempt]).toEqual([true, "VALIDATION_INTERNAL", 1]);
+    expect(r.meta?.display?.[0]).toMatchObject({ revision: 1, level: "text", status: "repairing", fallback: { text: FALLBACK } });
+    expect(metrics.counters.get("display.validation_errors{code=VALIDATION_INTERNAL,kind=chart}")).toBe(1);
+    expect(lines.some((l) => l.includes("display check failed unexpectedly"))).toBe(true);
+    for (const l of lines) expect(l).not.toContain("secret detail");
+  });
+
   test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {
     const r = await tool({ ...WEB, kinds: ["grid"] }).call(chart());
     expect([errorOf(r).error, errorOf(r).path]).toEqual(["KIND_NOT_ALLOWED", "kind"]);

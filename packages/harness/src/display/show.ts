@@ -1,4 +1,5 @@
 import {
+  asDisplayError,
   checkShowInput,
   DISPLAY_CATALOG,
   DISPLAY_LIMITS,
@@ -41,6 +42,9 @@ import type { DisplayPolicy } from "./policy";
  */
 
 export const SHOW_TOOL = "Show";
+
+/** What a call falls back to when the store cannot be read: revisions continue from this session's own. */
+const EMPTY_HISTORY: DisplayHistory = { revisions: new Map(), toolUseIds: new Set() };
 
 export interface ShowToolDeps {
   policy: DisplayPolicy;
@@ -292,9 +296,19 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
         log.warn("display refused", { code: "RETRY_EXHAUSTED", block_id: id, kind, attempt: state.failuresOf(id) + 1, fallback_shown: false });
         return { content: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id })}\n${id} failed twice this turn; the person sees its fallback. Do not call Show for it again this turn.`, isError: true };
       }
+      // checkShowInput never throws (a validator bug is its VALIDATION_INTERNAL); the store read and the session
+      // checks may, and become the same typed refusal, so the fallback is shown and the attempt counted.
       const check = checkShowInput(input, { kinds: policy.kinds });
-      const history = await deps.history();
-      const outcome: Outcome = check.ok ? checkSession(check.show, history, state) : check;
+      let history = EMPTY_HISTORY;
+      let outcome: Outcome;
+      try {
+        history = await deps.history();
+        outcome = check.ok ? checkSession(check.show, history, state) : check;
+      } catch (e) {
+        log.error("display check failed unexpectedly", { error: e instanceof Error ? e.name : typeof e, kind });
+        const known = check.ok ? { block_id: check.show.block_id, fallback: check.show.fallback } : { block_id: check.block_id, fallback: check.fallback };
+        outcome = { ok: false, error: asDisplayError(e), ...known };
+      }
       return outcome.ok ? shown(outcome.show, outcome.notes, history) : refused(outcome, kind, history);
     },
   });

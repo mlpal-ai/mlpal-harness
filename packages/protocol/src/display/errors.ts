@@ -33,7 +33,10 @@ export type DisplayErrorCode =
   /** A cited tool_use id is not in this session. */
   | "SOURCE_UNKNOWN"
   /** This block already failed twice this turn; the person sees its fallback. */
-  | "RETRY_EXHAUSTED";
+  | "RETRY_EXHAUSTED"
+  /** The check itself failed on this input (a bug in the validator, never the model's fault). Typed so that no input
+   *  can surface as an untyped error: the fallback is shown and the repair counted like any refusal. */
+  | "VALIDATION_INTERNAL";
 
 export interface DisplayError {
   code: DisplayErrorCode;
@@ -79,12 +82,19 @@ export function fail(code: DisplayErrorCode, path: ReadonlyArray<string | number
   throw new DisplayRefusal({ code, ...(path.length ? { path: inert(displayPath(path)) } : {}), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) });
 }
 
-/** Run a validator; its refusal becomes `{ok: false}`. Any other exception is a bug and propagates. */
+/** Any exception as a DisplayError: a refusal as itself, anything else (a validator bug) as VALIDATION_INTERNAL,
+ *  naming only the exception's class, never its message (which may quote the input). */
+export function asDisplayError(e: unknown): DisplayError {
+  if (e instanceof DisplayRefusal) return e.error;
+  const name = e instanceof Error ? e.name : typeof e;
+  return { code: "VALIDATION_INTERNAL", message: inert(`the check failed unexpectedly (${name}); this is not your input's fault as far as the check can tell`), hint: "show the same content another way, or answer in prose" };
+}
+
+/** Run a validator; whatever it throws becomes `{ok: false}` with a typed code, so no input makes a caller throw. */
 export function checked<T>(run: () => T): DisplayCheck<T> {
   try {
     return { ok: true, value: run() };
   } catch (e) {
-    if (e instanceof DisplayRefusal) return { ok: false, error: e.error };
-    throw e;
+    return { ok: false, error: asDisplayError(e) };
   }
 }
