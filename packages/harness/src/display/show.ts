@@ -29,6 +29,12 @@ import type { DisplayPolicy } from "./policy";
  * repair a turn: a second failure is RETRY_EXHAUSTED and the fallback stays (`fallback_only`); a third call is refused
  * unseen. Only a client that draws blocks is offered Show (resolveDisplay).
  *
+ * Counting, deliberately: the repair is one per failure, and a success clears it, so a block that alternates between
+ * failing and succeeding in one turn gets a repair after each failure (bounded by 200 revisions a block). Two failing
+ * Shows of one block in one message count as the failure and its repair, as two calls in a row would.
+ * `display.repair{outcome=attempted}` is counted at the first failure: a repair is now owed; `repaired` and
+ * `exhausted` say how it ended.
+ *
  * The model reads one short line; the step's `content` (what a client that draws nothing else shows) is that line
  * and the complete fallback. Nothing the model wrote is logged: counters and log lines carry the id, kind, level,
  * revision, size and error code only.
