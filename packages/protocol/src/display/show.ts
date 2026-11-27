@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { checkBlockSpec, parseShape, type BlockSpec } from "./blocks.js";
+import { checkBlockSpec } from "./blocks.js";
+import type { BlockSpec } from "./block-schemas.js";
+import { parseShape } from "./shape.js";
 import { checkBounds } from "./bounds.js";
 import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";

@@ -83,6 +83,11 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
+  types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
+  (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath
+  export, `@mlpal/harness-protocol/validate`. The package root still exports both, so nothing else changes. A test
+  walks the source imports and fails if chart.ts, cost.ts or blocks.ts is reachable from wire.ts.
 - Teaching the kinds (neither model used kpis; Haiku never tried grid): the grammar section opens with when to pick
   each kind (kpis for 2 to 6 headline numbers, grid for rows to scan or sort, chart for a trend or a comparison) and
   its smallest valid spec (`KIND_EXAMPLES`, held to validateBlock by a test), says the answer's sentence comes first

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DISPLAY_LEVELS, type DisplayLevel } from "./catalog.js";
-import { parseShape } from "./blocks.js";
+import { parseShape } from "./shape.js";
 import { checked, type DisplayCheck } from "./errors.js";
 
 /**

@@ -1,9 +1,10 @@
-import { z } from "zod";
+import { gridSpecSchema, kpisSpecSchema, type BlockSpec, type ChartSpec, type GridCell, type GridColumn, type GridSpec, type KpisSpec } from "./block-schemas.js";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 import { checkBounds, isReservedName } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
-import { checked, DisplayRefusal, displayError, fail, notice, report, type DisplayCheck } from "./errors.js";
-import { CONTROL, plainText } from "./fields.js";
+import { checked, fail, notice, report, type DisplayCheck } from "./errors.js";
+import { CONTROL } from "./fields.js";
+import { parseShape } from "./shape.js";
 
 /**
  * 0.26.8 display protocol: the first-wave block specs of `harness.v1/1` (DISPLAY-PROTOCOL-v0 §5.1). zod states each
@@ -11,78 +12,12 @@ import { CONTROL, plainText } from "./fields.js";
  * check both the engine and a client run.
  */
 
-const FIELD_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
-const TILE_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const CURRENCY = /^[A-Z]{3}$/;
 
-/** `chart`: a Vega-Lite 6 spec on the §5.2 subset, plus the series order colours follow wherever it is drawn. */
-export const chartSpecSchema = z
-  .object({
-    vl: z.record(z.unknown()),
-    series_order: z.array(plainText(60)).max(DISPLAY_LIMITS.chartSeries).optional(),
-  })
-  .strict();
-export type ChartSpec = z.infer<typeof chartSpecSchema>;
-
-/** `kpis`: summary tiles. `value` is a number except for `format: "text"`; a `percent` is the percentage (94.2 = 94.2 %);
- *  `currency` names its ISO 4217 code in `unit`. `delta.good` says which direction is good, for its colour. */
-export const kpiTileSchema = z
-  .object({
-    id: z.string().regex(TILE_ID),
-    label: plainText(40),
-    value: z.union([z.number().finite(), plainText(24)]),
-    format: z.enum(["number", "integer", "percent", "currency", "text"]),
-    unit: plainText(12).optional(),
-    sub: plainText(80).optional(),
-    delta: z
-      .object({ value: z.number().finite(), label: plainText(24).optional(), good: z.enum(["up", "down"]).optional() })
-      .strict()
-      .optional(),
-    spark: z.array(z.number().finite()).min(2).max(60).optional(),
-    status: z.enum(["ok", "warn", "bad", "neutral"]).optional(),
-  })
-  .strict();
-export type KpiTile = z.infer<typeof kpiTileSchema>;
-export const kpisSpecSchema = z.object({ tiles: z.array(kpiTileSchema).min(1).max(DISPLAY_LIMITS.kpiTiles) }).strict();
-export type KpisSpec = z.infer<typeof kpisSpecSchema>;
-
-/** `grid`: a data grid with inline rows. `num` and `bar` cells are numbers, `state` cells a status word; `row_key`
- *  names the column whose values identify rows (unique, never null). Rows from a file arrive with the file route. */
-export const gridColumnSchema = z
-  .object({ key: z.string().regex(FIELD_KEY), label: plainText(60), type: z.enum(["text", "code", "num", "bar", "state"]) })
-  .strict();
-export type GridColumn = z.infer<typeof gridColumnSchema>;
-export const gridCellSchema = z.union([z.string().max(1_000), z.number().finite(), z.boolean(), z.null()]);
-export type GridCell = z.infer<typeof gridCellSchema>;
-export const gridSpecSchema = z
-  .object({
-    columns: z.array(gridColumnSchema).min(1).max(DISPLAY_LIMITS.gridColumns),
-    rows: z.array(z.record(gridCellSchema)).max(DISPLAY_LIMITS.gridRows),
-    row_key: z.string(),
-  })
-  .strict();
-export type GridSpec = z.infer<typeof gridSpecSchema>;
-
-export type BlockSpec = ChartSpec | KpisSpec | GridSpec;
 
 type Path = ReadonlyArray<string | number>;
 
 /** Parse with zod; its first issue becomes VALIDATION_FAILED at that path. */
-const RECEIVED: Readonly<Record<string, string>> = { undefined: "nothing", null: "null", array: "a list", object: "an object", string: "a string", number: "a number", boolean: "a boolean" };
-
-/** Parse with zod; every issue becomes VALIDATION_FAILED at its path (an unknown key at the key's own path). */
-export function parseShape<S extends z.ZodTypeAny>(schema: S, value: unknown, path: Path, hint?: string): z.infer<S> {
-  const r = schema.safeParse(value);
-  if (r.success) return r.data;
-  const errors = r.error.issues.flatMap((issue) =>
-    issue.code === "unrecognized_keys"
-      ? issue.keys.map((k) => displayError("VALIDATION_FAILED", [...path, ...issue.path, k], `unknown field "${k}"`, hint))
-      : issue.code === "invalid_type"
-        ? [displayError("VALIDATION_FAILED", [...path, ...issue.path], `${issue.expected} expected; ${RECEIVED[issue.received] ?? `a ${issue.received}`} arrived`, hint)]
-        : [displayError("VALIDATION_FAILED", [...path, ...issue.path], issue.message, hint)],
-  );
-  throw new DisplayRefusal(errors);
-}
 
 function checkKpis(spec: unknown, path: Path): KpisSpec {
   const kpis = parseShape(kpisSpecSchema, spec, path);
