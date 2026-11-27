@@ -129,6 +129,8 @@ describe("registry", () => {
     host.setSchemaFilter((t) => t.name !== "mcp__x__ping");
     expect(view.schemas().map((s) => s.name)).toEqual(["Read", "mcp__y__late", "mcp__z__later", "Show"]);
     expect((await runTool(view, "mcp__x__ping", {}, ctx)).isError).toBe(true);
+    // a registry filtered from the view keeps the host's deferral (review 1, optional 1)
+    expect(view.filter(() => true).schemas().map((s) => s.name)).toEqual(["Read", "mcp__y__late", "mcp__z__later", "Show"]);
     // a view's own tool shadows the host's of the same name, in the view only
     const shadow = host.withTools([tool("Read", "view read") as never]);
     expect((await runTool(shadow, "Read", {}, ctx)).content).toBe("view read");

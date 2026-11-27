@@ -109,7 +109,8 @@ export class ToolRegistry {
    */
   filter(pred: (t: Tool<unknown>) => boolean): ToolRegistry {
     const out = new ToolRegistry();
-    out.setSchemaFilter(this.schemaFilter);
+    // A view's own filter shows its own tools; what it shows of the host's is the host's deferral.
+    out.setSchemaFilter(this.base ? (t) => this.shown(t) : this.schemaFilter);
     // The same restriction, its refused names included: a child never reports a name its parent already refused.
     out.hands = this.hands;
     for (const t of this.list()) if (pred(t)) out.register(t);
