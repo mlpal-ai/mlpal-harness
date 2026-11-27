@@ -2,7 +2,7 @@ import { z } from "zod";
 import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
 import { fail, report } from "./errors.js";
-import { CONTROL, CONTROL_ALL } from "./fields.js";
+import { CONTROL, CONTROL_ALL, defuseReferences } from "./fields.js";
 
 /**
  * 0.27.0 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
@@ -58,12 +58,13 @@ function unsafeLinks(text: string): boolean {
  * The fallback as stored and sent: inert in a markdown renderer by construction, whatever the checks above miss.
  * Every `<` becomes `&lt;` (so nothing opens a tag or an autolink, whatever follows), every `![` starts with `&#33;`
  * (so no image, of any form), every `]:` becomes `]&#58;` (so no reference definition, however written), and an inline
- * link whose destination is not http(s) or a relative path loses its link syntax. Entities, not backslashes: a
+ * link whose destination is not http(s) or a relative path loses its link syntax. First, a character reference the
+ * model wrote that would decode to a control character is defused (defuseReferences). Entities, not backslashes: a
  * backslash the model wrote before them cannot undo them. A client that cannot render markdown decodes the entity codes
  * before showing the text.
  */
 export function inertFallbackText(text: string): string {
-  const out = text.replace(/</g, "&lt;").replace(/!\[/g, "&#33;[").replace(/\]:/g, "]&#58;");
+  const out = defuseReferences(text).replace(/</g, "&lt;").replace(/!\[/g, "&#33;[").replace(/\]:/g, "]&#58;");
   return out.replace(INLINE_LINK, (m, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `]&#40;${m.slice(2)}`));
 }
 
@@ -102,7 +103,7 @@ function cell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const plain = String(v).replace(ANSI, "").replace(CONTROL_ALL, " ").replace(/\s+/g, " ").trim();
   const cut = [...plain].length > CELL_CHARS ? `${[...plain].slice(0, CELL_CHARS - 1).join("")}…` : plain;
-  return cut.replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/\]:/g, "]\\:").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
+  return defuseReferences(cut).replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/\]:/g, "]\\:").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
 }
 
 /** The complete fallback: the model's text, then the table it asked for (at most 20 rows, then how many more).

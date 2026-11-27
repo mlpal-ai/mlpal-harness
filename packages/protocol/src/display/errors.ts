@@ -1,5 +1,5 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
-import { CONTROL_ALL } from "./fields.js";
+import { CONTROL_ALL, defuseReferences } from "./fields.js";
 
 /**
  * 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §3.3): why the engine refused a display. The model reads the code with
@@ -139,7 +139,7 @@ export function collectFaults<T>(run: () => T): { value: T | undefined; errors: 
  *  for any client that renders it as markdown or prints it to a terminal. No control character, no image or link
  *  syntax, no HTML or code span, no autolink; at most 300 characters. */
 export function inert(s: string): string {
-  const flat = s
+  const flat = defuseReferences(s)
     .replace(CONTROL_ALL, " ")
     .replace(/!\[/g, "!?")
     .replace(/\]\(/g, "]?")

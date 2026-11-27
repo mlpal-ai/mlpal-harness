@@ -42,6 +42,12 @@
   relative links. The engine stores it neutralised (HTML-significant characters entity-encoded, image syntax and link
   definitions defused), so a client that renders it with HTML enabled is still safe. A client that cannot render
   markdown shows it as it is, after decoding the entity codes.
+- No stored character reference decodes to a control character (UI review R1): in the fallback, table cells and
+  headers, and refusal text, the `&` of a numeric reference (decimal or hex, any case, leading zeros, with or without
+  `;`) to a CONTROL character or to no scalar value, and of a named reference outside a short list of printable ones,
+  is stored as `&amp;`; the reference then shows as written. References to printable characters stay, `&#60;`
+  included (never markup in a markdown renderer; a plain-text client shows the character). Neutralised at store time
+  rather than refused: legitimate references (`&#8212;`) keep working and no repair is spent.
 - Invisible characters that reorder or hide text (bidirectional marks, embeddings, overrides, isolates, the zero-width
   space, the BOM) count as control characters: refused in model text, stripped from engine text; the zero-width
   joiner and non-joiner stay. A protocol-relative link (`//host/...`) is not a relative path.
