@@ -1,0 +1,261 @@
+{
+ "_comment": "The Ridgeline 2P projection from prototype 11 (page.js projSpec(1200)) as a Vega-Lite-subset chart: two series, the 8-in-10 band, the safety-stock band and the event rules. `show` is the Show input; `<name>.fallback.md` is the complete fallback it yields.",
+ "show": {
+  "block_id": "fig-2",
+  "kind": "chart",
+  "title": "Ridgeline 2P tent, projected stock at Columbus",
+  "caption": "ERP snapshot and forecast v14 · as of 27 Nov 06:00",
+  "sources": [
+   "toolu_03"
+  ],
+  "as_of": "2026-11-27T06:00:00Z",
+  "placement": {
+   "surface": "canvas",
+   "slot": "projection"
+  },
+  "spec": {
+   "series_order": [
+    "As things stand",
+    "With the transfer (1,200)"
+   ],
+   "vl": {
+    "data": {
+     "values": [
+      {
+       "week": "2026-11-09",
+       "onhand": 4430,
+       "lo": null,
+       "hi": null,
+       "alt": null
+      },
+      {
+       "week": "2026-11-16",
+       "onhand": 3670,
+       "lo": null,
+       "hi": null,
+       "alt": null
+      },
+      {
+       "week": "2026-11-23",
+       "onhand": 2900,
+       "lo": null,
+       "hi": null,
+       "alt": null
+      },
+      {
+       "week": "2026-11-30",
+       "onhand": 2140,
+       "lo": 2020,
+       "hi": 2260,
+       "alt": null
+      },
+      {
+       "week": "2026-12-07",
+       "onhand": 1340,
+       "lo": 1160,
+       "hi": 1520,
+       "alt": 1340
+      },
+      {
+       "week": "2026-12-14",
+       "onhand": 460,
+       "lo": 220,
+       "hi": 700,
+       "alt": 1660
+      },
+      {
+       "week": "2026-12-21",
+       "onhand": 0,
+       "lo": 0,
+       "hi": 310,
+       "alt": 780
+      },
+      {
+       "week": "2026-12-28",
+       "onhand": 2880,
+       "lo": 2550,
+       "hi": 3210,
+       "alt": 3660
+      },
+      {
+       "week": "2027-01-04",
+       "onhand": 2450,
+       "lo": 2090,
+       "hi": 2810,
+       "alt": 3230
+      },
+      {
+       "week": "2027-01-11",
+       "onhand": 2020,
+       "lo": 1630,
+       "hi": 2410,
+       "alt": 2800
+      },
+      {
+       "week": "2027-01-18",
+       "onhand": 1590,
+       "lo": 1170,
+       "hi": 2010,
+       "alt": 2370
+      }
+     ]
+    },
+    "layer": [
+     {
+      "data": {
+       "values": [
+        {
+         "lo": 0,
+         "hi": 1500,
+         "band": "Below safety stock (1,500)"
+        }
+       ]
+      },
+      "mark": {
+       "type": "rect",
+       "opacity": 0.12
+      },
+      "encoding": {
+       "y": {
+        "field": "lo",
+        "type": "quantitative"
+       },
+       "y2": {
+        "field": "hi"
+       },
+       "tooltip": [
+        {
+         "field": "band"
+        }
+       ]
+      }
+     },
+     {
+      "mark": "errorband",
+      "encoding": {
+       "x": {
+        "field": "week",
+        "type": "temporal",
+        "title": "Week starting"
+       },
+       "y": {
+        "field": "lo",
+        "type": "quantitative",
+        "title": "8 in 10 outcomes"
+       },
+       "y2": {
+        "field": "hi"
+       }
+      }
+     },
+     {
+      "mark": "line",
+      "encoding": {
+       "x": {
+        "field": "week",
+        "type": "temporal",
+        "title": "Week starting"
+       },
+       "y": {
+        "field": "onhand",
+        "type": "quantitative",
+        "title": "Units on hand",
+        "scale": {
+         "zero": true
+        }
+       },
+       "color": {
+        "datum": "As things stand"
+       }
+      }
+     },
+     {
+      "mark": {
+       "type": "line",
+       "strokeDash": [
+        6,
+        4
+       ]
+      },
+      "encoding": {
+       "x": {
+        "field": "week",
+        "type": "temporal",
+        "title": "Week starting"
+       },
+       "y": {
+        "field": "alt",
+        "type": "quantitative"
+       },
+       "color": {
+        "datum": "With the transfer (1,200)"
+       }
+      }
+     },
+     {
+      "data": {
+       "values": [
+        {
+         "at": "2026-11-27",
+         "event": "Today"
+        },
+        {
+         "at": "2026-12-09",
+         "event": "Transfer arrives"
+        },
+        {
+         "at": "2026-12-21",
+         "event": "PO 4471 lands"
+        }
+       ]
+      },
+      "mark": "rule",
+      "encoding": {
+       "x": {
+        "field": "at",
+        "type": "temporal"
+       },
+       "tooltip": [
+        {
+         "field": "event"
+        },
+        {
+         "field": "at",
+         "type": "temporal"
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  "fallback": {
+   "text": "Ridgeline 2P tent (KO-2104) at Columbus runs out on 17 Dec as things stand: 460 units in the week of 14 Dec, none the week after, four days before PO 4471 lands on 21 Dec. Transferring 1,200 units from Reno, arriving 9 Dec, keeps it in stock; the low point is 780 units in the week of 21 Dec, under the 1,500 safety stock for that week only.",
+   "table": {
+    "from": "rows",
+    "columns": [
+     "week",
+     "onhand",
+     "alt"
+    ]
+   }
+  },
+  "notes": [
+   {
+    "id": "erp",
+    "kind": "source",
+    "text": "ERP inventory snapshot, Columbus DC",
+    "ref": {
+     "tool_use_id": "toolu_03"
+    },
+    "as_of": "2026-11-27T06:00:00Z",
+    "rows": 11
+   },
+   {
+    "id": "forecast",
+    "kind": "assumption",
+    "text": "Forecast v14 holds: about 800 units sold a week through the promotion"
+   }
+  ]
+ }
+}

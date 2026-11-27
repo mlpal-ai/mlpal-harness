@@ -1,0 +1,75 @@
+{
+ "_comment": "A data grid with every column type but edit. `show` is the Show input; `<name>.fallback.md` is the complete fallback it yields.",
+ "show": {
+  "block_id": "stock-by-dc",
+  "kind": "grid",
+  "title": "Ridgeline 2P tent on hand, by distribution centre",
+  "caption": "ERP inventory snapshot · as of 27 Nov 06:00",
+  "spec": {
+   "columns": [
+    {
+     "key": "dc",
+     "label": "Distribution centre",
+     "type": "text"
+    },
+    {
+     "key": "onhand",
+     "label": "On hand",
+     "type": "num"
+    },
+    {
+     "key": "cover",
+     "label": "Weeks of cover",
+     "type": "bar"
+    },
+    {
+     "key": "inbound",
+     "label": "Next inbound",
+     "type": "code"
+    },
+    {
+     "key": "state",
+     "label": "State",
+     "type": "state"
+    }
+   ],
+   "rows": [
+    {
+     "dc": "Columbus",
+     "onhand": 460,
+     "cover": 0.6,
+     "inbound": "PO 4471",
+     "state": "short"
+    },
+    {
+     "dc": "Reno",
+     "onhand": 3400,
+     "cover": 8.1,
+     "inbound": null,
+     "state": "ok"
+    },
+    {
+     "dc": "Dallas",
+     "onhand": 1720,
+     "cover": 2.9,
+     "inbound": "PO 4480",
+     "state": "watch"
+    },
+    {
+     "dc": "Atlanta",
+     "onhand": 2210,
+     "cover": 3.7,
+     "inbound": "TO-2280",
+     "state": "ok"
+    }
+   ],
+   "row_key": "dc"
+  },
+  "fallback": {
+   "text": "Columbus holds 460 units of the Ridgeline 2P tent, 0.6 weeks of cover, the only centre short. Reno has 3,400 units and 8.1 weeks of cover, enough to send 1,200 and keep 5.2 weeks.",
+   "table": {
+    "from": "rows"
+   }
+  }
+ }
+}

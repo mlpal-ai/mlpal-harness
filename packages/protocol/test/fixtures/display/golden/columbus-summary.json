@@ -1,0 +1,58 @@
+{
+ "_comment": "Summary tiles: currency, text, percent with a delta and a spark. `show` is the Show input; `<name>.fallback.md` is the complete fallback it yields.",
+ "show": {
+  "block_id": "columbus-summary",
+  "kind": "kpis",
+  "title": "Columbus, Ridgeline 2P tent",
+  "spec": {
+   "tiles": [
+    {
+     "id": "at-risk",
+     "label": "Revenue at risk",
+     "value": 148200,
+     "format": "currency",
+     "unit": "USD",
+     "status": "bad",
+     "sub": "if nothing is done"
+    },
+    {
+     "id": "runs-out",
+     "label": "Runs out",
+     "value": "17 Dec",
+     "format": "text",
+     "sub": "4 days before PO 4471"
+    },
+    {
+     "id": "fill",
+     "label": "Fill rate",
+     "value": 94.2,
+     "format": "percent",
+     "delta": {
+      "value": -1.8,
+      "label": "vs last week",
+      "good": "up"
+     },
+     "spark": [
+      96.4,
+      96.0,
+      95.1,
+      94.2
+     ],
+     "status": "warn"
+    },
+    {
+     "id": "transfer",
+     "label": "Transfer cost",
+     "value": 3100,
+     "format": "currency",
+     "unit": "USD",
+     "sub": "1,200 units from Reno",
+     "status": "ok"
+    }
+   ]
+  },
+  "fallback": {
+   "text": "- Revenue at risk: $148,200 if nothing is done.\n- Runs out: 17 Dec, 4 days before PO 4471.\n- Fill rate: 94.2%, down 1.8 points on last week.\n- Transfer cost: $3,100 for 1,200 units from Reno."
+  }
+ }
+}

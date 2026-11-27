@@ -1,0 +1,4 @@
+- Revenue at risk: $148,200 if nothing is done.
+- Runs out: 17 Dec, 4 days before PO 4471.
+- Fill rate: 94.2%, down 1.8 points on last week.
+- Transfer cost: $3,100 for 1,200 units from Reno.
