@@ -45,6 +45,7 @@ export * from "./memory/projection";
 export * from "./usage/stats";
 export { CheckpointStore, type CheckpointTurn, type CheckpointFile, type RewindResult } from "./checkpoints/store";
 export * from "./tools";
+export * from "./display";
 export * from "./permission/engine";
 export * from "./permission/safety-envelope";
 export * from "./permission/plan-gate";

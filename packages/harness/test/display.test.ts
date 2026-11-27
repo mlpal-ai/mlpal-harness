@@ -1,0 +1,412 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { ConversationEntry, DisplayCaps, DisplayEnvelope, EngineEvent, ToolResultEvent } from "@mlpal/harness-protocol";
+import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, type DisplayHistory } from "../src/display";
+import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
+import { AgentSession, type AgentConfig } from "../src/loop/agent";
+import { JsonLogger } from "../src/obs/logger";
+import { MemoryMetrics } from "../src/obs/metrics";
+import { createPolicy } from "../src/permission/engine";
+import { LocalStore } from "../src/store/local";
+import { defaultRegistry, type ToolResult } from "../src/tools";
+
+const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block", "app", "page", "file"], catalogs: ["harness.v1/1"], viewport: "desktop", theme: "light", locale: "en-US", timeZone: "UTC" };
+const CLI: DisplayCaps = { v: 1, client: "cli", levels: ["text", "file"], catalogs: [], viewport: "desktop", theme: "dark", locale: "en-US", timeZone: "UTC" };
+const FALLBACK = "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.";
+const rows = [{ week: "2026-11-30", onhand: 2140 }, { week: "2026-12-07", onhand: 1340 }];
+const chart = (over: Record<string, unknown> = {}) => ({
+  block_id: "fig-1",
+  kind: "chart",
+  spec: { vl: { data: { values: rows }, mark: "line", encoding: { x: { field: "week", type: "temporal" }, y: { field: "onhand", type: "quantitative" } } } },
+  fallback: { text: FALLBACK },
+  ...over,
+});
+const badChart = (over: Record<string, unknown> = {}) => chart({ spec: { vl: { data: { values: rows }, mark: "image" } }, ...over });
+
+// ─── the tool on its own ───
+
+const history = (h: Partial<DisplayHistory> = {}): DisplayHistory => ({ revisions: new Map(), toolUseIds: new Set(), ...h });
+
+function tool(caps: DisplayCaps = WEB, h: DisplayHistory = history()) {
+  const metrics = new MemoryMetrics();
+  const lines: string[] = [];
+  const logger = new JsonLogger({ level: "debug", sink: (l) => lines.push(l) });
+  const show = createShowTool({ policy: resolveDisplay(caps), history: async () => h, logger, metrics });
+  const call = (input: unknown, runId = "run-1") => show.call(input, { cwd: "/w", runId });
+  return { show, call, metrics, lines };
+}
+
+const modelText = (r: ToolResult) => (typeof r.content === "string" ? r.content : r.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
+const errorOf = (r: ToolResult) => JSON.parse(modelText(r).split("\n")[0]!) as { error: string; path?: string; attempt?: number; cause?: { code: string } };
+
+describe("Show: a client that draws blocks", () => {
+  test("a valid block: one envelope, revision 1; the model reads one line, the step shows the line and the fallback", async () => {
+    const { call, metrics } = tool();
+    const r = await call(chart({ placement: { surface: "canvas" } }));
+    expect(r.isError).toBeUndefined();
+    expect(modelText(r)).toBe("Shown fig-1 r1 (chart) on the canvas.");
+    expect(r.meta?.displayText).toBe(`[shown fig-1 r1 · chart]\n${FALLBACK}`);
+    expect(r.meta?.display).toEqual([
+      { v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "block", kind: "chart", catalog: "harness.v1/1", spec: chart().spec, fallback: { text: FALLBACK }, source: { by: "model" }, placement: { surface: "canvas" }, status: "ok" },
+    ]);
+    expect(metrics.counters.get("display.emitted{kind=chart,level=block,source=model}")).toBe(1);
+  });
+
+  test("showing a block again replaces it: the revision continues from the session's record", async () => {
+    const { call } = tool(WEB, history({ revisions: new Map([["fig-1", 4]]) }));
+    expect((await call(chart())).meta?.display?.[0]?.revision).toBe(5);
+    expect((await call(chart())).meta?.display?.[0]?.revision).toBe(6);
+  });
+
+  test("two Shows of one block in one message (run concurrently) get distinct revisions", async () => {
+    const { call } = tool();
+    const [a, b] = await Promise.all([call(chart()), call(chart())]);
+    expect([a.meta?.display?.[0]?.revision, b.meta?.display?.[0]?.revision].sort()).toEqual([1, 2]);
+  });
+
+  test("a stringified spec, notes or placement is parsed (models stringify nested objects); a string fallback is text", async () => {
+    const { call } = tool();
+    const r = await call({ ...chart(), spec: JSON.stringify(chart().spec), placement: '{"surface": "canvas"}', fallback: FALLBACK });
+    expect(r.meta?.display?.[0]).toMatchObject({ level: "block", placement: { surface: "canvas" }, fallback: { text: FALLBACK } });
+  });
+
+  test("sources and notes must name tool calls of this session; a note citing one is verified", async () => {
+    const h = history({ toolUseIds: new Set(["toolu_03"]), revisions: new Map([["fig-0", 1]]) });
+    const { call } = tool(WEB, h);
+    const ok = await call(chart({ sources: ["toolu_03"], as_of: "2026-11-27T06:00:00Z", notes: [
+      { id: "erp", kind: "source", text: "ERP snapshot", ref: { tool_use_id: "toolu_03" } },
+      { id: "prev", kind: "caveat", text: "Replaces the earlier view", ref: { block_id: "fig-0" } },
+      { id: "gone", kind: "caveat", text: "Compare the old figure", ref: { block_id: "fig-9" } },
+      { id: "file", kind: "assumption", text: "Forecast v14 holds", ref: { path: "forecast.csv" } },
+    ] }));
+    const d = ok.meta?.display?.[0];
+    expect(d?.source).toEqual({ by: "model", tool_use_ids: ["toolu_03"], as_of: "2026-11-27T06:00:00Z" });
+    expect(d?.notes?.map((n) => n.verified)).toEqual([true, true, false, undefined]);
+    for (const [input, path] of [
+      [chart({ sources: ["toolu_03", "toolu_99"] }), "sources[1]"],
+      [chart({ notes: [{ id: "n", kind: "source", text: "x", ref: { tool_use_id: "toolu_99" } }] }), "notes[0].ref.tool_use_id"],
+    ] as const) {
+      const r = await tool(WEB, h).call(input);
+      expect([r.isError, errorOf(r).error, errorOf(r).path]).toEqual([true, "SOURCE_UNKNOWN", path]);
+      expect(r.meta?.display?.[0]).toMatchObject({ level: "text", status: "repairing" });
+    }
+  });
+});
+
+describe("Show: refusal and the one repair", () => {
+  test("a refused block: a typed error for the model; the person sees the fallback meanwhile", async () => {
+    const { call, metrics } = tool();
+    const r = await call(badChart());
+    expect(r.isError).toBe(true);
+    expect(errorOf(r)).toMatchObject({ error: "VALIDATION_FAILED", block_id: "fig-1", path: "spec.vl.mark", attempt: 1 });
+    expect(modelText(r)).toContain('call Show again with block_id "fig-1"');
+    expect(r.meta?.display).toEqual([{ v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status: "repairing" }]);
+    expect(r.meta?.displayText).toBe(`[display fig-1 r1 · repairing]\n${FALLBACK}`);
+    expect(metrics.counters.get("display.validation_errors{code=VALIDATION_FAILED,kind=chart}")).toBe(1);
+    expect(metrics.counters.get("display.repair{outcome=attempted}")).toBe(1);
+    expect(metrics.counters.get("display.fallback_shown{reason=validation}")).toBe(1);
+  });
+
+  test("the repair lands as the next revision and is counted as repaired", async () => {
+    const { call, metrics } = tool();
+    await call(badChart());
+    const r = await call(chart());
+    expect(r.meta?.display?.[0]).toMatchObject({ level: "block", revision: 2, status: "ok" });
+    expect(metrics.counters.get("display.repair{outcome=repaired}")).toBe(1);
+  });
+
+  test("a second failure is RETRY_EXHAUSTED and the fallback stays; a third call is refused unseen, even a valid one", async () => {
+    const { call, metrics } = tool();
+    await call(badChart());
+    const second = await call(badChart({ spec: { vl: { data: { url: "https://x/y.csv" }, mark: "line" } } }));
+    expect(errorOf(second)).toMatchObject({ error: "RETRY_EXHAUSTED", attempt: 2, cause: { code: "URL_NOT_ALLOWED" } });
+    expect(modelText(second)).toContain("Do not call Show for fig-1 again this turn");
+    expect(second.meta?.display?.[0]).toMatchObject({ level: "text", revision: 2, status: "fallback_only" });
+    const third = await call(chart());
+    expect([third.isError, errorOf(third).error, third.meta]).toEqual([true, "RETRY_EXHAUSTED", undefined]);
+    expect(metrics.counters.get("display.repair{outcome=exhausted}")).toBe(1);
+    expect(metrics.counters.get("display.validation_errors{code=RETRY_EXHAUSTED,kind=chart}")).toBe(1);
+  });
+
+  test("attempts are counted per turn: the next run starts afresh", async () => {
+    const { call } = tool();
+    await call(badChart(), "run-1");
+    await call(badChart(), "run-1");
+    expect((await call(chart(), "run-2")).meta?.display?.[0]).toMatchObject({ level: "block", revision: 3 });
+  });
+
+  test("attempts are counted per block: another block's failures do not count", async () => {
+    const { call } = tool();
+    await call(badChart({ block_id: "fig-1" }));
+    expect(errorOf(await call(badChart({ block_id: "fig-2" }))).attempt).toBe(1);
+  });
+
+  test("an invalid fallback shows nothing: no envelope, the error is the step's content", async () => {
+    const { call, metrics } = tool();
+    const r = await call(chart({ fallback: { text: "See the chart." } }));
+    expect([r.isError, typeof r.content, r.meta]).toEqual([true, "string", undefined]);
+    expect(errorOf(r).error).toBe("FALLBACK_UNINFORMATIVE");
+    expect(modelText(r)).toContain("Nothing was shown.");
+    expect(metrics.counters.get("display.fallback_shown{reason=validation}")).toBeUndefined();
+  });
+
+  test("an invalid block_id shows nothing and counts no attempt", async () => {
+    const { call, metrics } = tool();
+    const r = await call(chart({ block_id: "Figure 1" }));
+    expect([errorOf(r).error, errorOf(r).path, r.meta]).toEqual(["VALIDATION_FAILED", "block_id", undefined]);
+    expect(metrics.counters.get("display.repair{outcome=attempted}")).toBeUndefined();
+  });
+
+  const big = { vl: { data: { values: [{ week: "w", onhand: 1, pad: "x".repeat(300 * 1024) }] }, mark: "line" } };
+  const many = { vl: { data: { values: Array.from({ length: 5_001 }, (_, i) => ({ week: `w${i}`, onhand: i })) }, mark: "line" } };
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["FALLBACK_MISSING", chart({ fallback: undefined })],
+    ["FALLBACK_TOO_LONG", chart({ fallback: { text: "1".repeat(8_001) } })],
+    ["FALLBACK_UNINFORMATIVE", chart({ fallback: { text: "Stock runs out." } })],
+    ["KIND_UNKNOWN", chart({ kind: "sankey" })],
+    ["HOST_OWNED_KIND", chart({ kind: "approval" })],
+    ["VALIDATION_FAILED", badChart()],
+    ["URL_NOT_ALLOWED", chart({ spec: { vl: { data: { url: "https://x/y.csv" }, mark: "line" } } })],
+    ["EXPRESSION_NOT_ALLOWED", chart({ spec: { vl: { ...chart().spec.vl, transform: [{ calculate: "1", as: "k" }] } } })],
+    ["SPEC_TOO_LARGE", chart({ spec: big })],
+    ["ROWS_OVER_LIMIT", chart({ spec: many })],
+  ];
+  for (const [code, input] of cases) {
+    test(`the protocol's ${code} reaches the model as a tool error with its path`, async () => {
+      const r = await tool().call(input);
+      expect([r.isError, errorOf(r).error]).toEqual([true, code]);
+    });
+  }
+
+  test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {
+    const r = await tool({ ...WEB, kinds: ["grid"] }).call(chart());
+    expect([errorOf(r).error, errorOf(r).path]).toEqual(["KIND_NOT_ALLOWED", "kind"]);
+  });
+
+  test("TOO_MANY_BLOCKS: a 13th block in one turn; a block at 200 revisions", async () => {
+    const { call } = tool();
+    for (let i = 0; i < 12; i++) expect((await call(chart({ block_id: `b-${i}` }))).isError).toBeUndefined();
+    const r = await call(chart({ block_id: "b-12" }));
+    expect([errorOf(r).error, r.meta]).toEqual(["TOO_MANY_BLOCKS", undefined]);
+    expect((await call(chart({ block_id: "b-3" }))).isError).toBeUndefined();
+    const old = await tool(WEB, history({ revisions: new Map([["fig-1", 200]]) })).call(chart());
+    expect(errorOf(old).error).toBe("TOO_MANY_BLOCKS");
+  });
+
+  test("logs and metric labels carry no content the model wrote", async () => {
+    const { call, lines, metrics } = tool();
+    const secret = "Columbus-Reno-secret-plan";
+    await call(chart({ fallback: { text: `${FALLBACK} ${secret}` }, title: secret }));
+    await call(badChart({ block_id: "fig-2", fallback: { text: `${FALLBACK} ${secret}` } }));
+    await call(chart({ block_id: "fig-3", kind: "my-own-kind" }));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) expect(l).not.toContain(secret);
+    expect([...metrics.counters.keys()].some((k) => k.includes("my-own-kind"))).toBe(false);
+    expect(metrics.counters.get("display.validation_errors{code=KIND_UNKNOWN,kind=other}")).toBe(1);
+  });
+});
+
+describe("Show: a text client", () => {
+  test("gets the fallback as the step's visible result and no envelope", async () => {
+    const { call, metrics } = tool(CLI);
+    const r = await call(chart());
+    expect(r.isError).toBeUndefined();
+    expect(r.meta).toEqual({ displayText: `[shown fig-1 · text]\n${FALLBACK}` });
+    expect(modelText(r)).toBe("Shown fig-1 as text: this client draws text only, so the person reads your fallback.");
+    expect(metrics.counters.get("display.fallback_shown{reason=client_level}")).toBe(1);
+  });
+
+  test("a refusal still shows the fallback as text, with no envelope", async () => {
+    const r = await tool(CLI).call(badChart());
+    expect([r.isError, r.meta]).toEqual([true, { displayText: `[display fig-1 · repairing]\n${FALLBACK}` }]);
+  });
+
+  test("a client that declares blocks without the catalog, or none of its kinds, is a text client", () => {
+    expect(resolveDisplay({ ...WEB, catalogs: [] }).levels.has("block")).toBe(false);
+    expect(resolveDisplay({ ...WEB, kinds: ["sankey"] }).levels.has("block")).toBe(false);
+    expect([...resolveDisplay({ ...WEB, kinds: ["grid", "kpis"] }).kinds]).toEqual(["kpis", "grid"]);
+  });
+});
+
+describe("the display section of the system prompt", () => {
+  test("only for a client that draws blocks, naming only the kinds it draws", () => {
+    expect(displayInstructions(resolveDisplay(CLI))).toBeNull();
+    const all = displayInstructions(resolveDisplay(WEB))!;
+    expect(all).toContain("# Showing results");
+    for (const k of ["- chart:", "- kpis:", "- grid:"]) expect(all).toContain(k);
+    const grid = displayInstructions(resolveDisplay({ ...WEB, kinds: ["grid"] }))!;
+    expect([grid.includes("- grid:"), grid.includes("- chart:"), grid.includes("- kpis:")]).toEqual([true, false, false]);
+    expect(all).not.toContain("on a phone");
+    expect(displayInstructions(resolveDisplay({ ...WEB, viewport: "phone" }))).toContain("on a phone");
+  });
+
+  test("the same declaration always gives the same section (the prompt cache holds)", () => {
+    expect(displayInstructions(resolveDisplay(WEB))).toBe(displayInstructions(resolveDisplay(structuredClone(WEB))));
+  });
+});
+
+describe("the display history", () => {
+  const entry = (uuid: string, payload: unknown): ConversationEntry => ({ uuid, parentUuid: null, payload, ts: "t" }) as unknown as ConversationEntry;
+  const envelope = (block_id: string, revision: number): DisplayEnvelope => ({ v: 1, block_id, revision, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status: "repairing" });
+
+  test("folds each block's last revision and every tool call, from string or block content", () => {
+    const h = foldDisplayHistory([
+      entry("a", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: {} }] } }),
+      entry("b", { type: "assistant", message: { role: "assistant", content: "plain" } }),
+      entry("c", { type: "tool_result", toolUseId: "toolu_1", toolName: "Show", content: "", display: [envelope("fig-1", 3), envelope("fig-2", 1)], isError: false, ts: "t" }),
+      entry("d", { type: "tool_result", toolUseId: "toolu_2", toolName: "Show", content: "", display: [envelope("fig-1", 2)], isError: false, ts: "t" }),
+    ]);
+    expect([...h.revisions]).toEqual([["fig-1", 3], ["fig-2", 1]]);
+    expect([...h.toolUseIds]).toEqual(["toolu_1"]);
+  });
+});
+
+// ─── the engine: gating, contract, persistence ───
+
+class Scripted implements ModelClient {
+  private i = 0;
+  readonly seen: ModelRequest[] = [];
+  constructor(private readonly scripts: ModelResult[]) {}
+  async *stream(req: ModelRequest): AsyncGenerator<never, ModelResult, void> {
+    this.seen.push(structuredClone({ ...req, signal: undefined }));
+    const r = this.scripts[this.i++];
+    if (!r) throw new GatewayError("script exhausted", 500);
+    return r;
+  }
+}
+const use = (id: string, name: string, input: unknown): ModelResult => ({
+  model: "test",
+  message: { role: "assistant", content: [{ type: "tool_use", id, name, input: input as Record<string, unknown> }] },
+  usage: { input_tokens: 10, output_tokens: 5 },
+  stopReason: "tool_use",
+});
+const done = (text: string): ModelResult => ({ model: "test", message: { role: "assistant", content: [{ type: "text", text }] }, usage: { input_tokens: 8, output_tokens: 4 }, stopReason: "end_turn" });
+
+let root: string;
+beforeEach(async () => {
+  root = join(tmpdir(), `yodex-display-${crypto.randomUUID()}`);
+  await mkdir(join(root, "work"), { recursive: true });
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+function session(model: ModelClient, extra: Partial<AgentConfig> = {}): AgentSession {
+  return new AgentSession({
+    agentId: "ag1",
+    sessionId: "s1",
+    workspace: "w",
+    cwd: join(root, "work"),
+    model: "test",
+    systemPrompt: "You are a test.",
+    tools: defaultRegistry(),
+    store: new LocalStore(root),
+    model_client: model,
+    canUseTool: createPolicy({ mode: "manual" }),
+    ...extra,
+  });
+}
+
+async function run(s: AgentSession, text = "show me"): Promise<EngineEvent[]> {
+  const out: EngineEvent[] = [];
+  for await (const e of s.run({ text })) out.push(e);
+  return out;
+}
+const toolResults = (events: EngineEvent[]) => events.filter((e): e is ToolResultEvent => e.type === "tool_result");
+const toolNames = (req: ModelRequest) => (req.tools ?? []).map((t) => t.name);
+
+describe("capability gating in the engine", () => {
+  test("no display declared: no Show, the host's prompt, and a Show call is an unknown tool", async () => {
+    const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    // autopilot, so the call reaches the registry (under manual an unknown, so not read-only, tool is asked first)
+    const events = await run(session(model, { canUseTool: createPolicy({ mode: "autopilot" }) }));
+    expect(toolNames(model.seen[0]!)).not.toContain("Show");
+    expect(model.seen[0]!.system).toBe("You are a test.");
+    const [r] = toolResults(events);
+    expect([r!.isError, r!.content, "display" in r!]).toEqual([true, "Unknown tool: Show", false]);
+  });
+
+  test("a text client: Show is offered without the catalog; its result is the fallback, with no display", async () => {
+    const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    const events = await run(session(model, { display: CLI }));
+    expect(toolNames(model.seen[0]!)).toContain("Show");
+    expect(model.seen[0]!.system).toBe("You are a test.");
+    const [r] = toolResults(events);
+    expect([r!.isError, r!.content, "display" in r!]).toEqual([false, `[shown fig-1 · text]\n${FALLBACK}`, false]);
+  });
+
+  test("a client that draws blocks: Show and the catalog; the result carries the envelope; the model reads one line", async () => {
+    const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    const events = await run(session(model, { display: WEB }));
+    expect(toolNames(model.seen[0]!)).toContain("Show");
+    expect(model.seen[0]!.system?.startsWith("You are a test.\n\n# Showing results\n")).toBe(true);
+    const [r] = toolResults(events);
+    expect(r!.content).toBe(`[shown fig-1 r1 · chart]\n${FALLBACK}`);
+    expect(r!.display?.[0]).toMatchObject({ block_id: "fig-1", revision: 1, level: "block", kind: "chart" });
+    const sent = model.seen[1]!.messages.at(-1)!.content as Array<{ type: string; content: unknown }>;
+    expect(sent[0]).toMatchObject({ type: "tool_result", content: [{ type: "text", text: "Shown fig-1 r1 (chart) in the thread." }] });
+  });
+
+  test("Show's schema tells the model what is required, and is the same for every client that declares display", async () => {
+    const schema = (caps: DisplayCaps) => {
+      const m = new Scripted([done("ok")]);
+      return run(session(m, { display: caps })).then(() => m.seen[0]!.tools!.find((t) => t.name === "Show")!);
+    };
+    const web = await schema(WEB);
+    expect(await schema(CLI)).toEqual(web);
+    expect((web.input_schema as { required: string[] }).required.sort()).toEqual(["block_id", "fallback", "kind", "spec"]);
+  });
+
+  test("the host's registry is not changed by a session that adds Show", async () => {
+    const tools = defaultRegistry();
+    await run(session(new Scripted([done("ok")]), { display: WEB, tools }));
+    expect(tools.get("Show")).toBeUndefined();
+  });
+});
+
+describe("persistence and replay", () => {
+  test("the display is stored with the tool result, replayed as stored, and never reaches the model", async () => {
+    const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    const events = await run(session(model, { display: WEB }));
+    const streamed = toolResults(events)[0]!;
+    const stored = (await new LocalStore(root).conversation.read("s1")).find((e) => e.payload.type === "tool_result")!.payload as ToolResultEvent;
+    expect({ ...stored, uuid: streamed.uuid } as ToolResultEvent).toEqual(streamed);
+
+    // a new engine on the same session: the model's replay has the line, not the spec or the fallback, and the next
+    // Show of the block continues its revisions from the store
+    const next = new Scripted([use("toolu_2", "Show", chart()), done("ok")]);
+    const later = await run(session(next, { display: WEB }), "again");
+    const replayed = JSON.stringify(next.seen[0]!.messages);
+    expect(replayed).toContain("Shown fig-1 r1 (chart) in the thread.");
+    expect(replayed.match(new RegExp(FALLBACK.slice(0, 30), "g"))?.length).toBe(1); // only in the model's own tool_use input
+    expect(toolResults(later)[0]!.display?.[0]?.revision).toBe(2);
+  });
+
+  test("a rewind before a block forgets its revisions", async () => {
+    const first = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    await run(session(first, { display: WEB }));
+    const store = new LocalStore(root);
+    const entries = await store.conversation.read("s1");
+    const user = entries.find((e) => e.payload.type === "user")!;
+    const head = entries.at(-1)!.uuid;
+    await store.conversation.append("s1", { type: "rewind", toUuid: entries[entries.indexOf(user) - 1]!.uuid, turn: 1, ts: "t" }, head);
+    const again = new Scripted([use("toolu_2", "Show", chart()), done("ok")]);
+    expect(toolResults(await run(session(again, { display: WEB })))[0]!.display?.[0]?.revision).toBe(1);
+  });
+});
+
+// ─── the goldens, through the engine ───
+
+const goldenDir = new URL("../../protocol/test/fixtures/display/golden/", import.meta.url);
+describe("goldens through Show", () => {
+  for (const name of readdirSync(goldenDir).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""))) {
+    test(`${name}: the envelope the engine emits is the golden's`, async () => {
+      const golden = JSON.parse(readFileSync(new URL(`${name}.json`, goldenDir), "utf8"));
+      const r = await tool(WEB, history({ toolUseIds: new Set(["toolu_03"]) })).call(golden.show);
+      expect(r.meta?.display).toEqual([golden.envelope]);
+    });
+  }
+});

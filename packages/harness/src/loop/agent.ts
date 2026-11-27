@@ -5,6 +5,8 @@ import {
   type Author,
   type ModelFallbackEvent,
   type ContentBlock,
+  type DisplayCaps,
+  type DisplayEnvelope,
   type ConversationEntry,
   emptyUsage,
   HUMAN,
@@ -42,6 +44,7 @@ import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
+import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, SHOW_TOOL, type DisplayPolicy } from "../display";
 import type { ExecPolicy, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
 import { EventTooLargeError } from "../store/errors";
@@ -233,6 +236,10 @@ export interface AgentConfig {
    * (pre-split behavior, byte-identical — pinned by golden tests).
    */
   loop?: LoopPolicy;
+  /** 0.27.0 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
+   *  parseDisplayCaps). Set: the Show tool is offered, and when the client draws blocks the catalog's grammar joins the
+   *  system prompt. Absent: the run is exactly as before, no Show and no display on any event. */
+  display?: DisplayCaps;
   /** E-17: which sandbox confines this session's commands, as the host started it. Carried on `system/init` (and so
    *  into the conversation) and on run.completed; the engine never derives it. */
   sandbox?: SandboxRecord;
@@ -592,18 +599,42 @@ export class AgentSession {
   /** Side events raised while this run's tools execute, yielded on the stream as they arrive. */
   private readonly side = new SideQueue();
 
+  /** The host's tools, plus Show when the run's client declared display (a view: the host registry is unchanged). */
+  private readonly tools: ToolRegistry;
+  /** The host's system prompt, plus the display section when the client draws blocks. */
+  private readonly systemPrompt: string;
+
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
     this.maxTurns = cfg.maxTurns ?? 50;
+    const policy = cfg.display ? resolveDisplay(cfg.display) : null;
+    this.tools = policy ? this.withShow(policy) : cfg.tools;
+    const section = policy && displayInstructions(policy);
+    this.systemPrompt = section ? `${cfg.systemPrompt}\n\n${section}` : cfg.systemPrompt;
     // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
     // transcript-only char/4 estimate never sees (easily 5-15k tokens). ~1200 tokens fixed
     // request overhead on top.
     try {
-      const schemas = JSON.stringify(cfg.tools.schemas());
+      const schemas = JSON.stringify(this.tools.schemas());
       this.toolSchemaTokens = Math.ceil(schemas.length / 4) + 1200;
     } catch {
       this.toolSchemaTokens = 1200;
     }
+  }
+
+  /** The display protocol's Show tool on a view of the host's registry. Its history is the session's record as it
+   *  stands at each call, after rewinds. */
+  private withShow(policy: DisplayPolicy): ToolRegistry {
+    const { cfg } = this;
+    const log = cfg.logger ?? silentLogger;
+    if (cfg.tools.get(SHOW_TOOL)) log.warn("display: the host registers a tool named Show; the engine's Show replaces it for this run", { sessionId: cfg.sessionId });
+    const show = createShowTool({
+      policy,
+      history: async () => foldDisplayHistory(effectiveEntries(await this.store.conversation.read(cfg.sessionId))),
+      logger: log,
+      metrics: cfg.metrics ?? noopMetrics,
+    });
+    return cfg.tools.withTools([show]);
   }
 
   private async init(): Promise<void> {
@@ -855,7 +886,7 @@ export class AgentSession {
     const loop = cfg.loop ?? CODING_PROFILE.loop;
     // A resumed turn goes on from what the dead engine's part of it did, so the self-check and the anti-churn
     // breaker fire as they would have in the live turn; an answered head is counted by the first iteration.
-    const counted = t.resumed ? countTurn(inFlightTurn(effectiveEntries(await this.store.conversation.read(cfg.sessionId))), cfg.tools, loop) : null;
+    const counted = t.resumed ? countTurn(inFlightTurn(effectiveEntries(await this.store.conversation.read(cfg.sessionId))), this.tools, loop) : null;
     let turns = counted ? counted.turns - (t.answered ? 1 : 0) : 0;
     let stopContinuations = 0;
     // Max-tokens recovery: a response cut off by the per-request output cap shouldn't be silently
@@ -943,7 +974,7 @@ export class AgentSession {
       // Auto-compaction: summarize older turns before they overflow the window.
       if (!answered && cfg.contextWindow && cfg.compaction?.enabled !== false) {
         const preCompactCount = messages.length;
-        const c = await maybeCompact(messages, cfg.systemPrompt, {
+        const c = await maybeCompact(messages, this.systemPrompt, {
           contextWindow: cfg.contextWindow,
           maxOutputTokens: this.maxTokens,
           threshold: cfg.compaction?.threshold,
@@ -1029,14 +1060,14 @@ export class AgentSession {
       const callId = crypto.randomUUID(); // names the model span; the gateway sees it in traceparent
       // Snapshot the tool set SENT: MCP servers may connect during the call, and the ledger must
       // record what the model saw, not what the registry holds afterwards.
-      const toolSchemas = cfg.tools.schemas();
+      const toolSchemas = this.tools.schemas();
       try {
         if (answered) result = answered;
         else {
           const denied = cfg.modelFallback === "deny";
           const gen = cfg.model_client.stream({
             model: activeModel,
-            system: cfg.systemPrompt,
+            system: this.systemPrompt,
             messages: [...messages], // snapshot — the model client never sees our mutable array
             tools: toolSchemas,
             maxTokens: this.maxTokens,
@@ -1388,7 +1419,7 @@ export class AgentSession {
       // A tool may classify per CALL (Agent with read_only children can fan out safely).
       metrics.increment("agent.tool_calls", toolUses.length, { model: cfg.model });
       const allReadOnly = toolUses.every((tu) => {
-        const tool = cfg.tools.get(tu.name);
+        const tool = this.tools.get(tu.name);
         if (!tool) return false;
         return tool.isCallReadOnly?.(tu.input) ?? tool.readOnly;
       });
@@ -1430,7 +1461,7 @@ export class AgentSession {
         for (const tu of toolUses) {
           // Capability tags, not tool names: a profile with a different toolset keeps
           // these signals (name matching silently disabled them for renamed tools).
-          const tool = cfg.tools.get(tu.name);
+          const tool = this.tools.get(tu.name);
           if (tool?.edits) {
             const r = trEvts.find((e) => e.toolUseId === tu.id);
             if (r && !r.isError) {
@@ -1981,6 +2012,7 @@ export class AgentSession {
       decided?: Decision,
       refused?: ModelRefusal,
       sandboxRefused?: SandboxRefusal,
+      display?: DisplayEnvelope[],
     ): ToolResultEvent => ({
       type: "tool_result",
       toolUseId: tu.id,
@@ -1990,6 +2022,7 @@ export class AgentSession {
       ...(diff ? { diff } : {}),
       ...(refused ? { refusal: refused } : {}),
       ...(sandboxRefused ? { sandboxRefusal: sandboxRefused } : {}),
+      ...(display ? { display } : {}),
       ...(decided?.behavior !== "ask" && decided?.judge ? { judged: { verdict: decided.behavior, reason: decided.judge.reason } } : {}),
       isError,
       ts: now(),
@@ -2025,7 +2058,7 @@ export class AgentSession {
 
     // resolve() lets tools that register asynchronously (MCP servers still connecting)
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
-    const tool = await cfg.tools.resolve(tu.name);
+    const tool = await this.tools.resolve(tu.name);
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
@@ -2042,6 +2075,8 @@ export class AgentSession {
     let diff: string | undefined;
     let refusal: ModelRefusal | undefined;
     let sandboxRefusal: SandboxRefusal | undefined;
+    let display: DisplayEnvelope[] | undefined;
+    let displayText: string | undefined;
     if (decision.behavior === "deny") {
       raw = `Permission denied: ${decision.reason ?? "not allowed"}`;
       isError = true;
@@ -2053,7 +2088,7 @@ export class AgentSession {
       // that ignores the signal) must never trap Ctrl-C — control returns immediately
       // and the orphaned promise is dropped.
       const res = await raceAbort(
-        runTool(cfg.tools, tu.name, input, {
+        runTool(this.tools, tu.name, input, {
           cwd: cfg.cwd,
           roots: cfg.roots ?? [cfg.cwd],
           signal: cfg.signal,
@@ -2070,6 +2105,8 @@ export class AgentSession {
       diff = res.meta?.diff;
       refusal = res.meta?.refusal;
       sandboxRefusal = res.meta?.sandboxRefusal;
+      display = res.meta?.display;
+      displayText = res.meta?.displayText;
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
       this.observed(
@@ -2081,17 +2118,17 @@ export class AgentSession {
       );
     }
 
-    let display = typeof raw === "string" ? raw : summarizeBlocks(raw);
+    let shown = displayText ?? (typeof raw === "string" ? raw : summarizeBlocks(raw));
     const blocks = typeof raw === "string" ? undefined : raw;
 
     // PostToolUse hooks: observations are appended so the model sees them.
     if (cfg.hooks?.has("PostToolUse")) {
       const results = await cfg.hooks.run(
-        { event: "PostToolUse", toolName: tu.name, input, result: display, isError },
+        { event: "PostToolUse", toolName: tu.name, input, result: shown, isError },
         this.hookCtx(),
       );
       const notes = results.map((r) => r.injectContext).filter((n): n is string => Boolean(n));
-      if (notes.length) display += `\n\n[hook] ${notes.join("\n")}`;
+      if (notes.length) shown += `\n\n[hook] ${notes.join("\n")}`;
     }
 
     log.info("tool", { tool: tu.name, decision: decision.behavior, isError });
@@ -2105,7 +2142,7 @@ export class AgentSession {
       ...(diff ? { diff: diffStat(diff) } : {}),
     });
 
-    return make(display, isError, blocks, diff, decision, refusal, sandboxRefusal);
+    return make(shown, isError, blocks, diff, decision, refusal, sandboxRefusal, display);
   }
 
   /** D-48: the person's answer to this exact call stands in for its ask, never for a policy denial: a rule that denies
