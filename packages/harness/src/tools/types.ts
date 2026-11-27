@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
+import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -68,6 +68,11 @@ export interface ToolResult {
     refusal?: ModelRefusal;
     /** 0.22.4: the remote sandbox had no capacity for the call */
     sandboxRefusal?: SandboxRefusal;
+    /** 0.27.0: what the call showed the person (Show), copied onto the event like `diff` */
+    display?: DisplayEnvelope[];
+    /** The step's display string when it is not what the model reads: Show's model reads a short line, while a client
+     *  that draws no display shows the line and the fallback. Absent = the display string is derived from `content`. */
+    displayText?: string;
   };
 }
 
