@@ -52,7 +52,7 @@ export function displayInstructions(p: DisplayPolicy): string {
     "Kinds this client draws:",
     ...[...p.kinds].map((k) => KIND_GRAMMAR[k]),
     "",
-    "Put the ids of the tool calls a block shows in sources, and add notes for its sources, assumptions and caveats. A refused Show returns a code with a path and a hint: " +
+    "Name a block's sources in words in sources (which tool or data, and as of when; a tool call id only if you have it verbatim), and add notes for its assumptions and caveats. A refused Show returns a code with a path and a hint: " +
       "fix that and call Show again with the same block_id, once; the person sees your fallback meanwhile.",
     ...(p.viewport === "phone" ? ["", "This person is on a phone: prefer one series, at most four grid columns and short labels."] : []),
   ].join("\n");

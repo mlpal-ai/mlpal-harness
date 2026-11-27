@@ -30,7 +30,13 @@ export const showInputSchema = z
     ),
     title: plainText(120).optional(),
     caption: plainText(300).optional().describe("one line under the block: what the data is and how fresh"),
-    sources: z.array(z.string().min(1).max(128)).max(DISPLAY_LIMITS.sources).optional().describe("ids of this session's tool calls whose results the block shows"),
+    sources: z
+      .array(z.string())
+      .max(DISPLAY_LIMITS.sources)
+      .optional()
+      .describe(
+        "where the block's data came from, in words: which tool or data, and as of when (\"erp_query, inventory as of 27 Nov 06:00\"). Add a tool call id only if you have it verbatim. Never a reason to refuse: a source the engine can match to a call of this session is verified, the rest is shown unverified",
+      ),
     as_of: z.string().datetime({ offset: true }).optional().describe("when the data was true, ISO 8601"),
     placement: placementSchema.optional().describe("where: the thread (default) or the canvas beside it"),
     notes: z.array(noteInputSchema).max(DISPLAY_LIMITS.notes).optional().describe("sources, assumptions and caveats, shown under the block"),

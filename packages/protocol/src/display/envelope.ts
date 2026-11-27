@@ -37,7 +37,9 @@ export const noteInputSchema = z
     text: plain(300),
     ref: z
       .object({
-        tool_use_id: z.string().min(1).max(128).optional(),
+        /** A tool call id, only if the model has it verbatim. Never a gate: the engine keeps it when it names a call of
+         *  this session (the note is then verified) and drops it otherwise. */
+        tool_use_id: z.string().optional(),
         block_id: z.string().regex(BLOCK_ID).optional(),
         path: plain(300).optional(),
       })

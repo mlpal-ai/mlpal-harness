@@ -48,6 +48,16 @@
   is stored as `&amp;`; the reference then shows as written. References to printable characters stay, `&#60;`
   included (never markup in a markdown renderer; a plain-text client shows the character). Neutralised at store time
   rather than refused: legitimate references (`&#8212;`) keep working and no repair is spent.
+- Provenance is verified when it can be, never a gate (first real-model run: Haiku 5.5 cited the command line). A
+  source in `sources`, or a note's `ref.tool_use_id`, that is a tool call id of this session is verified as before; a
+  tool name called exactly once since the person's last message is mapped to that call and verified; anything else
+  no longer refuses the block: a `sources` entry becomes a source note (`kind: "source"`, its words as `text`,
+  `verified: false`), a note keeps its text and loses the id (`verified: false`), and an unusable value (control
+  characters, over 300 characters, empty) is dropped, never echoed. The model reads a one-line `SOURCE_UNKNOWN`
+  notice; counters `display.sources {state: verified|mapped|unverified|dropped}` and
+  `display.notices {code: SOURCE_UNKNOWN}`. No envelope change: `Note.verified` already tells a client which sources
+  were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
+  verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
 - Chart cost (UI review R2), new code `TOO_COSTLY`: a window with median, q1, q3, ci0, ci1 or distinct takes frame
   [null, null] (`DISPLAY_LIMITS.chartWholeFrameOps`); a frame bounded at both ends runs at most
   `chartWindowRowsTimesSpan` = 1,000,000 rows x span; all windows of a chart at most `chartWindowOpRows` = 200,000 rows
