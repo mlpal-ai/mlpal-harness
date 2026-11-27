@@ -16,26 +16,25 @@ export interface DisplayHistory {
   recentCalls?: ReadonlyArray<{ id: string; name: string }>;
 }
 
-/** `showToolUseId`: the Show call being checked; only what the record held before its message can verify it. */
+/** `showToolUseId`: the Show call being checked; only what the record held before its message can verify it. Without
+ *  it, or when it is not stored yet, the record freezes at the last assistant message that called tools, which is
+ *  where a Show running now was asked for. */
 export function foldDisplayHistory(entries: ConversationEntry[], showToolUseId?: string): DisplayHistory {
   const revisions = new Map<string, number>();
   const toolUseIds = new Set<string>();
   const names = new Map<string, string>();
   const verifiableIds = new Set<string>();
   let recentCalls: Array<{ id: string; name: string }> = [];
-  let frozen = false;
+  const freezeAt = freezePoint(entries, showToolUseId);
   const seen = (displays: ReadonlyArray<{ block_id: string; revision: number }> | undefined) => {
     for (const d of displays ?? []) revisions.set(d.block_id, Math.max(revisions.get(d.block_id) ?? 0, d.revision));
   };
-  for (const { payload } of entries) {
+  entries.forEach(({ payload }, i) => {
+    const frozen = i >= freezeAt;
     if (payload.type === "assistant") {
-      const content = payload.message.content;
-      if (!Array.isArray(content)) continue;
-      for (const b of content) {
-        if (b.type !== "tool_use") continue;
+      for (const b of toolUses(payload.message.content)) {
         toolUseIds.add(b.id);
         names.set(b.id, b.name);
-        if (b.id === showToolUseId) frozen = true;
       }
     } else if (payload.type === "user") {
       if (!frozen && payload.author?.type !== "system") recentCalls = [];
@@ -45,10 +44,30 @@ export function foldDisplayHistory(entries: ConversationEntry[], showToolUseId?:
     } else if (payload.type === "tool_result") {
       seen(payload.display);
       const name = names.get(payload.toolUseId);
-      if (frozen || payload.isError || name === undefined) continue;
+      // a Show's own result shows a block; it proves no source
+      if (frozen || payload.isError || name === undefined || name === SHOW_TOOL_NAME) return;
       verifiableIds.add(payload.toolUseId);
-      if (name !== SHOW_TOOL_NAME) recentCalls.push({ id: payload.toolUseId, name });
+      recentCalls.push({ id: payload.toolUseId, name });
     }
-  }
+  });
   return { revisions, toolUseIds, verifiableIds, recentCalls };
+}
+
+type ToolUse = { type: "tool_use"; id: string; name: string };
+function toolUses(content: unknown): ToolUse[] {
+  return Array.isArray(content) ? content.filter((b): b is ToolUse => (b as { type?: unknown }).type === "tool_use") : [];
+}
+
+/** The index of the assistant message holding the Show (or, failing that, the last one that called tools); entries
+ *  from there on verify nothing. No such message: nothing is frozen. */
+function freezePoint(entries: ConversationEntry[], showToolUseId: string | undefined): number {
+  let last = entries.length;
+  for (let i = 0; i < entries.length; i++) {
+    const p = entries[i]!.payload;
+    if (p.type !== "assistant") continue;
+    const uses = toolUses(p.message.content);
+    if (showToolUseId !== undefined && uses.some((b) => b.id === showToolUseId)) return i;
+    if (uses.length > 0) last = i;
+  }
+  return last;
 }

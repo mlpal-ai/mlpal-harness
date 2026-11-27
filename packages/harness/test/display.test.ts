@@ -504,9 +504,10 @@ describe("the display history", () => {
       entry("b", { type: "assistant", message: { role: "assistant", content: "plain" } }),
       entry("c", { type: "tool_result", toolUseId: "toolu_1", toolName: "Show", content: "", display: [envelope("fig-1", 3), envelope("fig-2", 1)], isError: false, ts: "t" }),
       entry("d", { type: "tool_result", toolUseId: "toolu_2", toolName: "Show", content: "", display: [envelope("fig-1", 2)], isError: false, ts: "t" }),
-    ]);
+      entry("e", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_9", name: "Show", input: {} }] } }),
+    ], "toolu_9");
     expect([...h.revisions]).toEqual([["fig-1", 3], ["fig-2", 1]]);
-    expect([...h.toolUseIds]).toEqual(["toolu_1"]);
+    expect([...h.toolUseIds]).toEqual(["toolu_1", "toolu_9"]);
     expect(h.recentCalls).toEqual([{ id: "toolu_1", name: "Read" }]);
     expect([...(h.verifiableIds ?? [])]).toEqual(["toolu_1"]);
   });
@@ -518,9 +519,33 @@ describe("the display history", () => {
       entry("c", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "forecast", input: {} }, { type: "tool_use", id: "t3", name: "Show", input: {} }] } }),
       entry("d", { type: "tool_result", toolUseId: "t2", toolName: "forecast", content: "", isError: false, ts: "t" }),
       entry("e", { type: "tool_result", toolUseId: "t3", toolName: "Show", content: "", isError: false, ts: "t" }),
-    ]);
+      entry("f", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t4", name: "Show", input: {} }] } }),
+    ], "t4");
     expect(h.recentCalls).toEqual([{ id: "t2", name: "forecast" }]);
-    expect([...h.toolUseIds]).toEqual(["t1", "t2", "t3"]);
+    expect([...h.toolUseIds]).toEqual(["t1", "t2", "t3", "t4"]);
+  });
+
+  // review 6, O3
+  const sibling = [
+    entry("a", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t0", name: "erp_query", input: {} }] } }),
+    entry("b", { type: "tool_result", toolUseId: "t0", toolName: "erp_query", content: "", isError: false, ts: "t" }),
+    entry("c", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "forecast", input: {} }, { type: "tool_use", id: "s1", name: "Show", input: {} }] } }),
+    entry("d", { type: "tool_result", toolUseId: "t1", toolName: "forecast", content: "", isError: false, ts: "t" }),
+  ];
+  test("without the Show's id the record freezes at the last message that called tools: a sibling still verifies nothing", () => {
+    for (const id of [undefined, "not-stored"]) {
+      const h = foldDisplayHistory(sibling, id);
+      expect([[...(h.verifiableIds ?? [])], h.recentCalls]).toEqual([["t0"], [{ id: "t0", name: "erp_query" }]]);
+    }
+  });
+
+  test("an earlier Show's id verifies no source", () => {
+    const h = foldDisplayHistory([
+      entry("a", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "s0", name: "Show", input: {} }] } }),
+      entry("b", { type: "tool_result", toolUseId: "s0", toolName: "Show", content: "", isError: false, ts: "t" }),
+      entry("c", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "Show", input: {} }] } }),
+    ], "s1");
+    expect([...(h.verifiableIds ?? [])]).toEqual([]);
   });
 });
 

@@ -92,6 +92,8 @@
 - A quantitative or temporal colour on a mark drawn per row (point, tick, rule, text, rect, bar) is a scale, not
   series, so a 52 x 7 heatmap of 97 values is accepted (review 6, O5); on a line or area, which Vega-Lite splits by
   colour, it still counts.
+- Provenance (review 6, O3): without the Show's id (or before its message is stored) the record freezes at the last
+  assistant message that called tools, so a sibling call never verifies; a Show's own result verifies no source.
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath
