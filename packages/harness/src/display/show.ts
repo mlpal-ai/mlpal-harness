@@ -90,6 +90,7 @@ type Outcome = { ok: true; show: ValidShow; notes?: Note[] } | { ok: false; erro
 class ShowState {
   private run: string | undefined;
   private failures = new Map<string, number>();
+  private lastFallback = new Map<string, string>();
   private shownThisTurn = new Set<string>();
   private readonly assigned = new Map<string, number>();
 
@@ -97,6 +98,7 @@ class ShowState {
     if (runId === this.run) return;
     this.run = runId;
     this.failures = new Map();
+    this.lastFallback = new Map();
     this.shownThisTurn = new Set();
   }
 
@@ -104,14 +106,21 @@ class ShowState {
     return this.failures.get(id) ?? 0;
   }
 
-  fail(id: string): number {
+  fail(id: string, fallback: string | undefined): number {
     const n = this.failuresOf(id) + 1;
     this.failures.set(id, n);
+    if (fallback) this.lastFallback.set(id, fallback);
     return n;
   }
 
   succeed(id: string): void {
     this.failures.delete(id);
+    this.lastFallback.delete(id);
+  }
+
+  /** The last valid fallback this turn's failed attempts at a block carried. */
+  fallbackOf(id: string): string | undefined {
+    return this.lastFallback.get(id);
   }
 
   revisionOf(id: string, history: DisplayHistory): number {
@@ -185,11 +194,17 @@ function blockEnvelope(show: ValidShow, notes: Note[] | undefined, revision: num
   } as BlockDisplay;
 }
 
-const result = (model: string, shown: string, display?: DisplayEnvelope[], isError = false): ToolResult => ({
-  content: [{ type: "text", text: model }],
-  ...(isError ? { isError } : {}),
-  meta: { displayText: shown, ...(display ? { display } : {}) },
-});
+/** What Show answers: `model` is what the model reads, `shown` the step's display string (the line and the fallback). */
+function result(o: { model: string; shown: string; display?: DisplayEnvelope[]; outcome: "shown" | "refused" }): ToolResult {
+  return {
+    content: [{ type: "text", text: o.model }],
+    ...(o.outcome === "refused" ? { isError: true } : {}),
+    meta: { displayText: o.shown, ...(o.display ? { display: o.display } : {}) },
+  };
+}
+
+/** The final text of a block whose repair failed and none of whose attempts carried a valid fallback. */
+const COULD_NOT_SHOW = "This block could not be shown; the answer is in the conversation.";
 
 export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
   const { policy, logger: log, metrics } = deps;
@@ -206,33 +221,53 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
     metrics.histogram("display.bytes", bytes, { level: "block", kind: show.kind });
     log.info("display shown", { block_id: show.block_id, kind: show.kind, level: "block", revision, bytes });
     const where = show.placement?.surface === "canvas" ? "on the canvas" : "in the thread";
-    return result(`Shown ${show.block_id} r${revision} (${show.kind}) ${where}.`, `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, [envelope]);
+    return result({ model: `Shown ${show.block_id} r${revision} (${show.kind}) ${where}.`, shown: `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, display: [envelope], outcome: "shown" });
+  }
+
+  /** One text envelope for a block, counted. */
+  function textEnvelope(id: string, text: string, status: TextDisplay["status"], history: DisplayHistory): TextDisplay {
+    metrics.increment("display.fallback_shown", 1, { reason: "validation" });
+    metrics.increment("display.emitted", 1, { level: "text", kind: "none", source: "model" });
+    return { v: 1, block_id: id, revision: state.nextRevision(id, history), op: "snapshot", level: "text", fallback: { text }, source: { by: "model" }, status };
   }
 
   function refused(o: Extract<Outcome, { ok: false }>, kind: string, history: DisplayHistory): ToolResult {
     const { error } = o;
-    const attempt = o.block_id ? state.fail(o.block_id) : 1;
-    const exhausted = attempt >= 2;
     metrics.increment("display.validation_errors", 1, { code: error.code, kind });
-    if (o.block_id) metrics.increment("display.repair", 1, { outcome: exhausted ? "exhausted" : "attempted" });
-    const visible = o.block_id && o.fallback ? { id: o.block_id, text: o.fallback } : undefined;
-    const status = exhausted ? "fallback_only" : "repairing";
-    let display: TextDisplay[] | undefined;
-    if (visible) {
-      metrics.increment("display.fallback_shown", 1, { reason: "validation" });
-      const revision = state.nextRevision(visible.id, history);
-      display = [{ v: 1, block_id: visible.id, revision, op: "snapshot", level: "text", fallback: { text: visible.text }, source: { by: "model" }, status }];
-      metrics.increment("display.emitted", 1, { level: "text", kind: "none", source: "model" });
+    if (!o.block_id) {
+      log.warn("display refused", { code: error.code, kind, attempt: 1, fallback_shown: false });
+      return { content: `${JSON.stringify({ error: error.code, ...withoutCode(error), attempt: 1 })}\nNothing was shown.`, isError: true };
     }
-    log.warn("display refused", { code: error.code, ...(o.block_id ? { block_id: o.block_id } : {}), kind, attempt, fallback_shown: visible !== undefined });
-    const body = exhausted && o.block_id ? { error: "RETRY_EXHAUSTED", block_id: o.block_id, cause: error, attempt } : { error: error.code, ...(o.block_id ? { block_id: o.block_id } : {}), ...withoutCode(error), attempt };
-    const next = !visible
-      ? "Nothing was shown."
-      : exhausted
-        ? `The person sees your fallback for ${visible.id}. Do not call Show for ${visible.id} again this turn.`
-        : `The person sees your fallback meanwhile. Fix this and call Show again with block_id "${visible.id}"; it is the one repair this block gets this turn.`;
-    const model = `${JSON.stringify(body)}\n${next}`;
-    return visible ? result(model, `[display ${visible.id}${display ? ` r${display[0]!.revision}` : ""} · ${exhausted ? "fallback only" : "repairing"}]\n${visible.text}`, display, true) : { content: model, isError: true };
+    const id = o.block_id;
+    const attempt = state.fail(id, o.fallback);
+    if (attempt >= 2) return exhausted(id, error, kind, attempt, o.fallback, history);
+    metrics.increment("display.repair", 1, { outcome: "attempted" });
+    log.warn("display refused", { code: error.code, block_id: id, kind, attempt, fallback_shown: o.fallback !== undefined });
+    const body = JSON.stringify({ error: error.code, block_id: id, ...withoutCode(error), attempt });
+    if (!o.fallback) return { content: `${body}\nNothing was shown. Fix this and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`, isError: true };
+    const envelope = textEnvelope(id, o.fallback, "repairing", history);
+    return result({
+      model: `${body}\nThe person sees your fallback meanwhile. Fix this and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`,
+      shown: `[display ${id} r${envelope.revision} · repairing]\n${o.fallback}`,
+      display: [envelope],
+      outcome: "refused",
+    });
+  }
+
+  /** The repair failed: the block ends `fallback_only` on this attempt's fallback, else the last valid one this turn,
+   *  else a plain sentence, so no block is left `repairing` by a model that gave up. */
+  function exhausted(id: string, cause: DisplayError, kind: string, attempt: number, fallback: string | undefined, history: DisplayHistory): ToolResult {
+    metrics.increment("display.repair", 1, { outcome: "exhausted" });
+    const last = fallback ?? state.fallbackOf(id);
+    const envelope = textEnvelope(id, last ?? COULD_NOT_SHOW, "fallback_only", history);
+    log.warn("display refused", { code: cause.code, block_id: id, kind, attempt, fallback_shown: true, final: true });
+    const sees = fallback ? "your fallback" : last ? "your last valid fallback" : `a note that ${id} could not be shown`;
+    return result({
+      model: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id, cause, attempt })}\nThe repair failed, so the person sees ${sees}. Do not call Show for ${id} again this turn; say what it would have shown in your reply.`,
+      shown: `[display ${id} r${envelope.revision} · fallback only]\n${envelope.fallback.text}`,
+      display: [envelope],
+      outcome: "refused",
+    });
   }
 
   const tool = defineTool<unknown>({

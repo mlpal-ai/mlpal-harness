@@ -131,6 +131,33 @@ describe("Show: refusal and the one repair", () => {
     expect(metrics.counters.get("display.validation_errors{code=RETRY_EXHAUSTED,kind=chart}")).toBe(1);
   });
 
+  test("a block never stays repairing: a failed repair whose own fallback is invalid ends on the last valid fallback", async () => {
+    const { call, metrics } = tool();
+    const first = await call(badChart());
+    expect(first.meta?.display?.[0]).toMatchObject({ revision: 1, level: "text", status: "repairing", fallback: { text: FALLBACK } });
+    const second = await call(badChart({ fallback: { text: "See the chart." } }));
+    expect([second.isError, errorOf(second).error, errorOf(second).cause?.code]).toEqual([true, "RETRY_EXHAUSTED", "FALLBACK_UNINFORMATIVE"]);
+    expect(second.meta?.display).toEqual([{ v: 1, block_id: "fig-1", revision: 2, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status: "fallback_only" }]);
+    expect(second.meta?.displayText).toBe(`[display fig-1 r2 · fallback only]\n${FALLBACK}`);
+    expect(modelText(second)).toContain("the person sees your last valid fallback");
+    expect(modelText(second)).toContain("Do not call Show for fig-1 again this turn");
+    expect(metrics.counters.get("display.fallback_shown{reason=validation}")).toBe(2);
+    expect(metrics.counters.get("display.emitted{kind=none,level=text,source=model}")).toBe(2);
+    const third = await call(chart());
+    expect([errorOf(third).error, third.meta]).toEqual(["RETRY_EXHAUSTED", undefined]);
+  });
+
+  test("with no valid fallback at all, the final envelope says plainly that the block could not be shown", async () => {
+    const { call } = tool();
+    const first = await call(badChart({ fallback: { text: "See the chart." } }));
+    expect(first.meta).toBeUndefined();
+    const second = await call(badChart({ fallback: undefined }));
+    const d = second.meta?.display?.[0];
+    expect(d).toMatchObject({ revision: 1, level: "text", status: "fallback_only" });
+    expect(d?.fallback.text).toBe("This block could not be shown; the answer is in the conversation.");
+    expect(modelText(second)).toContain("the person sees a note that fig-1 could not be shown");
+  });
+
   test("attempts are counted per turn: the next run starts afresh", async () => {
     const { call } = tool();
     await call(badChart(), "run-1");
