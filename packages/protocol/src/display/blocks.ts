@@ -2,7 +2,7 @@ import { z } from "zod";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 import { checkBounds, isReservedName } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
-import { checked, fail, type DisplayCheck } from "./errors.js";
+import { checked, DisplayRefusal, displayError, fail, report, type DisplayCheck } from "./errors.js";
 import { CONTROL, plainText } from "./fields.js";
 
 /**
@@ -68,13 +68,16 @@ export type BlockSpec = ChartSpec | KpisSpec | GridSpec;
 type Path = ReadonlyArray<string | number>;
 
 /** Parse with zod; its first issue becomes VALIDATION_FAILED at that path. */
+/** Parse with zod; every issue becomes VALIDATION_FAILED at its path (an unknown key at the key's own path). */
 export function parseShape<S extends z.ZodTypeAny>(schema: S, value: unknown, path: Path, hint?: string): z.infer<S> {
   const r = schema.safeParse(value);
   if (r.success) return r.data;
-  const issue = r.error.issues[0]!;
-  const where = [...path, ...issue.path];
-  const message = issue.code === "unrecognized_keys" ? `unknown field${issue.keys.length > 1 ? "s" : ""}: ${issue.keys.join(", ")}` : issue.message;
-  return fail("VALIDATION_FAILED", where, message, hint);
+  const errors = r.error.issues.flatMap((issue) =>
+    issue.code === "unrecognized_keys"
+      ? issue.keys.map((k) => displayError("VALIDATION_FAILED", [...path, ...issue.path, k], `unknown field "${k}"`, hint))
+      : [displayError("VALIDATION_FAILED", [...path, ...issue.path], issue.message, hint)],
+  );
+  throw new DisplayRefusal(errors);
 }
 
 function checkKpis(spec: unknown, path: Path): KpisSpec {
@@ -82,14 +85,13 @@ function checkKpis(spec: unknown, path: Path): KpisSpec {
   const ids = new Set<string>();
   kpis.tiles.forEach((t, i) => {
     const at = [...path, "tiles", i];
-    if (ids.has(t.id)) fail("VALIDATION_FAILED", [...at, "id"], `tile id "${t.id}" is used twice`);
+    if (ids.has(t.id)) report("VALIDATION_FAILED", [...at, "id"], `tile id "${t.id}" is used twice`);
     ids.add(t.id);
     if (t.format === "text" ? typeof t.value !== "string" : typeof t.value !== "number") {
-      fail("VALIDATION_FAILED", [...at, "value"], t.format === "text" ? "a text tile's value is a string" : `a ${t.format} tile's value is a number`, "use format \"text\" for a word, a number for every other format");
-    }
-    if (t.format === "integer" && !Number.isInteger(t.value)) fail("VALIDATION_FAILED", [...at, "value"], "an integer tile's value is a whole number");
+      report("VALIDATION_FAILED", [...at, "value"], t.format === "text" ? "a text tile's value is a string" : `a ${t.format} tile's value is a number`, "use format \"text\" for a word, a number for every other format");
+    } else if (t.format === "integer" && !Number.isInteger(t.value)) report("VALIDATION_FAILED", [...at, "value"], "an integer tile's value is a whole number");
     if (t.format === "currency" && !(t.unit && CURRENCY.test(t.unit))) {
-      fail("VALIDATION_FAILED", [...at, "unit"], "a currency tile names its ISO 4217 code in unit", 'for example "unit": "USD"');
+      report("VALIDATION_FAILED", [...at, "unit"], "a currency tile names its ISO 4217 code in unit", 'for example "unit": "USD"');
     }
   });
   return kpis;
@@ -111,23 +113,25 @@ function checkGrid(spec: unknown, path: Path): GridSpec {
   const grid = parseShape(gridSpecSchema, spec, path);
   const columns = new Map<string, GridColumn>();
   grid.columns.forEach((c, i) => {
-    if (isReservedName(c.key)) fail("VALIDATION_FAILED", [...path, "columns", i, "key"], `"${c.key}" is a name every object has, never a column key`, "rename the column");
-    if (columns.has(c.key)) fail("VALIDATION_FAILED", [...path, "columns", i, "key"], `column key "${c.key}" is used twice`);
+    if (isReservedName(c.key)) return report("VALIDATION_FAILED", [...path, "columns", i, "key"], `"${c.key}" is a name every object has, never a column key`, "rename the column");
+    if (columns.has(c.key)) return report("VALIDATION_FAILED", [...path, "columns", i, "key"], `column key "${c.key}" is used twice`);
     columns.set(c.key, c);
   });
+  // without its key column, rows cannot be checked for keys
   if (!columns.has(grid.row_key)) fail("VALIDATION_FAILED", [...path, "row_key"], `row_key "${grid.row_key}" is not a column key`, `column keys: ${[...columns.keys()].join(", ")}`);
   const seen = new Set<string>();
   grid.rows.forEach((row, i) => {
     for (const [k, v] of Object.entries(row)) {
       const col = columns.get(k);
-      if (!col) fail("VALIDATION_FAILED", [...path, "rows", i, k], `"${k}" is not a column key`, `column keys: ${[...columns.keys()].join(", ")}`);
-      if (typeof v === "string" && CONTROL.test(v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], "a cell has a control character (a terminal escape)");
-      if (!CELL_TYPE[col.type](v)) fail("VALIDATION_FAILED", [...path, "rows", i, k], `a ${col.type} cell is ${col.type === "state" ? "a string" : col.type === "code" ? "a string or a number" : "a number"} or null`);
+      const at = [...path, "rows", i, k];
+      if (!col) report("VALIDATION_FAILED", at, `"${k}" is not a column key`, `column keys: ${[...columns.keys()].join(", ")}`);
+      else if (typeof v === "string" && CONTROL.test(v)) report("VALIDATION_FAILED", at, "a cell has a control character (a terminal escape)");
+      else if (!CELL_TYPE[col.type](v)) report("VALIDATION_FAILED", at, `a ${col.type} cell is ${col.type === "state" ? "a string" : col.type === "code" ? "a string or a number" : "a number"} or null`);
     }
     const key = Object.hasOwn(row, grid.row_key) ? row[grid.row_key] : undefined;
-    if (key === undefined || key === null) fail("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], "every row has a row_key value");
+    if (key === undefined || key === null) return report("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], "every row has a row_key value");
     const id = JSON.stringify(key);
-    if (seen.has(id)) fail("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], `row_key value ${id} is used twice`);
+    if (seen.has(id)) report("VALIDATION_FAILED", [...path, "rows", i, grid.row_key], `row_key value ${id} is used twice`);
     seen.add(id);
   });
   return grid;

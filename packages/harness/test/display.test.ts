@@ -251,6 +251,19 @@ describe("Show: refusal and the one repair", () => {
     for (const l of lines) expect(l).not.toContain("secret detail");
   });
 
+  test("every fault is listed to the model, so one repair fixes them all", async () => {
+    const { call, metrics } = tool();
+    const spec = { vl: { ...chart().spec.vl, mark: { type: "line", evil: 1 }, transform: [{ calculate: "1", as: "k" }], encoding: { x: { field: "week", type: "temporal", axis: { tickCount: 1e9 } }, y: { field: "onhand", type: "quantitative" } } } };
+    const r = await call(chart({ spec }));
+    const body = errorOf(r) as unknown as { error: string; faults: Array<{ code: string; path: string }> };
+    expect([body.error, body.faults.map((f) => f.path)]).toEqual(["EXPRESSION_NOT_ALLOWED", ["spec.vl.transform[0].calculate", "spec.vl.encoding.x.axis.tickCount", "spec.vl.mark.evil"]]);
+    expect(modelText(r)).toContain("3 faults; fix all of them in this one repair:");
+    expect(modelText(r)).toContain("- VALIDATION_FAILED at spec.vl.mark.evil:");
+    expect(metrics.counters.get("display.validation_errors{code=EXPRESSION_NOT_ALLOWED,kind=chart}")).toBe(1);
+    const fixed = await call(chart());
+    expect(fixed.meta?.display?.[0]).toMatchObject({ level: "block", revision: 2, status: "ok" });
+  });
+
   test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {
     const r = await tool({ ...WEB, kinds: ["grid"] }).call(chart());
     expect([errorOf(r).error, errorOf(r).path]).toEqual(["KIND_NOT_ALLOWED", "kind"]);

@@ -12,8 +12,10 @@
   `DisplayCaps` on `run.display?` (`parseDisplayCaps` at the server's edge; unknown fields, levels and `a2ui`
   versions dropped) and the
   capability `display`. A run without `run.display` is served exactly as before.
-- `checkShowInput(raw, {kinds})`: the `Show` tool's input, checked before any client sees it; every refusal is a
-  `DisplayError {code, path, message, hint}` (`DisplayErrorCode`: `FALLBACK_MISSING`, `FALLBACK_TOO_LONG`,
+- `checkShowInput(raw, {kinds})`: the `Show` tool's input, checked before any client sees it. A refusal lists every
+  fault, in the input's order (`errors`, at most 10, `omitted` counting the rest; `error` is the first, the primary that
+  counters count), so one repair can fix them all; validateBlock's refusals carry the same fields. Show lists the
+  faults to the model in its error. Each fault is a `DisplayError {code, path, message, hint}` (`DisplayErrorCode`: `FALLBACK_MISSING`, `FALLBACK_TOO_LONG`,
   `FALLBACK_UNINFORMATIVE`, `KIND_UNKNOWN`, `KIND_NOT_ALLOWED`, `HOST_OWNED_KIND`, `VALIDATION_FAILED`,
   `URL_NOT_ALLOWED`, `EXPRESSION_NOT_ALLOWED`, `SPEC_TOO_LARGE`, `ROWS_OVER_LIMIT`, `TOO_MANY_BLOCKS`,
   `SOURCE_UNKNOWN`, `RETRY_EXHAUSTED`, `VALIDATION_INTERNAL`). A refusal after the fallback passed carries the fallback, so it can be shown

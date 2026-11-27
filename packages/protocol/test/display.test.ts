@@ -495,6 +495,67 @@ describe("names on Object.prototype are never data fields, column keys or transf
   });
 });
 
+describe("every fault in one response, so one repair can fix them all", () => {
+  const three = () =>
+    line(rows(2), {
+      mark: { type: "line", evil: 1 },
+      encoding: { x: { field: "week", type: "ordinal", axis: { tickCount: 1e9 } }, y: { field: "onhand", type: "quantitative" } },
+      transform: [{ calculate: "1", as: "k" }],
+    });
+  const listed = (r: ReturnType<typeof checkShowInput>) => (r.ok ? [] : r.errors.map((e) => `${e.code} ${e.path}`));
+
+  test("a spec with three independent faults yields three entries, the first one the primary", () => {
+    const r = checkShowInput(show({ spec: three() }));
+    expect(listed(r)).toEqual(["EXPRESSION_NOT_ALLOWED spec.vl.transform[0].calculate", "VALIDATION_FAILED spec.vl.encoding.x.axis.tickCount", "VALIDATION_FAILED spec.vl.mark.evil"]);
+    if (r.ok) throw new Error("expected a refusal");
+    expect(r.error).toBe(r.errors[0]!);
+    expect(r.omitted).toBeUndefined();
+    for (const e of r.ok ? [] : r.errors) expect(typeof e.message).toBe("string");
+  });
+
+  test("fixing every listed fault in one retry passes", () => {
+    const fixed = line(rows(2), { mark: { type: "line" }, encoding: { x: { field: "week", type: "ordinal", axis: { tickCount: 6 } }, y: { field: "onhand", type: "quantitative" } } });
+    expect(checkShowInput(show({ spec: fixed })).ok).toBe(true);
+  });
+
+  test("a fallback fault and spec faults come together, fallback first; the fallback is then not shown", () => {
+    const r = checkShowInput(show({ spec: three(), fallback: { text: "See the chart." } }));
+    expect(listed(r)[0]).toBe("FALLBACK_UNINFORMATIVE fallback.text");
+    expect(listed(r)).toHaveLength(4);
+    expect(r.ok ? "x" : r.fallback).toBeUndefined();
+  });
+
+  test("validateBlock lists them too", () => {
+    const r = validateBlock("chart", three());
+    expect(r.ok ? 0 : r.errors.length).toBe(3);
+  });
+
+  test("at most 10 are listed, with a count of the rest", () => {
+    const mark: Record<string, unknown> = { type: "line" };
+    for (let i = 0; i < 15; i++) mark[`bad${i}`] = 1;
+    const r = checkShowInput(show({ spec: line(rows(2), { mark }) }));
+    expect(r.ok ? null : [r.errors.length, r.omitted, r.errors[0]!.path, r.errors[9]!.path]).toEqual([DISPLAY_LIMITS.faults, 5, "spec.vl.mark.bad0", "spec.vl.mark.bad9"]);
+  });
+
+  test("the order is stable: the input's own order, the same every time", () => {
+    const a = checkShowInput(show({ spec: three() }));
+    const b = checkShowInput(show({ spec: structuredClone(three()) }));
+    expect(listed(a)).toEqual(listed(b));
+  });
+
+  test("a broken data block reports its own faults and adds no field noise", () => {
+    const r = validateBlock("chart", { vl: { data: { url: "https://x/y.csv" }, mark: "line", encoding: { x: { field: "week", type: "ordinal" } } } });
+    expect(r.ok ? [] : r.errors.map((e) => `${e.code} ${e.path}`)).toEqual(["URL_NOT_ALLOWED spec.vl.data.url", "VALIDATION_FAILED spec.vl.data.values"]);
+  });
+
+  test("a fatal fault (depth) stops the check: nothing below it is walked", () => {
+    let deep: unknown[] = [];
+    for (let i = 0; i < 100; i++) deep = [deep];
+    const r = checkShowInput(show({ spec: line(rows(2), { mark: { type: "line", evil: 1 }, encoding: { x: { field: "week", type: "ordinal", axis: { values: deep } } } }) }));
+    expect(r.ok ? [] : r.errors.map((e) => e.code)).toEqual(["SPEC_TOO_LARGE"]);
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);
@@ -551,7 +612,7 @@ describe("checkShowInput", () => {
 
   test("an unknown field is refused by name, never ignored", () => {
     const r = checkShowInput(show({ level: "block" }));
-    expect(r.ok ? null : r.error).toEqual({ code: "VALIDATION_FAILED", message: "unknown field: level" });
+    expect(r.ok ? null : r.error).toEqual({ code: "VALIDATION_FAILED", path: "level", message: 'unknown field "level"' });
   });
 
   test("placement: thread or canvas; the home arrives with describe-and-add", () => {

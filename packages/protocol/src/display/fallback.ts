@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
-import { fail } from "./errors.js";
+import { fail, report } from "./errors.js";
 import { CONTROL, CONTROL_ALL } from "./fields.js";
 
 /**
@@ -108,9 +108,9 @@ export function completeFallback(input: FallbackInput, kind: BlockKind, spec: Bl
   if (!rows) fail("VALIDATION_FAILED", at, `a ${kind} block has no rows to tabulate`, kind === "kpis" ? "write one line per tile in the text" : undefined);
   const known = kind === "grid" ? (spec as GridSpec).columns.map((c) => c.key) : [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const columns = input.table.columns ?? known;
-  columns.forEach((c, i) => {
-    if (!known.includes(c)) fail("VALIDATION_FAILED", [...at, "columns", i], `"${c}" is not a field of the rows`, `fields: ${known.join(", ")}`);
-  });
+  const unknown = columns.map((c, i) => [c, i] as const).filter(([c]) => !known.includes(c));
+  for (const [c, i] of unknown) report("VALIDATION_FAILED", [...at, "columns", i], `"${c}" is not a field of the rows`, `fields: ${known.join(", ")}`);
+  if (unknown.length) return input.text;
   const labels = kind === "grid" ? new Map((spec as GridSpec).columns.map((c) => [c.key, c.label])) : new Map<string, string>();
   const shown = rows.slice(0, input.table.max_rows ?? DISPLAY_LIMITS.fallbackTableRows).map((r) => (c: string) => (Object.hasOwn(r, c) ? r[c] : undefined));
   const numeric = (c: string) => shown.some((r) => typeof r(c) === "number") && shown.every((r) => r(c) === null || r(c) === undefined || typeof r(c) === "number");
