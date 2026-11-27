@@ -96,6 +96,9 @@
   entries in a plain Node process, checking they give the same functions.
 - Revisions stay unique across a restart (review 6): `foldDisplayHistory` also reads the displays settled on run
   results, so the next Show of a block settled `fallback_only` takes the revision after it.
+- A quantitative or temporal colour on a mark drawn per row (point, tick, rule, text, rect, bar) is a scale, not
+  series, so a 52 x 7 heatmap of 97 values is accepted (review 6, O5); on a line or area, which Vega-Lite splits by
+  colour, it still counts.
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath

@@ -237,6 +237,15 @@ describe("chart limits", () => {
     expect(code(series(13))).toBe("VALIDATION_FAILED spec.vl.encoding.color.field");
   });
 
+  test("a quantitative or temporal colour is a scale, not series: a 52 x 7 heatmap of 97 values passes (review 6, O5)", () => {
+    const cells = Array.from({ length: 52 * 7 }, (_, i) => ({ week: `w${Math.floor(i / 7)}`, day: `d${i % 7}`, v: i % 97 }));
+    const heat = (type: string) => line(cells, { mark: "rect", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "day", type: "ordinal" }, color: { field: "v", type } } });
+    expect(code(heat("quantitative"))).toBe("ok");
+    expect(code(heat("ordinal"))).toBe("VALIDATION_FAILED spec.vl.encoding.color.field");
+    // a line is split into a path per colour value, so there a quantitative colour still counts
+    expect(code(line(cells, { encoding: { x: { field: "week", type: "ordinal" }, y: { field: "v", type: "quantitative" }, color: { field: "v", type: "quantitative" } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.color.field");
+  });
+
   test("the drawn spec loses the top-level $schema, config and usermeta and keeps everything else", () => {
     const spec = line(rows(2), { $schema: "https://vega.github.io/schema/vega-lite/v6.json", config: { view: { stroke: null } }, usermeta: { x: 1 }, title: "Stock" });
     const r = validateBlock("chart", { ...spec, series_order: ["onhand"] });
