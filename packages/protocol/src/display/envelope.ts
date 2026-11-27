@@ -54,7 +54,14 @@ export type NoteInput = z.infer<typeof noteInputSchema>;
 
 /** A note as the envelope carries it: `verified` is the engine's, true when its `ref` names a tool call or a block
  *  of this session (a path is not checked, so it carries none). */
-export const noteSchema = noteInputSchema.extend({ verified: z.boolean().optional() });
+export const noteSchema = noteInputSchema.extend({
+  /** Only ids the engine checked are written, so a stored or wire envelope's id is bounded (review 5, O5). */
+  ref: z
+    .object({ tool_use_id: z.string().min(1).max(128).optional(), block_id: z.string().regex(BLOCK_ID).optional(), path: plain(300).optional() })
+    .strict()
+    .optional(),
+  verified: z.boolean().optional(),
+});
 export type Note = z.infer<typeof noteSchema>;
 
 /** §2.3 who made the block. This engine writes model blocks only; `engine`, `mcp` and `host` sources arrive with the
@@ -68,6 +75,9 @@ export const displaySourceSchema = z
   })
   .strict();
 export type DisplaySource = z.infer<typeof displaySourceSchema>;
+
+/** Every other string of an envelope (title, caption, note text, cells, labels, chart data) is plain text: a client
+ *  never entity-decodes it (review 5, O1); only the fallback is markdown. */
 
 /** §2.5 the fallback as the envelope carries it, the engine's text table (when the model asked for one) already
  *  appended. Fallback text is markdown (CommonMark with tables). Clients render it with raw HTML disabled, load no images, and
