@@ -4,6 +4,7 @@ import { inertFallbackText } from "../src/display/fallback";
 import { CHART_GRAMMAR } from "../src/display/chart";
 import { AGGREGATE_OP_COST, MARK_COST, TRANSFORM_COST, WINDOW_OP_COST } from "../src/display/cost";
 import {
+  settleDisplays,
   chartCost,
   checkShowInput,
   noteInputSchema,
@@ -758,6 +759,27 @@ describe("review 5 optionals: O3, O4, O5", () => {
     expect(displayEnvelopeSchema.safeParse(env).success).toBe(false);
     env.notes[0]!.ref.tool_use_id = "t".repeat(128);
     expect(displayEnvelopeSchema.safeParse(env).success).toBe(true);
+  });
+});
+
+describe("settleDisplays: an older session's repairing block, once its run ended, reads as fallback_only (E3)", () => {
+  const text = (rev: number, status: string) => ({ v: 1, block_id: "fig-1", revision: rev, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status });
+  const tr = (display: unknown[]) => ({ type: "tool_result", toolUseId: "t", toolName: "Show", content: "", display, isError: true, ts: "t" });
+  const result = { type: "result", subtype: "success", numTurns: 1, usage: {}, ts: "t" };
+
+  test("repairing then the run's result: fallback_only, on a copy", () => {
+    const messages = [tr([text(1, "repairing")]), result];
+    const out = settleDisplays(messages) as typeof messages;
+    expect((out[0] as { display: Array<{ status: string }> }).display[0]!.status).toBe("fallback_only");
+    expect((messages[0] as { display: Array<{ status: string }> }).display[0]!.status).toBe("repairing");
+  });
+
+  test("a run still going, a later revision, or a run's own settled envelope: unchanged", () => {
+    expect(settleDisplays([tr([text(1, "repairing")])])).toEqual([tr([text(1, "repairing")])]);
+    const replaced = [tr([text(1, "repairing")]), tr([text(2, "fallback_only")]), result];
+    expect(settleDisplays(replaced)).toEqual(replaced);
+    const settled = [tr([text(1, "repairing")]), { ...result, display: [text(2, "fallback_only")] }];
+    expect(settleDisplays(settled)).toEqual(settled);
   });
 });
 

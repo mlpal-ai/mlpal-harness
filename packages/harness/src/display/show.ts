@@ -132,6 +132,8 @@ class ShowState {
   private run: string | undefined;
   private failures = new Map<string, number>();
   private lastFallback = new Map<string, string>();
+  /** Blocks whose latest envelope this run is `repairing`, with that fallback (E3: settled at the run's end). */
+  readonly repairing = new Map<string, string>();
   private shownThisTurn = new Set<string>();
   private readonly assigned = new Map<string, number>();
 
@@ -140,6 +142,7 @@ class ShowState {
     this.run = runId;
     this.failures = new Map();
     this.lastFallback = new Map();
+    this.repairing.clear();
     this.shownThisTurn = new Set();
   }
 
@@ -157,6 +160,7 @@ class ShowState {
   succeed(id: string): void {
     this.failures.delete(id);
     this.lastFallback.delete(id);
+    this.repairing.delete(id);
   }
 
   /** The last valid fallback this turn's failed attempts at a block carried. */
@@ -323,7 +327,13 @@ function result(o: { model: string; shown: string; display?: DisplayEnvelope[]; 
 /** The final text of a block whose repair failed and none of whose attempts carried a valid fallback. */
 const COULD_NOT_SHOW = "This block could not be shown; the answer is in the conversation.";
 
-export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
+/** Show, and what the session asks of it at a run's end. */
+export interface ShowTool extends Tool<unknown> {
+  /** The final envelopes for blocks this run left `repairing`; the state is cleared. */
+  settle(): TextDisplay[];
+}
+
+export function createShowTool(deps: ShowToolDeps): ShowTool {
   const { policy, logger: log, metrics } = deps;
   const state = new ShowState();
 
@@ -373,6 +383,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
     const fix = faults.length > 1 ? "Fix them all" : "Fix this";
     if (!o.fallback) return { content: `${body}\n${list}Nothing was shown. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`, isError: true };
     const envelope = textEnvelope(id, o.fallback, "repairing", history);
+    state.repairing.set(id, o.fallback);
     return result({
       model: `${body}\n${list}The person sees your fallback meanwhile. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`,
       shown: `[display ${id} r${envelope.revision} · repairing]\n${o.fallback}`,
@@ -386,6 +397,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
   function exhausted(id: string, cause: DisplayError, kind: string, attempt: number, fallback: string | undefined, history: DisplayHistory, faults: DisplayError[], omitted?: number): ToolResult {
     metrics.increment("display.repair", 1, { outcome: "exhausted" });
     const last = fallback ?? state.fallbackOf(id);
+    state.repairing.delete(id);
     const envelope = textEnvelope(id, last ?? COULD_NOT_SHOW, "fallback_only", history);
     log.warn("display refused", { code: cause.code, block_id: id, kind, attempt, fallback_shown: true, final: true });
     const sees = fallback ? "your fallback" : last ? "your last valid fallback" : `a note that ${id} could not be shown`;
@@ -395,6 +407,18 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
       display: [envelope],
       outcome: "refused",
     });
+  }
+
+  /** E3: at the run's end, every block still `repairing` (the model never retried) becomes `fallback_only`. */
+  function settle(): TextDisplay[] {
+    const out: TextDisplay[] = [];
+    for (const [id, text] of state.repairing) {
+      metrics.increment("display.repair", 1, { outcome: "abandoned" });
+      out.push(textEnvelope(id, text, "fallback_only", EMPTY_HISTORY));
+      log.info("display settled at run end", { block_id: id, status: "fallback_only" });
+    }
+    state.repairing.clear();
+    return out;
   }
 
   const tool = defineTool<unknown>({
@@ -433,7 +457,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
       return outcome.ok ? shown(outcome.show, outcome.provenance, history) : refused(outcome, kind, history);
     },
   });
-  return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}) };
+  return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}), settle };
 }
 
 /** A metric label from the model's kind: a catalog or host kind as it is, anything else one bucket (low cardinality,
