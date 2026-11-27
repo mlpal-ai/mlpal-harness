@@ -99,6 +99,12 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- chartCost costs the channel options that change how many marks are drawn (review 6, R1, found by the property
+  test's grammar): a line or area splits into a path per value of color, opacity, size, strokeDash or detail (order
+  on an area), each path a mark; a stacked area or line imputes every x value per path (an area split by a
+  window-written detail took 1.2 s at 500 rows, 18.9 s at 2,000, and was accepted); a layer's shared encoding is
+  costed in each of its views. A fold's key keeps its known distinct count, so a line per folded measure stays
+  cheap. A 200-chart local run of the property test: worst 1.6 x the estimate, slowest 331 ms.
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath

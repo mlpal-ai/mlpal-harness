@@ -2,6 +2,439 @@
  "_comment": "chartCost vectors (UI reviews R2 and N2, review 5): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0, and {\"$rows\": n, \"$shape\": \"iabc\"} for n rows {i, a: i, b: n - 1 - i, c: i % 7}; expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
  "refused": [
   {
+   "name": "an area split by a window-written detail: 500 paths x 500 x values imputed (1.2 s; 2,000 rows: 18.9 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 500,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "s"
+        }
+       ]
+      }
+     ],
+     "mark": "area",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "a",
+       "type": "quantitative"
+      },
+      "detail": {
+       "field": "s",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "lines split by a window-written detail in 2 x 6 views: 24,000 paths (1.5 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.vconcat[1].layer[1].mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 2000,
+       "$shape": "iabc"
+      }
+     },
+     "vconcat": [
+      {
+       "layer": [
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        }
+       ]
+      },
+      {
+       "layer": [
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        },
+        {
+         "transform": [
+          {
+           "window": [
+            {
+             "op": "row_number",
+             "as": "s"
+            }
+           ]
+          }
+         ],
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "a",
+           "type": "quantitative"
+          },
+          "detail": {
+           "field": "s",
+           "type": "nominal"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a ci0 in a layer's shared encoding, grouped by a window-written x, is costed in each view",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "s"
+        }
+       ]
+      }
+     ],
+     "encoding": {
+      "x": {
+       "field": "s",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "a",
+       "aggregate": "ci0",
+       "type": "quantitative"
+      }
+     },
+     "layer": [
+      {
+       "mark": "line"
+      },
+      {
+       "mark": "line"
+      }
+     ]
+    }
+   }
+  },
+  {
    "name": "review 6 overwriteChain19: a window renames c, then 19 ci aggregates by c (24.6 s)",
    "code": "TOO_COSTLY",
    "path": "spec.vl",
@@ -4416,6 +4849,83 @@
   }
  ],
  "accepted": [
+  {
+   "name": "two measures folded over 2,500 rows, a line per measure (the fold's key has 2 values)",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 2500,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "fold": [
+        "a",
+        "b"
+       ],
+       "as": [
+        "measure",
+        "v"
+       ]
+      }
+     ],
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "measure",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "an area stacked by a fold of 3 measures over 1,500 rows",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 1500,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "fold": [
+        "a",
+        "b",
+        "c"
+       ]
+      }
+     ],
+     "mark": "area",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "value",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "key",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
   {
    "name": "review 5 honestBarLabels: 5,000 rows summed into 7 bars with labels",
    "spec": {

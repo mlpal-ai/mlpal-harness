@@ -16,6 +16,10 @@ import { displayPath } from "./errors.js";
  * errorband or errorbar with extent "ci") about 0.12 per group per field (one field over 5,000 groups: 529-589; twenty
  * chained aggregates of three: 24,800); filter, bin, timeUnit and stack about 0.0005 per row; drawing about 0.025 per
  * point-like mark, 0.07 per bar, 0.01 per line or area vertex, 0.002 per row an errorband, errorbar or boxplot reads.
+ * A line or area splits into a path per value of a grouping channel (color, opacity, size, strokeDash, detail, and
+ * order on an area), about 0.05 per path (2,000 paths: 163); a stacked one (every area, a line with `stack`) imputes
+ * every x value for every path, about 0.005 per imputed row (500 paths x 500 x values: 1,178; 2,000 x 2,000:
+ * 18,949), so an area's vertices are its x values x paths. Each path counts as a mark.
  * Rows are counted after every fold; an aggregate reduces them to its groups (1 without groupby, else the product of
  * its groupby fields' distinct values in the inline data, when every field is there; otherwise not reduced), and a
  * channel aggregate reduces the marks drawn the same way. Conservative by construction (review 6): once any
@@ -26,7 +30,7 @@ import { displayPath } from "./errors.js";
  * 1. median, q1, q3, ci0, ci1 and distinct windows run over the whole partition only: frame [null, null];
  * 2. a frame whose start is bounded: rows x span (an open end counts to the partition's edge) <= chartWindowRowsTimesSpan;
  * 3. every window of the chart, every view counted: rows x ops <= chartWindowOpRows;
- * 4. point-like marks drawn (rows x views that draw them) <= chartMarks;
+ * 4. point-like marks and paths drawn (rows x views that draw them) <= chartMarks;
  * 5. the whole estimate <= chartCostBudgetMs.
  */
 
@@ -52,6 +56,7 @@ const MS = {
   pointMark: 0.025,
   bar: 0.07,
   vertex: 0.01,
+  path: 0.06,
   aggregatedRow: 0.002,
 } as const;
 
@@ -109,18 +114,23 @@ interface Acc {
   marks: number;
 }
 
-/** The rows reaching a point: how many, and the inline data they still are (null once a fold or an aggregate made
- *  others). */
+/** The rows reaching a point: how many, and the inline data they still are (null once a transform but a filter has
+ *  run). `known`: distinct counts known without the data, the one a fold's key field has (its list's length). */
 interface Rows {
   n: number;
   data: Obj[] | null;
+  known?: ReadonlyMap<string, number>;
 }
 
 /** How many groups `fields` make: the product of their distinct values in the data, at most the rows; the rows when
  *  any field is not in the data. */
 function groups(rows: Rows, fields: string[]): number {
   if (fields.length === 0) return 1;
-  if (!rows.data) return rows.n;
+  if (!rows.data) {
+    let product = 1;
+    for (const f of fields) product *= rows.known?.get(f) ?? rows.n;
+    return Math.max(1, Math.min(product, rows.n));
+  }
   let product = 1;
   for (const f of fields) {
     const seen = new Set<string>();
@@ -199,12 +209,18 @@ function transforms(ts: unknown, at: Seg[], rows: Rows, acc: Acc): Rows {
     const key = Object.keys(t).find((k) => has(TRANSFORM_COST, k));
     if (!key) return unknownCost(here, `the transform ${Object.keys(t).join(", ") || "{}"}`);
     const cls = TRANSFORM_COST[key];
-    if (cls === "fold") rows = { n: rows.n * Math.max(1, Array.isArray(t.fold) ? t.fold.length : 1), data: null };
-    else if (cls === "window") windowCost(t, here, rows, acc);
+    if (cls === "fold") {
+      const width = Math.max(1, Array.isArray(t.fold) ? t.fold.length : 1);
+      const keyField = Array.isArray(t.as) && typeof t.as[0] === "string" ? t.as[0] : "key";
+      rows = { n: rows.n * width, data: null, known: new Map([[keyField, width]]) };
+      return;
+    }
+    if (cls === "window") windowCost(t, here, rows, acc);
     else if (cls === "aggregate") rows = aggregateCost(t, here, rows, acc);
     else acc.ms += rows.n * MS.linearTransform;
     // Conservative by construction: a transform that writes or renames a field (every one but filter, which only
-    // drops rows) makes what the inline data said about fields unknown, so groups count as rows from here on.
+    // drops rows, so what is known stays an upper bound) makes what the inline data said about fields unknown, so
+    // groups count as rows from here on.
     if (key !== "filter") rows = { n: rows.n, data: null };
   });
   return rows;
@@ -220,12 +236,15 @@ function channelDefs(enc: Obj): Array<{ ch: string; def: Obj; at: Seg[] }> {
   return out;
 }
 
-function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc): void {
+/** Channels by which Vega-Lite splits a line or area into paths (pathGroupingFields; order too, on an area). */
+const PATH_GROUPING: ReadonlySet<string> = new Set(["color", "opacity", "size", "strokeDash", "detail"]);
+
+/** `enc`: the view's encoding over the encoding its layers share, as Vega-Lite merges them. */
+function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc, enc: Obj): void {
   const mark = view.mark;
   const type = String(isObj(mark) ? mark.type : mark);
   if (!has(MARK_COST, type)) unknownCost([...at, "mark"], `the mark "${type}"`);
   const cls = MARK_COST[type]!;
-  const enc = isObj(view.encoding) ? view.encoding : {};
   const defs = channelDefs(enc);
   // channel aggregates and sort ops: their bootstraps, and the groups that remain
   const aggOps = defs.flatMap(({ def, at: a }) => [
@@ -252,7 +271,17 @@ function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc): void {
   }
   acc.ms += drawn * ciFields.size * MS.bootstrapGroupField + (aggOps.length ? rows.n * aggOps.length * MS.aggregateOp : 0);
   const withPoints = isObj(mark) && (mark.point === true || isObj(mark.point) || mark.point === "transparent");
-  const counted = (cls === "point" || cls === "bar" ? drawn : 0) + (withPoints ? drawn : 0);
+  let paths = 0;
+  if (cls === "path") {
+    const grouping = defs.filter(({ ch, def }) => PATH_GROUPING.has(ch) || (ch === "order" && type === "area")).filter(({ def }) => typeof def.field === "string" && typeof def.aggregate !== "string").map(({ def }) => String(def.field));
+    paths = grouping.length ? Math.min(drawn, groups(rows, [...new Set(grouping)])) : 1;
+    const stacked = type === "area" || defs.some(({ def }) => def.stack !== undefined && def.stack !== null && def.stack !== false);
+    if (stacked && paths > 1) {
+      const positional = (["x", "y"] as const).map((c) => (isObj(enc[c]) && typeof (enc[c] as Obj).field === "string" ? groups(rows, [String((enc[c] as Obj).field)]) : 1));
+      drawn = Math.max(drawn, Math.max(...positional) * paths);
+    }
+  }
+  const counted = (cls === "point" || cls === "bar" ? drawn : 0) + (withPoints ? drawn : 0) + paths;
   if (counted) {
     acc.marks += counted;
     if (acc.marks > DISPLAY_LIMITS.chartMarks) {
@@ -261,11 +290,11 @@ function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc): void {
   }
   if (cls === "point") acc.ms += drawn * MS.pointMark;
   else if (cls === "bar") acc.ms += drawn * MS.bar;
-  else if (cls === "path") acc.ms += drawn * MS.vertex;
+  else if (cls === "path") acc.ms += drawn * MS.vertex + paths * MS.path;
   if (withPoints) acc.ms += drawn * MS.pointMark;
 }
 
-function view(v: unknown, at: Seg[], inherited: Rows, acc: Acc, depth: number): void {
+function view(v: unknown, at: Seg[], inherited: Rows, acc: Acc, depth: number, shared: Obj): void {
   if (!isObj(v)) unknownCost(at, "a view it cannot read");
   if (depth > MAX_VIEW_DEPTH) unknownCost(at, `views nested deeper than ${MAX_VIEW_DEPTH}`);
   let rows = inherited;
@@ -275,10 +304,12 @@ function view(v: unknown, at: Seg[], inherited: Rows, acc: Acc, depth: number): 
     rows = { n: values.length, data: values.every(isObj) ? (values as Obj[]) : null };
   }
   rows = transforms(v.transform, [...at, "transform"], rows, acc);
-  if (has(v, "mark")) return markCost(v, at, rows, acc);
+  // a layer's encoding is inherited by its views, so a shared channel is costed where it is drawn
+  const enc = { ...shared, ...(isObj(v.encoding) ? v.encoding : {}) };
+  if (has(v, "mark")) return markCost(v, at, rows, acc, enc);
   const key = (["layer", "vconcat"] as const).find((k) => Array.isArray(v[k]));
   if (!key) unknownCost(at, "a view with no mark, layer or vconcat");
-  (v[key!] as unknown[]).forEach((c, i) => view(c, [...at, key!, i], rows, acc, depth + 1));
+  (v[key!] as unknown[]).forEach((c, i) => view(c, [...at, key!, i], rows, acc, depth + 1, enc));
 }
 
 /** The cost of drawing `spec` (a chart spec validateBlock accepted, `{vl, series_order?}`). A fault's path starts at
@@ -287,7 +318,7 @@ export function chartCost(spec: unknown): ChartCostCheck {
   const acc: Acc = { ms: MS.chart, windowOpRows: 0, marks: 0 };
   try {
     if (!isObj(spec)) unknownCost([], "a spec it cannot read");
-    view(spec.vl, ["vl"], { n: 0, data: [] }, acc, 0);
+    view(spec.vl, ["vl"], { n: 0, data: [] }, acc, 0, {});
   } catch (e) {
     if (e instanceof TooCostly) return { ok: false, code: "TOO_COSTLY", path: displayPath(["spec", ...e.path]), message: e.message, hint: e.hint };
     return { ok: false, code: "TOO_COSTLY", path: "spec.vl", message: "the cost of this chart could not be estimated" };
