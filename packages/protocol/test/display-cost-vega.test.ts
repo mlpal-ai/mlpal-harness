@@ -32,48 +32,57 @@ function rng(seed: number): () => number {
 function generator(seed: number) {
   const r = rng(seed);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]!;
+  const maybe = <T extends Obj>(p: number, x: () => T): T | Record<string, never> => (r() < p ? x() : {});
   const q = (field: string) => ({ field, type: "quantitative" });
-  const op = () => pick(["sum", "mean", "count", "rank", "median", "distinct", "ci0", "min", "max", "q1"]);
-  const frameFor = (o: string) => (["median", "distinct", "ci0", "q1"].includes(o) ? [null, null] : pick([[null, 0], [-2, 2], [-50, 50], [null, null]]));
+  const op = () => pick(["sum", "mean", "count", "rank", "median", "distinct", "q3", "min", "max", "q1"]);
+  const frameFor = (o: string) => (["median", "distinct", "q3", "q1"].includes(o) ? [null, null] : pick([[null, 0], [-2, 2], [-50, 50], [null, null]]));
+  // what the grammar keeps of sorts and conditions (review 7): a channel, a field with an order, a value condition
+  const sort = () => ({ sort: pick<unknown>(["-y", "ascending", { field: "a", order: "descending" }, { encoding: "y", order: "descending" }]) });
+  const colour = () => ({ color: pick<unknown>([{ field: "c", type: "nominal" }, { condition: { test: { field: "a", gt: 500 }, value: "#d64545" }, value: "#888888" }, { field: "c", type: "nominal", condition: { test: { field: "a", gt: 500 }, value: "#d64545" } }]) });
+  const tooltip = () => ({ tooltip: pick<unknown>([{ field: "i", type: "quantitative" }, [{ field: "c", type: "nominal" }, { field: "b", aggregate: "mean", type: "quantitative" }]]) });
   const layer = (): Obj => {
     const kind = pick(["raw", "window", "aggregate", "channel", "fold", "bin", "composite", "paths", "shared"]);
     const mark = pick(["line", "point", "bar", "area", "tick", "text", "rule"]);
+    const text = (f: string) => (mark === "text" ? { text: q(f) } : {});
     switch (kind) {
       case "raw":
-        return { mark, encoding: { x: q(pick(["i", "a"])), y: q(pick(["a", "b"])), ...(r() < 0.5 ? { color: { field: "c", type: "nominal" } } : {}), ...(mark === "text" ? { text: q("a") } : {}) } };
+        return { mark, encoding: { x: q(pick(["i", "a"])), y: q(pick(["a", "b"])), ...maybe(0.5, colour), ...text("a") } };
       case "window": {
         const o = op();
-        return { transform: [{ window: [{ op: o, field: "a", as: "w" }], frame: frameFor(o), sort: [{ field: "i" }] }], mark, encoding: { x: q("i"), y: q("w"), ...(mark === "text" ? { text: q("w") } : {}) } };
+        return { transform: [{ window: [{ op: o, field: "a", as: "w" }], frame: frameFor(o), sort: [{ field: "i" }] }], mark, encoding: { x: q("i"), y: q("w"), ...text("w") } };
       }
       case "aggregate": {
         const g = pick(["c", "i"]);
-        return { transform: [{ aggregate: [{ op: pick(["sum", "mean", "median", "ci0", "ci1", "distinct"]), field: "a", as: "s" }], groupby: [g] }], mark, encoding: { x: { field: g, type: "ordinal" }, y: q("s"), ...(mark === "text" ? { text: q("s") } : {}) } };
+        return { transform: [{ aggregate: [{ op: pick(["sum", "mean", "median", "q3", "distinct"]), field: "a", as: "s" }], groupby: [g] }], mark, encoding: { x: { field: g, type: "ordinal", ...maybe(0.5, sort) }, y: q("s"), ...maybe(0.3, colour), ...text("s") } };
       }
       case "channel":
-        return { mark, encoding: { x: { field: pick(["c", "i"]), type: "ordinal" }, y: { field: "a", aggregate: pick(["sum", "mean", "median", "ci0", "max"]), type: "quantitative" }, ...(mark === "text" ? { text: q("a") } : {}) } };
+        return { mark, encoding: { x: { field: pick(["c", "i"]), type: "ordinal", ...maybe(0.6, sort) }, y: { field: "a", aggregate: pick(["sum", "mean", "median", "q1", "max"]), type: "quantitative" }, ...maybe(0.4, colour), ...maybe(0.4, tooltip), ...text("a") } };
       case "fold":
-        return { transform: [{ fold: ["a", "b"] }], mark: pick([mark, "area"]), encoding: { x: q("i"), y: q("value"), color: { field: "key", type: "nominal" }, ...(mark === "text" ? { text: q("value") } : {}) } };
+        return { transform: [{ fold: ["a", "b"] }], mark: pick([mark, "area"]), encoding: { x: q("i"), y: q("value"), color: { field: "key", type: "nominal" }, ...text("value") } };
       case "paths": // a line or area split by a field a window wrote (Vega-Lite makes a path per value)
         return { transform: [{ window: [{ op: "row_number", as: "w" }] }], mark: pick(["line", "area"]), encoding: { x: q("i"), y: q("a"), [pick(["color", "detail", "strokeDash"])]: { field: pick(["w", "c"]), type: "nominal" } } };
       case "shared": // channels a layer shares with its views
-        return { encoding: { x: { field: pick(["c", "i"]), type: "ordinal" }, y: { field: "a", aggregate: pick(["mean", "ci0", "median"]), type: "quantitative" } }, layer: [{ mark: "line" }, { mark: pick(["point", "bar"]) }] };
+        return { encoding: { x: { field: pick(["c", "i"]), type: "ordinal", ...maybe(0.5, sort) }, y: { field: "a", aggregate: pick(["mean", "max", "median"]), type: "quantitative" }, ...maybe(0.4, colour) }, layer: [{ mark: "line" }, { mark: pick(["point", "bar"]) }] };
       case "bin":
-        return { mark: "bar", encoding: { x: { field: "a", bin: { maxbins: pick([10, 40, 100]) }, type: "quantitative" }, y: { aggregate: "count", type: "quantitative" } } };
+        return { mark: "bar", encoding: { x: { field: "a", bin: { maxbins: pick([10, 40, 100]) }, type: "quantitative" }, y: { aggregate: "count", type: "quantitative" }, ...maybe(0.3, colour) } };
       default:
-        return { mark: pick([{ type: "errorband", extent: pick(["ci", "stderr"]) }, "boxplot", { type: "errorbar", extent: "ci" }]), encoding: { x: { field: pick(["c", "i"]), type: "ordinal" }, y: q("a") } };
+        return { mark: pick([{ type: "errorband", extent: pick(["stderr", "stdev"]) }, "boxplot", { type: "errorbar", extent: "stderr" }]), encoding: { x: { field: pick(["c", "i"]), type: "ordinal" }, y: q("a"), ...maybe(0.3, colour) } };
     }
   };
   return (): Obj => {
     const n = pick([200, 1_000, 2_500, 5_000]);
     const values = Array.from({ length: n }, (_, i) => ({ i, a: (i * 7919) % 1000, b: n - i, c: `c${i % 7}` }));
     const layers = Array.from({ length: 1 + Math.floor(r() * 4) }, layer);
-    const vl = r() < 0.25 ? { data: { values }, vconcat: [{ layer: layers }, { layer: layers.slice(0, 2) }] } : { data: { values }, layer: layers };
-    return { vl };
+    const shape = r();
+    // many layered views: vconcat 2 x layer k x the layers, as the reviews built them
+    if (shape < 0.2) return { vl: { data: { values }, vconcat: [0, 1].map(() => ({ layer: Array.from({ length: 1 + Math.floor(r() * 8) }, () => ({ layer: layers })) })) } };
+    if (shape < 0.4) return { vl: { data: { values }, vconcat: [{ layer: layers }, { layer: layers.slice(0, 2) }] } };
+    return { vl: { data: { values }, layer: layers } };
   };
 }
 
-const maybe = VEGA_DIR ? describe : describe.skip;
-maybe("chartCost against Vega: measured time within a fixed multiple of the estimate", () => {
+const withVega = VEGA_DIR ? describe : describe.skip;
+withVega("chartCost against Vega: measured time within a fixed multiple of the estimate", () => {
   test(`a seeded sample of ${SAMPLE} accepted random charts`, async () => {
     const vega = await import(`${VEGA_DIR}/vega/build/vega.module.js`);
     const vl = await import(`${VEGA_DIR}/vega-lite/build/index.js`);

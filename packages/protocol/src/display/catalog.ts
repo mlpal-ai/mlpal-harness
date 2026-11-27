@@ -48,7 +48,7 @@ export const DISPLAY_LIMITS = {
   /** The estimated milliseconds a chart may cost to compile, run and draw (chartCost; well under a second). */
   chartCostBudgetMs: 400,
   /** Window ops that recompute over the whole frame for every row: allowed only with frame [null, null]. */
-  chartWholeFrameOps: ["median", "q1", "q3", "ci0", "ci1", "distinct"],
+  chartWholeFrameOps: ["median", "q1", "q3", "distinct"],
   gridRows: 2_000,
   gridColumns: 40,
   kpiTiles: 8,

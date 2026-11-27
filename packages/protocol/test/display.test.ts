@@ -237,6 +237,18 @@ describe("chart limits", () => {
     expect(code(series(13))).toBe("VALIDATION_FAILED spec.vl.encoding.color.field");
   });
 
+  test("what the grammar cut is refused in one line that says what to do instead (review 7 ruling)", () => {
+    const say = (vl: Record<string, unknown>) => {
+      const r = validateBlock("chart", { vl: { data: { values: rows(3) }, ...vl } });
+      return r.ok ? "ok" : `${r.error.message}; ${r.error.hint}`;
+    };
+    const x = { field: "week", type: "ordinal" };
+    expect(say({ mark: "line", encoding: { x, y: { field: "onhand", aggregate: "ci0", type: "quantitative" } } })).toMatch(/upstream.*low and high/);
+    expect(say({ mark: { type: "errorband", extent: "ci" }, encoding: { x, y: { field: "onhand", type: "quantitative" } } })).toMatch(/upstream.*low and high/);
+    expect(say({ mark: "bar", encoding: { x: { ...x, sort: { field: "onhand", op: "mean" } }, y: { field: "onhand", type: "quantitative" } } })).toMatch(/"-y".*"order"/);
+    expect(say({ params: [{ name: "p", select: "point" }], mark: "bar", encoding: { x, y: { field: "onhand", type: "quantitative" }, color: { condition: { param: "p", field: "week" }, value: "grey" } } })).toMatch(/encode the field on the channel/);
+  });
+
   test("a quantitative or temporal colour is a scale, not series: a 52 x 7 heatmap of 97 values passes (review 6, O5)", () => {
     const cells = Array.from({ length: 52 * 7 }, (_, i) => ({ week: `w${Math.floor(i / 7)}`, day: `d${i % 7}`, v: i % 97 }));
     const heat = (type: string) => line(cells, { mark: "rect", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "day", type: "ordinal" }, color: { field: "v", type } } });
@@ -329,11 +341,13 @@ describe("chart cost (UI review R2)", () => {
   });
 
   test("the limits are exported for clients", () => {
-    expect([DISPLAY_LIMITS.chartWindowRowsTimesSpan, DISPLAY_LIMITS.chartWindowOpRows, DISPLAY_LIMITS.chartMarks, DISPLAY_LIMITS.chartCostBudgetMs, [...DISPLAY_LIMITS.chartWholeFrameOps]]).toEqual([1_000_000, 100_000, 15_000, 400, ["median", "q1", "q3", "ci0", "ci1", "distinct"]]);
+    expect([DISPLAY_LIMITS.chartWindowRowsTimesSpan, DISPLAY_LIMITS.chartWindowOpRows, DISPLAY_LIMITS.chartMarks, DISPLAY_LIMITS.chartCostBudgetMs, [...DISPLAY_LIMITS.chartWholeFrameOps]]).toEqual([1_000_000, 100_000, 15_000, 400, ["median", "q1", "q3", "distinct"]]);
   });
 });
 
 describe("chartCost: the one cost walker (UI re-review N2)", () => {
+  /** `refused`: TOO_COSTLY at `path` through chartCost and validateBlock alike, or, for what the grammar cut,
+   *  VALIDATION_FAILED at `path` through validateBlock and TOO_COSTLY through chartCost alone. */
   type CostVectors = { refused: Array<{ name: string; code: string; path: string; spec: unknown }>; accepted: Array<{ name: string; spec: unknown }> };
   const raw = JSON.parse(readFileSync(new URL("./fixtures/display/chart-cost.vectors.json", import.meta.url), "utf8")) as CostVectors;
   /** The fixture's {"$rows": n, "$extra": {...}} directive, expanded. */
@@ -350,7 +364,9 @@ describe("chartCost: the one cost walker (UI re-review N2)", () => {
     test(`refused: ${c.name}`, () => {
       const spec = expand(c.spec);
       const cost = chartCost(spec);
-      expect(cost.ok ? "ok" : `${cost.code} ${cost.path}`).toBe(`${c.code} ${c.path}`);
+      // a spec the grammar now cuts (review 7) is refused by validateBlock at the cut; the walker alone refuses it too
+      if (c.code === "VALIDATION_FAILED") expect(cost.ok ? "ok" : cost.code).toBe("TOO_COSTLY");
+      else expect(cost.ok ? "ok" : `${cost.code} ${cost.path}`).toBe(`${c.code} ${c.path}`);
       const v = validateBlock("chart", spec);
       expect(v.ok ? "ok" : `${v.error.code} ${v.error.path}`).toBe(`${c.code} ${c.path}`);
     });

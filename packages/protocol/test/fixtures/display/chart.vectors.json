@@ -592,7 +592,6 @@
        },
        "sort": {
         "field": "onhand",
-        "op": "sum",
         "order": "descending"
        }
       }
@@ -647,7 +646,7 @@
    }
   },
   {
-   "name": "median, q1 and ci1 over the whole partition",
+   "name": "median, q1 and q3 over the whole partition",
    "spec": {
     "vl": {
      "data": {
@@ -687,7 +686,7 @@
          "as": "q"
         },
         {
-         "op": "ci1",
+         "op": "q3",
          "field": "onhand",
          "as": "c"
         }
@@ -698,6 +697,107 @@
        ]
       }
      ]
+    }
+   }
+  },
+  {
+   "name": "an interval computed upstream: an errorband over low and high fields, and a line",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "lo": 1900,
+        "hi": 2400,
+        "mid": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "lo": 1100,
+        "hi": 1600,
+        "mid": 1340
+       }
+      ]
+     },
+     "layer": [
+      {
+       "mark": "errorband",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "lo",
+         "type": "quantitative"
+        },
+        "y2": {
+         "field": "hi"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "mid",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "sort by a channel, by a field with an order, by an encoding; a value condition",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "params": [
+      {
+       "name": "pick",
+       "select": "point"
+      }
+     ],
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "ordinal",
+       "sort": {
+        "field": "onhand",
+        "order": "descending"
+       }
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "color": {
+       "condition": {
+        "param": "pick",
+        "value": "#d64545"
+       },
+       "value": "#888888"
+      }
+     }
     }
    }
   },
@@ -3311,7 +3411,7 @@
    }
   },
   {
-   "name": "ci0 on a cumulative frame",
+   "name": "q1 on a cumulative frame",
    "code": "TOO_COSTLY",
    "path": "spec.vl.transform[0].frame",
    "spec": {
@@ -3343,7 +3443,7 @@
       {
        "window": [
         {
-         "op": "ci0",
+         "op": "q1",
          "field": "onhand",
          "as": "c"
         }
@@ -3446,6 +3546,284 @@
         -1,
         1
        ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "cut: ci0 as a channel aggregate",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.encoding.y.aggregate",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative",
+       "aggregate": "ci0"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "cut: ci1 in an aggregate transform",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.transform[0].aggregate[0].op",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "aggregate": [
+        {
+         "op": "ci1",
+         "field": "onhand",
+         "as": "onhand"
+        }
+       ],
+       "groupby": [
+        "week"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "cut: ci0 in a window",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.transform[0].window[0].op",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "ci0",
+         "field": "onhand",
+         "as": "c"
+        }
+       ],
+       "frame": [
+        null,
+        null
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "cut: an errorband with extent ci",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark.extent",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": {
+      "type": "errorband",
+      "extent": "ci"
+     },
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "cut: an errorbar with extent ci",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark.extent",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": {
+      "type": "errorbar",
+      "extent": "ci"
+     },
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "cut: a sort with an op",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.encoding.x.sort.op",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal",
+       "sort": {
+        "field": "onhand",
+        "op": "mean"
+       }
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "cut: a condition with a field",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.encoding.color.condition.field",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "color": {
+       "condition": {
+        "param": "p",
+        "field": "week",
+        "type": "nominal"
+       },
+       "value": "grey"
+      }
+     },
+     "params": [
+      {
+       "name": "p",
+       "select": "point"
       }
      ]
     }
