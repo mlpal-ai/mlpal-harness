@@ -3,9 +3,9 @@ import { z } from "zod";
 /** C0 and C1 controls except tab and newline, and the invisible characters that reorder or hide text (bidirectional
  *  marks, embeddings, overrides and isolates, the zero-width space, the BOM): "\u202e0041" shows as "1400". The
  *  zero-width joiner and non-joiner stay, since emoji and several scripts need them. */
-export const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+export const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u180e\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 /** CONTROL with tab and newline, for engine-written text that is stripped rather than refused. */
-export const CONTROL_ALL = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+/g;
+export const CONTROL_ALL = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]+/gu;
 
 /** One to `max` characters of text a person reads, with no control characters. */
 export const plainText = (max: number) =>
@@ -24,7 +24,7 @@ const SAFE_NAMED: ReadonlySet<string> = new Set([
   "frac14", "frac34", "sup2", "sup3", "permil", "prime", "Prime",
 ]);
 const REFERENCE = /&(#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]{0,31});?/g;
-const ONE_CONTROL = new RegExp(`^${CONTROL.source}$`);
+const ONE_CONTROL = new RegExp(`^${CONTROL.source}$`, "u");
 
 function harmless(body: string): boolean {
   if (!body.startsWith("#")) return SAFE_NAMED.has(body);
@@ -42,8 +42,21 @@ function harmless(body: string): boolean {
  * character: the `&` of a numeric reference (decimal or hex, any case, leading zeros, with or without `;`) whose code
  * point is in CONTROL or is no scalar value, and of a named reference outside a small list of printable ones, becomes
  * `&amp;`, so the reference shows as written. References to printable characters stay, HTML-significant ones included
- * (`&#60;`): a reference never forms markup in a markdown renderer, and a plain-text client shows the character.
+ * (`&#60;`), except a `<` that a tag would follow: a reference never forms markup in a markdown renderer, and a
+ * plain-text client shows the character.
  */
 export function defuseReferences(text: string): string {
-  return text.replace(REFERENCE, (m, body: string) => (harmless(body) ? m : `&amp;${m.slice(1)}`));
+  return text.replace(REFERENCE, (m, body: string, offset: number, all: string) =>
+    harmless(body) && !(decodesToLt(body) && TAG_START.test(all[offset + m.length] ?? "")) ? m : `&amp;${m.slice(1)}`,
+  );
+}
+
+/** A `<` reference followed by what starts a tag would be markup after one decode (review 5, O3); a `<` before a
+ *  space or a digit is a comparison and stays. */
+const TAG_START = /[A-Za-z!/?]/;
+function decodesToLt(body: string): boolean {
+  if (body === "lt") return true;
+  if (!body.startsWith("#")) return false;
+  const hex = body[1] === "x" || body[1] === "X";
+  return parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10) === 0x3c;
 }

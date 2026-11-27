@@ -83,6 +83,10 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Review 5 optionals: a `<` reference followed by what starts a tag (`&#60;script`) is defused too; CONTROL also
+  covers U+061C, U+180E, U+2028/2029, U+2060-2064 and the tag characters U+E0000-E007F (in line with the web UI);
+  an envelope's note `ref.tool_use_id` is at most 128 characters on output; envelope strings other than the fallback
+  are plain text that a client never entity-decodes (documented).
 - Chart cost (UI review R2), new code `TOO_COSTLY`: a window with median, q1, q3, ci0, ci1 or distinct takes frame
   [null, null] (`DISPLAY_LIMITS.chartWholeFrameOps`); a frame bounded at both ends runs at most
   `chartWindowRowsTimesSpan` = 1,000,000 rows x span; all windows of a chart at most `chartWindowOpRows` = 200,000 rows

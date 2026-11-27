@@ -710,10 +710,11 @@ describe("no stored reference decodes to a control character (UI review R1)", ()
     });
   }
 
-  test("kept: tab, newline, ordinary characters and the safe named references; < stays a harmless reference", () => {
+  test("kept: tab, newline, ordinary characters and the safe named references; a < before a space stays", () => {
     const text = `${FALLBACK} &#9; &#10; &#8212; &#x2014; &mdash; &copy; &lt; &#60;img&#62; &amp; R&D`;
     const out = stored(text);
-    expect(out).toBe(`${FALLBACK} &#9; &#10; &#8212; &#x2014; &mdash; &copy; &lt; &#60;img&#62; &amp; R&amp;D`);
+    // a < reference before a tag name is defused (review 5, O3); before a space it stays
+    expect(out).toBe(`${FALLBACK} &#9; &#10; &#8212; &#x2014; &mdash; &copy; &lt; &amp;#60;img&#62; &amp; R&amp;D`);
   });
 
   test("every code point of the CONTROL class, in every reference form, never decodes from stored text or a table cell", () => {
@@ -734,6 +735,29 @@ describe("no stored reference decodes to a control character (UI review R1)", ()
   test("a refusal's message quoting a reference is defused too", () => {
     const r = checkShowInput(show({ kind: "grid", spec: { columns: [{ key: "n", label: "N", type: "text" }], rows: [{ n: "x", "k&#27;": 1 }], row_key: "n" } }));
     expect(r.ok ? "" : CONTROL_CLASS.test(decode(`${r.error.message} ${r.error.path}`))).toBe(false);
+  });
+});
+
+describe("review 5 optionals: O3, O4, O5", () => {
+  test("O3: a reference to < that would open a tag after one decode is defused; a comparison stays", () => {
+    const r = checkShowInput(show({ fallback: { text: `${FALLBACK} &#60;script&#62;x &lt;img src=x&gt; 3 &lt; 5 &#60;/p&#62;` } }));
+    expect(r.ok && r.show.fallback).toBe(`${FALLBACK} &amp;#60;script&#62;x &amp;lt;img src=x&gt; 3 &lt; 5 &amp;#60;/p&#62;`);
+  });
+
+  test("O4: the Arabic letter mark, line and paragraph separators, invisible operators, the Mongolian vowel separator and tag characters are control characters", () => {
+    for (const ch of ["\u061c", "\u2028", "\u2029", "\u2060", "\u2064", "\u180e", "\u{E0001}", "\u{E007F}"]) {
+      const r = checkShowInput(show({ fallback: { text: `${FALLBACK} a${ch}b` } }));
+      expect([ch.codePointAt(0)!.toString(16), r.ok ? null : r.error.path]).toEqual([ch.codePointAt(0)!.toString(16), "fallback.text"]);
+    }
+    const decoded = checkShowInput(show({ fallback: { text: `${FALLBACK} &#x061C; &#xE0041;` } }));
+    expect(decoded.ok && decoded.show.fallback).toContain("&amp;#x061C; &amp;#xE0041;");
+  });
+
+  test("O5: an envelope's note ref id is at most 128 characters", () => {
+    const env = { v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status: "repairing", notes: [{ id: "n", kind: "source", text: "x", ref: { tool_use_id: "t".repeat(129) } }] };
+    expect(displayEnvelopeSchema.safeParse(env).success).toBe(false);
+    env.notes[0]!.ref.tool_use_id = "t".repeat(128);
+    expect(displayEnvelopeSchema.safeParse(env).success).toBe(true);
   });
 });
 
