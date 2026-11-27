@@ -55,6 +55,13 @@
   is stored as `&amp;`; the reference then shows as written. References to printable characters stay, `&#60;`
   included (never markup in a markdown renderer; a plain-text client shows the character). Neutralised at store time
   rather than refused: legitimate references (`&#8212;`) keep working and no repair is spent.
+- Chart cost (UI review R2), new code `TOO_COSTLY`: a window with median, q1, q3, ci0, ci1 or distinct takes frame
+  [null, null] (`DISPLAY_LIMITS.chartWholeFrameOps`); a frame bounded at both ends runs at most
+  `chartWindowRowsTimesSpan` = 1,000,000 rows x span; all windows of a chart at most `chartWindowOpRows` = 200,000 rows
+  x ops (folds above a window count). Measured with Vega 6.4 in Bun on 5,000 rows: a cumulative median 3.6 s, a
+  distinct over +-2,500 2.7 s, min/max over +-2,500 330 ms, sum or mean over +-2,500 under 100 ms, twenty windows about
+  100 ms. The model's grammar names the rule. No other allowed transform is quadratic (joinaggregate, loess, regression
+  and density are refused).
 - Invisible characters that reorder or hide text (bidirectional marks, embeddings, overrides, isolates, the zero-width
   space, the BOM) count as control characters: refused in model text, stripped from engine text; the zero-width
   joiner and non-joiner stay. A protocol-relative link (`//host/...`) is not a relative path.
