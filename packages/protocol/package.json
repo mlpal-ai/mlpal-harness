@@ -32,7 +32,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/display/validate.ts --root src --outdir dist --target node --format esm --external zod && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && bun scripts/build.ts dist && tsc -p tsconfig.build.json",
     "prepack": "bun run build"
   },
   "publishConfig": {
