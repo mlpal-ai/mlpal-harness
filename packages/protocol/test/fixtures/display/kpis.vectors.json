@@ -1,0 +1,300 @@
+{
+ "_comment": "validateBlock('kpis', spec) vectors. Paths start at the Show input root.",
+ "valid": [
+  {
+   "name": "four tiles",
+   "spec": {
+    "tiles": [
+     {
+      "id": "at-risk",
+      "label": "Revenue at risk",
+      "value": 148200,
+      "format": "currency",
+      "unit": "USD",
+      "status": "bad"
+     },
+     {
+      "id": "fill",
+      "label": "Fill rate",
+      "value": 94.2,
+      "format": "percent",
+      "delta": {
+       "value": -1.8,
+       "label": "vs last week",
+       "good": "up"
+      },
+      "spark": [
+       96.4,
+       96.0,
+       95.1,
+       94.2
+      ]
+     },
+     {
+      "id": "stockout",
+      "label": "Runs out",
+      "value": "17 Dec",
+      "format": "text",
+      "sub": "Columbus, as things stand"
+     },
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     }
+    ]
+   }
+  },
+  {
+   "name": "one tile",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     }
+    ]
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "no tiles",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles",
+   "spec": {
+    "tiles": []
+   }
+  },
+  {
+   "name": "nine tiles",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles",
+   "spec": {
+    "tiles": [
+     {
+      "id": "t0",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t1",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t2",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t3",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t4",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t5",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t6",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t7",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "t8",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a tile id used twice",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[1].id",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     },
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a number tile given text",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].value",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": "880",
+      "format": "integer"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a text tile given a number",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].value",
+   "spec": {
+    "tiles": [
+     {
+      "id": "stockout",
+      "label": "Runs out",
+      "value": 17,
+      "format": "text",
+      "sub": "Columbus, as things stand"
+     }
+    ]
+   }
+  },
+  {
+   "name": "an integer tile given a fraction",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].value",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880.5,
+      "format": "integer"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a currency tile without its code",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].unit",
+   "spec": {
+    "tiles": [
+     {
+      "id": "at-risk",
+      "label": "Revenue at risk",
+      "value": 148200,
+      "format": "currency",
+      "status": "bad"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a currency tile with a symbol for a code",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].unit",
+   "spec": {
+    "tiles": [
+     {
+      "id": "at-risk",
+      "label": "Revenue at risk",
+      "value": 148200,
+      "format": "currency",
+      "unit": "$",
+      "status": "bad"
+     }
+    ]
+   }
+  },
+  {
+   "name": "an unknown format",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].format",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "bytes"
+     }
+    ]
+   }
+  },
+  {
+   "name": "an unknown tile field",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0]",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer",
+      "color": "red"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a spark of one point",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].spark",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "Units short",
+      "value": 880,
+      "format": "integer",
+      "spark": [
+       1
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "a label over 40 characters",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.tiles[0].label",
+   "spec": {
+    "tiles": [
+     {
+      "id": "units",
+      "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "value": 880,
+      "format": "integer"
+     }
+    ]
+   }
+  }
+ ]
+}

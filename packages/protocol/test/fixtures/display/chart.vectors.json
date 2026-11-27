@@ -1,0 +1,1968 @@
+{
+ "_comment": "validateBlock('chart', spec) vectors for the Vega-Lite subset (DISPLAY-PROTOCOL-v0 §5.2). 'valid' must pass; 'invalid' must be refused with the stated code at the stated path (paths start at the Show input root). Row, cell and series limits are generated in the test.",
+ "valid": [
+  {
+   "name": "time series",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "stacked column through fold",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "dc": "Reno",
+        "onhand": 3400,
+        "inbound": 1200
+       },
+       {
+        "dc": "Columbus",
+        "onhand": 460,
+        "inbound": 0
+       }
+      ]
+     },
+     "transform": [
+      {
+       "fold": [
+        "onhand",
+        "inbound"
+       ],
+       "as": [
+        "part",
+        "units"
+       ]
+      }
+     ],
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "dc",
+       "type": "nominal"
+      },
+      "y": {
+       "field": "units",
+       "type": "quantitative",
+       "stack": "zero"
+      },
+      "color": {
+       "field": "part",
+       "type": "nominal"
+      }
+     }
+    },
+    "series_order": [
+     "onhand",
+     "inbound"
+    ]
+   }
+  },
+  {
+   "name": "pareto: bars and a cumulative line through window",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "cause": "scratch",
+        "n": 40
+       },
+       {
+        "cause": "dent",
+        "n": 25
+       },
+       {
+        "cause": "stain",
+        "n": 10
+       }
+      ]
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "n",
+         "as": "cum"
+        }
+       ],
+       "sort": [
+        {
+         "field": "n",
+         "order": "descending"
+        }
+       ]
+      }
+     ],
+     "layer": [
+      {
+       "mark": "bar",
+       "encoding": {
+        "x": {
+         "field": "cause",
+         "type": "nominal",
+         "sort": "-y"
+        },
+        "y": {
+         "field": "n",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "line",
+        "point": true
+       },
+       "encoding": {
+        "x": {
+         "field": "cause",
+         "type": "nominal"
+        },
+        "y": {
+         "field": "cum",
+         "type": "quantitative"
+        }
+       }
+      }
+     ],
+     "resolve": {
+      "scale": {
+       "y": "independent"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "point selection and a param condition",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "opacity": {
+       "condition": {
+        "param": "pick",
+        "value": 1
+       },
+       "value": 0.4
+      }
+     },
+     "params": [
+      {
+       "name": "pick",
+       "select": "point"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "predicate condition and field filter",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "color": {
+       "condition": {
+        "test": {
+         "field": "onhand",
+         "lt": 1500
+        },
+        "value": "#c0392b"
+       },
+       "value": "#2c3e50"
+      }
+     },
+     "transform": [
+      {
+       "filter": {
+        "field": "onhand",
+        "gte": 0
+       }
+      },
+      {
+       "filter": {
+        "and": [
+         {
+          "field": "week",
+          "valid": true
+         },
+         {
+          "not": {
+           "field": "onhand",
+           "equal": 0
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "binned histogram with aggregate",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "lead": 3
+       },
+       {
+        "lead": 5
+       },
+       {
+        "lead": 9
+       }
+      ]
+     },
+     "transform": [
+      {
+       "bin": true,
+       "field": "lead",
+       "as": "lead_bin"
+      },
+      {
+       "aggregate": [
+        {
+         "op": "count",
+         "as": "n"
+        }
+       ],
+       "groupby": [
+        "lead_bin",
+        "lead_bin_end"
+       ]
+      }
+     ],
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "lead_bin",
+       "type": "quantitative"
+      },
+      "x2": {
+       "field": "lead_bin_end"
+      },
+      "y": {
+       "field": "n",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "errorband under a line, data inherited by the layers",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140,
+        "lo": 2020,
+        "hi": 2260
+       }
+      ]
+     },
+     "layer": [
+      {
+       "mark": "errorband",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "lo",
+         "type": "quantitative"
+        },
+        "y2": {
+         "field": "hi"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "vconcat of two views",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "vconcat": [
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "bar",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a layer with its own inline data (a rule)",
+   "spec": {
+    "vl": {
+     "layer": [
+      {
+       "data": {
+        "values": [
+         {
+          "week": "2026-11-30",
+          "onhand": 2140
+         },
+         {
+          "week": "2026-12-07",
+          "onhand": 1340
+         }
+        ]
+       },
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "data": {
+        "values": [
+         {
+          "at": "2026-12-09",
+          "label": "Transfer arrives"
+         }
+        ]
+       },
+       "mark": "rule",
+       "encoding": {
+        "x": {
+         "field": "at",
+         "type": "temporal"
+        },
+        "tooltip": [
+         {
+          "field": "label"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "timeUnit and tooltip list",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "wk",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "tooltip": [
+       {
+        "field": "week",
+        "type": "temporal"
+       },
+       {
+        "field": "onhand"
+       }
+      ]
+     },
+     "transform": [
+      {
+       "timeUnit": "yearweek",
+       "field": "week",
+       "as": "wk"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "$schema, config and usermeta at the top are stripped, not refused",
+   "spec": {
+    "vl": {
+     "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+     "config": {
+      "background": "#fff"
+     },
+     "usermeta": {
+      "embedOptions": {
+       "loader": {
+        "baseURL": "https://x"
+       }
+      }
+     },
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "data.url",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.data.url",
+   "spec": {
+    "vl": {
+     "data": {
+      "url": "https://example.com/stock.csv"
+     },
+     "mark": "line"
+    }
+   }
+  },
+  {
+   "name": "a URL inside the data",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.data.values[0].link",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "link": "https://evil.example/?q=1"
+       }
+      ]
+     },
+     "mark": "point"
+    }
+   }
+  },
+  {
+   "name": "a protocol-relative URL in a title",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.title",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "title": "//evil.example/x.png"
+    }
+   }
+  },
+  {
+   "name": "a data: URI in a mark property",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.mark.fill",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": {
+      "type": "area",
+      "fill": "data:image/png;base64,AAAA"
+     },
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "the href channel",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.encoding.href",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "href": {
+       "field": "week"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "the url channel",
+   "code": "URL_NOT_ALLOWED",
+   "path": "spec.vl.encoding.url",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "url": {
+       "field": "week"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "an image mark",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "image",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a geoshape mark",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark.type",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": {
+      "type": "geoshape"
+     },
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "an arc mark",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a trail mark",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "trail",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "calculate",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.transform[0].calculate",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "calculate": "datum.onhand * 2",
+       "as": "double"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "an expression filter",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.transform[0].filter",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "filter": "datum.onhand > 0"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a test string in a condition",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.encoding.color.condition.test",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "color": {
+       "condition": {
+        "test": "datum.onhand < 1500",
+        "value": "red"
+       },
+       "value": "black"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "an expr in a mark property",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.mark.opacity.expr",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": {
+      "type": "line",
+      "opacity": {
+       "expr": "random()"
+      }
+     },
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a signal reference",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.width.signal",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "width": {
+      "signal": "containerSize()[0]"
+     }
+    }
+   }
+  },
+  {
+   "name": "an expr hidden under a legend's values",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.encoding.color.legend.values.expr",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "week",
+       "legend": {
+        "values": {
+         "expr": "x"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a variable param (expr)",
+   "code": "EXPRESSION_NOT_ALLOWED",
+   "path": "spec.vl.params[0].expr",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "params": [
+      {
+       "name": "k",
+       "expr": "2"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a bound param",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.params[0].bind",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "params": [
+      {
+       "name": "k",
+       "select": "point",
+       "bind": {
+        "input": "range"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a param that is not a selection",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.params[0].select",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "params": [
+      {
+       "name": "k",
+       "value": 2
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "facet",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.facet",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "facet": {
+      "field": "week"
+     },
+     "spec": {
+      "mark": "line"
+     }
+    }
+   }
+  },
+  {
+   "name": "repeat",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.repeat",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "repeat": [
+      "onhand"
+     ],
+     "spec": {
+      "mark": "line"
+     }
+    }
+   }
+  },
+  {
+   "name": "hconcat",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.hconcat",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "hconcat": [
+      {
+       "mark": "line"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "concat",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.concat",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "concat": [
+      {
+       "mark": "line"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "nine layers",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.layer",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "layer": [
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "three vconcat views",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.vconcat",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "vconcat": [
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "line",
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "vconcat inside a layer",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.layer[0].vconcat",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "layer": [
+      {
+       "vconcat": [
+        {
+         "mark": "line"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a view with both mark and layer",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "layer": [
+      {
+       "mark": "line"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a lookup transform",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.transform[0]",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "lookup": "week",
+       "from": {
+        "data": {
+         "values": []
+        },
+        "key": "week"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a regression transform",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.transform[0]",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "regression": "onhand",
+       "on": "week"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a loess transform",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.transform[0]",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "loess": "onhand",
+       "on": "week"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a channel outside the allowlist",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.encoding.theta",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      },
+      "theta": {
+       "field": "onhand"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "an encoding names a field the data lacks",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.encoding.y.field",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "on_hand",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "no inline data anywhere",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "mark": "point"
+    }
+   }
+  },
+  {
+   "name": "a data generator",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.data.sequence",
+   "spec": {
+    "vl": {
+     "data": {
+      "sequence": {
+       "start": 0,
+       "stop": 10
+      }
+     },
+     "mark": "point"
+    }
+   }
+  },
+  {
+   "name": "named data without values",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.data.values",
+   "spec": {
+    "vl": {
+     "data": {
+      "name": "stock"
+     },
+     "mark": "point"
+    }
+   }
+  },
+  {
+   "name": "a nested value in a row",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.data.values[0].onhand",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": {
+         "v": 1
+        }
+       }
+      ]
+     },
+     "mark": "point"
+    }
+   }
+  },
+  {
+   "name": "an unknown view field",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.autosize",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "autosize": "fit"
+    }
+   }
+  },
+  {
+   "name": "config inside a layer is not stripped, it is unknown there",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.layer[0].config",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "layer": [
+      {
+       "mark": "line",
+       "config": {},
+       "encoding": {
+        "x": {
+         "field": "week",
+         "type": "temporal"
+        },
+        "y": {
+         "field": "onhand",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "the spec has no vl",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl",
+   "spec": {
+    "series_order": [
+     "onhand"
+    ]
+   }
+  },
+  {
+   "name": "the spec has an unknown field",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.colors",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    },
+    "colors": [
+     "red"
+    ]
+   }
+  },
+  {
+   "name": "a series named twice in series_order",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.series_order",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     }
+    },
+    "series_order": [
+     "a",
+     "a"
+    ]
+   }
+  }
+ ]
+}

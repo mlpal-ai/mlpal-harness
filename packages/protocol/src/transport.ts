@@ -1,6 +1,7 @@
 import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
+import type { DisplayCaps } from "./display/caps.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, ModelRefusal, SDKMessage } from "./sdk.js";
@@ -79,7 +80,8 @@ export type ServerCapability =
   | "page_context" // 0.26.0 (C2): run.context, checked by shape and injected as data when it changed
   | "secret_reveal" // 0.26.0 (C1 §7.2): secret_reveal frames, session_history.secretReveals, the secret_revealed client frame
   | "abuse_flag" // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
-  | "live_attach"; // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
+  | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
+  | "display"; // 0.27.0: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -460,6 +462,9 @@ export type ClientMessage =
       /** 0.26.0 (capability "page_context", C2): the page the person is on, as data. An invalid one is dropped, never
        *  the run. (Not the RunContext: the scheduler carries that beside the message, never in it.) */
       context?: PageContextV1;
+      /** 0.27.0 (capability "display"): what this client draws, sent with every run. Absent: the run is served exactly
+       *  as before. An invalid one (parseDisplayCaps) is dropped, never the run. */
+      display?: DisplayCaps;
     }
   /** Steer a session. yodex/2 (capability "mail"): `requestId` is echoed on the send_result. */
   | { type: "send"; requestId?: string; sessionId: string; text: string }
@@ -744,4 +749,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.26.7";
+export const HARNESS_PROTOCOL_VERSION = "0.27.0";

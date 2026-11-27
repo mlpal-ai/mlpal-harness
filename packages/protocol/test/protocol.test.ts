@@ -5,6 +5,8 @@ import {
   HARNESS_PROTOCOL_VERSION,
   type ClientMessage,
   type DelegatedCredential,
+  type DisplayCaps,
+  type DisplayEnvelope,
   type PageContextV1,
   type ErrorCode,
   type ErrorEvent,
@@ -213,12 +215,26 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.26.7 (E-17: system/init names the sandbox that confines the session's commands, additive)", () => {
+describe("0.27.0 (display protocol: tool_result.display, run.display, capability display; additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.26.7");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.26.7");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.27.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.27.0");
   });
 
+  test("display is optional on tool_result and on run; the capability is named", () => {
+    const envelope: DisplayEnvelope = { v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "text", fallback: { text: "Runs out on 17 Dec, four days before PO 4471." }, source: { by: "model" }, status: "repairing" };
+    const shown: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Show", content: "c", display: [envelope], isError: false, ts: "t" };
+    const before: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Read", content: "c", isError: false, ts: "t" };
+    const caps: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], viewport: "desktop", theme: "light", locale: "en-US", timeZone: "UTC" };
+    const run = { type: "run", requestId: "r", prompt: "p", display: caps } satisfies ClientMessage;
+    const cap: ServerCapability = "display";
+    // @ts-expect-error a text envelope carries no kind
+    const kinded: DisplayEnvelope = { ...envelope, kind: "chart" };
+    expect([shown.display?.length, "display" in before, run.display.client, cap, kinded.level]).toEqual([1, false, "web", "display", "text"]);
+  });
+});
+
+describe("0.26.7 (E-17: system/init names the sandbox that confines the session's commands, additive)", () => {
   test("sandbox is optional on system/init; local, remote and none records are typed", () => {
     const local: SandboxRecord = { platform: "bwrap", filesystem: "readOnly", network: "none", required: true };
     const remote: SandboxRecord = { platform: "remote", filesystem: null, network: null, required: true, template: "hands" };
