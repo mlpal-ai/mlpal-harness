@@ -89,6 +89,11 @@
   marks) are refused vectors. `test/display-cost-vega.test.ts` draws a seeded sample of 24 random accepted charts
   with the real Vega when `DISPLAY_COST_VEGA_DIR` names a node_modules holding vega and vega-lite, and holds each to
   3 x its estimate (worst seen: 0.97 x; skipped otherwise).
+- The built package loads in Node (review 6): a two-entry `bun build` emitted entries Node could not import
+  ("Export 'blockRows2' is not defined"). `scripts/build.ts` bundles `src/index.ts` alone and writes the `./validate`
+  subpath as a re-export of the root bundle's validation names (read from `validate.ts`, so it cannot drift);
+  declarations still come from tsc. `test/build.test.ts` runs the build into a fresh directory and imports both
+  entries in a plain Node process, checking they give the same functions.
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath
