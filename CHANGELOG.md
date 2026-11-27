@@ -17,9 +17,14 @@
   `URL_NOT_ALLOWED`, `EXPRESSION_NOT_ALLOWED`, `SPEC_TOO_LARGE`, `ROWS_OVER_LIMIT`, `TOO_MANY_BLOCKS`,
   `SOURCE_UNKNOWN`, `RETRY_EXHAUSTED`). A refusal after the fallback passed carries the fallback, so it can be shown
   while the model repairs.
-- `validateBlock(kind, spec)`, the check engine and client share: `chart` on the §5.2 Vega-Lite subset (inline
-  `data.values` only; no URL anywhere, data included; no `calculate`, expression filter, `test` string, `expr` or
-  `signal`; marks, channels and transforms by allowlist; `layer` ≤ 8, top-level `vconcat` ≤ 2; 5,000 rows after
+- `validateBlock(kind, spec)`, the check engine and client share: `chart` on the §5.2 Vega-Lite subset as a strict
+  allowlist at every depth (every object of a mark, channel, axis, legend, scale, sort, bin, condition, predicate,
+  transform, param, selection, title and resolve is checked key by key, every number bounded: `tickCount` ≤ 100,
+  `maxbins` ≤ 200, `width`/`height` ≤ 4,000, a band step ≤ 200; a transform has exactly one op key and only that
+  op's keys); inline `data.values` only; no URL anywhere, data included; anywhere outside the data rows `expr`,
+  `signal`, `*Expr`, a selection's `on`/`clear`/`toggle`/`translate`/`zoom` and a custom `formatType` are
+  `EXPRESSION_NOT_ALLOWED`, and `url`, `href`, `from`, `lookup` are `URL_NOT_ALLOWED`; no `calculate`, expression
+  filter or `test` string; `layer` ≤ 8, top-level `vconcat` ≤ 2; 5,000 rows after
   `fold`, 50,000 cells, 12 series; the top-level `$schema`, `config` and `usermeta` dropped), `kpis` (≤ 8 tiles),
   `grid` (≤ 2,000 inline rows, typed columns, a unique `row_key`). Notes (`source`, `assumption`, `caveat`) ride the
   envelope. The fallback is 40–8,000 characters of plain GFM that does not only point at the block and, for these

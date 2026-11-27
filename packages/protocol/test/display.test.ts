@@ -38,6 +38,60 @@ for (const kind of ["chart", "grid", "kpis"] as BlockKind[]) {
   });
 }
 
+describe("chart allowlist is strict at every depth", () => {
+  /** Every plain object of a spec outside its data rows, with its path from `spec` and its depth below `vl`. */
+  function objects(spec: unknown): Array<{ path: Array<string | number>; depth: number; obj: Record<string, unknown> }> {
+    const out: Array<{ path: Array<string | number>; depth: number; obj: Record<string, unknown> }> = [];
+    const stack: Array<{ v: unknown; path: Array<string | number> }> = [{ v: spec, path: [] }];
+    while (stack.length) {
+      const { v, path } = stack.pop()!;
+      if (path.at(-1) === "values" && path.at(-2) === "data") continue;
+      if (path[0] === "vl" && (path[1] === "config" || path[1] === "usermeta")) continue; // dropped whole, never drawn
+      if (Array.isArray(v)) v.forEach((x, i) => stack.push({ v: x, path: [...path, i] }));
+      else if (v && typeof v === "object") {
+        if (path[0] === "vl") out.push({ path, depth: path.length, obj: v as Record<string, unknown> });
+        for (const [k, x] of Object.entries(v)) stack.push({ v: x, path: [...path, k] });
+      }
+    }
+    return out;
+  }
+  const rich = load<"spec">("chart").valid.map((c) => c.spec);
+  const ridgeline = JSON.parse(readFileSync(new URL("./fixtures/display/golden/ridgeline-2p-projection.json", import.meta.url), "utf8")).show.spec;
+  // a deterministic generator of key names that no allowlist or refusal list names
+  let seed = 7;
+  const name = () => {
+    seed = (seed * 48271) % 2147483647;
+    return `zq${seed.toString(36)}`;
+  };
+
+  test("an unknown key on any object at depth 1 to 6 is refused at its path", () => {
+    let probed = 0;
+    const depths = new Set<number>();
+    for (const spec of [...rich, ridgeline]) {
+      for (const { path, depth } of objects(spec)) {
+        if (depth > 6) continue;
+        for (let n = 0; n < 3; n++) {
+          const key = name();
+          const copy = structuredClone(spec);
+          let at: Record<string, unknown> = copy;
+          for (const seg of path) at = at[seg as string] as Record<string, unknown>;
+          at[key] = n === 0 ? 1 : n === 1 ? "x" : { nested: true };
+          const r = validateBlock("chart", copy);
+          expect(r.ok ? "ok" : `${r.error.code} ${r.error.path}`).toBe(`VALIDATION_FAILED ${displayPath(["spec", ...path, key])}`);
+          probed++;
+          depths.add(depth);
+        }
+      }
+    }
+    expect([...depths].sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(probed).toBeGreaterThan(300);
+  });
+
+  test("every valid vector and the golden still pass", () => {
+    for (const spec of [...rich, ridgeline]) expect(validateBlock("chart", spec).ok).toBe(true);
+  });
+});
+
 describe("chart limits", () => {
   const code = (spec: unknown) => {
     const r = validateBlock("chart", spec);
