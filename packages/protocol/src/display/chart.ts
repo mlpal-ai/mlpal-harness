@@ -255,7 +255,7 @@ const PREDICATE: Rule = (v, p, w) => {
 
 const CONDITION: Rule = (v, p, w) => {
   // cut (review 7 ruling): a field in a condition is a hidden grouping dimension
-  if (isObj(v) && has(v, "field")) fail("VALIDATION_FAILED", [...p, "field"], "a condition sets a value, not a field", 'encode the field on the channel itself; a condition is { "param" or "test", "value" }');
+  if (isObj(v) && has(v, "field")) fail("VALIDATION_FAILED", [...p, "field"], "a condition sets a value, not a field", 'encode the field on the channel itself; a condition is { "param" or "test", "value" }. To highlight a series, put its field on color and a value condition on opacity: {"condition": {"param": "pick", "value": 1}, "value": 0.2}');
   obj({ param: TOKEN, test: PREDICATE, empty: bool, value: byType({ string: str(200), number: num(-1e15, 1e15), boolean: bool, null: nul, array: arr(num(0, 100), 8) }) })(v, p, w);
   if (has(v as Obj, "param") === has(v as Obj, "test")) fail("VALIDATION_FAILED", p, "a condition has exactly one of param or test");
 };
