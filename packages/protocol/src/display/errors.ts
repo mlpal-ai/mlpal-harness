@@ -1,3 +1,5 @@
+import { CONTROL_ALL } from "./fields.js";
+
 /**
  * 0.26.8 display protocol (DISPLAY-PROTOCOL-v0 §3.3): why the engine refused a display. The model reads the code with
  * a path and a hint as a tool error and repairs from it; metrics count it by code. A2UI's names are reused where they
@@ -69,7 +71,7 @@ export class DisplayRefusal extends Error {
  *  syntax, no HTML or code span, no autolink; at most 300 characters. */
 export function inert(s: string): string {
   const flat = s
-    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(CONTROL_ALL, " ")
     .replace(/!\[/g, "!?")
     .replace(/\]\(/g, "]?")
     .replace(/\]:/g, "]?")

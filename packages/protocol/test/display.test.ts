@@ -460,6 +460,27 @@ describe("no fallback can hold a link reference definition, however written (rev
   });
 });
 
+describe("protocol-relative links and invisible direction marks (review 3, optional 2 and 3)", () => {
+  test("a protocol-relative link is not a relative path", () => {
+    const r = checkShowInput(show({ fallback: { text: `${FALLBACK} [x](//evil.example/x)` } }));
+    expect(r.ok ? null : [r.error.code, r.error.path]).toEqual(["VALIDATION_FAILED", "fallback.text"]);
+    expect(inertFallbackText("[x](//evil.example/x)")).toBe("[x]&#40;//evil.example/x)");
+  });
+
+  test("bidirectional overrides, isolates, zero-width spaces and BOMs are refused in model text and stripped from engine text", () => {
+    for (const mark of ["\u202e", "\u2066", "\u2069", "\u200b", "\u200f", "\ufeff"]) {
+      const r = checkShowInput(show({ fallback: { text: `${FALLBACK} ${mark}0041${mark} units` } }));
+      expect(r.ok ? null : r.error.path).toBe("fallback.text");
+      const g = checkShowInput(show({ kind: "grid", spec: { columns: [{ key: "n", label: "N", type: "text" }], rows: [{ n: `a${mark}b` }], row_key: "n" } }));
+      expect(g.ok ? null : g.error.path).toBe("spec.rows[0].n");
+      const c = validateBlock("chart", line([{ week: `w${mark}`, onhand: 1 }]));
+      expect(c.ok ? null : c.error.path).toBe("spec.vl.data.values[0].week");
+    }
+    // emoji and scripts that need joiners still pass
+    expect(checkShowInput(show({ fallback: { text: `${FALLBACK} 👩\u200d💻 \u200c` } })).ok).toBe(true);
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);

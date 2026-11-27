@@ -2,7 +2,7 @@ import { z } from "zod";
 import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
 import { fail } from "./errors.js";
-import { CONTROL } from "./fields.js";
+import { CONTROL, CONTROL_ALL } from "./fields.js";
 
 /**
  * 0.26.8 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
@@ -35,8 +35,9 @@ const HTML = /<[A-Za-z!/?]/;
 /** Any image: inline, reference, collapsed or shortcut. */
 const IMAGE = /!\[/;
 const FENCE = /^\s*(```|~~~)/m;
-/** A link destination that may stay a link: http(s), or a relative path with no scheme and no entity. */
-const SAFE_DEST = /^(?:<?https?:\/\/|[A-Za-z0-9._~/#?=%+-]*(?:[)\s>]|$))/i;
+/** A link destination that may stay a link: http(s), or a relative path with no scheme, no entity and no leading `//`
+ *  (protocol-relative is another host). */
+const SAFE_DEST = /^(?:<?https?:\/\/|(?!\/\/)[A-Za-z0-9._~/#?=%+-]*(?:[)\s>]|$))/i;
 const INLINE_LINK = /\]\(\s*/g;
 /** A link reference definition is `]:` after its label, wherever the label starts (a block quote, a list item, a label
  *  with an escaped bracket or a line ending). No fallback needs one, so the sequence itself is refused and rewritten:
@@ -93,7 +94,7 @@ const CELL_CHARS = 120;
  *  image, a link, HTML or a terminal escape; a cell is at most 120 characters. */
 function cell(v: unknown): string {
   if (v === null || v === undefined) return "";
-  const plain = String(v).replace(ANSI, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const plain = String(v).replace(ANSI, "").replace(CONTROL_ALL, " ").replace(/\s+/g, " ").trim();
   const cut = [...plain].length > CELL_CHARS ? `${[...plain].slice(0, CELL_CHARS - 1).join("")}…` : plain;
   return cut.replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/\]:/g, "]\\:").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
 }
