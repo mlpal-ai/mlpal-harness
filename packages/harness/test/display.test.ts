@@ -75,6 +75,36 @@ describe("Show: a client that draws blocks", () => {
     expect(r.meta?.display?.[0]).toMatchObject({ level: "block", placement: { surface: "canvas" }, fallback: { text: FALLBACK } });
   });
 
+  test("E4: an object argument sent as a JSON string is parsed once: spec, spec.vl, fallback, notes, placement", async () => {
+    const { call } = tool();
+    const r = await call({
+      ...chart(),
+      spec: JSON.stringify({ vl: JSON.stringify(chart().spec.vl) }),
+      fallback: JSON.stringify({ text: FALLBACK }),
+      notes: JSON.stringify([{ id: "n", kind: "caveat", text: "Forecast v14" }]),
+      placement: '{"surface": "canvas"}',
+    });
+    expect(r.isError).toBeUndefined();
+    expect(r.meta?.display?.[0]).toMatchObject({ level: "block", placement: { surface: "canvas" }, notes: [{ id: "n", kind: "caveat", text: "Forecast v14" }] });
+  });
+
+  test("E4: a string that is not valid JSON is refused saying a string arrived and where its JSON breaks", async () => {
+    const broken = JSON.stringify(chart().spec).slice(0, -2) + "]}}";
+    const r = await tool().call(chart({ spec: broken }));
+    const e = errorOf(r) as unknown as { error: string; path: string; message: string };
+    expect([e.error, e.path]).toEqual(["VALIDATION_FAILED", "spec"]);
+    expect(e.message).toMatch(/spec arrived as a string that is not valid JSON \(.+\); send it as an object/);
+  });
+
+  test("E4: a wrong type says which type arrived", async () => {
+    for (const [spec, arrived] of [[42, "a number"], [["x"], "a list"], [true, "a boolean"]] as const) {
+      const e = errorOf(await tool().call(chart({ spec }))) as unknown as { message: string };
+      expect(e.message).toContain(`${arrived} arrived`);
+    }
+    const e = errorOf(await tool().call(chart({ spec: { vl: { ...chart().spec.vl, encoding: "x" } } }))) as unknown as { message: string };
+    expect(e.message).toContain("a string arrived");
+  });
+
   test("a source that is a tool call of this session is verified; a note citing one is verified", async () => {
     const h = history({ toolUseIds: new Set(["toolu_03"]), revisions: new Map([["fig-0", 1]]) });
     const { call } = tool(WEB, h);

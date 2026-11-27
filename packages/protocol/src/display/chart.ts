@@ -1,7 +1,7 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
 import { isReservedName } from "./bounds.js";
 import { chartCost } from "./cost.js";
-import { attempt, collectedNow, fail, failAt, report } from "./errors.js";
+import { arrived, attempt, collectedNow, fail, failAt, report } from "./errors.js";
 import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./blocks.js";
 
@@ -104,7 +104,7 @@ const arr = (item: Rule, max: number, min = 0): Rule => (v, p, w) => {
 const byType = (rules: { string?: Rule; number?: Rule; boolean?: Rule; null?: Rule; array?: Rule; object?: Rule }): Rule => (v, p, w) => {
   const t = v === null ? "null" : Array.isArray(v) ? "array" : (typeof v as "string" | "number" | "boolean" | "object");
   const rule = rules[t];
-  if (!rule) fail("VALIDATION_FAILED", p, `a ${Object.keys(rules).join(" or ")}`);
+  if (!rule) fail("VALIDATION_FAILED", p, `a ${Object.keys(rules).join(" or ")}; ${arrived(v)} arrived`);
   rule(v, p, w);
 };
 /** An object with these keys and no other; `required` keys must be present. */
@@ -112,7 +112,7 @@ const obj = (fields: Record<string, Rule>, required: string[] = []): Rule => {
   // A Map, so a name every JavaScript object inherits (constructor, toString, __proto__) is never a rule.
   const rules = new Map(Object.entries(fields));
   return (v, p, w) => {
-    if (!isObj(v)) fail("VALIDATION_FAILED", p, `an object with ${list(rules.keys())}`);
+    if (!isObj(v)) fail("VALIDATION_FAILED", p, `an object with ${list(rules.keys())}; ${arrived(v)} arrived`);
     for (const k of Object.keys(v)) if (!rules.has(k)) report("VALIDATION_FAILED", [...p, k], `unknown field "${k}"`, `allowed here: ${list(rules.keys())}`);
     for (const k of required) if (!has(v, k)) report("VALIDATION_FAILED", [...p, k], `${k} is required here`);
     for (const [k, x] of Object.entries(v)) if (rules.has(k)) attempt(() => rules.get(k)!(x, [...p, k], w));
@@ -271,7 +271,7 @@ CHANNEL_RULES.tooltip = byType({ null: nul, boolean: bool, object: CHANNEL_DEF, 
 CHANNEL_RULES.detail = CHANNEL_LIST(DISPLAY_LIMITS.chartSeries);
 CHANNEL_RULES.order = CHANNEL_LIST(4);
 const ENCODING: Rule = (v, p, w) => {
-  if (!isObj(v)) fail("VALIDATION_FAILED", p, "encoding is an object of channels");
+  if (!isObj(v)) fail("VALIDATION_FAILED", p, `encoding is an object of channels; ${arrived(v)} arrived`);
   for (const ch of Object.keys(v)) if (!has(CHANNEL_RULES, ch)) report("VALIDATION_FAILED", [...p, ch], `channel "${ch}" is not allowed`, `channels: ${CHANNELS.join(", ")}`);
   obj(CHANNEL_RULES)(v, p, w);
 };
@@ -368,7 +368,7 @@ function checkTransforms(ts: unknown, path: Path, w: Walk): number {
 }
 
 function checkData(data: unknown, path: Path, w: Walk): unknown[] {
-  if (!isObj(data)) fail("VALIDATION_FAILED", path, "data is an object with inline values");
+  if (!isObj(data)) fail("VALIDATION_FAILED", path, `data is an object with inline values; ${arrived(data)} arrived`);
   for (const g of ["sequence", "sphere", "graticule"]) if (has(data, g)) report("VALIDATION_FAILED", [...path, g], `data generators (${g}) are not allowed`, "put the rows in data.values");
   for (const k of Object.keys(data)) if (k !== "values" && k !== "name") report("VALIDATION_FAILED", [...path, k], `unknown data field "${k}"`, "data takes values (and an optional name)");
   if (has(data, "name")) attempt(() => TOKEN(data.name, [...path, "name"], w));
@@ -402,7 +402,7 @@ const VIEW_KEYS = new Set(["data", "mark", "encoding", "layer", "vconcat", "tran
 const COMPOSE_REFUSED = new Set(["facet", "repeat", "hconcat", "concat", "spec"]);
 
 function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; values: unknown[]; factor: number }): void {
-  if (!isObj(view)) fail("VALIDATION_FAILED", path, "a view is an object");
+  if (!isObj(view)) fail("VALIDATION_FAILED", path, `a view is an object; ${arrived(view)} arrived`);
   for (const k of Object.keys(view)) {
     if (COMPOSE_REFUSED.has(k)) report("VALIDATION_FAILED", [...path, k], `${k} is not allowed`, `compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat})`);
     else if (!VIEW_KEYS.has(k)) report("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, `a view takes: ${list(VIEW_KEYS)}`);
@@ -452,9 +452,9 @@ function checkSeries(enc: Obj, values: unknown[], path: Path): void {
 /** Throwing form for `checkBlockSpec`; the caller has run checkBounds. Returns the spec as drawn: the top-level
  *  `$schema`, `config` and `usermeta` removed. */
 export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
-  if (!isObj(spec)) fail("VALIDATION_FAILED", path, "a chart spec is { vl, series_order? }");
+  if (!isObj(spec)) fail("VALIDATION_FAILED", path, `a chart spec is { vl, series_order? }; ${arrived(spec)} arrived`);
   for (const k of Object.keys(spec)) if (k !== "vl" && k !== "series_order") report("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, "a chart spec is { vl, series_order? }");
-  if (!isObj(spec.vl)) fail("VALIDATION_FAILED", [...path, "vl"], "vl is a Vega-Lite spec object");
+  if (!isObj(spec.vl)) fail("VALIDATION_FAILED", [...path, "vl"], `vl is a Vega-Lite spec object; ${arrived(spec.vl)} arrived`);
   const vl: Obj = { ...spec.vl };
   for (const k of ["$schema", "config", "usermeta"]) delete vl[k];
   const at = [...path, "vl"];
