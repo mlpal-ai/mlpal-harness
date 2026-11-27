@@ -42,6 +42,7 @@
   the envelope is persisted with the tool result and replayed by `load_session` unchanged; the model's replay never
   carries it.
 - `ToolResult.meta.display` and `meta.displayText` (the step's display string when it is not what the model reads).
+  Both pass the secret redactor like the rest of a result: the display string, and every string in an envelope.
 - Telemetry, content-free: counters `display.emitted {level, kind, source}`, `display.validation_errors {code, kind}`,
   `display.repair {outcome: attempted|repaired|exhausted}`, `display.fallback_shown {reason: client_level|validation}`,
   histogram `display.bytes {level, kind}`; log lines `display shown` / `display refused` with id, kind, level,

@@ -71,11 +71,29 @@ export function redactBlocks(blocks: ToolResultBlocks): ToolResultBlocks {
   return blocks.map((b) => (b.type === "text" ? { ...b, text: redactText(b.text) } : b)) as ToolResultBlocks;
 }
 
+/** Every string inside a JSON value, redacted; the shape is kept. */
+function redactDeep<T>(v: T): T {
+  if (typeof v === "string") return redactText(v) as T;
+  if (Array.isArray(v)) return v.map(redactDeep) as T;
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactDeep(x)])) as T;
+  return v;
+}
+
 export function redactResult(res: ToolResult): ToolResult {
   if (!active()) return res;
+  const meta = res.meta;
   return {
     ...res,
     content: typeof res.content === "string" ? redactText(res.content) : redactBlocks(res.content),
-    ...(res.meta?.diff ? { meta: { ...res.meta, diff: redactText(res.meta.diff) } } : {}),
+    ...(meta && (meta.diff || meta.displayText || meta.display)
+      ? {
+          meta: {
+            ...meta,
+            ...(meta.diff ? { diff: redactText(meta.diff) } : {}),
+            ...(meta.displayText ? { displayText: redactText(meta.displayText) } : {}),
+            ...(meta.display ? { display: redactDeep(meta.display) } : {}),
+          },
+        }
+      : {}),
   };
 }
