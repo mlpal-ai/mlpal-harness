@@ -36,7 +36,8 @@ export type DisplayErrorCode =
   /** A valid chart that would take a renderer too long: a median, quartile, interval or distinct window over a sliding
    *  or cumulative frame, a bounded frame whose rows times span is over the limit, or too many window ops times rows. */
   | "TOO_COSTLY"
-  /** A cited tool_use id is not in this session. */
+  /** A source or a note's tool call id is not a call of this session. A notice, never a refusal: the block is shown,
+   *  the source unverified (or dropped when unusable), and the code is counted (`display.notices`). */
   | "SOURCE_UNKNOWN"
   /** This block already failed twice this turn; the person sees its fallback. */
   | "RETRY_EXHAUSTED"

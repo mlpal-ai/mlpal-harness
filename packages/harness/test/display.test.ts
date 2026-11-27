@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ConversationEntry, DisplayCaps, DisplayEnvelope, EngineEvent, ToolResultEvent } from "@mlpal/harness-protocol";
+import { DISPLAY_LIMITS } from "@mlpal/harness-protocol";
 import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, type DisplayHistory } from "../src/display";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { AgentSession, type AgentConfig } from "../src/loop/agent";
@@ -73,7 +74,7 @@ describe("Show: a client that draws blocks", () => {
     expect(r.meta?.display?.[0]).toMatchObject({ level: "block", placement: { surface: "canvas" }, fallback: { text: FALLBACK } });
   });
 
-  test("sources and notes must name tool calls of this session; a note citing one is verified", async () => {
+  test("a source that is a tool call of this session is verified; a note citing one is verified", async () => {
     const h = history({ toolUseIds: new Set(["toolu_03"]), revisions: new Map([["fig-0", 1]]) });
     const { call } = tool(WEB, h);
     const ok = await call(chart({ sources: ["toolu_03"], as_of: "2026-11-27T06:00:00Z", notes: [
@@ -85,14 +86,84 @@ describe("Show: a client that draws blocks", () => {
     const d = ok.meta?.display?.[0];
     expect(d?.source).toEqual({ by: "model", tool_use_ids: ["toolu_03"], as_of: "2026-11-27T06:00:00Z" });
     expect(d?.notes?.map((n) => n.verified)).toEqual([true, true, false, undefined]);
-    for (const [input, path] of [
-      [chart({ sources: ["toolu_03", "toolu_99"] }), "sources[1]"],
-      [chart({ notes: [{ id: "n", kind: "source", text: "x", ref: { tool_use_id: "toolu_99" } }] }), "notes[0].ref.tool_use_id"],
-    ] as const) {
-      const r = await tool(WEB, h).call(input);
-      expect([r.isError, errorOf(r).error, errorOf(r).path]).toEqual([true, "SOURCE_UNKNOWN", path]);
-      expect(r.meta?.display?.[0]).toMatchObject({ level: "text", status: "repairing" });
-    }
+  });
+});
+
+describe("Show: provenance is verified when it can be, never a gate (real-model run, Haiku 5.5)", () => {
+  test("a source named in words (not a tool call id) shows the block, unverified, with a one-line notice", async () => {
+    const { call, metrics } = tool();
+    const r = await call(chart({ sources: ["yodex hop run, the command line"], as_of: "2026-11-27T06:00:00Z" }));
+    expect(r.isError).toBeUndefined();
+    const d = r.meta?.display?.[0];
+    expect(d).toMatchObject({ level: "block", revision: 1, status: "ok", source: { by: "model", as_of: "2026-11-27T06:00:00Z" } });
+    expect(d?.source).not.toHaveProperty("tool_use_ids");
+    expect(d?.notes).toEqual([{ id: "source-1", kind: "source", text: "yodex hop run, the command line", verified: false }]);
+    expect(modelText(r)).toBe("Shown fig-1 r1 (chart) in the thread.\nSOURCE_UNKNOWN (a notice, not an error): 1 source is not a tool call of this session, so it is shown as unverified.");
+    expect(metrics.counters.get("display.notices{code=SOURCE_UNKNOWN}")).toBe(1);
+    expect(metrics.counters.get("display.sources{state=unverified}")).toBe(1);
+    expect(metrics.counters.get("display.repair{outcome=attempted}")).toBeUndefined();
+  });
+
+  test("mixed: known ids stay verified, unknown ones become unverified labels; a note's unknown ref loses its id", async () => {
+    const h = history({ toolUseIds: new Set(["toolu_03"]) });
+    const { call, metrics } = tool(WEB, h);
+    const r = await call(chart({
+      sources: ["toolu_03", "toolu_99", "ERP export, 27 Nov"],
+      notes: [
+        { id: "a", kind: "source", text: "ERP snapshot", ref: { tool_use_id: "toolu_03" } },
+        { id: "b", kind: "source", text: "Forecast sheet", ref: { tool_use_id: "toolu_42" } },
+        { id: "c", kind: "source", text: "Planner note", ref: { tool_use_id: "toolu_43", path: "notes.md" } },
+      ],
+    }));
+    const d = r.meta?.display?.[0];
+    expect(d?.source.tool_use_ids).toEqual(["toolu_03"]);
+    expect(d?.notes).toEqual([
+      { id: "a", kind: "source", text: "ERP snapshot", ref: { tool_use_id: "toolu_03" }, verified: true },
+      { id: "b", kind: "source", text: "Forecast sheet", verified: false },
+      { id: "c", kind: "source", text: "Planner note", ref: { path: "notes.md" }, verified: false },
+      { id: "source-1", kind: "source", text: "toolu_99", verified: false },
+      { id: "source-2", kind: "source", text: "ERP export, 27 Nov", verified: false },
+    ]);
+    expect(modelText(r)).toContain("4 sources are not tool calls of this session");
+    expect([metrics.counters.get("display.sources{state=verified}"), metrics.counters.get("display.sources{state=unverified}")]).toEqual([2, 4]);
+  });
+
+  test("a source naming a tool called exactly once since the person's last message is mapped to that call, verified", async () => {
+    const h = history({ toolUseIds: new Set(["toolu_05", "toolu_06", "toolu_07"]), recentCalls: [{ id: "toolu_05", name: "erp_query" }, { id: "toolu_06", name: "forecast" }, { id: "toolu_07", name: "forecast" }] });
+    const { call, metrics } = tool(WEB, h);
+    const r = await call(chart({ sources: ["erp_query", "forecast"], notes: [{ id: "n", kind: "source", text: "ERP", ref: { tool_use_id: "erp_query" } }] }));
+    const d = r.meta?.display?.[0];
+    expect(d?.source.tool_use_ids).toEqual(["toolu_05"]);
+    expect(d?.notes).toEqual([
+      { id: "n", kind: "source", text: "ERP", ref: { tool_use_id: "toolu_05" }, verified: true },
+      { id: "source-1", kind: "source", text: "forecast", verified: false },
+    ]);
+    expect(metrics.counters.get("display.sources{state=mapped}")).toBe(2);
+  });
+
+  test("a hostile id (control characters, 10 KB) is dropped, counted and never echoed", async () => {
+    const hostile = `\u001b[2J${"x".repeat(10_240)}`;
+    const { call, metrics, lines } = tool();
+    const r = await call(chart({ sources: [hostile, "ERP export"], notes: [{ id: "n", kind: "source", text: "ERP", ref: { tool_use_id: hostile } }] }));
+    expect(r.isError).toBeUndefined();
+    const everything = JSON.stringify(r) + lines.join("\n");
+    expect(everything).not.toContain("x".repeat(40));
+    expect(everything).not.toContain("\u001b");
+    expect(r.meta?.display?.[0]?.notes).toEqual([{ id: "n", kind: "source", text: "ERP", verified: false }, { id: "source-1", kind: "source", text: "ERP export", verified: false }]);
+    expect(metrics.counters.get("display.sources{state=dropped}")).toBe(2);
+  });
+
+  test("counters stay bounded: only fixed states and the code label", async () => {
+    const { call, metrics } = tool();
+    await call(chart({ sources: Array.from({ length: 20 }, (_, i) => `source number ${i} of a long list`) }));
+    const keys = [...metrics.counters.keys()].filter((k) => k.startsWith("display.sources") || k.startsWith("display.notices"));
+    for (const k of keys) expect(k).toMatch(/^display\.(sources\{state=(verified|mapped|unverified|dropped)\}|notices\{code=SOURCE_UNKNOWN\})$/);
+  });
+
+  test("unverified labels never take the block past 20 notes", async () => {
+    const notes = Array.from({ length: 19 }, (_, i) => ({ id: `n${i}`, kind: "caveat", text: `caveat ${i}` }));
+    const r = await tool().call(chart({ notes, sources: ["first label", "second label", "third label"] }));
+    expect(r.meta?.display?.[0]?.notes).toHaveLength(DISPLAY_LIMITS.notes);
   });
 });
 
@@ -331,6 +402,17 @@ describe("the display history", () => {
     ]);
     expect([...h.revisions]).toEqual([["fig-1", 3], ["fig-2", 1]]);
     expect([...h.toolUseIds]).toEqual(["toolu_1"]);
+    expect(h.recentCalls).toEqual([{ id: "toolu_1", name: "Read" }]);
+  });
+
+  test("recent calls are those since the last user message, Show's own excluded", () => {
+    const h = foldDisplayHistory([
+      entry("a", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "erp_query", input: {} }] } }),
+      entry("b", { type: "user", message: { role: "user", content: "and now?" } }),
+      entry("c", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "forecast", input: {} }, { type: "tool_use", id: "t3", name: "Show", input: {} }] } }),
+    ]);
+    expect(h.recentCalls).toEqual([{ id: "t2", name: "forecast" }]);
+    expect([...h.toolUseIds]).toEqual(["t1", "t2", "t3"]);
   });
 });
 

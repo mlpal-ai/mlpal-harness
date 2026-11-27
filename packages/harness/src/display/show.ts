@@ -5,6 +5,7 @@ import {
   DISPLAY_LIMITS,
   HOST_OWNED_KINDS,
   isBlockKind,
+  noteInputSchema,
   showInputSchema,
   type BlockDisplay,
   type DisplayEnvelope,
@@ -70,7 +71,8 @@ const SHOW_JSON_SCHEMA = (() => {
 const DESCRIPTION =
   "Show the person one typed block (a chart, summary tiles or a data grid) beside your answer, when it makes the answer clearer than prose. " +
   "Your instructions list the kinds this client draws and each kind's spec. fallback.text is required: the conclusion and the key numbers in plain markdown, " +
-  "which is all a person who cannot see the block reads. Show again with the same block_id to replace a block. A refusal names a code, a path and a hint: " +
+  "which is all a person who cannot see the block reads. Name sources in words (which tool or data, as of when); a tool call id only if you have it verbatim. " +
+  "Show again with the same block_id to replace a block. A refusal names a code, a path and a hint: " +
   "fix it and call Show once more with the same block_id.";
 
 /** Fields models hand over as JSON strings. A fallback is text in its own right, so only an object-looking one is
@@ -97,7 +99,7 @@ function lenientInput(raw: unknown): unknown {
   return out;
 }
 
-type Outcome = { ok: true; show: ValidShow; notes?: Note[] } | { ok: false; error: DisplayError; errors?: DisplayError[]; omitted?: number; block_id?: string; fallback?: string };
+type Outcome = { ok: true; show: ValidShow; provenance: Provenance } | { ok: false; error: DisplayError; errors?: DisplayError[]; omitted?: number; block_id?: string; fallback?: string };
 
 /** Per-turn repair state and the revisions this session assigned but may not have written yet (calls in one
  *  message run concurrently). */
@@ -157,38 +159,101 @@ class ShowState {
   }
 }
 
-function sourceOf(show: ValidShow): DisplaySource {
-  return { by: "model", ...(show.sources?.length ? { tool_use_ids: show.sources } : {}), ...(show.as_of ? { as_of: show.as_of } : {}) };
+function sourceOf(show: ValidShow, ids: string[]): DisplaySource {
+  return { by: "model", ...(ids.length ? { tool_use_ids: ids } : {}), ...(show.as_of ? { as_of: show.as_of } : {}) };
+}
+
+/** How a source the model named was taken: an id of this session (verified), a tool name called once since the
+ *  person's last message (mapped, verified), words (unverified, kept as a label), or unusable (dropped: control
+ *  characters, too long, empty; never echoed). */
+type SourceState = "verified" | "mapped" | "unverified" | "dropped";
+
+/** A label as a source note's text: what the protocol's note text allows. */
+const LABEL = noteInputSchema.shape.text;
+
+interface Provenance {
+  ids: string[];
+  notes: Note[];
+  states: SourceState[];
+}
+
+/**
+ * Provenance is verified when it can be, never a gate (the first real-model run cited the command line: models do not
+ * reliably know their tool call ids). Sources and notes' tool call refs are resolved against the session; what does
+ * not resolve is shown unverified or dropped, and the block is shown.
+ */
+function resolveProvenance(show: ValidShow, history: DisplayHistory, state: ShowState): Provenance {
+  const recent = history.recentCalls ?? [];
+  const callOf = (s: string): { id: string; state: "verified" | "mapped" } | null => {
+    if (history.toolUseIds.has(s)) return { id: s, state: "verified" };
+    const hits = recent.filter((c) => c.name === s.trim());
+    return hits.length === 1 ? { id: hits[0]!.id, state: "mapped" } : null;
+  };
+  const usable = (s: string) => LABEL.safeParse(s.trim()).success;
+  const states: SourceState[] = [];
+  const ids: string[] = [];
+  const labels: string[] = [];
+  for (const s of show.sources ?? []) {
+    const call = callOf(s);
+    if (call) {
+      if (!ids.includes(call.id)) ids.push(call.id);
+      states.push(call.state);
+    } else if (usable(s)) {
+      labels.push(s.trim());
+      states.push("unverified");
+    } else states.push("dropped");
+  }
+  const notes: Note[] = [];
+  for (const n of show.notes ?? []) {
+    const id = n.ref?.tool_use_id;
+    const block = n.ref?.block_id;
+    if (id === undefined) {
+      const verified = block !== undefined ? state.revisionOf(block, history) > 0 : undefined;
+      notes.push(verified === undefined ? n : { ...n, verified });
+      continue;
+    }
+    const call = callOf(id);
+    if (call) {
+      states.push(call.state);
+      notes.push({ ...n, ref: { ...n.ref, tool_use_id: call.id }, verified: true });
+      continue;
+    }
+    states.push(usable(id) && id.length <= 128 ? "unverified" : "dropped");
+    const { tool_use_id: _dropped, ...rest } = n.ref!;
+    const { ref: _ref, ...note } = n;
+    notes.push({ ...note, ...(Object.keys(rest).length ? { ref: rest } : {}), verified: false });
+  }
+  const taken = new Set(notes.map((n) => n.id));
+  let next = 1;
+  for (const text of labels) {
+    if (notes.length >= DISPLAY_LIMITS.notes) {
+      states[states.indexOf("unverified")] = "dropped";
+      continue;
+    }
+    while (taken.has(`source-${next}`)) next++;
+    taken.add(`source-${next}`);
+    notes.push({ id: `source-${next}`, kind: "source", text, verified: false });
+  }
+  return { ids, notes, states };
 }
 
 function displayError(code: DisplayError["code"], path: string, message: string, hint?: string): DisplayError {
   return { code, path, message, ...(hint ? { hint } : {}) };
 }
 
-/** Engine checks the protocol cannot make: cited calls exist, the turn's block count, a block's revision count. */
+/** Engine checks the protocol cannot make: the turn's block count, a block's revision count. Provenance is resolved
+ *  here too, and never refuses. */
 function checkSession(show: ValidShow, history: DisplayHistory, state: ShowState): Outcome {
-  const known = (id: string) => history.toolUseIds.has(id);
-  const unknown = (show.sources ?? []).findIndex((id) => !known(id));
-  const fault = (error: DisplayError): Outcome => ({ ok: false, error, block_id: show.block_id, fallback: show.fallback });
-  if (unknown >= 0) return fault(displayError("SOURCE_UNKNOWN", `sources[${unknown}]`, `no tool call ${show.sources![unknown]} in this session`, "cite the tool_use ids of calls this session made"));
-  const notes: Note[] = [];
-  for (const [i, n] of (show.notes ?? []).entries()) {
-    const id = n.ref?.tool_use_id;
-    if (id !== undefined && !known(id)) return fault(displayError("SOURCE_UNKNOWN", `notes[${i}].ref.tool_use_id`, `no tool call ${id} in this session`, "cite the tool_use ids of calls this session made"));
-    const block = n.ref?.block_id;
-    const verified = id !== undefined ? true : block !== undefined ? state.revisionOf(block, history) > 0 : undefined;
-    notes.push(verified === undefined ? n : { ...n, verified });
-  }
   if (state.isNewThisTurn(show.block_id) && state.blocksThisTurn() >= DISPLAY_LIMITS.blocksPerTurn) {
     return { ok: false, error: displayError("TOO_MANY_BLOCKS", "block_id", `at most ${DISPLAY_LIMITS.blocksPerTurn} blocks a turn`, "replace a block you showed (same block_id) or say the rest in prose") };
   }
   if (state.revisionOf(show.block_id, history) >= DISPLAY_LIMITS.revisionsPerBlock) {
     return { ok: false, error: displayError("TOO_MANY_BLOCKS", "block_id", `${show.block_id} has ${DISPLAY_LIMITS.revisionsPerBlock} revisions`, "show it under a new block_id") };
   }
-  return { ok: true, show, ...(notes.length ? { notes } : {}) };
+  return { ok: true, show, provenance: resolveProvenance(show, history, state) };
 }
 
-function blockEnvelope(show: ValidShow, notes: Note[] | undefined, revision: number): BlockDisplay {
+function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number): BlockDisplay {
   return {
     v: 1,
     block_id: show.block_id,
@@ -199,11 +264,11 @@ function blockEnvelope(show: ValidShow, notes: Note[] | undefined, revision: num
     catalog: DISPLAY_CATALOG,
     spec: show.spec,
     fallback: { text: show.fallback },
-    source: sourceOf(show),
+    source: sourceOf(show, provenance.ids),
     ...(show.title ? { title: show.title } : {}),
     ...(show.caption ? { caption: show.caption } : {}),
     ...(show.placement ? { placement: show.placement } : {}),
-    ...(notes ? { notes } : {}),
+    ...(provenance.notes.length ? { notes: provenance.notes } : {}),
     status: "ok",
   } as BlockDisplay;
 }
@@ -224,18 +289,24 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
   const { policy, logger: log, metrics } = deps;
   const state = new ShowState();
 
-  function shown(show: ValidShow, notes: Note[] | undefined, history: DisplayHistory): ToolResult {
+  function shown(show: ValidShow, provenance: Provenance, history: DisplayHistory): ToolResult {
     const repaired = state.failuresOf(show.block_id) > 0;
     state.succeed(show.block_id);
     if (repaired) metrics.increment("display.repair", 1, { outcome: "repaired" });
     const revision = state.nextRevision(show.block_id, history);
-    const envelope = blockEnvelope(show, notes, revision);
+    const envelope = blockEnvelope(show, provenance, revision);
+    for (const st of provenance.states) metrics.increment("display.sources", 1, { state: st });
+    const unknown = provenance.states.filter((st) => st === "unverified" || st === "dropped").length;
+    if (unknown) metrics.increment("display.notices", 1, { code: "SOURCE_UNKNOWN" });
     const bytes = Buffer.byteLength(JSON.stringify(envelope));
     metrics.increment("display.emitted", 1, { level: "block", kind: show.kind, source: "model" });
     metrics.histogram("display.bytes", bytes, { level: "block", kind: show.kind });
     log.info("display shown", { block_id: show.block_id, kind: show.kind, level: "block", revision, bytes });
     const where = show.placement?.surface === "canvas" ? "on the canvas" : "in the thread";
-    return result({ model: `Shown ${show.block_id} r${revision} (${show.kind}) ${where}.`, shown: `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, display: [envelope], outcome: "shown" });
+    const notice = unknown
+      ? `\nSOURCE_UNKNOWN (a notice, not an error): ${unknown === 1 ? "1 source is not a tool call" : `${unknown} sources are not tool calls`} of this session, so ${unknown === 1 ? "it is" : "they are"} shown as unverified.`
+      : "";
+    return result({ model: `Shown ${show.block_id} r${revision} (${show.kind}) ${where}.${notice}`, shown: `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, display: [envelope], outcome: "shown" });
   }
 
   /** One text envelope for a block, counted. */
@@ -317,7 +388,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
         const known = check.ok ? { block_id: check.show.block_id, fallback: check.show.fallback } : { block_id: check.block_id, fallback: check.fallback };
         outcome = { ok: false, error: asDisplayError(e), ...known };
       }
-      return outcome.ok ? shown(outcome.show, outcome.notes, history) : refused(outcome, kind, history);
+      return outcome.ok ? shown(outcome.show, outcome.provenance, history) : refused(outcome, kind, history);
     },
   });
   return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}) };
