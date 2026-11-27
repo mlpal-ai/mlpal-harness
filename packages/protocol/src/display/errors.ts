@@ -1,3 +1,4 @@
+import { DISPLAY_LIMITS } from "./catalog.js";
 import { CONTROL_ALL } from "./fields.js";
 
 /**
@@ -49,7 +50,9 @@ export interface DisplayError {
   hint?: string;
 }
 
-export type DisplayCheck<T> = { ok: true; value: T } | { ok: false; error: DisplayError };
+/** A refusal lists every fault found, in the input's order, so one repair can fix them all: `error` is the first (the
+ *  primary, which counters count), `errors` all of them up to DISPLAY_LIMITS.faults, `omitted` how many more. */
+export type DisplayCheck<T> = { ok: true; value: T } | { ok: false; error: DisplayError; errors: DisplayError[]; omitted?: number };
 
 /** A path segment list as the error's dotted path: `["spec", "vl", "layer", 0]` → `spec.vl.layer[0]`. */
 export function displayPath(segments: ReadonlyArray<string | number>): string {
@@ -58,12 +61,78 @@ export function displayPath(segments: ReadonlyArray<string | number>): string {
   return out;
 }
 
-/** Thrown inside a validator and turned into a DisplayCheck at its public edge, so a deep walk stops at the first
- *  fault without threading results through every level. Never escapes this package's functions. */
+/** Thrown inside a validator and turned into a DisplayCheck at its public edge, so a check stops at a fault without
+ *  threading results through every level. Carries one fault, or several (zod's issues). Never escapes this package's
+ *  functions. */
 export class DisplayRefusal extends Error {
-  constructor(readonly error: DisplayError) {
-    super(error.message);
+  constructor(readonly errors: DisplayError[]) {
+    super(errors[0]!.message);
   }
+
+  get error(): DisplayError {
+    return this.errors[0]!;
+  }
+}
+
+/** The faults of one check, in the order found. The first at a path is kept, so two checks of one key (a name scan and
+ *  the allowlist) report it once. */
+class Faults {
+  readonly list: DisplayError[] = [];
+  total = 0;
+  private readonly paths = new Set<string>();
+
+  add(e: DisplayError): void {
+    const at = e.path ?? "";
+    if (this.paths.has(at)) return;
+    this.paths.add(at);
+    this.total++;
+    if (this.list.length < DISPLAY_LIMITS.faults) this.list.push(e);
+  }
+}
+
+/** The faults of the check running now (checks are synchronous; collectFaults scopes it and restores the outer one). */
+let current: Faults | null = null;
+
+/** Run an independent part of a check: inside collectFaults its refusal is recorded and the check goes on with the
+ *  part's siblings (the part's value is then undefined); outside, the refusal propagates. */
+export function attempt<T>(run: () => T): T | undefined {
+  if (!current) return run();
+  try {
+    return run();
+  } catch (e) {
+    if (!(e instanceof DisplayRefusal)) throw e;
+    for (const x of e.errors) current.add(x);
+    return undefined;
+  }
+}
+
+/** How many faults the running check has collected so far (0 outside one): lets a part tell whether a rule it ran
+ *  reported something before it acts on that rule's input. */
+export function collectedNow(): number {
+  return current?.total ?? 0;
+}
+
+/** Report a fault and go on, inside collectFaults; outside, it is a refusal like fail. */
+export function report(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): void {
+  attempt(() => fail(code, path, message, hint));
+}
+
+/** Run a whole check, collecting every fault its parts report. A fault the parts do not catch ends the check (it is
+ *  fatal for what follows); anything else thrown is VALIDATION_INTERNAL. */
+export function collectFaults<T>(run: () => T): { value: T | undefined; errors: DisplayError[]; omitted: number } {
+  const outer = current;
+  const faults = new Faults();
+  current = faults;
+  let value: T | undefined;
+  try {
+    value = run();
+  } catch (e) {
+    if (e instanceof DisplayRefusal) for (const x of e.errors) faults.add(x);
+    else faults.add(asDisplayError(e));
+  } finally {
+    current = outer;
+  }
+  return { value: faults.total ? undefined : value, errors: faults.list, omitted: faults.total - faults.list.length };
 }
 
 /** An error's text quotes names the model chose (keys, fields, kinds), and the step's content shows it: made inert
@@ -81,8 +150,12 @@ export function inert(s: string): string {
   return [...flat].length > 300 ? `${[...flat].slice(0, 299).join("")}…` : flat;
 }
 
+export function displayError(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): DisplayError {
+  return { code, ...(path.length ? { path: inert(displayPath(path)) } : {}), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) };
+}
+
 export function fail(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): never {
-  throw new DisplayRefusal({ code, ...(path.length ? { path: inert(displayPath(path)) } : {}), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) });
+  throw new DisplayRefusal([displayError(code, path, message, hint)]);
 }
 
 /** Any exception as a DisplayError: a refusal as itself, anything else (a validator bug) as VALIDATION_INTERNAL,
@@ -93,11 +166,10 @@ export function asDisplayError(e: unknown): DisplayError {
   return { code: "VALIDATION_INTERNAL", message: inert(`the check failed unexpectedly (${name}); this is not your input's fault as far as the check can tell`), hint: "show the same content another way, or answer in prose" };
 }
 
-/** Run a validator; whatever it throws becomes `{ok: false}` with a typed code, so no input makes a caller throw. */
+/** Run a validator, collecting its faults; whatever it throws becomes `{ok: false}` with typed codes, so no input
+ *  makes a caller throw. */
 export function checked<T>(run: () => T): DisplayCheck<T> {
-  try {
-    return { ok: true, value: run() };
-  } catch (e) {
-    return { ok: false, error: asDisplayError(e) };
-  }
+  const r = collectFaults(run);
+  if (r.errors.length === 0) return { ok: true, value: r.value as T };
+  return { ok: false, error: r.errors[0]!, errors: r.errors, ...(r.omitted ? { omitted: r.omitted } : {}) };
 }

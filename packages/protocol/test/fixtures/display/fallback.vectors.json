@@ -181,7 +181,7 @@
   {
    "name": "an unknown fallback field",
    "code": "VALIDATION_FAILED",
-   "path": "fallback",
+   "path": "fallback.markdown",
    "kind": "chart",
    "fallback": {
     "text": "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.",

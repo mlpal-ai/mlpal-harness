@@ -1,6 +1,6 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
 import { isReservedName } from "./bounds.js";
-import { fail } from "./errors.js";
+import { attempt, collectedNow, fail, report } from "./errors.js";
 import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./blocks.js";
 
@@ -28,6 +28,8 @@ interface Walk {
   uses: Array<{ field: string; path: Path }>;
   totalRows: number;
   cells: number;
+  /** A data block failed its check, so the fields and rows it would have made are unknown. */
+  dataFaulted?: boolean;
 }
 
 type Rule = (v: unknown, path: Path, w: Walk) => void;
@@ -45,8 +47,8 @@ const URL_LIKE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/|(?:data|javascript|vbscript
 
 function scan(x: unknown, path: Path, inData: boolean): void {
   if (typeof x === "string") {
-    if (CONTROL.test(x)) fail("VALIDATION_FAILED", path, "a string has a control character (a terminal escape)");
-    if (URL_LIKE.test(x)) fail("URL_NOT_ALLOWED", path, "a chart carries no URL; it draws inline data only", "put the values in data.values; drop links and image marks");
+    if (CONTROL.test(x)) report("VALIDATION_FAILED", path, "a string has a control character (a terminal escape)");
+    if (URL_LIKE.test(x)) report("URL_NOT_ALLOWED", path, "a chart carries no URL; it draws inline data only", "put the values in data.values; drop links and image marks");
     return;
   }
   if (Array.isArray(x)) {
@@ -55,11 +57,11 @@ function scan(x: unknown, path: Path, inData: boolean): void {
   }
   if (!isObj(x)) return;
   for (const [k, v] of Object.entries(x)) {
-    if (CONTROL.test(k)) fail("VALIDATION_FAILED", path, "a field name has a control character (a terminal escape)");
+    if (CONTROL.test(k)) report("VALIDATION_FAILED", path, "a field name has a control character (a terminal escape)");
     if (!inData) {
-      if (EXPRESSION_KEYS.has(k) || /Expr$/.test(k)) fail("EXPRESSION_NOT_ALLOWED", [...path, k], `"${k}" is an expression; charts take none`, "precompute the value into the data");
-      if (LOADING_KEYS.has(k)) fail("URL_NOT_ALLOWED", [...path, k], `"${k}" can load data; a chart draws inline data only`, "put the rows in data.values");
-      if (k === "formatType" && v !== "number" && v !== "time") fail("EXPRESSION_NOT_ALLOWED", [...path, k], "a custom formatType is code", 'formatType is "number" or "time"');
+      if (EXPRESSION_KEYS.has(k) || /Expr$/.test(k)) report("EXPRESSION_NOT_ALLOWED", [...path, k], `"${k}" is an expression; charts take none`, "precompute the value into the data");
+      if (LOADING_KEYS.has(k)) report("URL_NOT_ALLOWED", [...path, k], `"${k}" can load data; a chart draws inline data only`, "put the rows in data.values");
+      if (k === "formatType" && v !== "number" && v !== "time") report("EXPRESSION_NOT_ALLOWED", [...path, k], "a custom formatType is code", 'formatType is "number" or "time"');
     }
     scan(v, [...path, k], inData || (k === "values" && path[path.length - 1] === "data"));
   }
@@ -95,7 +97,7 @@ const scalar: Rule = (v, p) => {
 };
 const arr = (item: Rule, max: number, min = 0): Rule => (v, p, w) => {
   if (!Array.isArray(v) || v.length < min || v.length > max) fail("VALIDATION_FAILED", p, min === max ? `a list of ${max}` : `a list of ${min} to ${max}`);
-  v.forEach((x, i) => item(x, [...p, i], w));
+  v.forEach((x, i) => attempt(() => item(x, [...p, i], w)));
 };
 /** Dispatch on the JSON type of the value, so the error names what that type must be. */
 const byType = (rules: { string?: Rule; number?: Rule; boolean?: Rule; null?: Rule; array?: Rule; object?: Rule }): Rule => (v, p, w) => {
@@ -110,9 +112,9 @@ const obj = (fields: Record<string, Rule>, required: string[] = []): Rule => {
   const rules = new Map(Object.entries(fields));
   return (v, p, w) => {
     if (!isObj(v)) fail("VALIDATION_FAILED", p, `an object with ${list(rules.keys())}`);
-    for (const k of Object.keys(v)) if (!rules.has(k)) fail("VALIDATION_FAILED", [...p, k], `unknown field "${k}"`, `allowed here: ${list(rules.keys())}`);
-    for (const k of required) if (!has(v, k)) fail("VALIDATION_FAILED", [...p, k], `${k} is required here`);
-    for (const [k, x] of Object.entries(v)) rules.get(k)!(x, [...p, k], w);
+    for (const k of Object.keys(v)) if (!rules.has(k)) report("VALIDATION_FAILED", [...p, k], `unknown field "${k}"`, `allowed here: ${list(rules.keys())}`);
+    for (const k of required) if (!has(v, k)) report("VALIDATION_FAILED", [...p, k], `${k} is required here`);
+    for (const [k, x] of Object.entries(v)) if (rules.has(k)) attempt(() => rules.get(k)!(x, [...p, k], w));
   };
 };
 /** A field name an encoding, predicate, sort or transform reads: checked against the data at the end. */
@@ -269,7 +271,7 @@ CHANNEL_RULES.detail = CHANNEL_LIST(DISPLAY_LIMITS.chartSeries);
 CHANNEL_RULES.order = CHANNEL_LIST(4);
 const ENCODING: Rule = (v, p, w) => {
   if (!isObj(v)) fail("VALIDATION_FAILED", p, "encoding is an object of channels");
-  for (const ch of Object.keys(v)) if (!has(CHANNEL_RULES, ch)) fail("VALIDATION_FAILED", [...p, ch], `channel "${ch}" is not allowed`, `channels: ${CHANNELS.join(", ")}`);
+  for (const ch of Object.keys(v)) if (!has(CHANNEL_RULES, ch)) report("VALIDATION_FAILED", [...p, ch], `channel "${ch}" is not allowed`, `channels: ${CHANNELS.join(", ")}`);
   obj(CHANNEL_RULES)(v, p, w);
 };
 
@@ -320,8 +322,8 @@ const SELECT = byType({
   object: obj({ type: enumOf("point", "interval"), fields: arr(field, 8, 1), encodings: arr(enumOf(...CHANNELS), 4, 1), nearest: bool, resolve: enumOf("global", "union", "intersect") }, ["type"]),
 });
 const PARAM: Rule = (v, p, w) => {
-  if (isObj(v) && !(has(v, "select")) && !(has(v, "bind"))) fail("VALIDATION_FAILED", [...p, "select"], "only point and interval selections are allowed", '"select": "point" or "interval"');
-  if (isObj(v) && has(v, "bind")) fail("VALIDATION_FAILED", [...p, "bind"], "bound params (inputs) are not allowed", "a selection without bind becomes the person's selection context");
+  if (isObj(v) && !(has(v, "select")) && !(has(v, "bind"))) report("VALIDATION_FAILED", [...p, "select"], "only point and interval selections are allowed", '"select": "point" or "interval"');
+  if (isObj(v) && has(v, "bind")) report("VALIDATION_FAILED", [...p, "bind"], "bound params (inputs) are not allowed", "a selection without bind becomes the person's selection context");
   obj({ name: TOKEN, select: SELECT }, ["name", "select"])(v, p, w);
 };
 
@@ -342,14 +344,16 @@ const TRANSFORMS: Record<string, Rule> = {
 function checkTransforms(ts: unknown, path: Path, w: Walk): number {
   if (!Array.isArray(ts) || ts.length > 20) fail("VALIDATION_FAILED", path, "transform is a list of at most 20");
   let factor = 1;
-  ts.forEach((t, i) => {
+  ts.forEach((t, i) => attempt(() => {
     const at = [...path, i];
     if (!isObj(t)) fail("VALIDATION_FAILED", at, "a transform is an object");
     if (has(t, "calculate")) fail("EXPRESSION_NOT_ALLOWED", [...at, "calculate"], "calculate is an expression", "precompute the field into the data");
     const ops = Object.keys(t).filter((k) => has(TRANSFORMS, k));
     if (ops.length !== 1) fail("VALIDATION_FAILED", at, ops.length ? `a transform has one op, not ${ops.join(" and ")}` : `transform ${list(Object.keys(t)) || "{}"} is not allowed`, `transforms: ${list(Object.keys(TRANSFORMS))}`);
     const op = ops[0]!;
+    const faulted = collectedNow();
     TRANSFORMS[op]!(t, at, w);
+    if (collectedNow() !== faulted) return;
     if (op === "fold") {
       factor *= (t.fold as unknown[]).length;
       if (!(has(t, "as"))) ["key", "value"].forEach((n) => w.fields.add(n));
@@ -358,23 +362,23 @@ function checkTransforms(ts: unknown, path: Path, w: Walk): number {
       const names = typeof t.as === "string" ? [t.as] : (t.as as string[]);
       if (names.length === 1) w.fields.add(`${names[0]}_end`);
     }
-  });
+  }));
   return factor;
 }
 
 function checkData(data: unknown, path: Path, w: Walk): unknown[] {
   if (!isObj(data)) fail("VALIDATION_FAILED", path, "data is an object with inline values");
-  for (const g of ["sequence", "sphere", "graticule"]) if (has(data, g)) fail("VALIDATION_FAILED", [...path, g], `data generators (${g}) are not allowed`, "put the rows in data.values");
-  for (const k of Object.keys(data)) if (k !== "values" && k !== "name") fail("VALIDATION_FAILED", [...path, k], `unknown data field "${k}"`, "data takes values (and an optional name)");
-  if (has(data, "name")) TOKEN(data.name, [...path, "name"], w);
+  for (const g of ["sequence", "sphere", "graticule"]) if (has(data, g)) report("VALIDATION_FAILED", [...path, g], `data generators (${g}) are not allowed`, "put the rows in data.values");
+  for (const k of Object.keys(data)) if (k !== "values" && k !== "name") report("VALIDATION_FAILED", [...path, k], `unknown data field "${k}"`, "data takes values (and an optional name)");
+  if (has(data, "name")) attempt(() => TOKEN(data.name, [...path, "name"], w));
   const values = data.values;
   if (!Array.isArray(values)) fail("VALIDATION_FAILED", [...path, "values"], "named data needs its rows inline in values", "data: { values: [ {...}, ... ] }");
   values.forEach((row, i) => {
-    if (!isObj(row)) fail("VALIDATION_FAILED", [...path, "values", i], "a row is an object of field values");
+    if (!isObj(row)) return report("VALIDATION_FAILED", [...path, "values", i], "a row is an object of field values");
     for (const [k, v] of Object.entries(row)) {
-      if (k.length > 128) fail("VALIDATION_FAILED", [...path, "values", i], "a field name is at most 128 characters");
+      if (k.length > 128) report("VALIDATION_FAILED", [...path, "values", i], "a field name is at most 128 characters");
       if (!(v === null || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && v.length <= 1_000))) {
-        fail("VALIDATION_FAILED", [...path, "values", i, k], "a value is a string of at most 1,000 characters, a finite number, a boolean or null", "flatten nested values into their own fields");
+        report("VALIDATION_FAILED", [...path, "values", i, k], "a value is a string of at most 1,000 characters, a finite number, a boolean or null", "flatten nested values into their own fields");
       }
       w.fields.add(k);
     }
@@ -399,28 +403,35 @@ const COMPOSE_REFUSED = new Set(["facet", "repeat", "hconcat", "concat", "spec"]
 function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; values: unknown[]; factor: number }): void {
   if (!isObj(view)) fail("VALIDATION_FAILED", path, "a view is an object");
   for (const k of Object.keys(view)) {
-    if (COMPOSE_REFUSED.has(k)) fail("VALIDATION_FAILED", [...path, k], `${k} is not allowed`, `compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat})`);
-    if (!VIEW_KEYS.has(k)) fail("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, `a view takes: ${list(VIEW_KEYS)}`);
+    if (COMPOSE_REFUSED.has(k)) report("VALIDATION_FAILED", [...path, k], `${k} is not allowed`, `compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat})`);
+    else if (!VIEW_KEYS.has(k)) report("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, `a view takes: ${list(VIEW_KEYS)}`);
   }
   const shapes = (["mark", "layer", "vconcat"] as const).filter((k) => has(view, k));
   if (shapes.length !== 1) fail("VALIDATION_FAILED", path, "a view has exactly one of mark, layer or vconcat");
-  for (const [k, rule] of Object.entries(VIEW_FIELDS)) if (has(view, k)) rule(view[k], [...path, k], w);
-  const values = has(view, "data") ? checkData(view.data, [...path, "data"], w) : o.values;
-  const factor = o.factor * (has(view, "transform") ? checkTransforms(view.transform, [...path, "transform"], w) : 1);
-  if (has(view, "params")) arr(PARAM, 8)(view.params, [...path, "params"], w);
-  if (values.length * factor > DISPLAY_LIMITS.chartRows) fail("ROWS_OVER_LIMIT", path, `${values.length * factor} rows after fold; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing, or show fewer series");
+  for (const [k, rule] of Object.entries(VIEW_FIELDS)) if (has(view, k)) attempt(() => rule(view[k], [...path, k], w));
+  let values = o.values;
+  if (has(view, "data")) {
+    const own = attempt(() => checkData(view.data, [...path, "data"], w));
+    if (own) values = own;
+    else w.dataFaulted = true;
+  }
+  const factor = o.factor * ((has(view, "transform") ? attempt(() => checkTransforms(view.transform, [...path, "transform"], w)) : 1) ?? 1);
+  if (has(view, "params")) attempt(() => arr(PARAM, 8)(view.params, [...path, "params"], w));
+  if (values.length * factor > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", path, `${values.length * factor} rows after fold; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing, or show fewer series");
   if (has(view, "encoding")) {
-    ENCODING(view.encoding, [...path, "encoding"], w);
-    checkSeries(view.encoding as Obj, values, [...path, "encoding"]);
+    attempt(() => {
+      ENCODING(view.encoding, [...path, "encoding"], w);
+      checkSeries(view.encoding as Obj, values, [...path, "encoding"]);
+    });
   }
   const shape = shapes[0]!;
-  if (shape === "mark") return MARK(view.mark, [...path, "mark"], w);
+  if (shape === "mark") return void attempt(() => MARK(view.mark, [...path, "mark"], w));
   if (shape === "vconcat" && o.depth > 0) fail("VALIDATION_FAILED", [...path, "vconcat"], "vconcat is allowed at the top level only");
   const children = view[shape];
   const max = shape === "layer" ? DISPLAY_LIMITS.chartLayers : DISPLAY_LIMITS.chartVconcat;
   if (!Array.isArray(children) || children.length === 0 || children.length > max) fail("VALIDATION_FAILED", [...path, shape], `${shape} takes 1 to ${max} views`);
   if (o.depth >= 3) fail("VALIDATION_FAILED", [...path, shape], "views nest at most three deep");
-  children.forEach((c, i) => checkView(c, [...path, shape, i], w, { depth: o.depth + 1, values, factor }));
+  children.forEach((c, i) => attempt(() => checkView(c, [...path, shape, i], w, { depth: o.depth + 1, values, factor })));
 }
 
 /** At most 12 series: the distinct values of a series channel's field in the data the view draws (a field a fold
@@ -432,7 +443,7 @@ function checkSeries(enc: Obj, values: unknown[], path: Path): void {
     const f = def.field;
     const distinct = new Set(values.map((r) => (isObj(r) ? JSON.stringify((has(r, f) ? r[f] : null) ?? null) : "null")));
     if (distinct.size > DISPLAY_LIMITS.chartSeries) {
-      fail("VALIDATION_FAILED", [...path, ch, "field"], `${distinct.size} series; a chart draws at most ${DISPLAY_LIMITS.chartSeries}`, 'keep the largest and group the rest as "Other"');
+      report("VALIDATION_FAILED", [...path, ch, "field"], `${distinct.size} series; a chart draws at most ${DISPLAY_LIMITS.chartSeries}`, 'keep the largest and group the rest as "Other"');
     }
   }
 }
@@ -441,7 +452,7 @@ function checkSeries(enc: Obj, values: unknown[], path: Path): void {
  *  `$schema`, `config` and `usermeta` removed. */
 export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
   if (!isObj(spec)) fail("VALIDATION_FAILED", path, "a chart spec is { vl, series_order? }");
-  for (const k of Object.keys(spec)) if (k !== "vl" && k !== "series_order") fail("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, "a chart spec is { vl, series_order? }");
+  for (const k of Object.keys(spec)) if (k !== "vl" && k !== "series_order") report("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, "a chart spec is { vl, series_order? }");
   if (!isObj(spec.vl)) fail("VALIDATION_FAILED", [...path, "vl"], "vl is a Vega-Lite spec object");
   const vl: Obj = { ...spec.vl };
   for (const k of ["$schema", "config", "usermeta"]) delete vl[k];
@@ -449,15 +460,16 @@ export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
   scan(vl, at, false);
   const w: Walk = { fields: new Set(), uses: [], totalRows: 0, cells: 0 };
   checkView(vl, at, w, { depth: 0, values: [], factor: 1 });
-  if (w.totalRows === 0) fail("VALIDATION_FAILED", at, "a chart needs inline data", "data: { values: [ {...}, ... ] } at the top level or on a layer");
-  if (w.totalRows > DISPLAY_LIMITS.chartRows) fail("ROWS_OVER_LIMIT", at, `${w.totalRows} inline rows; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing");
-  if (w.cells > DISPLAY_LIMITS.chartCells) fail("ROWS_OVER_LIMIT", at, `${w.cells} cells; a chart draws at most ${DISPLAY_LIMITS.chartCells}`, "drop fields the chart does not encode");
-  for (const u of w.uses) if (!w.fields.has(u.field)) fail("VALIDATION_FAILED", u.path, `field "${u.field}" is not in the data`, `fields: ${list(w.fields)}`);
+  if (w.totalRows === 0 && !w.dataFaulted) report("VALIDATION_FAILED", at, "a chart needs inline data", "data: { values: [ {...}, ... ] } at the top level or on a layer");
+  if (w.totalRows > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", at, `${w.totalRows} inline rows; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing");
+  if (w.cells > DISPLAY_LIMITS.chartCells) report("ROWS_OVER_LIMIT", at, `${w.cells} cells; a chart draws at most ${DISPLAY_LIMITS.chartCells}`, "drop fields the chart does not encode");
+  // a data block that failed its check made no fields: every field would look missing
+  if (!w.dataFaulted) for (const u of w.uses) if (!w.fields.has(u.field)) report("VALIDATION_FAILED", u.path, `field "${u.field}" is not in the data`, `fields: ${list(w.fields)}`);
   const order = spec.series_order;
   if (order !== undefined) {
     if (!Array.isArray(order) || !order.every((s) => typeof s === "string" && s.length > 0 && s.length <= 60)) fail("VALIDATION_FAILED", [...path, "series_order"], "series_order is a list of series names");
-    if (order.length > DISPLAY_LIMITS.chartSeries) fail("VALIDATION_FAILED", [...path, "series_order"], `at most ${DISPLAY_LIMITS.chartSeries} series`);
-    if (new Set(order).size !== order.length) fail("VALIDATION_FAILED", [...path, "series_order"], "a series is named twice");
+    if (order.length > DISPLAY_LIMITS.chartSeries) report("VALIDATION_FAILED", [...path, "series_order"], `at most ${DISPLAY_LIMITS.chartSeries} series`);
+    else if (new Set(order).size !== order.length) report("VALIDATION_FAILED", [...path, "series_order"], "a series is named twice");
   }
   return { vl, ...(order !== undefined ? { series_order: order as string[] } : {}) };
 }

@@ -250,7 +250,7 @@
   {
    "name": "an unknown tile field",
    "code": "VALIDATION_FAILED",
-   "path": "spec.tiles[0]",
+   "path": "spec.tiles[0].color",
    "spec": {
     "tiles": [
      {

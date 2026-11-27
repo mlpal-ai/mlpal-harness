@@ -97,7 +97,7 @@ function lenientInput(raw: unknown): unknown {
   return out;
 }
 
-type Outcome = { ok: true; show: ValidShow; notes?: Note[] } | { ok: false; error: DisplayError; block_id?: string; fallback?: string };
+type Outcome = { ok: true; show: ValidShow; notes?: Note[] } | { ok: false; error: DisplayError; errors?: DisplayError[]; omitted?: number; block_id?: string; fallback?: string };
 
 /** Per-turn repair state and the revisions this session assigned but may not have written yet (calls in one
  *  message run concurrently). */
@@ -247,21 +247,25 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
 
   function refused(o: Extract<Outcome, { ok: false }>, kind: string, history: DisplayHistory): ToolResult {
     const { error } = o;
+    const faults = o.errors?.length ? o.errors : [error];
+    // counters count the primary code only, one per refused call
     metrics.increment("display.validation_errors", 1, { code: error.code, kind });
+    const list = faultList(faults, o.omitted ?? 0);
     if (!o.block_id) {
-      log.warn("display refused", { code: error.code, kind, attempt: 1, fallback_shown: false });
-      return { content: `${JSON.stringify({ error: error.code, ...withoutCode(error), attempt: 1 })}\nNothing was shown.`, isError: true };
+      log.warn("display refused", { code: error.code, kind, attempt: 1, faults: faults.length + (o.omitted ?? 0), fallback_shown: false });
+      return { content: `${JSON.stringify({ error: error.code, ...withoutCode(error), attempt: 1, ...faultFields(faults, o.omitted) })}\n${list}Nothing was shown.`, isError: true };
     }
     const id = o.block_id;
     const attempt = state.fail(id, o.fallback);
-    if (attempt >= 2) return exhausted(id, error, kind, attempt, o.fallback, history);
+    if (attempt >= 2) return exhausted(id, error, kind, attempt, o.fallback, history, faults, o.omitted);
     metrics.increment("display.repair", 1, { outcome: "attempted" });
-    log.warn("display refused", { code: error.code, block_id: id, kind, attempt, fallback_shown: o.fallback !== undefined });
-    const body = JSON.stringify({ error: error.code, block_id: id, ...withoutCode(error), attempt });
-    if (!o.fallback) return { content: `${body}\nNothing was shown. Fix this and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`, isError: true };
+    log.warn("display refused", { code: error.code, block_id: id, kind, attempt, faults: faults.length + (o.omitted ?? 0), fallback_shown: o.fallback !== undefined });
+    const body = JSON.stringify({ error: error.code, block_id: id, ...withoutCode(error), attempt, ...faultFields(faults, o.omitted) });
+    const fix = faults.length > 1 ? "Fix them all" : "Fix this";
+    if (!o.fallback) return { content: `${body}\n${list}Nothing was shown. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`, isError: true };
     const envelope = textEnvelope(id, o.fallback, "repairing", history);
     return result({
-      model: `${body}\nThe person sees your fallback meanwhile. Fix this and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`,
+      model: `${body}\n${list}The person sees your fallback meanwhile. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`,
       shown: `[display ${id} r${envelope.revision} · repairing]\n${o.fallback}`,
       display: [envelope],
       outcome: "refused",
@@ -270,14 +274,14 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
 
   /** The repair failed: the block ends `fallback_only` on this attempt's fallback, else the last valid one this turn,
    *  else a plain sentence, so no block is left `repairing` by a model that gave up. */
-  function exhausted(id: string, cause: DisplayError, kind: string, attempt: number, fallback: string | undefined, history: DisplayHistory): ToolResult {
+  function exhausted(id: string, cause: DisplayError, kind: string, attempt: number, fallback: string | undefined, history: DisplayHistory, faults: DisplayError[], omitted?: number): ToolResult {
     metrics.increment("display.repair", 1, { outcome: "exhausted" });
     const last = fallback ?? state.fallbackOf(id);
     const envelope = textEnvelope(id, last ?? COULD_NOT_SHOW, "fallback_only", history);
     log.warn("display refused", { code: cause.code, block_id: id, kind, attempt, fallback_shown: true, final: true });
     const sees = fallback ? "your fallback" : last ? "your last valid fallback" : `a note that ${id} could not be shown`;
     return result({
-      model: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id, cause, attempt })}\nThe repair failed, so the person sees ${sees}. Do not call Show for ${id} again this turn; say what it would have shown in your reply.`,
+      model: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id, cause, attempt, ...faultFields(faults, omitted) })}\n${faultList(faults, omitted ?? 0)}The repair failed, so the person sees ${sees}. Do not call Show for ${id} again this turn; say what it would have shown in your reply.`,
       shown: `[display ${id} r${envelope.revision} · fallback only]\n${envelope.fallback.text}`,
       display: [envelope],
       outcome: "refused",
@@ -324,6 +328,19 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
 function kindLabel(kind: unknown): string {
   if (typeof kind !== "string") return "none";
   return isBlockKind(kind) || HOST_OWNED_KINDS.has(kind) ? kind : "other";
+}
+
+/** Every fault of a refusal, for the model's JSON line: listed only when there is more than one. */
+function faultFields(faults: DisplayError[], omitted?: number): { faults?: DisplayError[]; more?: number } {
+  return faults.length > 1 || omitted ? { faults, ...(omitted ? { more: omitted } : {}) } : {};
+}
+
+/** The faults as plain lines, so one repair can fix them all; empty for a single fault (the JSON line says it). */
+function faultList(faults: DisplayError[], omitted: number): string {
+  if (faults.length < 2 && !omitted) return "";
+  const total = faults.length + omitted;
+  const lines = faults.map((f) => `- ${f.code}${f.path ? ` at ${f.path}` : ""}: ${f.message}${f.hint ? ` (${f.hint})` : ""}`);
+  return `${total} faults; fix all of them in this one repair:\n${lines.join("\n")}\n${omitted ? `(and ${omitted} more)\n` : ""}`;
 }
 
 function withoutCode(e: DisplayError): Omit<DisplayError, "code"> {

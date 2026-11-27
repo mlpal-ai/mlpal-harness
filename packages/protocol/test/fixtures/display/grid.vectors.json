@@ -550,7 +550,7 @@
   {
    "name": "rows from a file (arrive with the file route)",
    "code": "VALIDATION_FAILED",
-   "path": "spec",
+   "path": "spec.data",
    "spec": {
     "columns": [
      {

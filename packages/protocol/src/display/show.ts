@@ -3,7 +3,7 @@ import { checkBlockSpec, parseShape, type BlockSpec } from "./blocks.js";
 import { checkBounds } from "./bounds.js";
 import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";
-import { asDisplayError, fail, type DisplayError } from "./errors.js";
+import { asDisplayError, attempt, collectFaults, fail, report, type DisplayError } from "./errors.js";
 import { checkFallbackInput, completeFallback, fallbackInputSchema } from "./fallback.js";
 import { plainText } from "./fields.js";
 
@@ -52,9 +52,13 @@ export interface ValidShow {
   notes?: NoteInput[];
 }
 
-/** A refused Show. `block_id` and `fallback` are present when they themselves passed, so the engine can show the
- *  fallback while the model repairs the rest. */
-export type ShowCheck = { ok: true; show: ValidShow } | { ok: false; error: DisplayError; block_id?: string; fallback?: string };
+/** A refused Show. `errors` lists every fault found, in the input's order, so one repair can fix them all; `error`
+ *  is the first (the primary, which counters count), `omitted` how many past DISPLAY_LIMITS.faults were not listed.
+ *  `block_id` and `fallback` are present when they themselves passed, so the engine can show the fallback while the
+ *  model repairs the rest. */
+export type ShowCheck =
+  | { ok: true; show: ValidShow }
+  | { ok: false; error: DisplayError; errors: DisplayError[]; omitted?: number; block_id?: string; fallback?: string };
 
 export interface ShowCheckOptions {
   /** The kinds this run's client draws; a catalog kind outside them is `KIND_NOT_ALLOWED`. Default: every kind. */
@@ -63,37 +67,48 @@ export interface ShowCheckOptions {
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
-/** Check a Show input. Order: block_id, fallback, depth and size, kind, the other fields, the spec, the fallback's
- *  table; the first fault wins. */
+/** Check a Show input, collecting every fault. Order: block_id (fatal), fallback, depth and size (fatal), kind, the
+ *  other fields, the spec, the fallback's table. */
+/** The Show input's other fields, checked on their own so their faults join the spec's. */
+const otherFieldsSchema = showInputSchema.omit({ kind: true, spec: true, fallback: true });
+
 export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowCheck {
   let blockId: string | undefined;
   let fallback: string | undefined;
-  try {
+  const r = collectFaults((): ValidShow | undefined => {
     if (!isObj(raw)) fail("VALIDATION_FAILED", [], "the Show input is an object");
     if (typeof raw.block_id !== "string" || !BLOCK_ID.test(raw.block_id)) fail("VALIDATION_FAILED", ["block_id"], "block_id is lowercase letters, digits and hyphens, starting with a letter, at most 40", 'for example "fig-1"');
     blockId = raw.block_id;
     // The fallback's check reads fixed fields only, so it is safe before the bounds; checking it first lets the
     // fallback be shown whatever is wrong with the rest.
-    const fb = checkFallbackInput(raw.fallback, raw.kind, ["fallback"]);
-    fallback = fb.text;
+    const fb = attempt(() => checkFallbackInput(raw.fallback, raw.kind, ["fallback"]));
+    fallback = fb?.text;
+    // Fatal: nothing below may walk an unbounded input.
     checkBounds(raw, []);
     const bytes = utf8.encode(JSON.stringify(raw)).length;
     if (bytes > DISPLAY_LIMITS.inputBytes) fail("SPEC_TOO_LARGE", [], `${bytes} bytes; a Show input is at most ${DISPLAY_LIMITS.inputBytes}`, "aggregate the data, or show fewer rows and give the total in the fallback");
-    const kind = raw.kind;
-    if (typeof kind !== "string") fail("VALIDATION_FAILED", ["kind"], "kind names the block kind", `kinds: ${BLOCK_KINDS.join(", ")}`);
-    if (HOST_OWNED_KINDS.has(kind)) fail("HOST_OWNED_KIND", ["kind"], `${kind} blocks are drawn by the host, never by Show`, kind === "approval" ? "call the tool that needs approval; the host asks the person" : undefined);
-    if (!isBlockKind(kind)) fail("KIND_UNKNOWN", ["kind"], `"${kind}" is not a kind of this catalog`, `kinds: ${BLOCK_KINDS.join(", ")}`);
-    if (opts.kinds && !opts.kinds.has(kind)) fail("KIND_NOT_ALLOWED", ["kind"], `this client does not draw ${kind} blocks`, `it draws: ${[...opts.kinds].join(", ") || "none"}`);
-    if (!Object.hasOwn(raw, "spec")) fail("VALIDATION_FAILED", ["spec"], `a ${kind} block needs its spec`);
-    const input = parseShape(showInputSchema, { ...raw, fallback: fb }, []);
-    const spec = checkBlockSpec(kind, input.spec, ["spec"]);
-    const complete = completeFallback(fb, kind, spec, ["fallback"]);
+    const kind = attempt(() => checkKind(raw.kind, opts));
+    if (kind && !Object.hasOwn(raw, "spec")) report("VALIDATION_FAILED", ["spec"], `a ${kind} block needs its spec`);
+    const { kind: _k, spec: _s, fallback: _f, ...others } = raw;
+    const input = attempt(() => parseShape(otherFieldsSchema, others, []));
+    const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"])) : undefined;
+    const complete = fb && kind && spec ? attempt(() => completeFallback(fb, kind, spec, ["fallback"])) : undefined;
+    if (!input || !kind || !spec || complete === undefined) return undefined;
     const { block_id, title, caption, sources, as_of, placement, notes } = input;
     const optional = { title, caption, sources, as_of, placement, notes };
     for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];
-    return { ok: true, show: { block_id, kind, spec, fallback: complete, ...optional } };
-  } catch (e) {
-    // A refusal, or (typed VALIDATION_INTERNAL) anything else the checks threw: never an exception for the caller.
-    return { ok: false, error: asDisplayError(e), ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };
-  }
+    return { block_id, kind, spec, fallback: complete, ...optional };
+  });
+  if (r.errors.length === 0 && r.value) return { ok: true, show: r.value };
+  // A refusal, or (typed VALIDATION_INTERNAL) anything else the checks threw: never an exception for the caller.
+  const errors = r.errors.length ? r.errors : [asDisplayError(new Error("no fault and no value"))];
+  return { ok: false, error: errors[0]!, errors, ...(r.omitted ? { omitted: r.omitted } : {}), ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };
+}
+
+function checkKind(kind: unknown, opts: ShowCheckOptions): BlockKind {
+  if (typeof kind !== "string") fail("VALIDATION_FAILED", ["kind"], "kind names the block kind", `kinds: ${BLOCK_KINDS.join(", ")}`);
+  if (HOST_OWNED_KINDS.has(kind)) fail("HOST_OWNED_KIND", ["kind"], `${kind} blocks are drawn by the host, never by Show`, kind === "approval" ? "call the tool that needs approval; the host asks the person" : undefined);
+  if (!isBlockKind(kind)) fail("KIND_UNKNOWN", ["kind"], `"${kind}" is not a kind of this catalog`, `kinds: ${BLOCK_KINDS.join(", ")}`);
+  if (opts.kinds && !opts.kinds.has(kind)) fail("KIND_NOT_ALLOWED", ["kind"], `this client does not draw ${kind} blocks`, `it draws: ${[...opts.kinds].join(", ") || "none"}`);
+  return kind;
 }

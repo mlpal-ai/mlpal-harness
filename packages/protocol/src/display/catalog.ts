@@ -46,4 +46,6 @@ export const DISPLAY_LIMITS = {
   revisionsPerBlock: 200,
   notes: 20,
   sources: 20,
+  /** Faults one refusal lists (the rest are counted). */
+  faults: 10,
 } as const;
