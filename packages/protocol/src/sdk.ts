@@ -123,6 +123,9 @@ export interface ResultEvent {
   /** 0.26.0 (C1 §7.4): the HOP ended a reply with `[[mlpal:abuse reason=…]]` (stripped from the message); recorded on
    *  the turn as data. The host tells its front with an `abuse_flag` frame. */
   abuse?: { reason: string };
+  /** Display protocol (E3): blocks this run left `repairing` (the model never retried), settled `fallback_only` at
+   *  its end. Render-only; absent on every other run. settleDisplays does the same for a session written before. */
+  display?: DisplayEnvelope[];
 }
 
 /**

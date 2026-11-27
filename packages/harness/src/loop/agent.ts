@@ -44,7 +44,7 @@ import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
-import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, SHOW_TOOL, type DisplayPolicy } from "../display";
+import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
 import type { ExecPolicy, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
 import { EventTooLargeError } from "../store/errors";
@@ -611,6 +611,8 @@ export class AgentSession {
   private readonly tools: ToolRegistry;
   /** The host's system prompt, plus the display section when the client draws blocks. */
   private readonly systemPrompt: string;
+  /** The session's Show, when its client draws blocks: at a run's end it settles blocks left repairing (E3). */
+  private showTool: ShowTool | null = null;
 
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
@@ -641,6 +643,7 @@ export class AgentSession {
       logger: log,
       metrics: cfg.metrics ?? noopMetrics,
     });
+    this.showTool = show;
     return cfg.tools.withTools([show]);
   }
 
@@ -2226,11 +2229,13 @@ export class AgentSession {
   ): AsyncGenerator<EngineEvent, string | null, void> {
     const base = this.result(subtype, numTurns, usage, pendingApproval);
     if (base.type !== "result") return parent;
+    const settled = this.showTool?.settle() ?? [];
+    const withDisplay: ResultEvent = settled.length ? { ...base, display: settled } : base;
     const ev: ResultEvent = refusal
-      ? { ...base, reason: refusal.message, refusal }
+      ? { ...withDisplay, reason: refusal.message, refusal }
       : sandboxRefusal
-        ? { ...base, reason: sandboxRefusal.message, sandboxRefusal }
-        : base;
+        ? { ...withDisplay, reason: sandboxRefusal.message, sandboxRefusal }
+        : withDisplay;
     const entry = await this.store.conversation.append(this.cfg.sessionId, ev, parent);
     await this.store.registry.patchSession(this.cfg.sessionId, { head: entry.uuid }).catch(() => undefined);
     yield { ...ev, uuid: entry.uuid };

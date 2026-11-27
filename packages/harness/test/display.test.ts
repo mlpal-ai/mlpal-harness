@@ -613,6 +613,28 @@ describe("capability gating in the engine", () => {
   });
 });
 
+describe("E3: a block left repairing when its run ends is settled fallback_only", () => {
+  test("the run's result carries the final envelope; it is stored, and a later run starts afresh", async () => {
+    const model = new Scripted([use("toolu_1", "Show", badChart()), done("I could not draw it.")]);
+    const metrics = new MemoryMetrics();
+    const events = await run(session(model, { display: WEB, metrics }));
+    const result = events.find((e) => e.type === "result") as { display?: DisplayEnvelope[] };
+    expect(result.display).toEqual([{ v: 1, block_id: "fig-1", revision: 2, op: "snapshot", level: "text", fallback: { text: FALLBACK }, source: { by: "model" }, status: "fallback_only" }]);
+    const stored = (await new LocalStore(root).conversation.read("s1")).find((e) => e.payload.type === "result")!.payload as { display?: unknown };
+    expect(stored.display).toEqual(result.display);
+    expect(metrics.counters.get("display.repair{outcome=abandoned}")).toBe(1);
+    const next = new Scripted([done("ok")]);
+    const later = await run(session(next, { display: WEB, metrics }), "again");
+    expect("display" in (later.find((e) => e.type === "result") as object)).toBe(false);
+  });
+
+  test("a repaired or exhausted block is not settled again", async () => {
+    const model = new Scripted([use("toolu_1", "Show", badChart()), use("toolu_2", "Show", chart()), done("ok")]);
+    const events = await run(session(model, { display: WEB }));
+    expect("display" in (events.find((e) => e.type === "result") as object)).toBe(false);
+  });
+});
+
 describe("persistence and replay", () => {
   test("the display is stored with the tool result, replayed as stored, and never reaches the model", async () => {
     const model = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);

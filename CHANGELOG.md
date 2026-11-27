@@ -76,6 +76,10 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- A block left repairing when its run ends (real-model run, E3): the engine settles it on the run's result,
+  `ResultEvent.display?` (spec §2.2's reserved carrier), as a `fallback_only` text envelope on its last fallback,
+  counted `display.repair{outcome=abandoned}`; `settleDisplays(messages)` (protocol) reads a session written before
+  the same way. The harness's `createShowTool` returns a `ShowTool` (a Tool with `settle()`).
 - Every stage in the first refusal (real-model run): the fallback's table is checked against the rows even when its
   text is refused, and the engine's block limits (TOO_MANY_BLOCKS) join the input's faults, so a later stage's fault
   never first appears on the retry.
