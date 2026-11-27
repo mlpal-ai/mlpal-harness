@@ -68,9 +68,12 @@ export const displaySourceSchema = z
 export type DisplaySource = z.infer<typeof displaySourceSchema>;
 
 /** §2.5 the fallback as the envelope carries it, the engine's text table (when the model asked for one) already
- *  appended. Fallback text is plain text that clients must not interpret as markup, and the engine stores it
- *  neutralised so a client that does is still safe: no `<` but as `&lt;`, no image syntax, no `]:` (so no reference
- *  definition), inline links only to http(s) or relative paths, table cells backslash-escaped, no control characters. */
+ *  appended. Fallback text is markdown (CommonMark with tables). Clients render it with raw HTML disabled, load no images, and
+ *  follow only http(s) and relative links. The engine stores it neutralised (HTML-significant characters
+ *  entity-encoded, image syntax and link definitions defused), so a client that renders it with HTML enabled is still
+ *  safe. A client that cannot render markdown shows it as it is, after decoding the entity codes. In detail:
+ *  no `<` but as `&lt;`, no image syntax, no `]:` (so no reference definition), inline links only to http(s) or
+ *  relative paths, table cells backslash-escaped, no control characters. */
 export const fallbackSchema = z.object({ text: z.string().min(1) }).strict();
 export type Fallback = z.infer<typeof fallbackSchema>;
 

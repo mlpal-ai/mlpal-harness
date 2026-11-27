@@ -6,8 +6,13 @@ import { CONTROL, CONTROL_ALL } from "./fields.js";
 
 /**
  * 0.27.0 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
- * e-mail, a screen reader and a pinned UI show, so it must stand alone: the conclusion and the key numbers, in plain
- * GFM. The checks are cheap heuristics, not a semantic judgement.
+ * e-mail, a screen reader and a pinned UI show, so it must stand alone: the conclusion and the key numbers. The checks
+ * are cheap heuristics, not a semantic judgement.
+ *
+ * Fallback text is markdown (CommonMark with tables). Clients render it with raw HTML disabled, load no images, and
+ * follow only http(s) and relative links. The engine stores it neutralised (HTML-significant characters
+ * entity-encoded, image syntax and link definitions defused), so a client that renders it with HTML enabled is still
+ * safe. A client that cannot render markdown shows it as it is, after decoding the entity codes.
  */
 
 /** What the model writes. `table: {from: "rows"}` asks the engine to append the block's rows as a text table. */
@@ -53,8 +58,9 @@ function unsafeLinks(text: string): boolean {
  * The fallback as stored and sent: inert in a markdown renderer by construction, whatever the checks above miss.
  * Every `<` becomes `&lt;` (so nothing opens a tag or an autolink, whatever follows), every `![` starts with `&#33;`
  * (so no image, of any form), every `]:` becomes `]&#58;` (so no reference definition, however written), and an inline
- * link whose destination is not http(s) or a relative path loses its link syntax. Entities, not backslashes: a backslash the model wrote before them cannot undo them. A client
- * that shows the fallback as plain text may see these entities.
+ * link whose destination is not http(s) or a relative path loses its link syntax. Entities, not backslashes: a
+ * backslash the model wrote before them cannot undo them. A client that cannot render markdown decodes the entity codes
+ * before showing the text.
  */
 export function inertFallbackText(text: string): string {
   const out = text.replace(/</g, "&lt;").replace(/!\[/g, "&#33;[").replace(/\]:/g, "]&#58;");

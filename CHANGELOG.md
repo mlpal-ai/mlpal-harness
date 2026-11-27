@@ -30,15 +30,18 @@
   filter or `test` string; `layer` ≤ 8, top-level `vconcat` ≤ 2; 5,000 rows after
   `fold`, 50,000 cells, 12 series; the top-level `$schema`, `config` and `usermeta` dropped), `kpis` (≤ 8 tiles),
   `grid` (≤ 2,000 inline rows, typed columns, a unique `row_key`). Notes (`source`, `assumption`, `caveat`) ride the
-  envelope. The fallback is 40–8,000 characters of plain GFM that does not only point at the block and, for these
+  envelope. The fallback is 40–8,000 characters of markdown (CommonMark with tables) that does not only point at the block and, for these
   kinds, states a number; `fallback.table {from: "rows"}` appends up to 20 rows as a GFM table.
 - The model's fallback is checked structurally and stored neutralised (`inertFallbackText`): any `<` that could open
   HTML (a tag whatever follows its name, a closing tag, a comment, CDATA, a processing instruction, an autolink) and
   any image (inline, reference, collapsed, shortcut) are refused, as is any link reference definition (any `]:`,
   however the definition is written) and an inline link to anything but http(s) or a relative path; and whatever the
   checks miss is inert by construction: every `<` is stored as `&lt;`, every `![` as `&#33;[`, every `]:` as
-  `]&#58;`, and an unsafe inline link loses its syntax; table cells never form `]:` either. Fallback text is plain text
-  that clients must not interpret as markup; the engine stores it neutralised so a client that does is still safe.
+  `]&#58;`, and an unsafe inline link loses its syntax; table cells never form `]:` either. Fallback text is markdown
+  (CommonMark with tables). Clients render it with raw HTML disabled, load no images, and follow only http(s) and
+  relative links. The engine stores it neutralised (HTML-significant characters entity-encoded, image syntax and link
+  definitions defused), so a client that renders it with HTML enabled is still safe. A client that cannot render
+  markdown shows it as it is, after decoding the entity codes.
 - Invisible characters that reorder or hide text (bidirectional marks, embeddings, overrides, isolates, the zero-width
   space, the BOM) count as control characters: refused in model text, stripped from engine text; the zero-width
   joiner and non-joiner stay. A protocol-relative link (`//host/...`) is not a relative path.
