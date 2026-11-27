@@ -2,6 +2,170 @@
  "_comment": "chartCost vectors (UI reviews R2 and N2, reviews 5 to 7): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike, or, for what the grammar cut in review 7, VALIDATION_FAILED at the stated path through validateBlock and TOO_COSTLY through chartCost alone; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0, {\"$rows\": n, \"$shape\": \"iabc\"} for n rows {i, a: i, b: n - 1 - i, c: i % 7}, and {\"$rows\": n, \"$shape\": \"sparse12\"} for n rows where row i holds f_k = 1 for each bit k set in i (f0..f11); expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
  "refused": [
   {
+   "name": "5,000 bars on a band scale, one labelled band per row: the bars and 5,000 labels together are over budget",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 8 axisLabels7: 7 independent ordinal axes of 5,000 labels (0.8 s; axis labels are costed)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "vconcat": [
+      {
+       "resolve": {
+        "axis": {
+         "x": "independent"
+        },
+        "scale": {
+         "x": "independent"
+        }
+       },
+       "layer": [
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "ordinal",
+           "title": "t00"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "a",
+           "type": "ordinal",
+           "title": "t01"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "b",
+           "type": "ordinal",
+           "title": "t02"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "ordinal",
+           "title": "t03"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        }
+       ]
+      },
+      {
+       "resolve": {
+        "axis": {
+         "x": "independent"
+        },
+        "scale": {
+         "x": "independent"
+        }
+       },
+       "layer": [
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "ordinal",
+           "title": "t10"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "a",
+           "type": "ordinal",
+           "title": "t11"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "b",
+           "type": "ordinal",
+           "title": "t12"
+          },
+          "y": {
+           "field": "c",
+           "type": "quantitative"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
    "name": "review 8 missingW1_128: an aggregate grouped by 12 sparse fields (absence is a value: 2,500 groups), 128 views (16.6 s)",
    "code": "TOO_COSTLY",
    "path": "spec.vl.vconcat[0].layer[0].layer[6].mark",
@@ -39878,29 +40042,6 @@
       "x": {
        "field": "i",
        "type": "quantitative"
-      },
-      "y": {
-       "field": "v",
-       "type": "quantitative"
-      }
-     }
-    }
-   }
-  },
-  {
-   "name": "slowest measured: 5,000 bars on a band scale (one band per row)",
-   "spec": {
-    "vl": {
-     "data": {
-      "values": {
-       "$rows": 5000
-      }
-     },
-     "mark": "bar",
-     "encoding": {
-      "x": {
-       "field": "i",
-       "type": "ordinal"
       },
       "y": {
        "field": "v",

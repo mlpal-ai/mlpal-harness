@@ -315,7 +315,8 @@ describe("chart cost (UI review R2)", () => {
     const r = validateBlock("chart", spec);
     return r.ok ? "ok" : `${r.error.code} ${r.error.path}`;
   };
-  const windowed = (n: number, transform: unknown[]) => line(rows(n), { transform });
+  // a quantitative x, so 5,000 ordinal axis labels are not part of what these tests measure
+  const windowed = (n: number, transform: unknown[]) => line(rows(n), { transform, encoding: { x: { field: "onhand", type: "quantitative" }, y: { field: "onhand", type: "quantitative" } } });
 
   test(`a bounded frame: rows times span at most ${DISPLAY_LIMITS.chartWindowRowsTimesSpan}`, () => {
     const moving = (k: number) => windowed(5_000, [{ window: [{ op: "mean", field: "onhand", as: "ma" }], frame: [-k, k] }]);
@@ -419,7 +420,7 @@ describe("chartCost: the one cost walker (UI re-review N2)", () => {
   });
 
   test(`point-like marks are capped at ${DISPLAY_LIMITS.chartMarks} across views`, () => {
-    const layers = (n: number, k: number) => ({ vl: { data: { values: rows(n) }, layer: Array.from({ length: k }, () => ({ mark: "point", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "onhand", type: "quantitative" } } })) } });
+    const layers = (n: number, k: number) => ({ vl: { data: { values: rows(n) }, layer: Array.from({ length: k }, () => ({ mark: "point", encoding: { x: { field: "onhand", type: "quantitative" }, y: { field: "onhand", type: "quantitative" } } })) } });
     expect(chartCost(layers(5_000, 3)).ok).toBe(false);
     expect(chartCost(layers(5_000, 2)).ok).toBe(true);
     const r = chartCost(layers(3_000, 6));
