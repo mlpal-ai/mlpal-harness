@@ -637,7 +637,7 @@ export class AgentSession {
     if (cfg.tools.get(SHOW_TOOL)) log.warn("display: the host registers a tool named Show; the engine's Show replaces it for this run", { sessionId: cfg.sessionId });
     const show = createShowTool({
       policy,
-      history: async () => foldDisplayHistory(effectiveEntries(await this.store.conversation.read(cfg.sessionId))),
+      history: async (toolUseId) => foldDisplayHistory(effectiveEntries(await this.store.conversation.read(cfg.sessionId)), toolUseId),
       logger: log,
       metrics: cfg.metrics ?? noopMetrics,
     });
