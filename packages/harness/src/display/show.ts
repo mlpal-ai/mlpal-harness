@@ -13,6 +13,7 @@ import {
   type DisplaySource,
   type Note,
   type TextDisplay,
+  type ShowCheck,
   type ValidShow,
 } from "@mlpal/harness-protocol";
 import { z } from "zod";
@@ -262,16 +263,28 @@ function displayError(code: DisplayError["code"], path: string, message: string,
   return { code, path, message, ...(hint ? { hint } : {}) };
 }
 
-/** Engine checks the protocol cannot make: the turn's block count, a block's revision count. Provenance is resolved
- *  here too, and never refuses. */
-function checkSession(show: ValidShow, history: DisplayHistory, state: ShowState): Outcome {
-  if (state.isNewThisTurn(show.block_id) && state.blocksThisTurn() >= DISPLAY_LIMITS.blocksPerTurn) {
-    return { ok: false, error: displayError("TOO_MANY_BLOCKS", "block_id", `at most ${DISPLAY_LIMITS.blocksPerTurn} blocks a turn`, "replace a block you showed (same block_id) or say the rest in prose") };
+/** Engine checks the protocol cannot make: the turn's block count, a block's revision count. They run whatever the
+ *  input's own faults, so every fault is reported in the first refusal. */
+function sessionFaults(blockId: string, history: DisplayHistory, state: ShowState): DisplayError[] {
+  const faults: DisplayError[] = [];
+  if (state.isNewThisTurn(blockId) && state.blocksThisTurn() >= DISPLAY_LIMITS.blocksPerTurn) {
+    faults.push(displayError("TOO_MANY_BLOCKS", "block_id", `at most ${DISPLAY_LIMITS.blocksPerTurn} blocks a turn`, "replace a block you showed (same block_id) or say the rest in prose"));
   }
-  if (state.revisionOf(show.block_id, history) >= DISPLAY_LIMITS.revisionsPerBlock) {
-    return { ok: false, error: displayError("TOO_MANY_BLOCKS", "block_id", `${show.block_id} has ${DISPLAY_LIMITS.revisionsPerBlock} revisions`, "show it under a new block_id") };
+  if (state.revisionOf(blockId, history) >= DISPLAY_LIMITS.revisionsPerBlock) {
+    faults.push(displayError("TOO_MANY_BLOCKS", "block_id", `${blockId} has ${DISPLAY_LIMITS.revisionsPerBlock} revisions`, "show it under a new block_id"));
   }
-  return { ok: true, show, provenance: resolveProvenance(show, history, state) };
+  return faults;
+}
+
+/** The input's check and the engine's, as one outcome. Provenance is resolved for a block that is shown, and never
+ *  refuses. A block over a limit shows nothing at all (it would be one more block). */
+function checkSession(check: ShowCheck, history: DisplayHistory, state: ShowState): Outcome {
+  const id = check.ok ? check.show.block_id : check.block_id;
+  const limits = id ? sessionFaults(id, history, state).slice(0, 1) : [];
+  if (check.ok && !limits.length) return { ok: true, show: check.show, provenance: resolveProvenance(check.show, history, state) };
+  const errors = [...(check.ok ? [] : check.errors), ...limits];
+  if (limits.length) return { ok: false, error: errors[0]!, errors };
+  return check as Extract<ShowCheck, { ok: false }>;
 }
 
 function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number): BlockDisplay {
@@ -403,7 +416,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
       let outcome: Outcome;
       try {
         history = await deps.history(ctx.toolUseId);
-        outcome = check.ok ? checkSession(check.show, history, state) : check;
+        outcome = checkSession(check, history, state);
       } catch (e) {
         log.error("display check failed unexpectedly", { error: e instanceof Error ? e.name : typeof e, kind });
         const known = check.ok ? { block_id: check.show.block_id, fallback: check.show.fallback } : { block_id: check.block_id, fallback: check.fallback };
