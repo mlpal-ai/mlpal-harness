@@ -181,6 +181,20 @@ describe("Show: refusal and the one repair", () => {
     });
   }
 
+  test("a 12,000-deep spec, given as an object or as a string, is a typed refusal with the fallback shown and the attempt counted", async () => {
+    let deep: unknown[] = [];
+    for (let i = 0; i < 12_000; i++) deep = [deep];
+    const spec = { vl: { ...chart().spec.vl, encoding: { x: { field: "week", type: "temporal", axis: { values: deep } } } } };
+    const text = "[".repeat(12_000) + "]".repeat(12_000);
+    for (const input of [chart({ spec }), chart({ spec: `{"vl": {"data": {"values": ${text}}}}` })]) {
+      const { call, metrics } = tool();
+      const r = await call(input);
+      expect([r.isError, errorOf(r).error, errorOf(r).attempt]).toEqual([true, "SPEC_TOO_LARGE", 1]);
+      expect(r.meta?.display?.[0]).toMatchObject({ level: "text", status: "repairing", fallback: { text: FALLBACK } });
+      expect(metrics.counters.get("display.repair{outcome=attempted}")).toBe(1);
+    }
+  });
+
   test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {
     const r = await tool({ ...WEB, kinds: ["grid"] }).call(chart());
     expect([errorOf(r).error, errorOf(r).path]).toEqual(["KIND_NOT_ALLOWED", "kind"]);

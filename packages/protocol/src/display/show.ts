@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { checkBlockSpec, parseShape, type BlockSpec } from "./blocks.js";
+import { checkBounds } from "./bounds.js";
 import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";
 import { DisplayRefusal, fail, type DisplayError } from "./errors.js";
@@ -62,19 +63,22 @@ export interface ShowCheckOptions {
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
-/** Check a Show input. Order: size, block_id, fallback, kind, the other fields, the spec, the fallback's table; the
- *  first fault wins. */
+/** Check a Show input. Order: block_id, fallback, depth and size, kind, the other fields, the spec, the fallback's
+ *  table; the first fault wins. */
 export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowCheck {
   let blockId: string | undefined;
   let fallback: string | undefined;
   try {
     if (!isObj(raw)) fail("VALIDATION_FAILED", [], "the Show input is an object");
-    const bytes = utf8.encode(JSON.stringify(raw)).length;
-    if (bytes > DISPLAY_LIMITS.inputBytes) fail("SPEC_TOO_LARGE", [], `${bytes} bytes; a Show input is at most ${DISPLAY_LIMITS.inputBytes}`, "aggregate the data, or show fewer rows and give the total in the fallback");
     if (typeof raw.block_id !== "string" || !BLOCK_ID.test(raw.block_id)) fail("VALIDATION_FAILED", ["block_id"], "block_id is lowercase letters, digits and hyphens, starting with a letter, at most 40", 'for example "fig-1"');
     blockId = raw.block_id;
+    // The fallback's check reads fixed fields only, so it is safe before the bounds; checking it first lets the
+    // fallback be shown whatever is wrong with the rest.
     const fb = checkFallbackInput(raw.fallback, raw.kind, ["fallback"]);
     fallback = fb.text;
+    checkBounds(raw, []);
+    const bytes = utf8.encode(JSON.stringify(raw)).length;
+    if (bytes > DISPLAY_LIMITS.inputBytes) fail("SPEC_TOO_LARGE", [], `${bytes} bytes; a Show input is at most ${DISPLAY_LIMITS.inputBytes}`, "aggregate the data, or show fewer rows and give the total in the fallback");
     const kind = raw.kind;
     if (typeof kind !== "string") fail("VALIDATION_FAILED", ["kind"], "kind names the block kind", `kinds: ${BLOCK_KINDS.join(", ")}`);
     if (HOST_OWNED_KINDS.has(kind)) fail("HOST_OWNED_KIND", ["kind"], `${kind} blocks are drawn by the host, never by Show`, kind === "approval" ? "call the tool that needs approval; the host asks the person" : undefined);
