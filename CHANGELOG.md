@@ -33,10 +33,11 @@
   kinds, states a number; `fallback.table {from: "rows"}` appends up to 20 rows as a GFM table.
 - The model's fallback is checked structurally and stored neutralised (`inertFallbackText`): any `<` that could open
   HTML (a tag whatever follows its name, a closing tag, a comment, CDATA, a processing instruction, an autolink) and
-  any image (inline, reference, collapsed, shortcut) are refused, as is a link or reference definition to anything
-  but http(s) or a relative path; and whatever the checks miss is inert by construction: every `<` is stored as
-  `&lt;`, every `![` as `&#33;[`, and an unsafe link loses its syntax. Clients render the fallback as GFM without raw
-  HTML; a plain-text client may see those entities.
+  any image (inline, reference, collapsed, shortcut) are refused, as is any link reference definition (any `]:`,
+  however the definition is written) and an inline link to anything but http(s) or a relative path; and whatever the
+  checks miss is inert by construction: every `<` is stored as `&lt;`, every `![` as `&#33;[`, every `]:` as
+  `]&#58;`, and an unsafe inline link loses its syntax; table cells never form `]:` either. Fallback text is plain text
+  that clients must not interpret as markup; the engine stores it neutralised so a client that does is still safe.
 - What reaches a terminal or a markdown renderer from block data is inert: control characters (terminal escapes)
   are refused in the fallback text, in grid cells and in every chart string and field name; each appended table cell
   is stripped of escapes and controls, cut at 120 characters, every markdown- and HTML-active character

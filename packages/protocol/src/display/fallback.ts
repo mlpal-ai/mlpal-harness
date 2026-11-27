@@ -38,26 +38,26 @@ const FENCE = /^\s*(```|~~~)/m;
 /** A link destination that may stay a link: http(s), or a relative path with no scheme and no entity. */
 const SAFE_DEST = /^(?:<?https?:\/\/|[A-Za-z0-9._~/#?=%+-]*(?:[)\s>]|$))/i;
 const INLINE_LINK = /\]\(\s*/g;
-const REF_DEF = /^( {0,3})\[([^\]\n]+)\]:[ \t]*/gm;
+/** A link reference definition is `]:` after its label, wherever the label starts (a block quote, a list item, a label
+ *  with an escaped bracket or a line ending). No fallback needs one, so the sequence itself is refused and rewritten:
+ *  definitions are never parsed. */
+const DEFINITION = /\]:/;
 
 function unsafeLinks(text: string): boolean {
   for (const m of text.matchAll(INLINE_LINK)) if (!SAFE_DEST.test(text.slice(m.index! + m[0].length))) return true;
-  for (const m of text.matchAll(REF_DEF)) if (!SAFE_DEST.test(text.slice(m.index! + m[0].length))) return true;
   return false;
 }
 
 /**
  * The fallback as stored and sent: inert in a markdown renderer by construction, whatever the checks above miss.
  * Every `<` becomes `&lt;` (so nothing opens a tag or an autolink, whatever follows), every `![` starts with `&#33;`
- * (so no image, of any form), and a link or a reference definition whose destination is not http(s) or a relative path
- * loses its link syntax. Entities, not backslashes: a backslash the model wrote before them cannot undo them. A client
+ * (so no image, of any form), every `]:` becomes `]&#58;` (so no reference definition, however written), and an inline
+ * link whose destination is not http(s) or a relative path loses its link syntax. Entities, not backslashes: a backslash the model wrote before them cannot undo them. A client
  * that shows the fallback as plain text may see these entities.
  */
 export function inertFallbackText(text: string): string {
-  let out = text.replace(/</g, "&lt;").replace(/!\[/g, "&#33;[");
-  out = out.replace(INLINE_LINK, (m, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `]&#40;${m.slice(2)}`));
-  out = out.replace(REF_DEF, (m, indent: string, label: string, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `${indent}&#91;${label}]:${m.slice(indent.length + label.length + 3)}`));
-  return out;
+  const out = text.replace(/</g, "&lt;").replace(/!\[/g, "&#33;[").replace(/\]:/g, "]&#58;");
+  return out.replace(INLINE_LINK, (m, offset: number, all: string) => (SAFE_DEST.test(all.slice(offset + m.length)) ? m : `]&#40;${m.slice(2)}`));
 }
 
 /** The fallback as the model sent it, checked. A bare string is taken as its text (models flatten small objects).
@@ -79,6 +79,7 @@ export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): Fal
   if (IMAGE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no images", "describe what the image would show");
   if (FENCE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no code fences");
   if (CONTROL.test(text)) fail("VALIDATION_FAILED", at, "the fallback has a control character (a terminal escape)", "write plain text; tabs and newlines are fine");
+  if (DEFINITION.test(text)) fail("VALIDATION_FAILED", at, "the fallback has a link reference definition (]:)", "write links inline: [text](https://...)");
   if (unsafeLinks(text)) fail("VALIDATION_FAILED", at, "a link in the fallback goes to http(s) or a relative path only", "drop the link or use its https address");
   return { ...input, text: inertFallbackText(text) };
 }
@@ -94,7 +95,7 @@ function cell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const plain = String(v).replace(ANSI, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
   const cut = [...plain].length > CELL_CHARS ? `${[...plain].slice(0, CELL_CHARS - 1).join("")}…` : plain;
-  return cut.replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
+  return cut.replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/\]:/g, "]\\:").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
 }
 
 /** The complete fallback: the model's text, then the table it asked for (at most 20 rows, then how many more).

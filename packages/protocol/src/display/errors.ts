@@ -72,6 +72,7 @@ export function inert(s: string): string {
     .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
     .replace(/!\[/g, "!?")
     .replace(/\]\(/g, "]?")
+    .replace(/\]:/g, "]?")
     .replace(/[<>`]/g, "?")
     .replace(/:\/\//g, ":?/")
     .replace(/www\./gi, "www?");
