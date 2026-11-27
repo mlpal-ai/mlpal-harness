@@ -37,6 +37,9 @@
   checks miss is inert by construction: every `<` is stored as `&lt;`, every `![` as `&#33;[`, every `]:` as
   `]&#58;`, and an unsafe inline link loses its syntax; table cells never form `]:` either. Fallback text is plain text
   that clients must not interpret as markup; the engine stores it neutralised so a client that does is still safe.
+- Invisible characters that reorder or hide text (bidirectional marks, embeddings, overrides, isolates, the zero-width
+  space, the BOM) count as control characters: refused in model text, stripped from engine text; the zero-width
+  joiner and non-joiner stay. A protocol-relative link (`//host/...`) is not a relative path.
 - What reaches a terminal or a markdown renderer from block data is inert: control characters (terminal escapes)
   are refused in the fallback text, in grid cells and in every chart string and field name; each appended table cell
   is stripped of escapes and controls, cut at 120 characters, every markdown- and HTML-active character
