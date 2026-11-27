@@ -30,6 +30,9 @@ interface Walk {
   cells: number;
   /** A data block failed its check, so the fields and rows it would have made are unknown. */
   dataFaulted?: boolean;
+  /** Rows times ops of every window so far (chartWindowOpRows), and whether its refusal has been reported. */
+  windowOpRows: number;
+  windowOpRowsReported?: boolean;
 }
 
 type Rule = (v: unknown, path: Path, w: Walk) => void;
@@ -340,8 +343,36 @@ const TRANSFORMS: Record<string, Rule> = {
   stack: obj({ stack: field, groupby: arr(field, 20), as: outputs(2), offset: enumOf("zero", "center", "normalize"), sort: SORT_LIST }, ["stack", "groupby", "as"]),
 };
 
-/** Returns the factor the transforms multiply rows by (every fold). */
-function checkTransforms(ts: unknown, path: Path, w: Walk): number {
+const WHOLE_FRAME_OPS: ReadonlySet<string> = new Set(DISPLAY_LIMITS.chartWholeFrameOps);
+
+/**
+ * What a window costs a renderer (UI review R2; measured with Vega 6.4 in Bun on 5,000 rows): a median, quartile,
+ * interval or distinct window recomputes over its frame for every row, so it is allowed only over the whole partition
+ * (median over a cumulative frame took 3.6 s, distinct over +-2,500 2.7 s; over [null, null] about 30-200 ms). Other
+ * ops are incremental (sum, mean, count over +-2,500: under 100 ms), except min and max, which rescan (330 ms over
+ * +-2,500): a bounded frame is held to rows x span <= 1,000,000 (min, max or median at that size: under 0.4 s). Twenty
+ * windows over 5,000 rows took about 100 ms, so all windows of a chart are held to 200,000 rows x ops.
+ */
+function checkWindowCost(t: Obj, at: Path, rows: number, w: Walk): void {
+  const ops = (t.window as Obj[]).map((x) => String(x.op));
+  const frame = (has(t, "frame") ? t.frame : [null, 0]) as Array<number | null>;
+  const whole = ops.findIndex((op) => WHOLE_FRAME_OPS.has(op));
+  if (whole >= 0 && !(frame[0] === null && frame[1] === null)) {
+    report("TOO_COSTLY", has(t, "frame") ? [...at, "frame"] : [...at, "window", whole, "op"], `${ops[whole]} over a sliding or cumulative frame recomputes for every row`, "use frame [null, null] (the whole partition), or aggregate first");
+  }
+  const [a, b] = frame;
+  if (typeof a === "number" && typeof b === "number" && rows * (Math.abs(b - a) + 1) > DISPLAY_LIMITS.chartWindowRowsTimesSpan) {
+    report("TOO_COSTLY", [...at, "frame"], `${rows} rows x a frame of ${Math.abs(b - a) + 1}; at most ${DISPLAY_LIMITS.chartWindowRowsTimesSpan}`, "narrow the frame, or aggregate the rows first");
+  }
+  w.windowOpRows += rows * ops.length;
+  if (w.windowOpRows > DISPLAY_LIMITS.chartWindowOpRows && !w.windowOpRowsReported) {
+    w.windowOpRowsReported = true;
+    report("TOO_COSTLY", at, `window ops x rows reach ${w.windowOpRows}; a chart runs at most ${DISPLAY_LIMITS.chartWindowOpRows}`, "use fewer window ops, or aggregate the rows first");
+  }
+}
+
+/** Returns the factor the transforms multiply rows by (every fold). `rows` are the rows the list starts with. */
+function checkTransforms(ts: unknown, path: Path, w: Walk, rows: number): number {
   if (!Array.isArray(ts) || ts.length > 20) fail("VALIDATION_FAILED", path, "transform is a list of at most 20");
   let factor = 1;
   ts.forEach((t, i) => attempt(() => {
@@ -354,6 +385,7 @@ function checkTransforms(ts: unknown, path: Path, w: Walk): number {
     const faulted = collectedNow();
     TRANSFORMS[op]!(t, at, w);
     if (collectedNow() !== faulted) return;
+    if (op === "window") checkWindowCost(t, at, rows * factor, w);
     if (op === "fold") {
       factor *= (t.fold as unknown[]).length;
       if (!(has(t, "as"))) ["key", "value"].forEach((n) => w.fields.add(n));
@@ -415,7 +447,7 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
     if (own) values = own;
     else w.dataFaulted = true;
   }
-  const factor = o.factor * ((has(view, "transform") ? attempt(() => checkTransforms(view.transform, [...path, "transform"], w)) : 1) ?? 1);
+  const factor = o.factor * ((has(view, "transform") ? attempt(() => checkTransforms(view.transform, [...path, "transform"], w, values.length * o.factor)) : 1) ?? 1);
   if (has(view, "params")) attempt(() => arr(PARAM, 8)(view.params, [...path, "params"], w));
   if (values.length * factor > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", path, `${values.length * factor} rows after fold; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing, or show fewer series");
   if (has(view, "encoding")) {
@@ -458,7 +490,7 @@ export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
   for (const k of ["$schema", "config", "usermeta"]) delete vl[k];
   const at = [...path, "vl"];
   scan(vl, at, false);
-  const w: Walk = { fields: new Set(), uses: [], totalRows: 0, cells: 0 };
+  const w: Walk = { fields: new Set(), uses: [], totalRows: 0, cells: 0, windowOpRows: 0 };
   checkView(vl, at, w, { depth: 0, values: [], factor: 1 });
   if (w.totalRows === 0 && !w.dataFaulted) report("VALIDATION_FAILED", at, "a chart needs inline data", "data: { values: [ {...}, ... ] } at the top level or on a layer");
   if (w.totalRows > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", at, `${w.totalRows} inline rows; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing");

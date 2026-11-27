@@ -39,6 +39,12 @@ export const DISPLAY_LIMITS = {
   chartSeries: 12,
   chartLayers: 8,
   chartVconcat: 2,
+  /** A window with both frame ends bounded: rows it runs on times (frame span) at most this. */
+  chartWindowRowsTimesSpan: 1_000_000,
+  /** Over the whole chart: the sum, for every window transform, of rows it runs on times its ops, at most this. */
+  chartWindowOpRows: 200_000,
+  /** Window ops that recompute over the whole frame for every row: allowed only with frame [null, null]. */
+  chartWholeFrameOps: ["median", "q1", "q3", "ci0", "ci1", "distinct"],
   gridRows: 2_000,
   gridColumns: 40,
   kpiTiles: 8,

@@ -33,6 +33,9 @@ export type DisplayErrorCode =
   | "ROWS_OVER_LIMIT"
   /** Over 12 blocks in one turn, or 200 revisions of one block. */
   | "TOO_MANY_BLOCKS"
+  /** A valid chart that would take a renderer too long: a median, quartile, interval or distinct window over a sliding
+   *  or cumulative frame, a bounded frame whose rows times span is over the limit, or too many window ops times rows. */
+  | "TOO_COSTLY"
   /** A cited tool_use id is not in this session. */
   | "SOURCE_UNKNOWN"
   /** This block already failed twice this turn; the person sees its fallback. */

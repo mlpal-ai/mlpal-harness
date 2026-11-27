@@ -647,6 +647,115 @@
    }
   },
   {
+   "name": "median, q1 and ci1 over the whole partition",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "median",
+         "field": "onhand",
+         "as": "m"
+        },
+        {
+         "op": "q1",
+         "field": "onhand",
+         "as": "q"
+        },
+        {
+         "op": "ci1",
+         "field": "onhand",
+         "as": "c"
+        }
+       ],
+       "frame": [
+        null,
+        null
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a moving average over a small frame, and a cumulative sum",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "mean",
+         "field": "onhand",
+         "as": "ma"
+        }
+       ],
+       "frame": [
+        -2,
+        2
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "onhand",
+         "as": "cum"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
    "name": "$schema, config and usermeta at the top are stripped, not refused",
    "spec": {
     "vl": {
@@ -3106,6 +3215,237 @@
         "field": "on_hand",
         "gt": 0
        }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "UI review R2: a sliding median",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "median",
+         "field": "onhand",
+         "as": "m"
+        }
+       ],
+       "frame": [
+        -2,
+        2
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "a cumulative median (the default frame)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].window[0].op",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "median",
+         "field": "onhand",
+         "as": "m"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "ci0 on a cumulative frame",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "ci0",
+         "field": "onhand",
+         "as": "c"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "q3 on a frame open at one end",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "q3",
+         "field": "onhand",
+         "as": "c"
+        }
+       ],
+       "frame": [
+        0,
+        null
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "distinct on a sliding frame",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "week": "2026-11-30",
+        "onhand": 2140
+       },
+       {
+        "week": "2026-12-07",
+        "onhand": 1340
+       }
+      ]
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "week",
+       "type": "temporal"
+      },
+      "y": {
+       "field": "onhand",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "onhand",
+         "as": "d"
+        }
+       ],
+       "frame": [
+        -1,
+        1
+       ]
       }
      ]
     }

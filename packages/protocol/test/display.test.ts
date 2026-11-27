@@ -283,6 +283,43 @@ describe("input bounds: depth and size are checked without recursion, before any
   });
 });
 
+describe("chart cost (UI review R2)", () => {
+  const fault = (spec: unknown) => {
+    const r = validateBlock("chart", spec);
+    return r.ok ? "ok" : `${r.error.code} ${r.error.path}`;
+  };
+  const windowed = (n: number, transform: unknown[]) => line(rows(n), { transform });
+
+  test(`a bounded frame: rows times span at most ${DISPLAY_LIMITS.chartWindowRowsTimesSpan}`, () => {
+    const moving = (k: number) => windowed(5_000, [{ window: [{ op: "mean", field: "onhand", as: "ma" }], frame: [-k, k] }]);
+    expect(fault(moving(99))).toBe("ok"); // 5,000 x 199
+    expect(fault(moving(100))).toBe("TOO_COSTLY spec.vl.transform[0].frame"); // 5,000 x 201
+  });
+
+  test("a fold before the window multiplies the rows it runs on", () => {
+    const folded = (k: number) => line(rows(1_000, { a: 1 }), { transform: [{ fold: ["onhand", "a"] }, { window: [{ op: "sum", field: "value", as: "s" }], frame: [-k, k] }] });
+    expect(fault(folded(249))).toBe("ok"); // 2,000 x 499
+    expect(fault(folded(250))).toBe("TOO_COSTLY spec.vl.transform[1].frame"); // 2,000 x 501
+  });
+
+  test(`window ops times rows, over the whole chart, at most ${DISPLAY_LIMITS.chartWindowOpRows}`, () => {
+    const ops = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ op: "sum", field: "onhand", as: `w${from + i}` }));
+    expect(fault(windowed(5_000, [{ window: ops(20) }, { window: ops(20, 20) }]))).toBe("ok"); // 200,000
+    expect(fault(windowed(5_000, [{ window: ops(20) }, { window: ops(20, 20) }, { window: ops(1, 40) }]))).toBe("TOO_COSTLY spec.vl.transform[2]");
+  });
+
+  test("layers each pay for the windows they run", () => {
+    const ops = Array.from({ length: 10 }, (_, i) => ({ op: "sum", field: "onhand", as: `w${i}` }));
+    const layer = { transform: [{ window: ops }], mark: "line", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "w0", type: "quantitative" } } };
+    const spec = { vl: { data: { values: rows(5_000) }, layer: [layer, layer, layer, layer, layer] } };
+    expect(fault(spec)).toBe("TOO_COSTLY spec.vl.layer[4].transform[0]");
+  });
+
+  test("the limits are exported for clients", () => {
+    expect([DISPLAY_LIMITS.chartWindowRowsTimesSpan, DISPLAY_LIMITS.chartWindowOpRows, [...DISPLAY_LIMITS.chartWholeFrameOps]]).toEqual([1_000_000, 200_000, ["median", "q1", "q3", "ci0", "ci1", "distinct"]]);
+  });
+});
+
 describe("grid limits", () => {
   test("2,000 inline rows pass, 2,001 are ROWS_OVER_LIMIT", () => {
     const grid = (n: number) => ({ columns: [{ key: "id", label: "Id", type: "num" }], rows: Array.from({ length: n }, (_, i) => ({ id: i })), row_key: "id" });
