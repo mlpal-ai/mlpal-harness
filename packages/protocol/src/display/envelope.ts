@@ -73,7 +73,8 @@ export type DisplaySource = z.infer<typeof displaySourceSchema>;
  *  entity-encoded, image syntax and link definitions defused), so a client that renders it with HTML enabled is still
  *  safe. A client that cannot render markdown shows it as it is, after decoding the entity codes. In detail:
  *  no `<` but as `&lt;`, no image syntax, no `]:` (so no reference definition), inline links only to http(s) or
- *  relative paths, table cells backslash-escaped, no control characters. */
+ *  relative paths, table cells backslash-escaped, no control characters, and no character reference that decodes to
+ *  one (its `&` stored as `&amp;`). */
 export const fallbackSchema = z.object({ text: z.string().min(1) }).strict();
 export type Fallback = z.infer<typeof fallbackSchema>;
 

