@@ -8,15 +8,22 @@ const SHOW_TOOL_NAME = "Show";
 export interface DisplayHistory {
   revisions: ReadonlyMap<string, number>;
   toolUseIds: ReadonlySet<string>;
-  /** The tool calls since the person's last message (Show's own excluded), by name: a source named after a tool
-   *  called exactly once there is mapped to that call. Absent: no mapping. */
+  /** The calls a source may be verified against: those whose result came back without an error before the assistant
+   *  message holding this Show (a call in the same message, or one that failed, proves nothing). Absent: none. */
+  verifiableIds?: ReadonlySet<string>;
+  /** Of those, the ones since the person's last message (Show's own excluded), by name: a source named after a tool
+   *  that completed exactly once there is mapped to that call. Absent: no mapping. */
   recentCalls?: ReadonlyArray<{ id: string; name: string }>;
 }
 
-export function foldDisplayHistory(entries: ConversationEntry[]): DisplayHistory {
+/** `showToolUseId`: the Show call being checked; only what the record held before its message can verify it. */
+export function foldDisplayHistory(entries: ConversationEntry[], showToolUseId?: string): DisplayHistory {
   const revisions = new Map<string, number>();
   const toolUseIds = new Set<string>();
+  const names = new Map<string, string>();
+  const verifiableIds = new Set<string>();
   let recentCalls: Array<{ id: string; name: string }> = [];
+  let frozen = false;
   for (const { payload } of entries) {
     if (payload.type === "assistant") {
       const content = payload.message.content;
@@ -24,13 +31,18 @@ export function foldDisplayHistory(entries: ConversationEntry[]): DisplayHistory
       for (const b of content) {
         if (b.type !== "tool_use") continue;
         toolUseIds.add(b.id);
-        if (b.name !== SHOW_TOOL_NAME) recentCalls.push({ id: b.id, name: b.name });
+        names.set(b.id, b.name);
+        if (b.id === showToolUseId) frozen = true;
       }
     } else if (payload.type === "user") {
-      if (payload.author?.type !== "system") recentCalls = [];
+      if (!frozen && payload.author?.type !== "system") recentCalls = [];
     } else if (payload.type === "tool_result") {
       for (const d of payload.display ?? []) revisions.set(d.block_id, Math.max(revisions.get(d.block_id) ?? 0, d.revision));
+      const name = names.get(payload.toolUseId);
+      if (frozen || payload.isError || name === undefined) continue;
+      verifiableIds.add(payload.toolUseId);
+      if (name !== SHOW_TOOL_NAME) recentCalls.push({ id: payload.toolUseId, name });
     }
   }
-  return { revisions, toolUseIds, recentCalls };
+  return { revisions, toolUseIds, verifiableIds, recentCalls };
 }

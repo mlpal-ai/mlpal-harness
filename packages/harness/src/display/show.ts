@@ -49,8 +49,8 @@ const EMPTY_HISTORY: DisplayHistory = { revisions: new Map(), toolUseIds: new Se
 
 export interface ShowToolDeps {
   policy: DisplayPolicy;
-  /** The session's record as it stands now (the store, after rewinds). */
-  history: () => Promise<DisplayHistory>;
+  /** The session's record as it stands now (the store, after rewinds), seen from the Show call `toolUseId`. */
+  history: (toolUseId?: string) => Promise<DisplayHistory>;
   logger: Logger;
   metrics: Metrics;
 }
@@ -179,13 +179,14 @@ interface Provenance {
 
 /**
  * Provenance is verified when it can be, never a gate (the first real-model run cited the command line: models do not
- * reliably know their tool call ids). Sources and notes' tool call refs are resolved against the session; what does
- * not resolve is shown unverified or dropped, and the block is shown.
+ * reliably know their tool call ids). Sources and notes' tool call refs are resolved against the calls that completed
+ * without an error before this Show's message (DisplayHistory.verifiableIds); what does not resolve is shown
+ * unverified or dropped, and the block is shown.
  */
 function resolveProvenance(show: ValidShow, history: DisplayHistory, state: ShowState): Provenance {
   const recent = history.recentCalls ?? [];
   const callOf = (s: string): { id: string; state: "verified" | "mapped" } | null => {
-    if (history.toolUseIds.has(s)) return { id: s, state: "verified" };
+    if (history.verifiableIds?.has(s)) return { id: s, state: "verified" };
     const hits = recent.filter((c) => c.name === s.trim());
     return hits.length === 1 ? { id: hits[0]!.id, state: "mapped" } : null;
   };
@@ -381,7 +382,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
       let history = EMPTY_HISTORY;
       let outcome: Outcome;
       try {
-        history = await deps.history();
+        history = await deps.history(ctx.toolUseId);
         outcome = check.ok ? checkSession(check.show, history, state) : check;
       } catch (e) {
         log.error("display check failed unexpectedly", { error: e instanceof Error ? e.name : typeof e, kind });

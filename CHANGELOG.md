@@ -78,7 +78,9 @@
   `verified: false`), a note keeps its text and loses the id (`verified: false`), and an unusable value (control
   characters, over 300 characters, empty) is dropped, never echoed. The model reads a one-line `SOURCE_UNKNOWN`
   notice; counters `display.sources {state: verified|mapped|unverified|dropped}` and
-  `display.notices {code: SOURCE_UNKNOWN}`. No envelope change: `Note.verified` already tells a client which sources
+  `display.notices {code: SOURCE_UNKNOWN}`. Only a call whose result came back without an error before the assistant
+  message holding the Show verifies (by id or by name; review 5): a call in the same message, or a failed one, proves
+  nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
 - Chart cost (UI review R2), new code `TOO_COSTLY`: a window with median, q1, q3, ci0, ci1 or distinct takes frame

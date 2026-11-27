@@ -29,7 +29,8 @@ const badChart = (over: Record<string, unknown> = {}) => chart({ spec: { vl: { d
 
 // ─── the tool on its own ───
 
-const history = (h: Partial<DisplayHistory> = {}): DisplayHistory => ({ revisions: new Map(), toolUseIds: new Set(), ...h });
+/** A history for the tool alone; ids given as toolUseIds are taken as completed calls unless verifiableIds says. */
+const history = (h: Partial<DisplayHistory> = {}): DisplayHistory => ({ revisions: new Map(), toolUseIds: new Set(), verifiableIds: h.toolUseIds ?? new Set(), ...h });
 
 function tool(caps: DisplayCaps = WEB, h: DisplayHistory = history()) {
   const metrics = new MemoryMetrics();
@@ -158,6 +159,50 @@ describe("Show: provenance is verified when it can be, never a gate (real-model 
     await call(chart({ sources: Array.from({ length: 20 }, (_, i) => `source number ${i} of a long list`) }));
     const keys = [...metrics.counters.keys()].filter((k) => k.startsWith("display.sources") || k.startsWith("display.notices"));
     for (const k of keys) expect(k).toMatch(/^display\.(sources\{state=(verified|mapped|unverified|dropped)\}|notices\{code=SOURCE_UNKNOWN\})$/);
+  });
+
+  describe("only a completed, successful call earlier than this Show verifies (review 5, R2)", () => {
+    const entry = (uuid: string, payload: unknown): ConversationEntry => ({ uuid, parentUuid: null, payload, ts: "t" }) as unknown as ConversationEntry;
+    const human = entry("u", { type: "user", message: { role: "user", content: "stock?" }, author: { type: "human" } });
+    const asks = (uuid: string, ...calls: Array<[string, string]>) => entry(uuid, { type: "assistant", message: { role: "assistant", content: calls.map(([id, name]) => ({ type: "tool_use", id, name, input: {} })) } });
+    const result = (id: string, isError: boolean) => entry(`r-${id}`, { type: "tool_result", toolUseId: id, toolName: "x", content: "", isError, ts: "t" });
+    const showWith = async (entries: ConversationEntry[], showId: string, input: Record<string, unknown>) => {
+      const metrics = new MemoryMetrics();
+      const show = createShowTool({ policy: resolveDisplay(WEB)!, history: async (id) => foldDisplayHistory(entries, id), logger: new JsonLogger({ level: "error", sink: () => {} }), metrics });
+      const r = await show.call(chart(input), { cwd: "/w", runId: "r", toolUseId: showId });
+      return r.meta?.display?.[0];
+    };
+    const cites = { sources: ["erp_query"], notes: [{ id: "n", kind: "source", text: "ERP, audited", ref: { tool_use_id: "erp_query" } }] };
+
+    test("A: a call in the same message as the Show (no result yet) does not verify, by name or by id", async () => {
+      const entries = [human, asks("a", ["toolu_1", "erp_query"], ["toolu_2", "Show"])];
+      const d = await showWith(entries, "toolu_2", { ...cites, sources: ["erp_query", "toolu_1"] });
+      expect(d?.source.tool_use_ids).toBeUndefined();
+      expect(d?.notes?.find((n) => n.id === "n")).toEqual({ id: "n", kind: "source", text: "ERP, audited", verified: false });
+    });
+
+    test("B: a call whose result was an error does not verify, by name or by id", async () => {
+      const entries = [human, asks("a", ["toolu_1", "sec_filing_verified"]), result("toolu_1", true), asks("b", ["toolu_2", "Show"])];
+      const d = await showWith(entries, "toolu_2", { sources: ["sec_filing_verified", "toolu_1"] });
+      expect(d?.source.tool_use_ids).toBeUndefined();
+    });
+
+    test("C: a completed call before the Show's message verifies, by name and by id", async () => {
+      const entries = [human, asks("a", ["toolu_1", "erp_query"]), result("toolu_1", false), asks("b", ["toolu_2", "Show"])];
+      const d = await showWith(entries, "toolu_2", cites);
+      expect(d?.source.tool_use_ids).toEqual(["toolu_1"]);
+      expect(d?.notes?.[0]).toEqual({ id: "n", kind: "source", text: "ERP, audited", ref: { tool_use_id: "toolu_1" }, verified: true });
+    });
+
+    test("a result written after the Show's own message does not count, even when the store already has it", async () => {
+      const entries = [human, asks("a", ["toolu_1", "erp_query"], ["toolu_2", "Show"]), result("toolu_1", false)];
+      expect((await showWith(entries, "toolu_2", cites))?.source.tool_use_ids).toBeUndefined();
+    });
+
+    test("a name matching two qualifying calls stays unverified", async () => {
+      const entries = [human, asks("a", ["toolu_1", "erp_query"], ["toolu_3", "erp_query"]), result("toolu_1", false), result("toolu_3", false), asks("b", ["toolu_2", "Show"])];
+      expect((await showWith(entries, "toolu_2", cites))?.source.tool_use_ids).toBeUndefined();
+    });
   });
 
   test("unverified labels never take the block past 20 notes", async () => {
@@ -403,13 +448,16 @@ describe("the display history", () => {
     expect([...h.revisions]).toEqual([["fig-1", 3], ["fig-2", 1]]);
     expect([...h.toolUseIds]).toEqual(["toolu_1"]);
     expect(h.recentCalls).toEqual([{ id: "toolu_1", name: "Read" }]);
+    expect([...(h.verifiableIds ?? [])]).toEqual(["toolu_1"]);
   });
 
-  test("recent calls are those since the last user message, Show's own excluded", () => {
+  test("recent calls are completed ones since the last user message, Show's own excluded", () => {
     const h = foldDisplayHistory([
       entry("a", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "erp_query", input: {} }] } }),
       entry("b", { type: "user", message: { role: "user", content: "and now?" } }),
       entry("c", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "forecast", input: {} }, { type: "tool_use", id: "t3", name: "Show", input: {} }] } }),
+      entry("d", { type: "tool_result", toolUseId: "t2", toolName: "forecast", content: "", isError: false, ts: "t" }),
+      entry("e", { type: "tool_result", toolUseId: "t3", toolName: "Show", content: "", isError: false, ts: "t" }),
     ]);
     expect(h.recentCalls).toEqual([{ id: "t2", name: "forecast" }]);
     expect([...h.toolUseIds]).toEqual(["t1", "t2", "t3"]);
