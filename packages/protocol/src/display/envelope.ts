@@ -67,10 +67,10 @@ export const displaySourceSchema = z
   .strict();
 export type DisplaySource = z.infer<typeof displaySourceSchema>;
 
-/** §2.5 the fallback as the envelope carries it: complete GFM, the engine's text table (when the model asked for one)
- *  already appended. Clients render it as markdown without raw HTML. The engine stores it neutralised, so a markdown
- *  client is never the weak link: no `<` but as `&lt;`, no image syntax, links only to http(s) or relative paths, table
- *  cells backslash-escaped, no control characters. */
+/** §2.5 the fallback as the envelope carries it, the engine's text table (when the model asked for one) already
+ *  appended. Fallback text is plain text that clients must not interpret as markup, and the engine stores it
+ *  neutralised so a client that does is still safe: no `<` but as `&lt;`, no image syntax, no `]:` (so no reference
+ *  definition), inline links only to http(s) or relative paths, table cells backslash-escaped, no control characters. */
 export const fallbackSchema = z.object({ text: z.string().min(1) }).strict();
 export type Fallback = z.infer<typeof fallbackSchema>;
 

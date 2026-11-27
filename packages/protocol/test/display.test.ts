@@ -421,6 +421,45 @@ describe("the model's fallback is never HTML, an image or a dangerous link, by c
   });
 });
 
+describe("no fallback can hold a link reference definition, however written (review 3, required 1)", () => {
+  const definitions = [
+    // the review's seven
+    "[click][1]\n\n[1]:\n  javascript:alert(1)",
+    "[click][1]\n\n> [1]: javascript:alert(1)",
+    "[click][1]\n\n>[1]: javascript:alert(1)",
+    "[click][1]\n\n- [1]: javascript:alert(1)",
+    "[c][1]\n\n1. [1]: javascript:alert(1)",
+    "[c][a\\]b]\n\n[a\\]b]: javascript:alert(1)",
+    "[c][a b]\n\n[a\nb]: javascript:alert(1)",
+    // ours
+    '[c][1]\n\n[1]: https://example.com "a title"',
+    "[c][1]\n\n[1]: <javascript:alert(1)>",
+    "[c][1]\n\n   [1]: javascript:alert(1)",
+    "[c][1]\n\n[1]:\tjavascript:alert(1)",
+    "[c][1]\r\n\r\n[1]: javascript:alert(1)",
+    "[c][1]\n\n[1]:\u00a0javascript:alert(1)",
+    "[c][1]\n\n\u2003[1]:\u2003javascript:alert(1)",
+    "[c][1]\n\n[1]: https://example.com",
+  ];
+  for (const d of definitions) {
+    test(`refused: ${JSON.stringify(d)}`, () => {
+      const r = checkShowInput(show({ fallback: { text: `${FALLBACK} ${d}` } }));
+      expect(r.ok ? null : [r.error.code, r.error.path]).toEqual(["VALIDATION_FAILED", "fallback.text"]);
+    });
+  }
+
+  test("stored text never holds ]: whatever the check becomes", () => {
+    for (const d of definitions) expect(inertFallbackText(d)).not.toContain("]:");
+    expect(inertFallbackText("[1]: x")).toBe("[1]&#58; x");
+  });
+
+  test("an engine-written table cell or header never forms ]:", () => {
+    const grid = { columns: [{ key: "id", label: "Id", type: "num" }, { key: "n", label: "Note]: x", type: "text" }], rows: [{ id: 1, n: "[1]: javascript:alert(1)" }], row_key: "id" };
+    const r = checkShowInput(show({ kind: "grid", spec: grid, fallback: { text: FALLBACK, table: { from: "rows" } } }));
+    expect(r.ok && r.show.fallback.slice(FALLBACK.length)).not.toContain("]:");
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);
