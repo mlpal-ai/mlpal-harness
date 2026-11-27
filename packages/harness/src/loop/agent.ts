@@ -238,7 +238,7 @@ export interface AgentConfig {
    * (pre-split behavior, byte-identical — pinned by golden tests).
    */
   loop?: LoopPolicy;
-  /** 0.27.0 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
+  /** 0.26.8 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
    *  parseDisplayCaps). When it declares the block level and draws a kind of catalog `harness.v1/1`, the Show tool is
    *  offered and the catalog's grammar joins the system prompt. Any other declaration, and none, is served exactly as
    *  before: no Show, no display on any event. Showing a block later, on another surface, for a session a text client

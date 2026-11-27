@@ -1,5 +1,5 @@
 /**
- * 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §3.3): why the engine refused a display. The model reads the code with
+ * 0.26.8 display protocol (DISPLAY-PROTOCOL-v0 §3.3): why the engine refused a display. The model reads the code with
  * a path and a hint as a tool error and repairs from it; metrics count it by code. A2UI's names are reused where they
  * overlap. Only the codes this engine produces are listed; patch and remove (BLOCK_NOT_FOUND, REVISION_CONFLICT,
  * PATCH_FAILED) and the other levels (LEVEL_NOT_SUPPORTED) arrive with the slices that add them.

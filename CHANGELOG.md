@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-### An agent can show a typed block, with a text fallback always; protocol 0.27.0 (Harness UI Next P1, additive, 2026-11-27)
+### An agent can show a typed block, with a text fallback always; protocol 0.26.8 (Harness UI Next P1, additive, 2026-11-27)
 
-- 0.27.0, not the next patch, for the reason 0.26.7 gives: `next/ws` numbers 0.26.1–0.26.6. Carry this onto `next/ws`
-  when the lines merge.
+- 0.26.8 on this line: the next patch after 0.26.6, skipping 0.26.7, which main's E-17 (`SystemInitEvent.sandbox`)
+  holds for when the lines merge. The same change is 0.27.0 on main (feat/display-protocol).
+- On this line `Show` also declares its arguments (`Tool.declaredArgs`), so the argument-reading rules judge it.
 - Protocol (`display/`, DISPLAY-PROTOCOL-v0 §2–5): `DisplayEnvelope` (a `TextDisplay` or a `ChartDisplay` /
   `KpisDisplay` / `GridDisplay` block of catalog `harness.v1/1`), its zod schema `displayEnvelopeSchema`, and
   `ToolResultEvent.display?`: render-only like `diff`. Every envelope carries a complete `fallback.text`.

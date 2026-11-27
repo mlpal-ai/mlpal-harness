@@ -68,7 +68,7 @@ export interface ToolResult {
     refusal?: ModelRefusal;
     /** 0.22.4: the remote sandbox had no capacity for the call */
     sandboxRefusal?: SandboxRefusal;
-    /** 0.27.0: what the call showed the person (Show), copied onto the event like `diff` */
+    /** 0.26.8: what the call showed the person (Show), copied onto the event like `diff` */
     display?: DisplayEnvelope[];
     /** The step's display string when it is not what the model reads: Show's model reads a short line, while a client
      *  that draws no display shows the line and the fallback. Absent = the display string is derived from `content`. */

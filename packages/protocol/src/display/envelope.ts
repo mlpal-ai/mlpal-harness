@@ -4,7 +4,7 @@ import { plainText as plain } from "./fields.js";
 import { BLOCK_ID, DISPLAY_CATALOG, DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 
 /**
- * 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §2): what an agent deliberately shows, as a render-only field on the
+ * 0.26.8 display protocol (DISPLAY-PROTOCOL-v0 §2): what an agent deliberately shows, as a render-only field on the
  * tool result that showed it (`ToolResultEvent.display`). Every envelope carries a complete text fallback, so a
  * client that draws nothing else still has the conclusion and the numbers. A client that did not ask for display
  * never receives one.

@@ -1,4 +1,4 @@
-/** 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §2–5). The throwing helpers stay inside the package. */
+/** 0.26.8 display protocol (DISPLAY-PROTOCOL-v0 §2–5). The throwing helpers stay inside the package. */
 export * from "./catalog.js";
 export { asDisplayError, displayPath, type DisplayCheck, type DisplayError, type DisplayErrorCode } from "./errors.js";
 export * from "./envelope.js";

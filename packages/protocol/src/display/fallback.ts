@@ -5,7 +5,7 @@ import { fail } from "./errors.js";
 import { CONTROL } from "./fields.js";
 
 /**
- * 0.27.0 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
+ * 0.26.8 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
  * e-mail, a screen reader and a pinned UI show, so it must stand alone: the conclusion and the key numbers, in plain
  * GFM. The checks are cheap heuristics, not a semantic judgement.
  */
