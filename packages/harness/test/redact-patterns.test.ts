@@ -68,6 +68,16 @@ describe("pattern redaction (C8 §8)", () => {
     registerPattern("custom", /\bsecret-[0-9]{4}\b/g);
     expect(redactResult({ content: "got secret-1234" }).content).toBe("got [redacted:custom]");
     expect(redactResult({ content: [{ type: "text", text: "got secret-9999" }] }).content).toEqual([{ type: "text", text: "got [redacted:custom]" }]);
+    // what Show puts in front of the person passes the same redactor: its display string and every string of its envelope
+    const shown = redactResult({
+      content: [{ type: "text", text: "Shown fig-1 r1 (chart) in the thread." }],
+      meta: {
+        displayText: "[shown fig-1 r1 · chart]\nkey secret-1111",
+        display: [{ v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "block", kind: "grid", catalog: "harness.v1/1", spec: { columns: [{ key: "k", label: "K", type: "text" }], rows: [{ k: "secret-2222" }], row_key: "k" }, fallback: { text: "secret-3333 and 4 more" }, source: { by: "model" }, status: "ok" }],
+      },
+    });
+    expect(JSON.stringify(shown.meta)).not.toMatch(/secret-\d/);
+    expect(shown.meta?.displayText).toBe("[shown fig-1 r1 · chart]\nkey [redacted:custom]");
   });
 
   test("registering twice adds nothing; a non-global pattern is refused", () => {
