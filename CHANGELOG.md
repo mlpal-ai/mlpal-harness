@@ -16,7 +16,7 @@
   `DisplayError {code, path, message, hint}` (`DisplayErrorCode`: `FALLBACK_MISSING`, `FALLBACK_TOO_LONG`,
   `FALLBACK_UNINFORMATIVE`, `KIND_UNKNOWN`, `KIND_NOT_ALLOWED`, `HOST_OWNED_KIND`, `VALIDATION_FAILED`,
   `URL_NOT_ALLOWED`, `EXPRESSION_NOT_ALLOWED`, `SPEC_TOO_LARGE`, `ROWS_OVER_LIMIT`, `TOO_MANY_BLOCKS`,
-  `SOURCE_UNKNOWN`, `RETRY_EXHAUSTED`). A refusal after the fallback passed carries the fallback, so it can be shown
+  `SOURCE_UNKNOWN`, `RETRY_EXHAUSTED`, `VALIDATION_INTERNAL`). A refusal after the fallback passed carries the fallback, so it can be shown
   while the model repairs.
 - `validateBlock(kind, spec)`, the check engine and client share: `chart` on the §5.2 Vega-Lite subset as a strict
   allowlist at every depth (every object of a mark, channel, axis, legend, scale, sort, bin, condition, predicate,
@@ -35,6 +35,12 @@
   is stripped of escapes and controls, cut at 120 characters, every markdown- and HTML-active character
   backslash-escaped and autolinks broken, so a cell is never an image, a link, HTML or an escape. A refusal's
   message, hint and path, which quote the model's names, are made inert the same way.
+- Inherited names are never rules: every key lookup is own-property (Maps for rule tables, `Object.hasOwn` on the
+  model's objects), so `constructor`, `toString`, `valueOf`, `hasOwnProperty` and the rest are unknown keys like any
+  other; `__proto__`, `constructor` and `prototype` are refused as keys anywhere, data rows included. A check that
+  throws anyway is `VALIDATION_INTERNAL` (new code), naming only the exception's class: `checkShowInput` and
+  `validateBlock` never throw, and Show turns a store failure the same way, so the fallback is shown and the repair
+  counted.
 - Bounds before any walk (`checkBounds`, iterative): a Show input or a spec is at most 32 levels deep and 100,000
   values, else `SPEC_TOO_LARGE` with the path; checked after the block_id and the fallback, so the fallback is shown
   and the repair counted. A 100,000-deep input is a typed refusal, never a stack overflow.

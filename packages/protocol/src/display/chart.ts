@@ -32,6 +32,8 @@ interface Walk {
 type Rule = (v: unknown, path: Path, w: Walk) => void;
 
 const isObj = (x: unknown): x is Obj => typeof x === "object" && x !== null && !Array.isArray(x);
+/** Own keys only: a model's object answers `in` for every name on Object.prototype. */
+const has = (o: object, k: string): boolean => Object.hasOwn(o, k);
 const list = (xs: Iterable<string>) => [...xs].join(", ");
 
 // ─── keys refused by name, anywhere outside the data rows ───
@@ -102,11 +104,15 @@ const byType = (rules: { string?: Rule; number?: Rule; boolean?: Rule; null?: Ru
   rule(v, p, w);
 };
 /** An object with these keys and no other; `required` keys must be present. */
-const obj = (fields: Record<string, Rule>, required: string[] = []): Rule => (v, p, w) => {
-  if (!isObj(v)) fail("VALIDATION_FAILED", p, `an object with ${list(Object.keys(fields))}`);
-  for (const k of Object.keys(v)) if (!(k in fields)) fail("VALIDATION_FAILED", [...p, k], `unknown field "${k}"`, `allowed here: ${list(Object.keys(fields))}`);
-  for (const k of required) if (!(k in v)) fail("VALIDATION_FAILED", [...p, k], `${k} is required here`);
-  for (const [k, x] of Object.entries(v)) fields[k]!(x, [...p, k], w);
+const obj = (fields: Record<string, Rule>, required: string[] = []): Rule => {
+  // A Map, so a name every JavaScript object inherits (constructor, toString, __proto__) is never a rule.
+  const rules = new Map(Object.entries(fields));
+  return (v, p, w) => {
+    if (!isObj(v)) fail("VALIDATION_FAILED", p, `an object with ${list(rules.keys())}`);
+    for (const k of Object.keys(v)) if (!rules.has(k)) fail("VALIDATION_FAILED", [...p, k], `unknown field "${k}"`, `allowed here: ${list(rules.keys())}`);
+    for (const k of required) if (!has(v, k)) fail("VALIDATION_FAILED", [...p, k], `${k} is required here`);
+    for (const [k, x] of Object.entries(v)) rules.get(k)!(x, [...p, k], w);
+  };
 };
 /** A field name an encoding, predicate, sort or transform reads: checked against the data at the end. */
 const field: Rule = (v, p, w) => {
@@ -221,17 +227,17 @@ const SORT = byType({
 const PREDICATE: Rule = (v, p, w) => {
   if (typeof v === "string") fail("EXPRESSION_NOT_ALLOWED", p, "an expression predicate is not allowed", 'use a field predicate: { "field": "x", "gte": 10 }');
   if (!isObj(v)) fail("VALIDATION_FAILED", p, "a predicate is an object");
-  if ("and" in v || "or" in v) return obj({ and: arr(PREDICATE, 10, 1), or: arr(PREDICATE, 10, 1) })(v, p, w);
-  if ("not" in v) return obj({ not: PREDICATE }, ["not"])(v, p, w);
-  if ("param" in v) return obj({ param: TOKEN, empty: bool }, ["param"])(v, p, w);
+  if (has(v, "and") || has(v, "or")) return obj({ and: arr(PREDICATE, 10, 1), or: arr(PREDICATE, 10, 1) })(v, p, w);
+  if (has(v, "not")) return obj({ not: PREDICATE }, ["not"])(v, p, w);
+  if (has(v, "param")) return obj({ param: TOKEN, empty: bool }, ["param"])(v, p, w);
   const tests = ["equal", "lt", "lte", "gt", "gte", "range", "oneOf", "valid"];
   obj({ field, timeUnit: TIME_UNIT, equal: scalar, lt: scalar, lte: scalar, gt: scalar, gte: scalar, range: arr(scalar, 2, 2), oneOf: arr(scalar, 100, 1), valid: bool }, ["field"])(v, p, w);
-  if (!tests.some((t) => t in v)) fail("VALIDATION_FAILED", p, "a predicate names a field and a test", `tests: ${tests.join(", ")}; or { "param": "the selection's name" }`);
+  if (!tests.some((t) => has(v, t))) fail("VALIDATION_FAILED", p, "a predicate names a field and a test", `tests: ${tests.join(", ")}; or { "param": "the selection's name" }`);
 };
 
 const CONDITION: Rule = (v, p, w) => {
   obj({ param: TOKEN, test: PREDICATE, empty: bool, value: byType({ string: str(200), number: num(-1e15, 1e15), boolean: bool, null: nul, array: arr(num(0, 100), 8) }), field, type: TYPES, title: TITLE })(v, p, w);
-  if ("param" in (v as Obj) === "test" in (v as Obj)) fail("VALIDATION_FAILED", p, "a condition has exactly one of param or test");
+  if (has(v as Obj, "param") === has(v as Obj, "test")) fail("VALIDATION_FAILED", p, "a condition has exactly one of param or test");
 };
 
 const CHANNEL_DEF = obj({
@@ -260,7 +266,7 @@ CHANNEL_RULES.detail = CHANNEL_LIST(DISPLAY_LIMITS.chartSeries);
 CHANNEL_RULES.order = CHANNEL_LIST(4);
 const ENCODING: Rule = (v, p, w) => {
   if (!isObj(v)) fail("VALIDATION_FAILED", p, "encoding is an object of channels");
-  for (const ch of Object.keys(v)) if (!(ch in CHANNEL_RULES)) fail("VALIDATION_FAILED", [...p, ch], `channel "${ch}" is not allowed`, `channels: ${CHANNELS.join(", ")}`);
+  for (const ch of Object.keys(v)) if (!has(CHANNEL_RULES, ch)) fail("VALIDATION_FAILED", [...p, ch], `channel "${ch}" is not allowed`, `channels: ${CHANNELS.join(", ")}`);
   obj(CHANNEL_RULES)(v, p, w);
 };
 
@@ -311,8 +317,8 @@ const SELECT = byType({
   object: obj({ type: enumOf("point", "interval"), fields: arr(field, 8, 1), encodings: arr(enumOf(...CHANNELS), 4, 1), nearest: bool, resolve: enumOf("global", "union", "intersect") }, ["type"]),
 });
 const PARAM: Rule = (v, p, w) => {
-  if (isObj(v) && !("select" in v) && !("bind" in v)) fail("VALIDATION_FAILED", [...p, "select"], "only point and interval selections are allowed", '"select": "point" or "interval"');
-  if (isObj(v) && "bind" in v) fail("VALIDATION_FAILED", [...p, "bind"], "bound params (inputs) are not allowed", "a selection without bind becomes the person's selection context");
+  if (isObj(v) && !(has(v, "select")) && !(has(v, "bind"))) fail("VALIDATION_FAILED", [...p, "select"], "only point and interval selections are allowed", '"select": "point" or "interval"');
+  if (isObj(v) && has(v, "bind")) fail("VALIDATION_FAILED", [...p, "bind"], "bound params (inputs) are not allowed", "a selection without bind becomes the person's selection context");
   obj({ name: TOKEN, select: SELECT }, ["name", "select"])(v, p, w);
 };
 
@@ -336,14 +342,14 @@ function checkTransforms(ts: unknown, path: Path, w: Walk): number {
   ts.forEach((t, i) => {
     const at = [...path, i];
     if (!isObj(t)) fail("VALIDATION_FAILED", at, "a transform is an object");
-    if ("calculate" in t) fail("EXPRESSION_NOT_ALLOWED", [...at, "calculate"], "calculate is an expression", "precompute the field into the data");
-    const ops = Object.keys(t).filter((k) => k in TRANSFORMS);
+    if (has(t, "calculate")) fail("EXPRESSION_NOT_ALLOWED", [...at, "calculate"], "calculate is an expression", "precompute the field into the data");
+    const ops = Object.keys(t).filter((k) => has(TRANSFORMS, k));
     if (ops.length !== 1) fail("VALIDATION_FAILED", at, ops.length ? `a transform has one op, not ${ops.join(" and ")}` : `transform ${list(Object.keys(t)) || "{}"} is not allowed`, `transforms: ${list(Object.keys(TRANSFORMS))}`);
     const op = ops[0]!;
     TRANSFORMS[op]!(t, at, w);
     if (op === "fold") {
       factor *= (t.fold as unknown[]).length;
-      if (!("as" in t)) ["key", "value"].forEach((n) => w.fields.add(n));
+      if (!(has(t, "as"))) ["key", "value"].forEach((n) => w.fields.add(n));
     }
     if (op === "bin") {
       const names = typeof t.as === "string" ? [t.as] : (t.as as string[]);
@@ -355,9 +361,9 @@ function checkTransforms(ts: unknown, path: Path, w: Walk): number {
 
 function checkData(data: unknown, path: Path, w: Walk): unknown[] {
   if (!isObj(data)) fail("VALIDATION_FAILED", path, "data is an object with inline values");
-  for (const g of ["sequence", "sphere", "graticule"]) if (g in data) fail("VALIDATION_FAILED", [...path, g], `data generators (${g}) are not allowed`, "put the rows in data.values");
+  for (const g of ["sequence", "sphere", "graticule"]) if (has(data, g)) fail("VALIDATION_FAILED", [...path, g], `data generators (${g}) are not allowed`, "put the rows in data.values");
   for (const k of Object.keys(data)) if (k !== "values" && k !== "name") fail("VALIDATION_FAILED", [...path, k], `unknown data field "${k}"`, "data takes values (and an optional name)");
-  if ("name" in data) TOKEN(data.name, [...path, "name"], w);
+  if (has(data, "name")) TOKEN(data.name, [...path, "name"], w);
   const values = data.values;
   if (!Array.isArray(values)) fail("VALIDATION_FAILED", [...path, "values"], "named data needs its rows inline in values", "data: { values: [ {...}, ... ] }");
   values.forEach((row, i) => {
@@ -393,14 +399,14 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
     if (COMPOSE_REFUSED.has(k)) fail("VALIDATION_FAILED", [...path, k], `${k} is not allowed`, `compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat})`);
     if (!VIEW_KEYS.has(k)) fail("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, `a view takes: ${list(VIEW_KEYS)}`);
   }
-  const shapes = (["mark", "layer", "vconcat"] as const).filter((k) => k in view);
+  const shapes = (["mark", "layer", "vconcat"] as const).filter((k) => has(view, k));
   if (shapes.length !== 1) fail("VALIDATION_FAILED", path, "a view has exactly one of mark, layer or vconcat");
-  for (const [k, rule] of Object.entries(VIEW_FIELDS)) if (k in view) rule(view[k], [...path, k], w);
-  const values = "data" in view ? checkData(view.data, [...path, "data"], w) : o.values;
-  const factor = o.factor * ("transform" in view ? checkTransforms(view.transform, [...path, "transform"], w) : 1);
-  if ("params" in view) arr(PARAM, 8)(view.params, [...path, "params"], w);
+  for (const [k, rule] of Object.entries(VIEW_FIELDS)) if (has(view, k)) rule(view[k], [...path, k], w);
+  const values = has(view, "data") ? checkData(view.data, [...path, "data"], w) : o.values;
+  const factor = o.factor * (has(view, "transform") ? checkTransforms(view.transform, [...path, "transform"], w) : 1);
+  if (has(view, "params")) arr(PARAM, 8)(view.params, [...path, "params"], w);
   if (values.length * factor > DISPLAY_LIMITS.chartRows) fail("ROWS_OVER_LIMIT", path, `${values.length * factor} rows after fold; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing, or show fewer series");
-  if ("encoding" in view) {
+  if (has(view, "encoding")) {
     ENCODING(view.encoding, [...path, "encoding"], w);
     checkSeries(view.encoding as Obj, values, [...path, "encoding"]);
   }
@@ -421,7 +427,7 @@ function checkSeries(enc: Obj, values: unknown[], path: Path): void {
     const def = enc[ch];
     if (!isObj(def) || typeof def.field !== "string") continue;
     const f = def.field;
-    const distinct = new Set(values.map((r) => (isObj(r) ? JSON.stringify(r[f] ?? null) : "null")));
+    const distinct = new Set(values.map((r) => (isObj(r) ? JSON.stringify((has(r, f) ? r[f] : null) ?? null) : "null")));
     if (distinct.size > DISPLAY_LIMITS.chartSeries) {
       fail("VALIDATION_FAILED", [...path, ch, "field"], `${distinct.size} series; a chart draws at most ${DISPLAY_LIMITS.chartSeries}`, 'keep the largest and group the rest as "Other"');
     }

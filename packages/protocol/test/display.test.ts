@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   checkShowInput,
+  noteInputSchema,
   DISPLAY_LIMITS,
   displayEnvelopeSchema,
   displayPath,
@@ -57,6 +58,8 @@ describe("chart allowlist is strict at every depth", () => {
   }
   const rich = load<"spec">("chart").valid.map((c) => c.spec);
   const ridgeline = JSON.parse(readFileSync(new URL("./fixtures/display/golden/ridgeline-2p-projection.json", import.meta.url), "utf8")).show.spec;
+  // Names every object inherits, apart from the three refused as reserved anywhere (a different message, same code)
+  const BUILTIN_KEYS = Object.getOwnPropertyNames(Object.prototype);
   // a deterministic generator of key names that no allowlist or refusal list names
   let seed = 7;
   const name = () => {
@@ -71,11 +74,11 @@ describe("chart allowlist is strict at every depth", () => {
       for (const { path, depth } of objects(spec)) {
         if (depth > 6) continue;
         for (let n = 0; n < 3; n++) {
-          const key = name();
+          const key = n === 0 ? name() : BUILTIN_KEYS[(probed + n) % BUILTIN_KEYS.length]!;
           const copy = structuredClone(spec);
           let at: Record<string, unknown> = copy;
           for (const seg of path) at = at[seg as string] as Record<string, unknown>;
-          at[key] = n === 0 ? 1 : n === 1 ? "x" : { nested: true };
+          Object.defineProperty(at, key, { value: n === 0 ? 1 : n === 1 ? "x" : { nested: true }, enumerable: true, writable: true, configurable: true });
           const r = validateBlock("chart", copy);
           expect(r.ok ? "ok" : `${r.error.code} ${r.error.path}`).toBe(`VALIDATION_FAILED ${displayPath(["spec", ...path, key])}`);
           probed++;
@@ -89,6 +92,112 @@ describe("chart allowlist is strict at every depth", () => {
 
   test("every valid vector and the golden still pass", () => {
     for (const spec of [...rich, ridgeline]) expect(validateBlock("chart", spec).ok).toBe(true);
+  });
+});
+
+describe("names every JavaScript object inherits are never rules, and never crash a check (review 2, finding 1)", () => {
+  const BUILTINS = Object.getOwnPropertyNames(Object.prototype);
+  /** Every plain object of `value` at depth 1..4 (outside chart data rows), as a path. */
+  function positions(value: unknown, maxDepth = 4): Array<Array<string | number>> {
+    const out: Array<Array<string | number>> = [];
+    const stack: Array<{ v: unknown; path: Array<string | number> }> = [{ v: value, path: [] }];
+    while (stack.length) {
+      const { v, path } = stack.pop()!;
+      if (path.at(-1) === "values" && path.at(-2) === "data") continue;
+      if (path.length > maxDepth) continue;
+      if (Array.isArray(v)) v.forEach((x, i) => stack.push({ v: x, path: [...path, i] }));
+      else if (v && typeof v === "object") {
+        if (path.length >= 1) out.push(path);
+        for (const [k, x] of Object.entries(v)) stack.push({ v: x, path: [...path, k] });
+      }
+    }
+    return out;
+  }
+  /** A copy of `value` with an own `name` key (even __proto__, as JSON.parse makes it) at `path`. */
+  function inject(value: unknown, path: Array<string | number>, name: string, v: unknown): unknown {
+    const copy = structuredClone(value) as Record<string | number, unknown>;
+    let at = copy;
+    for (const seg of path) at = at[seg] as Record<string | number, unknown>;
+    Object.defineProperty(at, name, { value: v, enumerable: true, writable: true, configurable: true });
+    return copy;
+  }
+  const never = (run: () => { ok: boolean }) => {
+    let r: { ok: boolean } | undefined;
+    expect(() => (r = run())).not.toThrow();
+    return r!.ok;
+  };
+  const kpis = { tiles: [{ id: "units", label: "Units short", value: 880, format: "integer", delta: { value: -2, good: "down" } }] };
+  const grid = { columns: [{ key: "dc", label: "DC", type: "text" }], rows: [{ dc: "Reno" }], row_key: "dc" };
+  const chartSpec = load<"spec">("chart").valid.find((c) => c.name.startsWith("axis, legend, scale"))!.spec;
+
+  for (const [kind, spec] of [["chart", chartSpec], ["kpis", kpis], ["grid", grid]] as const) {
+    test(`${kind}: each built-in name, at every object of depth 1 to 4, is refused typed`, () => {
+      // the spec itself, then every object below it (kpis and grid nest to depth 3 and 2 at most)
+      const at = [[] as Array<string | number>, ...positions(spec)];
+      expect(Math.max(...at.map((p) => p.length))).toBe(kind === "chart" ? 4 : kind === "kpis" ? 3 : 2);
+      for (const path of at) for (const name of BUILTINS) for (const v of [1, { polluted: 1 }]) expect(never(() => validateBlock(kind as BlockKind, inject(spec, path, name, v)))).toBe(false);
+    });
+  }
+
+  test("notes and the whole Show input: each built-in name at depth 1 to 4 is refused typed, never thrown", () => {
+    const input = show({ notes: [{ id: "n1", kind: "source", text: "ERP", ref: { tool_use_id: "toolu_03" } }], placement: { surface: "canvas" } });
+    for (const path of [[] as Array<string | number>, ...positions(input).filter((p) => p[0] !== "spec")]) {
+      for (const name of BUILTINS) expect(never(() => checkShowInput(inject(input, path, name, { x: 1 })))).toBe(false);
+    }
+    for (const name of BUILTINS) expect(noteInputSchema.safeParse(inject({ id: "n1", kind: "source", text: "ERP" }, [], name, 1)).success).toBe(false);
+  });
+
+  test("the envelope schema: each built-in name at depth 1 to 4 is refused, never thrown", () => {
+    const envelope = JSON.parse(readFileSync(new URL("./fixtures/display/golden/stock-by-dc.json", import.meta.url), "utf8")).envelope;
+    for (const path of [[] as Array<string | number>, ...positions(envelope)]) {
+      for (const name of BUILTINS) {
+        let ok = true;
+        expect(() => (ok = displayEnvelopeSchema.safeParse(inject(envelope, path, name, { x: 1 })).success)).not.toThrow();
+        if (!(path[0] === "spec" && path.length >= 3 && path[1] === "rows")) expect(ok).toBe(false);
+      }
+    }
+  });
+
+  test("a JSON-parsed __proto__ in a mark, a scale, a title and a transform: typed, with the path", () => {
+    const base = JSON.stringify(line(rows(2)).vl).slice(1, -1);
+    const cases: Array<[string, string]> = [
+      [`{"vl":{${base.replace('"mark":"line"', '"mark":{"type":"line","__proto__":{"polluted":1}}')}}}`, "spec.vl.mark.__proto__"],
+      [`{"vl":{${base.replace('"type":"quantitative"', '"type":"quantitative","scale":{"zero":true,"__proto__":{"x":1}}')}}}`, "spec.vl.encoding.y.scale.__proto__"],
+      [`{"vl":{${base},"title":{"text":"Stock","__proto__":{"x":1}}}}`, "spec.vl.title.__proto__"],
+      [`{"vl":{${base},"transform":[{"__proto__":{"x":1}}]}}`, "spec.vl.transform[0].__proto__"],
+      [`{"vl":{${base.replace('"values":[{', '"values":[{"constructor":1,')}}}`, "spec.vl.data.values[0].constructor"],
+    ];
+    for (const [json, path] of cases) {
+      const spec = JSON.parse(json);
+      const r = validateBlock("chart", spec);
+      expect(r.ok ? "ok" : `${r.error.code} ${r.error.path}`).toBe(`VALIDATION_FAILED ${path}`);
+      const s = checkShowInput(show({ spec }));
+      expect(s.ok ? null : [s.error.code, s.block_id, s.fallback]).toEqual(["VALIDATION_FAILED", "fig-1", FALLBACK]);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  test("the review's accepted cases are refused", () => {
+    const enc = (e: Record<string, unknown>) => line(rows(2), { encoding: { x: { field: "week", type: "ordinal" }, y: { field: "onhand", type: "quantitative" }, ...e } });
+    const fault = (spec: unknown) => {
+      const r = validateBlock("chart", spec);
+      return r.ok ? "ok" : `${r.error.code} ${r.error.path}`;
+    };
+    expect(fault(enc({ x: { field: "week", constructor: { anything: [1, 2] } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.x.constructor");
+    expect(fault(enc({ constructor: { field: "onhand" } }))).toBe("VALIDATION_FAILED spec.vl.encoding.constructor");
+    expect(fault(line(rows(2), { transform: [{ toString: { a: 1 } }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0]");
+    expect(fault(line(rows(2), { transform: [{ valueOf: 1 }] }))).toBe("VALIDATION_FAILED spec.vl.transform[0]");
+    expect(fault(enc({ x: { field: "week", type: "ordinal", axis: { hasOwnProperty: "x" } } }))).toBe("VALIDATION_FAILED spec.vl.encoding.x.axis.hasOwnProperty");
+  });
+
+  test("an exception inside a check becomes VALIDATION_INTERNAL, with the id and the fallback, never a throw", () => {
+    const hostile = show({ spec: line(rows(2)) });
+    Object.defineProperty(hostile.spec.vl, "mark", { get: () => { throw new TypeError("boom: secret input"); }, enumerable: true });
+    const r = checkShowInput(hostile);
+    expect(r.ok ? null : [r.error.code, r.block_id, r.fallback]).toEqual(["VALIDATION_INTERNAL", "fig-1", FALLBACK]);
+    expect(r.ok ? "" : r.error.message).not.toContain("secret");
+    const v = validateBlock("chart", hostile.spec);
+    expect(v.ok ? null : v.error.code).toBe("VALIDATION_INTERNAL");
   });
 });
 
