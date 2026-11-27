@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { inertFallbackText } from "../src/display/fallback";
+import { CHART_GRAMMAR } from "../src/display/chart";
+import { AGGREGATE_OP_COST, MARK_COST, TRANSFORM_COST, WINDOW_OP_COST } from "../src/display/cost";
 import {
   chartCost,
   checkShowInput,
@@ -329,6 +331,7 @@ describe("chartCost: the one cost walker (UI re-review N2)", () => {
     if (Array.isArray(x)) return x.map(expand);
     if (!x || typeof x !== "object") return x;
     const o = x as Record<string, unknown>;
+    if (typeof o.$rows === "number" && o.$shape === "iabc") return Array.from({ length: o.$rows }, (_, i) => ({ i, a: i, b: (o.$rows as number) - 1 - i, c: i % 7 }));
     if (typeof o.$rows === "number") return Array.from({ length: o.$rows }, (_, i) => ({ i, v: (i * 7919) % 1000, ...((o.$extra as object) ?? {}) }));
     return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, expand(v)]));
   };
@@ -356,6 +359,30 @@ describe("chartCost: the one cost walker (UI re-review N2)", () => {
     const golden = JSON.parse(readFileSync(new URL("./fixtures/display/golden/ridgeline-2p-projection.json", import.meta.url), "utf8")).show.spec;
     const cost = chartCost(golden);
     expect(cost.ok && cost.estimateMs).toBeLessThan(100);
+  });
+
+  test("every op, transform and mark the grammar allows has a cost entry (the walker fails closed on the rest)", () => {
+    for (const m of CHART_GRAMMAR.marks) expect([m, Object.hasOwn(MARK_COST, m)]).toEqual([m, true]);
+    for (const op of CHART_GRAMMAR.aggregateOps) expect([op, Object.hasOwn(AGGREGATE_OP_COST, op)]).toEqual([op, true]);
+    for (const op of CHART_GRAMMAR.windowOps) expect([op, Object.hasOwn(WINDOW_OP_COST, op)]).toEqual([op, true]);
+    for (const t of CHART_GRAMMAR.transforms) expect([t, Object.hasOwn(TRANSFORM_COST, t)]).toEqual([t, true]);
+  });
+
+  test("fails closed: an op, transform, mark or shape it has no cost for is TOO_COSTLY with its path", () => {
+    const at = (x: unknown) => {
+      const r = chartCost(x);
+      return r.ok ? "ok" : r.path;
+    };
+    const base = line(rows(10));
+    expect(at({ vl: { ...base.vl, mark: "geoshape" } })).toBe("spec.vl.mark");
+    expect(at({ vl: { ...base.vl, transform: [{ loess: "onhand" }] } })).toBe("spec.vl.transform[0]");
+    expect(at({ vl: { ...base.vl, transform: [{ window: [{ op: "argmax", field: "onhand", as: "m" }] }] } })).toBe("spec.vl.transform[0].window[0].op");
+    expect(at({ vl: { ...base.vl, transform: [{ aggregate: [{ op: "argmin", field: "onhand", as: "m" }] }] } })).toBe("spec.vl.transform[0].aggregate[0].op");
+    expect(at({ vl: { ...base.vl, encoding: { x: { field: "week", type: "ordinal" }, y: { field: "onhand", aggregate: "exponential", type: "quantitative" } } } })).toBe("spec.vl.encoding.y.aggregate");
+    for (const x of [null, "x", { vl: [] }, { vl: { data: { values: "x" }, mark: "line" } }, { vl: { data: { values: [] } } }]) expect(at(x)).not.toBe("ok");
+    let deep: Record<string, unknown> = { mark: "line", encoding: {} };
+    for (let i = 0; i < 5; i++) deep = { layer: [deep] };
+    expect(at({ vl: { data: { values: rows(2) }, ...deep } })).not.toBe("ok");
   });
 
   test("a frame open at its start only grows, so a running max over 5,000 rows is allowed", () => {

@@ -481,3 +481,11 @@ export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
   }
   return drawn;
 }
+
+/** What the grammar admits, for the cost walker's table test (every entry here must have a cost there). */
+export const CHART_GRAMMAR = {
+  marks: MARKS,
+  aggregateOps: AGG_OPS,
+  windowOps: WINDOW_OPS,
+  transforms: Object.keys(TRANSFORMS),
+} as const;

@@ -57,6 +57,13 @@
   `chartCostBudgetMs` = 400, calibrated with Vega 6.4.0 / Vega-Lite 6.5.0 in Bun. `chartWindowOpRows` is now 100,000
   (in line with the budget). Vectors: `test/fixtures/display/chart-cost.vectors.json` (the review's four specs among
   eight refused, six accepted; `{"$rows": n}` expands to n rows).
+- chartCost (review 5): bootstraps are charged wherever they appear (an aggregate's ci0/ci1, a channel's aggregate or
+  sort op, an errorband or errorbar with extent "ci": 0.12 ms per group per field); aggregate ops, filter, bin,
+  timeUnit and stack are charged; an aggregate reduces rows to its groups (1, or the product of its groupby fields'
+  distinct values in the inline data), and a channel aggregate reduces the marks drawn, binned channels by maxbins,
+  so honest summaries (7 labelled bars over 5,000 rows) are no longer refused. The walker fails closed: an op,
+  transform, mark or shape with no cost entry, or views deeper than 3, are TOO_COSTLY with the path; the cost tables
+  are exported from cost.ts and a test holds them to the grammar.
 - Provenance is verified when it can be, never a gate (first real-model run: Haiku 5.5 cited the command line). A
   source in `sources`, or a note's `ref.tool_use_id`, that is a tool call id of this session is verified as before; a
   tool name called exactly once since the person's last message is mapped to that call and verified; anything else
