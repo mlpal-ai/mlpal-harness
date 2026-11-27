@@ -422,7 +422,7 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
   if (has(view, "encoding")) {
     attempt(() => {
       ENCODING(view.encoding, [...path, "encoding"], w);
-      checkSeries(view.encoding as Obj, values, [...path, "encoding"]);
+      checkSeries(view.encoding as Obj, values, [...path, "encoding"], view.mark);
     });
   }
   const shape = shapes[0]!;
@@ -435,12 +435,21 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
   children.forEach((c, i) => attempt(() => checkView(c, [...path, shape, i], w, { depth: o.depth + 1, values, factor })));
 }
 
+/** Marks that draw one item per row whatever their encoding: a continuous colour on them is a scale, not series. A
+ *  line or area is not one (Vega-Lite splits a path by any colour field, so each value would be a path). */
+const ROW_MARKS: ReadonlySet<string> = new Set(["point", "tick", "rule", "text", "rect", "bar"]);
+
 /** At most 12 series: the distinct values of a series channel's field in the data the view draws (a field a fold
- *  makes is not counted here: the fold's own list bounds it). Applies to a layer's or vconcat's shared encoding too. */
-function checkSeries(enc: Obj, values: unknown[], path: Path): void {
+ *  makes is not counted here: the fold's own list bounds it). A quantitative or temporal colour on a view whose own
+ *  mark draws a row per item is not counted (a heatmap's colour). Applies to a layer's or vconcat's shared encoding
+ *  too, where every channel counts. */
+function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): void {
+  const markType = isObj(mark) ? mark.type : mark;
+  const rowMark = typeof markType === "string" && ROW_MARKS.has(markType);
   for (const ch of SERIES_CHANNELS) {
     const def = enc[ch];
     if (!isObj(def) || typeof def.field !== "string") continue;
+    if (ch === "color" && rowMark && (def.type === "quantitative" || def.type === "temporal")) continue;
     const f = def.field;
     const distinct = new Set(values.map((r) => (isObj(r) ? JSON.stringify((has(r, f) ? r[f] : null) ?? null) : "null")));
     if (distinct.size > DISPLAY_LIMITS.chartSeries) {
