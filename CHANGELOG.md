@@ -76,6 +76,12 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Teaching the kinds (neither model used kpis; Haiku never tried grid): the grammar section opens with when to pick
+  each kind (kpis for 2 to 6 headline numbers, grid for rows to scan or sort, chart for a trend or a comparison) and
+  its smallest valid spec (`KIND_EXAMPLES`, held to validateBlock by a test), says the answer's sentence comes first
+  and the block's table is not repeated in prose; the tool description says the same in three sentences. Size, the
+  description + the Show schema + the section for a web client: 6,182 characters (~1,550 tokens) before, 5,389
+  (~1,350) after.
 - Normalised, not refused (the replay's most common remaining causes): fallback.table columns that are not fields of
   the rows are left out (none left: all columns); `fallback.table: null` is no table; a grid's `row_id` is its
   `row_key` (refused only when both are given and differ), and a missing `row_key` is the first column whose values
