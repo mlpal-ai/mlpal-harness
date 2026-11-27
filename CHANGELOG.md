@@ -47,7 +47,8 @@
   message, hint and path, which quote the model's names, are made inert the same way.
 - Inherited names are never rules: every key lookup is own-property (Maps for rule tables, `Object.hasOwn` on the
   model's objects), so `constructor`, `toString`, `valueOf`, `hasOwnProperty` and the rest are unknown keys like any
-  other; `__proto__`, `constructor` and `prototype` are refused as keys anywhere, data rows included. A check that
+  other; every Object.prototype name (and `prototype`) is refused as a key anywhere, data rows included, and as a
+  field, transform output or grid column name. A check that
   throws anyway is `VALIDATION_INTERNAL` (new code), naming only the exception's class: `checkShowInput` and
   `validateBlock` never throw, and Show turns a store failure the same way, so the fallback is shown and the repair
   counted.

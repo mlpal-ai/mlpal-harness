@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
-import { checkBounds } from "./bounds.js";
+import { checkBounds, isReservedName } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
 import { checked, fail, type DisplayCheck } from "./errors.js";
 import { CONTROL, plainText } from "./fields.js";
@@ -111,6 +111,7 @@ function checkGrid(spec: unknown, path: Path): GridSpec {
   const grid = parseShape(gridSpecSchema, spec, path);
   const columns = new Map<string, GridColumn>();
   grid.columns.forEach((c, i) => {
+    if (isReservedName(c.key)) fail("VALIDATION_FAILED", [...path, "columns", i, "key"], `"${c.key}" is a name every object has, never a column key`, "rename the column");
     if (columns.has(c.key)) fail("VALIDATION_FAILED", [...path, "columns", i, "key"], `column key "${c.key}" is used twice`);
     columns.set(c.key, c);
   });
