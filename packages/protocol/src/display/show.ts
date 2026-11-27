@@ -28,7 +28,7 @@ export const showInputSchema = z
     kind: z.enum(BLOCK_KINDS).describe("kpis: 2 to 6 headline numbers; grid: rows to scan or sort; chart: a trend or a comparison"),
     spec: z.unknown().describe("the block's spec, an object; your instructions give each kind's smallest one"),
     fallback: fallbackInputSchema.describe(
-      "REQUIRED. text: the conclusion and the key numbers in plain markdown (40 to 8,000 characters, no HTML, images or code fences), all a person who cannot see the block reads. table: {from: \"rows\"} adds the rows",
+      "REQUIRED. text: the conclusion and the key numbers in plain markdown (40 to 8,000 characters, no HTML, images or code fences), all a person who cannot see the block reads. table: {from: \"rows\"} adds a grid's or chart's rows",
     ),
     title: plainText(120).optional(),
     caption: plainText(300).optional().describe("one line under the block: what the data is and how fresh"),
