@@ -48,6 +48,15 @@
   is stored as `&amp;`; the reference then shows as written. References to printable characters stay, `&#60;`
   included (never markup in a markdown renderer; a plain-text client shows the character). Neutralised at store time
   rather than refused: legitimate references (`&#8212;`) keep working and no repair is spent.
+- One cost walker (UI re-review N2): `chartCost(spec): ChartCostCheck` (`{ok: true, estimateMs}` or `{ok: false, code:
+  "TOO_COSTLY", path, message, hint?}`), exported; validateBlock calls it on an otherwise valid chart and a client calls
+  the same function before compiling, so no cost rule lives anywhere else. It counts rows after every fold, costs every
+  window op by its class (incremental; median, quartiles and distinct, whole partition only; ci0/ci1 bootstrap; min/max
+  rescan over a frame whose start is bounded, an open end counting to the partition's edge), sums windows across
+  transforms and views, caps point-like marks (`chartMarks` = 15,000 rows x views) and holds the whole estimate to
+  `chartCostBudgetMs` = 400, calibrated with Vega 6.4.0 / Vega-Lite 6.5.0 in Bun. `chartWindowOpRows` is now 100,000
+  (in line with the budget). Vectors: `test/fixtures/display/chart-cost.vectors.json` (the review's four specs among
+  eight refused, six accepted; `{"$rows": n}` expands to n rows).
 - Provenance is verified when it can be, never a gate (first real-model run: Haiku 5.5 cited the command line). A
   source in `sources`, or a note's `ref.tool_use_id`, that is a tool call id of this session is verified as before; a
   tool name called exactly once since the person's last message is mapped to that call and verified; anything else

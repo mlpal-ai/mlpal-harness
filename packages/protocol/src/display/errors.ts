@@ -33,8 +33,9 @@ export type DisplayErrorCode =
   | "ROWS_OVER_LIMIT"
   /** Over 12 blocks in one turn, or 200 revisions of one block. */
   | "TOO_MANY_BLOCKS"
-  /** A valid chart that would take a renderer too long: a median, quartile, interval or distinct window over a sliding
-   *  or cumulative frame, a bounded frame whose rows times span is over the limit, or too many window ops times rows. */
+  /** A valid chart that would take a renderer too long (chartCost): a median, quartile, interval or distinct window
+   *  over a sliding or cumulative frame, a frame's rows times span, window ops times rows, marks drawn, or the whole
+   *  estimate over its limit. */
   | "TOO_COSTLY"
   /** A source or a note's tool call id is not a call of this session. A notice, never a refusal: the block is shown,
    *  the source unverified (or dropped when unusable), and the code is counted (`display.notices`). */
@@ -156,6 +157,11 @@ export function inert(s: string): string {
 
 export function displayError(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): DisplayError {
   return { code, ...(path.length ? { path: inert(displayPath(path)) } : {}), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) };
+}
+
+/** fail, at a path already written as a string (a cost fault from chartCost). */
+export function failAt(code: DisplayErrorCode, path: string, message: string, hint?: string): never {
+  throw new DisplayRefusal([{ code, path: inert(path), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) }]);
 }
 
 export function fail(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): never {

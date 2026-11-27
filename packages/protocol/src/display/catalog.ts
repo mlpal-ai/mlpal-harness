@@ -39,10 +39,14 @@ export const DISPLAY_LIMITS = {
   chartSeries: 12,
   chartLayers: 8,
   chartVconcat: 2,
-  /** A window with both frame ends bounded: rows it runs on times (frame span) at most this. */
+  /** A window whose frame start is bounded: rows it runs on times frame span (an open end counts to the edge). */
   chartWindowRowsTimesSpan: 1_000_000,
   /** Over the whole chart: the sum, for every window transform, of rows it runs on times its ops, at most this. */
-  chartWindowOpRows: 200_000,
+  chartWindowOpRows: 100_000,
+  /** Point-like marks (point, tick, rule, text, rect, bar) a chart draws: rows x views that draw them. */
+  chartMarks: 15_000,
+  /** The estimated milliseconds a chart may cost to compile, run and draw (chartCost; well under a second). */
+  chartCostBudgetMs: 400,
   /** Window ops that recompute over the whole frame for every row: allowed only with frame [null, null]. */
   chartWholeFrameOps: ["median", "q1", "q3", "ci0", "ci1", "distinct"],
   gridRows: 2_000,

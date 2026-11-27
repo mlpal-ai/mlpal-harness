@@ -26,6 +26,7 @@ const KIND_GRAMMAR: Record<BlockKind, string> = {
     "Marks: line, area, bar, point, rule, rect, text, tick, errorband, errorbar, boxplot. Channels: x, y, x2, y2, color, opacity, size, shape, strokeDash, text, tooltip, detail, order. " +
     `Compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat}). Transforms: filter with field predicates, aggregate, bin, timeUnit, window, fold, stack. ` +
     `A window with ${DISPLAY_LIMITS.chartWholeFrameOps.join(", ")} takes frame [null, null]; a bounded frame's rows x span is at most ${DISPLAY_LIMITS.chartWindowRowsTimesSpan.toLocaleString("en-US")}, and all windows of a chart at most ${DISPLAY_LIMITS.chartWindowOpRows.toLocaleString("en-US")} rows x ops. ` +
+    `At most ${DISPLAY_LIMITS.chartMarks.toLocaleString("en-US")} points, ticks, rules, texts, rects or bars across all views (rows x views), and a chart's estimated drawing cost at most ${DISPLAY_LIMITS.chartCostBudgetMs} ms: aggregate rows or draw fewer layers when a chart is refused TOO_COSTLY. ` +
     "No URL anywhere, no calculate, no expression or test strings, no facet, repeat or concat; a selection is a param with select point or interval and no bind. " +
     "series_order lists the series names so their colours keep that order everywhere the block is drawn.",
   kpis:
