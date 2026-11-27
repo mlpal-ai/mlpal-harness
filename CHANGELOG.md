@@ -101,6 +101,8 @@
   colour, it still counts.
 - Provenance (review 6, O3): without the Show's id (or before its message is stored) the record freezes at the last
   assistant message that called tools, so a sibling call never verifies; a Show's own result verifies no source.
+- The tolerant JSON reader makes a `"__proto__"` key an own key, as `JSON.parse` does, instead of setting the
+  object's prototype, so the reserved-name check sees it (review 6, O2).
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath
