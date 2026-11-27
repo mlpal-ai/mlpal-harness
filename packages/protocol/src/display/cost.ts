@@ -18,7 +18,9 @@ import { displayPath } from "./errors.js";
  * point-like mark, 0.07 per bar, 0.01 per line or area vertex, 0.002 per row an errorband, errorbar or boxplot reads.
  * Rows are counted after every fold; an aggregate reduces them to its groups (1 without groupby, else the product of
  * its groupby fields' distinct values in the inline data, when every field is there; otherwise not reduced), and a
- * channel aggregate reduces the marks drawn the same way, so an estimate errs high only where the data cannot say.
+ * channel aggregate reduces the marks drawn the same way. Conservative by construction (review 6): once any
+ * transform but a filter has run, nothing the inline data said about fields is used again (a window, bin, timeUnit or
+ * stack may write over a field), so groups count as rows; rows never shrink unless an aggregate provably groups them.
  *
  * Rules, in the order a fault is reported:
  * 1. median, q1, q3, ci0, ci1 and distinct windows run over the whole partition only: frame [null, null];
@@ -201,6 +203,9 @@ function transforms(ts: unknown, at: Seg[], rows: Rows, acc: Acc): Rows {
     else if (cls === "window") windowCost(t, here, rows, acc);
     else if (cls === "aggregate") rows = aggregateCost(t, here, rows, acc);
     else acc.ms += rows.n * MS.linearTransform;
+    // Conservative by construction: a transform that writes or renames a field (every one but filter, which only
+    // drops rows) makes what the inline data said about fields unknown, so groups count as rows from here on.
+    if (key !== "filter") rows = { n: rows.n, data: null };
   });
   return rows;
 }
@@ -229,7 +234,8 @@ function markCost(view: Obj, at: Seg[], rows: Rows, acc: Acc): void {
   ]);
   const ciFields = bootstrapFields(aggOps);
   // a binned channel groups into at most its maxbins (10 by default); the other plain fields group by their values
-  const binned = defs.filter(({ def }) => typeof def.field === "string" && def.bin !== undefined && def.bin !== false);
+  // `bin: "binned"` means the data is already binned: it groups by its values, so it stays a plain field
+  const binned = defs.filter(({ def }) => typeof def.field === "string" && def.bin !== undefined && def.bin !== false && def.bin !== "binned");
   const bins = binned.reduce((p, { def }) => p * (isObj(def.bin) && typeof def.bin.maxbins === "number" ? def.bin.maxbins : 10), 1);
   const plain = defs.filter(({ def }) => typeof def.field === "string" && typeof def.aggregate !== "string" && !binned.some((b) => b.def === def)).map(({ def }) => String(def.field));
   let drawn = aggOps.length ? Math.min(rows.n, groups(rows, [...new Set(plain)]) * bins) : rows.n;

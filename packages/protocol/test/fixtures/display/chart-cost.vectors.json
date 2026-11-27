@@ -2,6 +2,2106 @@
  "_comment": "chartCost vectors (UI reviews R2 and N2, review 5): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0, and {\"$rows\": n, \"$shape\": \"iabc\"} for n rows {i, a: i, b: n - 1 - i, c: i % 7}; expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
  "refused": [
   {
+   "name": "review 6 overwriteChain19: a window renames c, then 19 ci aggregates by c (24.6 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "c"
+        }
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "p0"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "P0"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "q0"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "Q0"
+        },
+        {
+         "op": "ci0",
+         "field": "i",
+         "as": "r0"
+        },
+        {
+         "op": "ci1",
+         "field": "i",
+         "as": "R0"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p0",
+         "as": "p1"
+        },
+        {
+         "op": "ci1",
+         "field": "p0",
+         "as": "P1"
+        },
+        {
+         "op": "ci0",
+         "field": "q0",
+         "as": "q1"
+        },
+        {
+         "op": "ci1",
+         "field": "q0",
+         "as": "Q1"
+        },
+        {
+         "op": "ci0",
+         "field": "r0",
+         "as": "r1"
+        },
+        {
+         "op": "ci1",
+         "field": "r0",
+         "as": "R1"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p1",
+         "as": "p2"
+        },
+        {
+         "op": "ci1",
+         "field": "p1",
+         "as": "P2"
+        },
+        {
+         "op": "ci0",
+         "field": "q1",
+         "as": "q2"
+        },
+        {
+         "op": "ci1",
+         "field": "q1",
+         "as": "Q2"
+        },
+        {
+         "op": "ci0",
+         "field": "r1",
+         "as": "r2"
+        },
+        {
+         "op": "ci1",
+         "field": "r1",
+         "as": "R2"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p2",
+         "as": "p3"
+        },
+        {
+         "op": "ci1",
+         "field": "p2",
+         "as": "P3"
+        },
+        {
+         "op": "ci0",
+         "field": "q2",
+         "as": "q3"
+        },
+        {
+         "op": "ci1",
+         "field": "q2",
+         "as": "Q3"
+        },
+        {
+         "op": "ci0",
+         "field": "r2",
+         "as": "r3"
+        },
+        {
+         "op": "ci1",
+         "field": "r2",
+         "as": "R3"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p3",
+         "as": "p4"
+        },
+        {
+         "op": "ci1",
+         "field": "p3",
+         "as": "P4"
+        },
+        {
+         "op": "ci0",
+         "field": "q3",
+         "as": "q4"
+        },
+        {
+         "op": "ci1",
+         "field": "q3",
+         "as": "Q4"
+        },
+        {
+         "op": "ci0",
+         "field": "r3",
+         "as": "r4"
+        },
+        {
+         "op": "ci1",
+         "field": "r3",
+         "as": "R4"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p4",
+         "as": "p5"
+        },
+        {
+         "op": "ci1",
+         "field": "p4",
+         "as": "P5"
+        },
+        {
+         "op": "ci0",
+         "field": "q4",
+         "as": "q5"
+        },
+        {
+         "op": "ci1",
+         "field": "q4",
+         "as": "Q5"
+        },
+        {
+         "op": "ci0",
+         "field": "r4",
+         "as": "r5"
+        },
+        {
+         "op": "ci1",
+         "field": "r4",
+         "as": "R5"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p5",
+         "as": "p6"
+        },
+        {
+         "op": "ci1",
+         "field": "p5",
+         "as": "P6"
+        },
+        {
+         "op": "ci0",
+         "field": "q5",
+         "as": "q6"
+        },
+        {
+         "op": "ci1",
+         "field": "q5",
+         "as": "Q6"
+        },
+        {
+         "op": "ci0",
+         "field": "r5",
+         "as": "r6"
+        },
+        {
+         "op": "ci1",
+         "field": "r5",
+         "as": "R6"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p6",
+         "as": "p7"
+        },
+        {
+         "op": "ci1",
+         "field": "p6",
+         "as": "P7"
+        },
+        {
+         "op": "ci0",
+         "field": "q6",
+         "as": "q7"
+        },
+        {
+         "op": "ci1",
+         "field": "q6",
+         "as": "Q7"
+        },
+        {
+         "op": "ci0",
+         "field": "r6",
+         "as": "r7"
+        },
+        {
+         "op": "ci1",
+         "field": "r6",
+         "as": "R7"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p7",
+         "as": "p8"
+        },
+        {
+         "op": "ci1",
+         "field": "p7",
+         "as": "P8"
+        },
+        {
+         "op": "ci0",
+         "field": "q7",
+         "as": "q8"
+        },
+        {
+         "op": "ci1",
+         "field": "q7",
+         "as": "Q8"
+        },
+        {
+         "op": "ci0",
+         "field": "r7",
+         "as": "r8"
+        },
+        {
+         "op": "ci1",
+         "field": "r7",
+         "as": "R8"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p8",
+         "as": "p9"
+        },
+        {
+         "op": "ci1",
+         "field": "p8",
+         "as": "P9"
+        },
+        {
+         "op": "ci0",
+         "field": "q8",
+         "as": "q9"
+        },
+        {
+         "op": "ci1",
+         "field": "q8",
+         "as": "Q9"
+        },
+        {
+         "op": "ci0",
+         "field": "r8",
+         "as": "r9"
+        },
+        {
+         "op": "ci1",
+         "field": "r8",
+         "as": "R9"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p9",
+         "as": "p10"
+        },
+        {
+         "op": "ci1",
+         "field": "p9",
+         "as": "P10"
+        },
+        {
+         "op": "ci0",
+         "field": "q9",
+         "as": "q10"
+        },
+        {
+         "op": "ci1",
+         "field": "q9",
+         "as": "Q10"
+        },
+        {
+         "op": "ci0",
+         "field": "r9",
+         "as": "r10"
+        },
+        {
+         "op": "ci1",
+         "field": "r9",
+         "as": "R10"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p10",
+         "as": "p11"
+        },
+        {
+         "op": "ci1",
+         "field": "p10",
+         "as": "P11"
+        },
+        {
+         "op": "ci0",
+         "field": "q10",
+         "as": "q11"
+        },
+        {
+         "op": "ci1",
+         "field": "q10",
+         "as": "Q11"
+        },
+        {
+         "op": "ci0",
+         "field": "r10",
+         "as": "r11"
+        },
+        {
+         "op": "ci1",
+         "field": "r10",
+         "as": "R11"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p11",
+         "as": "p12"
+        },
+        {
+         "op": "ci1",
+         "field": "p11",
+         "as": "P12"
+        },
+        {
+         "op": "ci0",
+         "field": "q11",
+         "as": "q12"
+        },
+        {
+         "op": "ci1",
+         "field": "q11",
+         "as": "Q12"
+        },
+        {
+         "op": "ci0",
+         "field": "r11",
+         "as": "r12"
+        },
+        {
+         "op": "ci1",
+         "field": "r11",
+         "as": "R12"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p12",
+         "as": "p13"
+        },
+        {
+         "op": "ci1",
+         "field": "p12",
+         "as": "P13"
+        },
+        {
+         "op": "ci0",
+         "field": "q12",
+         "as": "q13"
+        },
+        {
+         "op": "ci1",
+         "field": "q12",
+         "as": "Q13"
+        },
+        {
+         "op": "ci0",
+         "field": "r12",
+         "as": "r13"
+        },
+        {
+         "op": "ci1",
+         "field": "r12",
+         "as": "R13"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p13",
+         "as": "p14"
+        },
+        {
+         "op": "ci1",
+         "field": "p13",
+         "as": "P14"
+        },
+        {
+         "op": "ci0",
+         "field": "q13",
+         "as": "q14"
+        },
+        {
+         "op": "ci1",
+         "field": "q13",
+         "as": "Q14"
+        },
+        {
+         "op": "ci0",
+         "field": "r13",
+         "as": "r14"
+        },
+        {
+         "op": "ci1",
+         "field": "r13",
+         "as": "R14"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p14",
+         "as": "p15"
+        },
+        {
+         "op": "ci1",
+         "field": "p14",
+         "as": "P15"
+        },
+        {
+         "op": "ci0",
+         "field": "q14",
+         "as": "q15"
+        },
+        {
+         "op": "ci1",
+         "field": "q14",
+         "as": "Q15"
+        },
+        {
+         "op": "ci0",
+         "field": "r14",
+         "as": "r15"
+        },
+        {
+         "op": "ci1",
+         "field": "r14",
+         "as": "R15"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p15",
+         "as": "p16"
+        },
+        {
+         "op": "ci1",
+         "field": "p15",
+         "as": "P16"
+        },
+        {
+         "op": "ci0",
+         "field": "q15",
+         "as": "q16"
+        },
+        {
+         "op": "ci1",
+         "field": "q15",
+         "as": "Q16"
+        },
+        {
+         "op": "ci0",
+         "field": "r15",
+         "as": "r16"
+        },
+        {
+         "op": "ci1",
+         "field": "r15",
+         "as": "R16"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p16",
+         "as": "p17"
+        },
+        {
+         "op": "ci1",
+         "field": "p16",
+         "as": "P17"
+        },
+        {
+         "op": "ci0",
+         "field": "q16",
+         "as": "q17"
+        },
+        {
+         "op": "ci1",
+         "field": "q16",
+         "as": "Q17"
+        },
+        {
+         "op": "ci0",
+         "field": "r16",
+         "as": "r17"
+        },
+        {
+         "op": "ci1",
+         "field": "r16",
+         "as": "R17"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p17",
+         "as": "p18"
+        },
+        {
+         "op": "ci1",
+         "field": "p17",
+         "as": "P18"
+        },
+        {
+         "op": "ci0",
+         "field": "q17",
+         "as": "q18"
+        },
+        {
+         "op": "ci1",
+         "field": "q17",
+         "as": "Q18"
+        },
+        {
+         "op": "ci0",
+         "field": "r17",
+         "as": "r18"
+        },
+        {
+         "op": "ci1",
+         "field": "r17",
+         "as": "R18"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      }
+     ],
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "c",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "p18",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 6 overwriteChain5 (6.2 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "c"
+        }
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "p0"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "P0"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "q0"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "Q0"
+        },
+        {
+         "op": "ci0",
+         "field": "i",
+         "as": "r0"
+        },
+        {
+         "op": "ci1",
+         "field": "i",
+         "as": "R0"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p0",
+         "as": "p1"
+        },
+        {
+         "op": "ci1",
+         "field": "p0",
+         "as": "P1"
+        },
+        {
+         "op": "ci0",
+         "field": "q0",
+         "as": "q1"
+        },
+        {
+         "op": "ci1",
+         "field": "q0",
+         "as": "Q1"
+        },
+        {
+         "op": "ci0",
+         "field": "r0",
+         "as": "r1"
+        },
+        {
+         "op": "ci1",
+         "field": "r0",
+         "as": "R1"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p1",
+         "as": "p2"
+        },
+        {
+         "op": "ci1",
+         "field": "p1",
+         "as": "P2"
+        },
+        {
+         "op": "ci0",
+         "field": "q1",
+         "as": "q2"
+        },
+        {
+         "op": "ci1",
+         "field": "q1",
+         "as": "Q2"
+        },
+        {
+         "op": "ci0",
+         "field": "r1",
+         "as": "r2"
+        },
+        {
+         "op": "ci1",
+         "field": "r1",
+         "as": "R2"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p2",
+         "as": "p3"
+        },
+        {
+         "op": "ci1",
+         "field": "p2",
+         "as": "P3"
+        },
+        {
+         "op": "ci0",
+         "field": "q2",
+         "as": "q3"
+        },
+        {
+         "op": "ci1",
+         "field": "q2",
+         "as": "Q3"
+        },
+        {
+         "op": "ci0",
+         "field": "r2",
+         "as": "r3"
+        },
+        {
+         "op": "ci1",
+         "field": "r2",
+         "as": "R3"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "p3",
+         "as": "p4"
+        },
+        {
+         "op": "ci1",
+         "field": "p3",
+         "as": "P4"
+        },
+        {
+         "op": "ci0",
+         "field": "q3",
+         "as": "q4"
+        },
+        {
+         "op": "ci1",
+         "field": "q3",
+         "as": "Q4"
+        },
+        {
+         "op": "ci0",
+         "field": "r3",
+         "as": "r4"
+        },
+        {
+         "op": "ci1",
+         "field": "r3",
+         "as": "R4"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      }
+     ],
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "c",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "p4",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 6 overwriteAgg1: one ci aggregate by a window-written c (1.3 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "c"
+        }
+       ]
+      },
+      {
+       "aggregate": [
+        {
+         "op": "ci0",
+         "field": "a",
+         "as": "la0"
+        },
+        {
+         "op": "ci1",
+         "field": "a",
+         "as": "ha0"
+        },
+        {
+         "op": "ci0",
+         "field": "b",
+         "as": "lb0"
+        },
+        {
+         "op": "ci1",
+         "field": "b",
+         "as": "hb0"
+        },
+        {
+         "op": "ci0",
+         "field": "i",
+         "as": "li0"
+        },
+        {
+         "op": "ci1",
+         "field": "i",
+         "as": "hi0"
+        }
+       ],
+       "groupby": [
+        "c"
+       ]
+      }
+     ],
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "c",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "la0",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "review 6 binnedCi: a binned channel grouped by its 5,000 values with ci aggregates (1.3 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "a",
+       "bin": "binned",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "b",
+       "aggregate": "ci0",
+       "type": "quantitative"
+      },
+      "tooltip": [
+       {
+        "field": "i",
+        "aggregate": "ci1",
+        "type": "quantitative"
+       },
+       {
+        "field": "c",
+        "aggregate": "ci0",
+        "type": "quantitative"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "review 6 overwriteMarks64: a window renames c, 64 point views over it (320,000 marks, 2.5 s)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.vconcat[0].layer[0].layer[3].mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000,
+       "$shape": "iabc"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "c"
+        }
+       ]
+      }
+     ],
+     "vconcat": [
+      {
+       "layer": [
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t000"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t001"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t002"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t003"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t004"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t005"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t006"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t007"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t010"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t011"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t012"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t013"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t014"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t015"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t016"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t017"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t020"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t021"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t022"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t023"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t024"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t025"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t026"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t027"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t030"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t031"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t032"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t033"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t034"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t035"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t036"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t037"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "layer": [
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t100"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t101"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t102"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t103"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t104"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t105"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t106"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t107"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t110"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t111"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t112"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t113"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t114"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t115"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t116"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t117"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t120"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t121"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t122"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t123"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t124"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t125"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t126"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t127"
+            }
+           }
+          }
+         ]
+        },
+        {
+         "layer": [
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t130"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t131"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t132"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t133"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t134"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "b",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t135"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "i",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t136"
+            }
+           }
+          },
+          {
+           "mark": "point",
+           "encoding": {
+            "x": {
+             "field": "c",
+             "type": "quantitative"
+            },
+            "y": {
+             "field": "a",
+             "aggregate": "max",
+             "type": "quantitative",
+             "title": "t137"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
    "name": "review 5 aggCiChain: twenty chained ci aggregates over 5,000 groups (24.8 s)",
    "code": "TOO_COSTLY",
    "path": "spec.vl",

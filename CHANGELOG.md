@@ -83,6 +83,12 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- chartCost is conservative by construction (review 6): after any transform but a filter, nothing the inline data said
+  about fields is used (a window, bin, timeUnit or stack may write over a field), so groups count as rows; a
+  `bin: "binned"` channel groups by its values. The review's five specs (24.6 s, 6.2 s, 1.3 s, 1.3 s, 320,000
+  marks) are refused vectors. `test/display-cost-vega.test.ts` draws a seeded sample of 24 random accepted charts
+  with the real Vega when `DISPLAY_COST_VEGA_DIR` names a node_modules holding vega and vega-lite, and holds each to
+  3 x its estimate (worst seen: 0.97 x; skipped otherwise).
 - Light and heavy halves (the web UI's bundle budget): `display/wire.ts` (envelope and block schemas, catalog, error
   types, caps, settleDisplays) never imports the chart grammar or the cost walker; `display/validate.ts`
   (validateBlock, blockRows, chartCost, checkShowInput and the Show input, the fallback input) is also a subpath
