@@ -1,0 +1,1781 @@
+{
+ "_comment": "chartCost vectors (UI reviews R2 and N2): 'refused' must be TOO_COSTLY at the stated path, through chartCost and validateBlock alike; 'accepted' must pass both. To keep the file small, a data.values of {\"$rows\": n, \"$extra\": {...}} stands for n rows {i, v: (i * 7919) % 1000, ...extra}, i from 0; expand it before checking. The report gives each accepted spec's measured time with Vega 6.4.0 / Vega-Lite 6.5.0.",
+ "refused": [
+  {
+   "name": "3,000 points with tooltips in 5 layers: within the mark cap, over the budget",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 3000
+      }
+     },
+     "layer": [
+      {
+       "mark": {
+        "type": "point",
+        "tooltip": true
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        },
+        "tooltip": [
+         {
+          "field": "i"
+         },
+         {
+          "field": "v"
+         }
+        ]
+       }
+      },
+      {
+       "mark": {
+        "type": "point",
+        "tooltip": true
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        },
+        "tooltip": [
+         {
+          "field": "i"
+         },
+         {
+          "field": "v"
+         }
+        ]
+       }
+      },
+      {
+       "mark": {
+        "type": "point",
+        "tooltip": true
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        },
+        "tooltip": [
+         {
+          "field": "i"
+         },
+         {
+          "field": "v"
+         }
+        ]
+       }
+      },
+      {
+       "mark": {
+        "type": "point",
+        "tooltip": true
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        },
+        "tooltip": [
+         {
+          "field": "i"
+         },
+         {
+          "field": "v"
+         }
+        ]
+       }
+      },
+      {
+       "mark": {
+        "type": "point",
+        "tooltip": true
+       },
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        },
+        "tooltip": [
+         {
+          "field": "i"
+         },
+         {
+          "field": "v"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "UI re-review N2: distinct, frame [-2500, null], 5,000 rows",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        -2500,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "UI re-review N2: four distinct windows of that kind",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        -2500,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "v",
+         "as": "w1"
+        }
+       ],
+       "frame": [
+        -2500,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "v",
+         "as": "w2"
+        }
+       ],
+       "frame": [
+        -2500,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "v",
+         "as": "w3"
+        }
+       ],
+       "frame": [
+        -2500,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "UI re-review N2: fold of 50 fields over 100 rows, then distinct over +-1249",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[1].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 100,
+       "$extra": {
+        "f0": 0,
+        "f1": 1,
+        "f2": 2,
+        "f3": 3,
+        "f4": 4,
+        "f5": 5,
+        "f6": 6,
+        "f7": 7,
+        "f8": 8,
+        "f9": 9,
+        "f10": 10,
+        "f11": 11,
+        "f12": 12,
+        "f13": 13,
+        "f14": 14,
+        "f15": 15,
+        "f16": 16,
+        "f17": 17,
+        "f18": 18,
+        "f19": 19,
+        "f20": 20,
+        "f21": 21,
+        "f22": 22,
+        "f23": 23,
+        "f24": 24,
+        "f25": 25,
+        "f26": 26,
+        "f27": 27,
+        "f28": 28,
+        "f29": 29,
+        "f30": 30,
+        "f31": 31,
+        "f32": 32,
+        "f33": 33,
+        "f34": 34,
+        "f35": 35,
+        "f36": 36,
+        "f37": 37,
+        "f38": 38,
+        "f39": 39,
+        "f40": 40,
+        "f41": 41,
+        "f42": 42,
+        "f43": 43,
+        "f44": 44,
+        "f45": 45,
+        "f46": 46,
+        "f47": 47,
+        "f48": 48
+       }
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "d",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "fold": [
+        "v",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
+        "f13",
+        "f14",
+        "f15",
+        "f16",
+        "f17",
+        "f18",
+        "f19",
+        "f20",
+        "f21",
+        "f22",
+        "f23",
+        "f24",
+        "f25",
+        "f26",
+        "f27",
+        "f28",
+        "f29",
+        "f30",
+        "f31",
+        "f32",
+        "f33",
+        "f34",
+        "f35",
+        "f36",
+        "f37",
+        "f38",
+        "f39",
+        "f40",
+        "f41",
+        "f42",
+        "f43",
+        "f44",
+        "f45",
+        "f46",
+        "f47",
+        "f48"
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "distinct",
+         "field": "value",
+         "as": "d"
+        }
+       ],
+       "frame": [
+        -1249,
+        1249
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "UI re-review N2: vconcat 2 x layer 8 points with tooltips over 5,000 rows",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.vconcat[0].layer[3].mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "vconcat": [
+      {
+       "layer": [
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "layer": [
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        },
+        {
+         "mark": {
+          "type": "point",
+          "tooltip": true
+         },
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          },
+          "tooltip": [
+           {
+            "field": "i"
+           },
+           {
+            "field": "v"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "min over a frame open at its end, 5,000 rows",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[0].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "min",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        -4999,
+        null
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "min over +-110 after a fold that doubles 2,400 rows (unfolded it would pass)",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl.transform[1].frame",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 2400,
+       "$extra": {
+        "a": 1
+       }
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "m",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "fold": [
+        "v",
+        "a"
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "min",
+         "field": "value",
+         "as": "m"
+        }
+       ],
+       "frame": [
+        -110,
+        110
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "16 line views over 5,000 rows: the whole estimate over budget",
+   "code": "TOO_COSTLY",
+   "path": "spec.vl",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "vconcat": [
+      {
+       "layer": [
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        }
+       ]
+      },
+      {
+       "layer": [
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        },
+        {
+         "mark": "line",
+         "encoding": {
+          "x": {
+           "field": "i",
+           "type": "quantitative"
+          },
+          "y": {
+           "field": "v",
+           "type": "quantitative"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "accepted": [
+  {
+   "name": "ci0, ci1, median and q1 over the whole partition of 5,000 rows, drawn as a line",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "ci0",
+         "field": "v",
+         "as": "a"
+        },
+        {
+         "op": "ci1",
+         "field": "v",
+         "as": "b"
+        },
+        {
+         "op": "median",
+         "field": "v",
+         "as": "c"
+        },
+        {
+         "op": "q1",
+         "field": "v",
+         "as": "d"
+        }
+       ],
+       "frame": [
+        null,
+        null
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "5,000 points in 2 layers, a cumulative sum and a running max",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "max",
+         "field": "v",
+         "as": "w1"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ],
+     "layer": [
+      {
+       "mark": "point",
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "v",
+         "type": "quantitative"
+        }
+       }
+      },
+      {
+       "mark": "point",
+       "encoding": {
+        "x": {
+         "field": "i",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "w0",
+         "type": "quantitative"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "5,000 bars",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "slowest measured: 5,000 bars on a band scale (one band per row)",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "bar",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "ordinal"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "twenty incremental windows over 5,000 rows, drawn as a line",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w1"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w2"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w3"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w4"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w5"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w6"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w7"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w8"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w9"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w10"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w11"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w12"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w13"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w14"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w15"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w16"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w17"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w18"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      },
+      {
+       "window": [
+        {
+         "op": "sum",
+         "field": "v",
+         "as": "w19"
+        }
+       ],
+       "frame": [
+        null,
+        0
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "min over +-99 on 5,000 rows, drawn as a line",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": {
+       "$rows": 5000
+      }
+     },
+     "mark": "line",
+     "encoding": {
+      "x": {
+       "field": "i",
+       "type": "quantitative"
+      },
+      "y": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "min",
+         "field": "v",
+         "as": "w0"
+        }
+       ],
+       "frame": [
+        -99,
+        99
+       ],
+       "sort": [
+        {
+         "field": "i"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

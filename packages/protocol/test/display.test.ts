@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { inertFallbackText } from "../src/display/fallback";
 import {
+  chartCost,
   checkShowInput,
   noteInputSchema,
   DISPLAY_LIMITS,
@@ -304,19 +305,69 @@ describe("chart cost (UI review R2)", () => {
 
   test(`window ops times rows, over the whole chart, at most ${DISPLAY_LIMITS.chartWindowOpRows}`, () => {
     const ops = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ op: "sum", field: "onhand", as: `w${from + i}` }));
-    expect(fault(windowed(5_000, [{ window: ops(20) }, { window: ops(20, 20) }]))).toBe("ok"); // 200,000
-    expect(fault(windowed(5_000, [{ window: ops(20) }, { window: ops(20, 20) }, { window: ops(1, 40) }]))).toBe("TOO_COSTLY spec.vl.transform[2]");
+    expect(fault(windowed(5_000, [{ window: ops(10) }, { window: ops(10, 10) }]))).toBe("ok"); // 100,000
+    expect(fault(windowed(5_000, [{ window: ops(10) }, { window: ops(10, 10) }, { window: ops(1, 20) }]))).toBe("TOO_COSTLY spec.vl.transform[2]");
   });
 
   test("layers each pay for the windows they run", () => {
     const ops = Array.from({ length: 10 }, (_, i) => ({ op: "sum", field: "onhand", as: `w${i}` }));
     const layer = { transform: [{ window: ops }], mark: "line", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "w0", type: "quantitative" } } };
     const spec = { vl: { data: { values: rows(5_000) }, layer: [layer, layer, layer, layer, layer] } };
-    expect(fault(spec)).toBe("TOO_COSTLY spec.vl.layer[4].transform[0]");
+    expect(fault(spec)).toBe("TOO_COSTLY spec.vl.layer[2].transform[0]"); // 3 x 10 ops x 5,000 rows
   });
 
   test("the limits are exported for clients", () => {
-    expect([DISPLAY_LIMITS.chartWindowRowsTimesSpan, DISPLAY_LIMITS.chartWindowOpRows, [...DISPLAY_LIMITS.chartWholeFrameOps]]).toEqual([1_000_000, 200_000, ["median", "q1", "q3", "ci0", "ci1", "distinct"]]);
+    expect([DISPLAY_LIMITS.chartWindowRowsTimesSpan, DISPLAY_LIMITS.chartWindowOpRows, DISPLAY_LIMITS.chartMarks, DISPLAY_LIMITS.chartCostBudgetMs, [...DISPLAY_LIMITS.chartWholeFrameOps]]).toEqual([1_000_000, 100_000, 15_000, 400, ["median", "q1", "q3", "ci0", "ci1", "distinct"]]);
+  });
+});
+
+describe("chartCost: the one cost walker (UI re-review N2)", () => {
+  type CostVectors = { refused: Array<{ name: string; code: string; path: string; spec: unknown }>; accepted: Array<{ name: string; spec: unknown }> };
+  const raw = JSON.parse(readFileSync(new URL("./fixtures/display/chart-cost.vectors.json", import.meta.url), "utf8")) as CostVectors;
+  /** The fixture's {"$rows": n, "$extra": {...}} directive, expanded. */
+  const expand = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(expand);
+    if (!x || typeof x !== "object") return x;
+    const o = x as Record<string, unknown>;
+    if (typeof o.$rows === "number") return Array.from({ length: o.$rows }, (_, i) => ({ i, v: (i * 7919) % 1000, ...((o.$extra as object) ?? {}) }));
+    return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, expand(v)]));
+  };
+
+  for (const c of raw.refused) {
+    test(`refused: ${c.name}`, () => {
+      const spec = expand(c.spec);
+      const cost = chartCost(spec);
+      expect(cost.ok ? "ok" : `${cost.code} ${cost.path}`).toBe(`${c.code} ${c.path}`);
+      const v = validateBlock("chart", spec);
+      expect(v.ok ? "ok" : `${v.error.code} ${v.error.path}`).toBe(`${c.code} ${c.path}`);
+    });
+  }
+  for (const c of raw.accepted) {
+    test(`accepted: ${c.name}`, () => {
+      const spec = expand(c.spec);
+      const cost = chartCost(spec);
+      expect(cost.ok && cost.estimateMs <= DISPLAY_LIMITS.chartCostBudgetMs).toBe(true);
+      expect(validateBlock("chart", spec).ok).toBe(true);
+    });
+  }
+
+  test("never throws, whatever it is given; an ordinary chart costs little", () => {
+    for (const x of [null, 1, "chart", [], {}, { vl: null }, { vl: { layer: "x" } }, { vl: { transform: [null, { window: "x" }] } }]) expect(() => chartCost(x)).not.toThrow();
+    const golden = JSON.parse(readFileSync(new URL("./fixtures/display/golden/ridgeline-2p-projection.json", import.meta.url), "utf8")).show.spec;
+    const cost = chartCost(golden);
+    expect(cost.ok && cost.estimateMs).toBeLessThan(100);
+  });
+
+  test("a frame open at its start only grows, so a running max over 5,000 rows is allowed", () => {
+    expect(chartCost(line(rows(5_000), { transform: [{ window: [{ op: "max", field: "onhand", as: "m" }], frame: [null, 0] }] })).ok).toBe(true);
+  });
+
+  test(`point-like marks are capped at ${DISPLAY_LIMITS.chartMarks} across views`, () => {
+    const layers = (n: number, k: number) => ({ vl: { data: { values: rows(n) }, layer: Array.from({ length: k }, () => ({ mark: "point", encoding: { x: { field: "week", type: "ordinal" }, y: { field: "onhand", type: "quantitative" } } })) } });
+    expect(chartCost(layers(5_000, 3)).ok).toBe(false);
+    expect(chartCost(layers(5_000, 2)).ok).toBe(true);
+    const r = chartCost(layers(3_000, 6));
+    expect(r.ok ? "" : r.path).toBe("spec.vl.layer[5].mark");
   });
 });
 
