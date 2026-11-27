@@ -59,6 +59,16 @@ export interface DisplayError {
  *  primary, which counters count), `errors` all of them up to DISPLAY_LIMITS.faults, `omitted` how many more. */
 export type DisplayCheck<T> = { ok: true; value: T } | { ok: false; error: DisplayError; errors: DisplayError[]; omitted?: number };
 
+/** What arrived, for a message that says a type was wrong (E4: the model sent the same wrong type again when the
+ *  message did not say what it had sent). */
+export function arrived(x: unknown): string {
+  if (x === undefined) return "nothing";
+  if (x === null) return "null";
+  if (Array.isArray(x)) return "a list";
+  if (typeof x === "object") return "an object";
+  return `a ${typeof x}`;
+}
+
 /** A path segment list as the error's dotted path: `["spec", "vl", "layer", 0]` → `spec.vl.layer[0]`. */
 export function displayPath(segments: ReadonlyArray<string | number>): string {
   let out = "";

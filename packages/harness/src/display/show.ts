@@ -71,28 +71,52 @@ const DESCRIPTION =
   "Show again with the same block_id to replace a block. A refusal names a code, a path and a hint: " +
   "fix it and call Show once more with the same block_id.";
 
-/** Fields models hand over as JSON strings. A fallback is text in its own right, so only an object-looking one is
- *  parsed. */
+/** Object-typed arguments models hand over as JSON strings (E4): parsed once, each at most the input's byte limit; a
+ *  fallback is text in its own right, so only an object-looking one is parsed. `spec.vl` too. What did not parse is
+ *  remembered, so the refusal can say a string arrived and where its JSON breaks. */
 const NESTED = ["spec", "notes", "placement", "sources"] as const;
 
-function lenientInput(raw: unknown): unknown {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+interface Lenient {
+  input: unknown;
+  unparsed: Map<string, string>;
+}
+
+function parseString(v: unknown, openers: RegExp): { ok: true; value: unknown } | { ok: false; error: string } | null {
+  if (typeof v !== "string" || !openers.test(v) || v.length > DISPLAY_LIMITS.inputBytes) return null;
+  // A string the reader cannot take (a stack overflow on a pathological nesting included) stays a string.
+  try {
+    const parsed = parseJsonLenient(v);
+    return parsed.ok ? { ok: true, value: parsed.value } : { ok: false, error: parsed.error };
+  } catch {
+    return { ok: false, error: "it could not be read" };
+  }
+}
+
+function lenientInput(raw: unknown): Lenient {
+  const unparsed = new Map<string, string>();
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { input: raw, unparsed };
   const out: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
-  const parse = (k: string, openers: RegExp) => {
-    const v = out[k];
-    if (typeof v !== "string" || !openers.test(v)) return;
-    // A string the reader cannot take (a stack overflow on a pathological nesting included) stays a string, which the
-    // check then refuses with a typed code.
-    try {
-      const parsed = parseJsonLenient(v);
-      if (parsed.ok) out[k] = parsed.value;
-    } catch {
-      return;
-    }
+  const take = (k: string, openers: RegExp) => {
+    const r = parseString(out[k], openers);
+    if (r?.ok) out[k] = r.value;
+    else if (r) unparsed.set(k, r.error);
   };
-  for (const k of NESTED) parse(k, /^\s*[[{]/);
-  parse("fallback", /^\s*\{/);
-  return out;
+  for (const k of NESTED) take(k, /^\s*[[{]/);
+  take("fallback", /^\s*\{/);
+  const spec = out.spec;
+  if (typeof spec === "object" && spec !== null && !Array.isArray(spec)) {
+    const r = parseString((spec as Record<string, unknown>).vl, /^\s*\{/);
+    if (r?.ok) out.spec = { ...(spec as Record<string, unknown>), vl: r.value };
+    else if (r) unparsed.set("spec.vl", r.error);
+  }
+  return { input: out, unparsed };
+}
+
+/** A fault at an argument that arrived as an unparsable JSON string says so. */
+function explainUnparsed(e: DisplayError, unparsed: Map<string, string>): DisplayError {
+  const why = e.path !== undefined ? unparsed.get(e.path) : undefined;
+  if (why === undefined) return e;
+  return { ...e, message: `${e.path} arrived as a string that is not valid JSON (${why}); send it as an object, not a string`, hint: "send the same content as a JSON object" };
 }
 
 type Outcome = { ok: true; show: ValidShow; provenance: Provenance } | { ok: false; error: DisplayError; errors?: DisplayError[]; omitted?: number; block_id?: string; fallback?: string };
@@ -364,7 +388,7 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
     schema: z.unknown(),
     async call(raw: unknown, ctx: ToolContext): Promise<ToolResult> {
       state.turn(ctx.runId);
-      const input = lenientInput(raw);
+      const { input, unparsed } = lenientInput(raw);
       const id = typeof (input as { block_id?: unknown })?.block_id === "string" ? (input as { block_id: string }).block_id : undefined;
       const kind = kindLabel((input as { kind?: unknown })?.kind);
       if (id && state.failuresOf(id) >= 2) {
@@ -384,6 +408,10 @@ export function createShowTool(deps: ShowToolDeps): Tool<unknown> {
         log.error("display check failed unexpectedly", { error: e instanceof Error ? e.name : typeof e, kind });
         const known = check.ok ? { block_id: check.show.block_id, fallback: check.show.fallback } : { block_id: check.block_id, fallback: check.fallback };
         outcome = { ok: false, error: asDisplayError(e), ...known };
+      }
+      if (!outcome.ok && unparsed.size) {
+        const errors = (outcome.errors ?? [outcome.error]).map((e) => explainUnparsed(e, unparsed));
+        outcome = { ...outcome, error: errors[0]!, errors };
       }
       return outcome.ok ? shown(outcome.show, outcome.provenance, history) : refused(outcome, kind, history);
     },

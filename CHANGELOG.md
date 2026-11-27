@@ -76,6 +76,10 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Arguments as JSON strings (real-model run, E4): Show parses an object-typed argument sent as a JSON string once
+  (spec, spec.vl, fallback, notes, placement, sources; each at most the input's byte limit). A string that is not
+  valid JSON is refused saying so and where it breaks ("spec arrived as a string that is not valid JSON (expected ','
+  or ']' at 3709); send it as an object"), and every wrong-type fault names the type that arrived.
 - Review 5 optionals: a `<` reference followed by what starts a tag (`&#60;script`) is defused too; CONTROL also
   covers U+061C, U+180E, U+2028/2029, U+2060-2064 and the tag characters U+E0000-E007F (in line with the web UI);
   an envelope's note `ref.tool_use_id` is at most 128 characters on output; envelope strings other than the fallback
