@@ -246,7 +246,9 @@ describe("chart limits", () => {
     expect(say({ mark: "line", encoding: { x, y: { field: "onhand", aggregate: "ci0", type: "quantitative" } } })).toMatch(/upstream.*low and high/);
     expect(say({ mark: { type: "errorband", extent: "ci" }, encoding: { x, y: { field: "onhand", type: "quantitative" } } })).toMatch(/upstream.*low and high/);
     expect(say({ mark: "bar", encoding: { x: { ...x, sort: { field: "onhand", op: "mean" } }, y: { field: "onhand", type: "quantitative" } } })).toMatch(/"-y".*"order"/);
-    expect(say({ params: [{ name: "p", select: "point" }], mark: "bar", encoding: { x, y: { field: "onhand", type: "quantitative" }, color: { condition: { param: "p", field: "week" }, value: "grey" } } })).toMatch(/encode the field on the channel/);
+    expect(say({ params: [{ name: "p", select: "point" }], mark: "bar", encoding: { x, y: { field: "onhand", type: "quantitative" }, color: { condition: { param: "p", field: "week" }, value: "grey" } } })).toMatch(/encode the field on the channel.*highlight.*color.*opacity/);
+    // and what that hint says is accepted
+    expect(say({ params: [{ name: "pick", select: "point" }], mark: "bar", encoding: { x, y: { field: "onhand", type: "quantitative" }, color: { field: "week", type: "nominal" }, opacity: { condition: { param: "pick", value: 1 }, value: 0.2 } } })).toBe("ok");
   });
 
   test("a quantitative or temporal colour is a scale, not series: a 52 x 7 heatmap of 97 values passes (review 6, O5)", () => {
