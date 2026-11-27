@@ -349,6 +349,14 @@ describe("display caps vectors", () => {
     });
   }
 
+  test("a newer client's level and a2ui version are dropped, the rest kept", () => {
+    const caps = v.valid.find((c) => c.name === "a level from a newer client is dropped")!.caps;
+    const r = parseDisplayCaps(caps);
+    expect(r.ok && r.value.levels).toEqual(["text", "block"]);
+    const a2ui = parseDisplayCaps(v.valid.find((c) => c.name === "an a2ui version from a newer client is dropped")!.caps);
+    expect(a2ui.ok && a2ui.value.a2ui).toBeUndefined();
+  });
+
   test("a newer client's extra field is dropped, not kept", () => {
     const caps = v.valid.find((c) => c.name === "a field from a newer client")!.caps;
     const r = parseDisplayCaps(caps);

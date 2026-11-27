@@ -1,5 +1,5 @@
 {
- "_comment": "parseDisplayCaps vectors (DISPLAY-PROTOCOL-v0 §4.2). Unknown fields are dropped, not refused, so a newer client still parses.",
+ "_comment": "parseDisplayCaps vectors (DISPLAY-PROTOCOL-v0 §4.2). Unknown fields, unknown levels and an unknown a2ui version are dropped, not refused, so a newer client still parses; client, viewport and theme are closed sets in v1.",
  "valid": [
   {
    "name": "web on a desktop",
@@ -87,6 +87,47 @@
      "point"
     ]
    }
+  },
+  {
+   "name": "a level from a newer client is dropped",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "hologram",
+     "block"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York"
+   }
+  },
+  {
+   "name": "an a2ui version from a newer client is dropped",
+   "caps": {
+    "v": 1,
+    "client": "web",
+    "levels": [
+     "text",
+     "block",
+     "app",
+     "page",
+     "file"
+    ],
+    "catalogs": [
+     "harness.v1/1"
+    ],
+    "viewport": "desktop",
+    "theme": "light",
+    "locale": "en-US",
+    "timeZone": "America/New_York",
+    "a2ui": "2.0"
+   }
   }
  ],
  "invalid": [
@@ -126,26 +167,6 @@
      "app",
      "page",
      "file"
-    ],
-    "catalogs": [
-     "harness.v1/1"
-    ],
-    "viewport": "desktop",
-    "theme": "light",
-    "locale": "en-US",
-    "timeZone": "America/New_York"
-   }
-  },
-  {
-   "name": "an unknown level",
-   "code": "VALIDATION_FAILED",
-   "path": "display.levels[1]",
-   "caps": {
-    "v": 1,
-    "client": "web",
-    "levels": [
-     "text",
-     "hologram"
     ],
     "catalogs": [
      "harness.v1/1"

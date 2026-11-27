@@ -9,7 +9,8 @@
 - Protocol (`display/`, DISPLAY-PROTOCOL-v0 §2–5): `DisplayEnvelope` (a `TextDisplay` or a `ChartDisplay` /
   `KpisDisplay` / `GridDisplay` block of catalog `harness.v1/1`), its zod schema `displayEnvelopeSchema`, and
   `ToolResultEvent.display?`: render-only like `diff`. Every envelope carries a complete `fallback.text`.
-  `DisplayCaps` on `run.display?` (`parseDisplayCaps` at the server's edge; unknown fields dropped) and the
+  `DisplayCaps` on `run.display?` (`parseDisplayCaps` at the server's edge; unknown fields, levels and `a2ui`
+  versions dropped) and the
   capability `display`. A run without `run.display` is served exactly as before.
 - `checkShowInput(raw, {kinds})`: the `Show` tool's input, checked before any client sees it; every refusal is a
   `DisplayError {code, path, message, hint}` (`DisplayErrorCode`: `FALLBACK_MISSING`, `FALLBACK_TOO_LONG`,
