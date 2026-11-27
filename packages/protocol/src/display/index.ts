@@ -1,26 +1,4 @@
-/** 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §2–5). The throwing helpers stay inside the package. */
-export * from "./catalog.js";
-export { asDisplayError, displayPath, type DisplayCheck, type DisplayError, type DisplayErrorCode } from "./errors.js";
-export * from "./envelope.js";
-export {
-  blockRows,
-  chartSpecSchema,
-  gridCellSchema,
-  gridColumnSchema,
-  gridSpecSchema,
-  kpiTileSchema,
-  kpisSpecSchema,
-  validateBlock,
-  type BlockSpec,
-  type ChartSpec,
-  type GridCell,
-  type GridColumn,
-  type GridSpec,
-  type KpiTile,
-  type KpisSpec,
-} from "./blocks.js";
-export { fallbackInputSchema, type FallbackInput } from "./fallback.js";
-export * from "./show.js";
-export * from "./caps.js";
-export { chartCost, type ChartCostCheck } from "./cost.js";
-export { settleDisplays } from "./settle.js";
+/** 0.27.0 display protocol (DISPLAY-PROTOCOL-v0 §2–5): the light wire half and the heavy validation half. The
+ *  throwing helpers stay inside the package. */
+export * from "./wire.js";
+export * from "./validate.js";

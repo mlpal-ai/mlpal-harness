@@ -15,6 +15,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./validate": {
+      "bun": "./src/display/validate.ts",
+      "types": "./dist/display/validate.d.ts",
+      "import": "./dist/display/validate.js",
+      "default": "./dist/display/validate.js"
     }
   },
   "main": "./dist/index.js",
@@ -26,7 +32,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts --outdir dist --target node --format esm --external zod && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && bun build src/index.ts src/display/validate.ts --root src --outdir dist --target node --format esm --external zod && tsc -p tsconfig.build.json",
     "prepack": "bun run build"
   },
   "publishConfig": {

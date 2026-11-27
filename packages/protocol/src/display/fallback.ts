@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
+import { blockRows } from "./blocks.js";
+import type { BlockSpec, GridSpec } from "./block-schemas.js";
+import { parseShape } from "./shape.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
 import { attempt, fail, notice } from "./errors.js";
 import { CONTROL, CONTROL_ALL, defuseReferences } from "./fields.js";

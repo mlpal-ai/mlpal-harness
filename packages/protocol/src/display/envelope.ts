@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { chartSpecSchema, gridSpecSchema, kpisSpecSchema } from "./blocks.js";
+import { chartSpecSchema, gridSpecSchema, kpisSpecSchema } from "./block-schemas.js";
 import { plainText as plain } from "./fields.js";
 import { BLOCK_ID, DISPLAY_CATALOG, DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 

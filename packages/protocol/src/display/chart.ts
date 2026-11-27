@@ -3,7 +3,7 @@ import { isReservedName } from "./bounds.js";
 import { chartCost } from "./cost.js";
 import { arrived, attempt, collectedNow, fail, failAt, report } from "./errors.js";
 import { CONTROL } from "./fields.js";
-import type { ChartSpec } from "./blocks.js";
+import type { ChartSpec } from "./block-schemas.js";
 
 /**
  * 0.27.0 display protocol: the Vega-Lite subset a `chart` block may use (DISPLAY-PROTOCOL-v0 §5.2), as a strict
