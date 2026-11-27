@@ -109,7 +109,8 @@ class Lenient {
       const key = this.key();
       this.ws();
       if (this.next() !== ":") this.fail("expected ':'");
-      out[key] = this.value();
+      // defineProperty, as JSON.parse does: an assignment to "__proto__" would set the prototype, not make a key
+      Object.defineProperty(out, key, { value: this.value(), enumerable: true, writable: true, configurable: true });
       this.ws();
       const d = this.next();
       if (d === ",") {

@@ -93,3 +93,14 @@ describe("parseJsonLenient — fail-safe on the unrecoverable", () => {
     }
   });
 });
+
+describe("parseJsonLenient — keys are own data (P1 review 6, O2)", () => {
+  test('a "__proto__" key is an own key, as JSON.parse makes it, never the prototype', () => {
+    const r = parseJsonLenient("{'__proto__': {'calculate': 'x'}, a: 1,}"); // not strict JSON: the tolerant reader
+    expect(r.ok).toBe(true);
+    const v = (r as { value: Record<string, unknown> }).value;
+    expect(Object.getPrototypeOf(v)).toBe(Object.prototype);
+    expect(Object.keys(v)).toEqual(["__proto__", "a"]);
+    expect(Object.keys(v)).toEqual(Object.keys(JSON.parse('{"__proto__": {"calculate": "x"}, "a": 1}')));
+  });
+});
