@@ -1,5 +1,6 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
 import { fail } from "./errors.js";
+import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./blocks.js";
 
 /**
@@ -41,6 +42,7 @@ const URL_LIKE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/|(?:data|javascript|vbscript
 
 function scan(x: unknown, path: Path, inData: boolean): void {
   if (typeof x === "string") {
+    if (CONTROL.test(x)) fail("VALIDATION_FAILED", path, "a string has a control character (a terminal escape)");
     if (URL_LIKE.test(x)) fail("URL_NOT_ALLOWED", path, "a chart carries no URL; it draws inline data only", "put the values in data.values; drop links and image marks");
     return;
   }
@@ -50,6 +52,7 @@ function scan(x: unknown, path: Path, inData: boolean): void {
   }
   if (!isObj(x)) return;
   for (const [k, v] of Object.entries(x)) {
+    if (CONTROL.test(k)) fail("VALIDATION_FAILED", path, "a field name has a control character (a terminal escape)");
     if (!inData) {
       if (EXPRESSION_KEYS.has(k) || /Expr$/.test(k)) fail("EXPRESSION_NOT_ALLOWED", [...path, k], `"${k}" is an expression; charts take none`, "precompute the value into the data");
       if (LOADING_KEYS.has(k)) fail("URL_NOT_ALLOWED", [...path, k], `"${k}" can load data; a chart draws inline data only`, "put the rows in data.values");
@@ -223,7 +226,7 @@ const PREDICATE: Rule = (v, p, w) => {
   if ("param" in v) return obj({ param: TOKEN, empty: bool }, ["param"])(v, p, w);
   const tests = ["equal", "lt", "lte", "gt", "gte", "range", "oneOf", "valid"];
   obj({ field, timeUnit: TIME_UNIT, equal: scalar, lt: scalar, lte: scalar, gt: scalar, gte: scalar, range: arr(scalar, 2, 2), oneOf: arr(scalar, 100, 1), valid: bool }, ["field"])(v, p, w);
-  if (!tests.some((t) => t in v)) fail("VALIDATION_FAILED", p, "a predicate names a field and a test", `tests: ${tests.join(", ")}; or { "param": "<selection>" }`);
+  if (!tests.some((t) => t in v)) fail("VALIDATION_FAILED", p, "a predicate names a field and a test", `tests: ${tests.join(", ")}; or { "param": "the selection's name" }`);
 };
 
 const CONDITION: Rule = (v, p, w) => {

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
 import { fail } from "./errors.js";
+import { CONTROL } from "./fields.js";
 
 /**
  * 0.27.0 display protocol: the text every display carries (DISPLAY-PROTOCOL-v0 §2.5). It is what a terminal, an
@@ -35,9 +36,9 @@ const FENCE = /^\s*(```|~~~)/m;
 /** The fallback as the model sent it, checked. A bare string is taken as its text (models flatten small objects).
  *  `kind`, when it is a block kind, adds the rule that a chart, kpis or grid fallback states a number. */
 export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): FallbackInput {
-  if (raw === undefined || raw === null) fail("FALLBACK_MISSING", path, "every Show needs a fallback", '"fallback": { "text": "<the conclusion and key numbers>" }');
+  if (raw === undefined || raw === null) fail("FALLBACK_MISSING", path, "every Show needs a fallback", '"fallback": { "text": "the conclusion and the key numbers" }');
   const obj = typeof raw === "string" ? { text: raw } : raw;
-  if (typeof obj === "object" && !Array.isArray(obj) && (obj as { text?: unknown }).text === undefined) fail("FALLBACK_MISSING", [...path, "text"], "the fallback has no text", '"fallback": { "text": "<the conclusion and key numbers>" }');
+  if (typeof obj === "object" && !Array.isArray(obj) && (obj as { text?: unknown }).text === undefined) fail("FALLBACK_MISSING", [...path, "text"], "the fallback has no text", '"fallback": { "text": "the conclusion and the key numbers" }');
   const input = parseShape(fallbackInputSchema, obj, path);
   const text = input.text.trim();
   const at = [...path, "text"];
@@ -50,10 +51,23 @@ export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): Fal
   if (HTML.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no HTML", "write it as text and GFM tables");
   if (IMAGE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no images", "describe what the image would show");
   if (FENCE.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no code fences");
+  if (CONTROL.test(text)) fail("VALIDATION_FAILED", at, "the fallback has a control character (a terminal escape)", "write plain text; tabs and newlines are fine");
   return { ...input, text };
 }
 
-const cell = (v: unknown): string => (v === null || v === undefined ? "" : String(v).replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|"));
+const ANSI = /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|.)/g;
+const CELL_CHARS = 120;
+
+/** A value as an inert GFM table cell. The checks already refuse control characters in cells; the engine still
+ *  strips them here, since this text reaches terminals and markdown renderers whatever the checks become. Then every
+ *  markdown- and HTML-active character is backslash-escaped and autolinks are broken, so a cell can never become an
+ *  image, a link, HTML or a terminal escape; a cell is at most 120 characters. */
+function cell(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  const plain = String(v).replace(ANSI, "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const cut = [...plain].length > CELL_CHARS ? `${[...plain].slice(0, CELL_CHARS - 1).join("")}…` : plain;
+  return cut.replace(/[\\`*_[\]<>&!|~#]/g, "\\$&").replace(/:\/\//g, ":\\/\\/").replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`);
+}
 
 /** The complete fallback: the model's text, then the table it asked for (at most 20 rows, then how many more).
  *  A table is refused for a kind without rows, and for a column the rows do not have. */

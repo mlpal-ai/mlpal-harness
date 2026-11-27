@@ -61,8 +61,22 @@ export class DisplayRefusal extends Error {
   }
 }
 
+/** An error's text quotes names the model chose (keys, fields, kinds), and the step's content shows it: made inert
+ *  for any client that renders it as markdown or prints it to a terminal. No control character, no image or link
+ *  syntax, no HTML or code span, no autolink; at most 300 characters. */
+export function inert(s: string): string {
+  const flat = s
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/!\[/g, "!?")
+    .replace(/\]\(/g, "]?")
+    .replace(/[<>`]/g, "?")
+    .replace(/:\/\//g, ":?/")
+    .replace(/www\./gi, "www?");
+  return [...flat].length > 300 ? `${[...flat].slice(0, 299).join("")}…` : flat;
+}
+
 export function fail(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): never {
-  throw new DisplayRefusal({ code, ...(path.length ? { path: displayPath(path) } : {}), message, ...(hint ? { hint } : {}) });
+  throw new DisplayRefusal({ code, ...(path.length ? { path: inert(displayPath(path)) } : {}), message: inert(message), ...(hint ? { hint: inert(hint) } : {}) });
 }
 
 /** Run a validator; its refusal becomes `{ok: false}`. Any other exception is a bug and propagates. */
