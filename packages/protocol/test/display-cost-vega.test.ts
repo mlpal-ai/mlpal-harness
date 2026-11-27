@@ -29,6 +29,9 @@ function rng(seed: number): () => number {
   };
 }
 
+/** Fields present on a row only for the bits of its index that are set. */
+const G = Array.from({ length: 8 }, (_, k) => `g${k}`);
+
 function generator(seed: number) {
   const r = rng(seed);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]!;
@@ -41,7 +44,7 @@ function generator(seed: number) {
   const colour = () => ({ color: pick<unknown>([{ field: "c", type: "nominal" }, { condition: { test: { field: "a", gt: 500 }, value: "#d64545" }, value: "#888888" }, { field: "c", type: "nominal", condition: { test: { field: "a", gt: 500 }, value: "#d64545" } }]) });
   const tooltip = () => ({ tooltip: pick<unknown>([{ field: "i", type: "quantitative" }, [{ field: "c", type: "nominal" }, { field: "b", aggregate: "mean", type: "quantitative" }]]) });
   const layer = (): Obj => {
-    const kind = pick(["raw", "window", "aggregate", "channel", "fold", "bin", "composite", "paths", "shared"]);
+    const kind = pick(["raw", "window", "aggregate", "channel", "fold", "bin", "composite", "paths", "shared", "sparse"]);
     const mark = pick(["line", "point", "bar", "area", "tick", "text", "rule"]);
     const text = (f: string) => (mark === "text" ? { text: q(f) } : {});
     switch (kind) {
@@ -63,6 +66,10 @@ function generator(seed: number) {
         return { transform: [{ window: [{ op: "row_number", as: "w" }] }], mark: pick(["line", "area"]), encoding: { x: q("i"), y: q("a"), [pick(["color", "detail", "strokeDash"])]: { field: pick(["w", "c"]), type: "nominal" } } };
       case "shared": // channels a layer shares with its views
         return { encoding: { x: { field: pick(["c", "i"]), type: "ordinal", ...maybe(0.5, sort) }, y: { field: "a", aggregate: pick(["mean", "max", "median"]), type: "quantitative" }, ...maybe(0.4, colour) }, layer: [{ mark: "line" }, { mark: pick(["point", "bar"]) }] };
+      case "sparse": // grouped by fields some rows lack: Vega groups an absent value as one more (review 8)
+        return r() < 0.5
+          ? { transform: [{ aggregate: [{ op: "count", as: "n" }], groupby: G }], mark: pick(["point", "bar", "tick"]), encoding: { x: q("n"), y: { field: "g0", type: "nominal" } } }
+          : { mark: pick(["point", "bar"]), encoding: { x: { field: "g0", type: "nominal" }, y: { aggregate: "count", type: "quantitative" }, tooltip: G.map((f) => ({ field: f, type: "nominal" })) } };
       case "bin":
         return { mark: "bar", encoding: { x: { field: "a", bin: { maxbins: pick([10, 40, 100]) }, type: "quantitative" }, y: { aggregate: "count", type: "quantitative" }, ...maybe(0.3, colour) } };
       default:
@@ -71,7 +78,14 @@ function generator(seed: number) {
   };
   return (): Obj => {
     const n = pick([200, 1_000, 2_500, 5_000]);
-    const values = Array.from({ length: n }, (_, i) => ({ i, a: (i * 7919) % 1000, b: n - i, c: `c${i % 7}` }));
+    // sparse rows: row i holds g_k only for each bit k set in i, and some rows lack b or c
+    const values = Array.from({ length: n }, (_, i) => ({
+      i,
+      a: (i * 7919) % 1000,
+      ...(i % 11 === 3 ? {} : { b: n - i }),
+      ...(i % 13 === 5 ? {} : { c: `c${i % 7}` }),
+      ...Object.fromEntries(G.filter((_, k) => (i >> k) & 1).map((f) => [f, 1])),
+    }));
     const layers = Array.from({ length: 1 + Math.floor(r() * 4) }, layer);
     const shape = r();
     // many layered views: vconcat 2 x layer k x the layers, as the reviews built them

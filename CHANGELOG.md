@@ -99,6 +99,9 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- A row that lacks a field counts as one more value of it when the walker counts groups (review 8: Vega groups it
+  under undefined; 12 sparse fields made 2,500 groups the walker saw as 1, and 128 views took 16.6 s). The
+  property test's generator emits sparse rows and groupings over them.
 - The cost walker never infers a reduction (review 7 ruling; every hole in reviews 5 to 7 was one). Rows and marks
   are the input rows times every multiplier, except through a whitelist stated in `cost.ts`, each with its vectors:
   W1 an aggregate transform grouped by plain fields, W2 a channel aggregate (and a composite mark's implicit one)

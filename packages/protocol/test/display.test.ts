@@ -355,6 +355,7 @@ describe("chartCost: the one cost walker (UI re-review N2)", () => {
     if (Array.isArray(x)) return x.map(expand);
     if (!x || typeof x !== "object") return x;
     const o = x as Record<string, unknown>;
+    if (typeof o.$rows === "number" && o.$shape === "sparse12") return Array.from({ length: o.$rows }, (_, i) => Object.fromEntries(Array.from({ length: 12 }, (_, k) => k).filter((k) => (i >> k) & 1).map((k) => [`f${k}`, 1])));
     if (typeof o.$rows === "number" && o.$shape === "iabc") return Array.from({ length: o.$rows }, (_, i) => ({ i, a: i, b: (o.$rows as number) - 1 - i, c: i % 7 }));
     if (typeof o.$rows === "number") return Array.from({ length: o.$rows }, (_, i) => ({ i, v: (i * 7919) % 1000, ...((o.$extra as object) ?? {}) }));
     return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, expand(v)]));
