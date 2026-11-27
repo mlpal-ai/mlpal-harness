@@ -1,0 +1,590 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "sessionId": "s1",
+      "agentId": "ag1",
+      "model": "test",
+      "cwd": "<root>/work",
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "How fast is stock falling?"
+      },
+      "author": {
+        "type": "human"
+      },
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_01",
+            "name": "Read",
+            "input": {
+              "path": "stock.csv"
+            }
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 10,
+        "output_tokens": 5
+      },
+      "stopReason": "tool_use",
+      "model": "test",
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    },
+    {
+      "type": "tool_result",
+      "toolUseId": "toolu_01",
+      "toolName": "Read",
+      "content": "     1\tweek,onhand\n     2\t2026-11-30,2140\n     3\t2026-12-07,1340\n     4\t",
+      "isError": false,
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Stock falls from 2,140 to 1,340 in a week."
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 4
+      },
+      "stopReason": "end_turn",
+      "model": "test",
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "numTurns": 2,
+      "usage": {
+        "input_tokens": 18,
+        "output_tokens": 9,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      },
+      "ts": "<ts>",
+      "uuid": "<uuid>"
+    }
+  ],
+  "requests": [
+    {
+      "model": "test",
+      "system": "You are a test.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How fast is stock falling?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "Read",
+          "description": "Read a file. Text files return numbered lines; images (png/jpg/gif/webp) and PDFs return rich content you can see directly. Supports offset/limit for large text files.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File path (absolute or relative to cwd)"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based start line"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "max lines to read"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        {
+          "name": "Write",
+          "description": "Write content to a file, creating parent directories. Overwrites if it exists.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        },
+        {
+          "name": "Edit",
+          "description": "Replace an exact string in a file. old_string must be unique unless replace_all is set.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ]
+          }
+        },
+        {
+          "name": "Bash",
+          "description": "Execute a shell command via bash in the working directory. Returns combined stdout+stderr. Set run_in_background for long-lived commands (dev servers, watchers): returns a task id immediately; read output later with BashOutput and stop it with Kill. A foreground command that outlives its timeout (default 120s, max 600s) is not killed — it is adopted as a background task and you get an event when it finishes; investigate instead of re-running if it should have been quick.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000,
+                "description": "timeout in ms (default 120000)"
+              },
+              "run_in_background": {
+                "type": "boolean",
+                "description": "start the command as a background task and return its id immediately"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          }
+        },
+        {
+          "name": "Glob",
+          "description": "Find files matching a glob pattern (e.g. '**/*.ts'). Respects .gitignore. Returns matching paths.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "base dir (default cwd)"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "name": "Grep",
+          "description": "Search file contents with a regular expression (ripgrep-backed; respects .gitignore). Returns file:line:match. Optionally scoped by a glob.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "base dir (default cwd)"
+              },
+              "glob": {
+                "type": "string",
+                "description": "file glob to scope the search"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "name": "List",
+          "description": "List the entries of a directory. Directories are suffixed with '/'.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "directory (default cwd)"
+              }
+            }
+          }
+        },
+        {
+          "name": "WebFetch",
+          "description": "Fetch a URL over HTTP(S) and return its readable text content (HTML is reduced to text). Use for reading docs or pages. Large pages are truncated.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "description": "Absolute http(s) URL"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "BashOutput",
+          "description": "Read new output from a background task started by Bash(run_in_background). Returns output since the last read plus the task's status. Call again later for more.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "shell id from Bash, e.g. \"bg1\""
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "name": "Kill",
+          "description": "Stop background work by id — a shell from Bash(run_in_background) (e.g. \"bg1\"), a monitor (\"mon1\"), or a sub-agent from Agent(run_in_background) (e.g. \"agent1\").",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "name": "ExitPlanMode",
+          "description": "Call this ONLY when you are in read-only planning mode and have finished researching: present your implementation plan (in `plan`, as markdown) for the user to approve BEFORE making any changes. Do NOT use it for trivial edits, for questions, or when you are already in an editing mode — just do the work in those cases.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "plan": {
+                "type": "string",
+                "description": "the implementation plan to run past the user, in concise markdown"
+              }
+            },
+            "required": [
+              "plan"
+            ]
+          }
+        }
+      ],
+      "maxTokens": 8192,
+      "trace": {
+        "stamp": {
+          "session": "s1",
+          "run": "<uuid>",
+          "prompt": "<uuid>"
+        },
+        "callId": "<uuid>"
+      }
+    },
+    {
+      "model": "test",
+      "system": "You are a test.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How fast is stock falling?"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_01",
+              "name": "Read",
+              "input": {
+                "path": "stock.csv"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_01",
+              "content": "     1\tweek,onhand\n     2\t2026-11-30,2140\n     3\t2026-12-07,1340\n     4\t",
+              "is_error": false
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "name": "Read",
+          "description": "Read a file. Text files return numbered lines; images (png/jpg/gif/webp) and PDFs return rich content you can see directly. Supports offset/limit for large text files.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File path (absolute or relative to cwd)"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based start line"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "max lines to read"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        {
+          "name": "Write",
+          "description": "Write content to a file, creating parent directories. Overwrites if it exists.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        },
+        {
+          "name": "Edit",
+          "description": "Replace an exact string in a file. old_string must be unique unless replace_all is set.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ]
+          }
+        },
+        {
+          "name": "Bash",
+          "description": "Execute a shell command via bash in the working directory. Returns combined stdout+stderr. Set run_in_background for long-lived commands (dev servers, watchers): returns a task id immediately; read output later with BashOutput and stop it with Kill. A foreground command that outlives its timeout (default 120s, max 600s) is not killed — it is adopted as a background task and you get an event when it finishes; investigate instead of re-running if it should have been quick.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000,
+                "description": "timeout in ms (default 120000)"
+              },
+              "run_in_background": {
+                "type": "boolean",
+                "description": "start the command as a background task and return its id immediately"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          }
+        },
+        {
+          "name": "Glob",
+          "description": "Find files matching a glob pattern (e.g. '**/*.ts'). Respects .gitignore. Returns matching paths.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "base dir (default cwd)"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "name": "Grep",
+          "description": "Search file contents with a regular expression (ripgrep-backed; respects .gitignore). Returns file:line:match. Optionally scoped by a glob.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "base dir (default cwd)"
+              },
+              "glob": {
+                "type": "string",
+                "description": "file glob to scope the search"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "name": "List",
+          "description": "List the entries of a directory. Directories are suffixed with '/'.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "directory (default cwd)"
+              }
+            }
+          }
+        },
+        {
+          "name": "WebFetch",
+          "description": "Fetch a URL over HTTP(S) and return its readable text content (HTML is reduced to text). Use for reading docs or pages. Large pages are truncated.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "description": "Absolute http(s) URL"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "name": "BashOutput",
+          "description": "Read new output from a background task started by Bash(run_in_background). Returns output since the last read plus the task's status. Call again later for more.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "shell id from Bash, e.g. \"bg1\""
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "name": "Kill",
+          "description": "Stop background work by id — a shell from Bash(run_in_background) (e.g. \"bg1\"), a monitor (\"mon1\"), or a sub-agent from Agent(run_in_background) (e.g. \"agent1\").",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "name": "ExitPlanMode",
+          "description": "Call this ONLY when you are in read-only planning mode and have finished researching: present your implementation plan (in `plan`, as markdown) for the user to approve BEFORE making any changes. Do NOT use it for trivial edits, for questions, or when you are already in an editing mode — just do the work in those cases.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "plan": {
+                "type": "string",
+                "description": "the implementation plan to run past the user, in concise markdown"
+              }
+            },
+            "required": [
+              "plan"
+            ]
+          }
+        }
+      ],
+      "maxTokens": 8192,
+      "trace": {
+        "stamp": {
+          "session": "s1",
+          "run": "<uuid>",
+          "prompt": "<uuid>"
+        },
+        "callId": "<uuid>"
+      }
+    }
+  ]
+}
