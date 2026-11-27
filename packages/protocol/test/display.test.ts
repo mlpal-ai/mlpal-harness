@@ -783,6 +783,36 @@ describe("settleDisplays: an older session's repairing block, once its run ended
   });
 });
 
+describe("normalised, not refused: the replay's most common remaining causes", () => {
+  test("table columns that are not fields of the rows are left out, with a notice; none left means all", () => {
+    const r = checkShowInput(show({ fallback: { text: FALLBACK, table: { from: "rows", columns: ["week", "cumulative_pct"] } } }));
+    expect(r.ok && r.show.fallback).toBe(`${FALLBACK}\n\n| week |\n| --- |\n| w0 |\n| w1 |`);
+    expect(r.ok && r.show.notices).toEqual(["fallback.table: left out columns that are not fields of the rows (cumulative_pct)"]);
+    const all = checkShowInput(show({ fallback: { text: FALLBACK, table: { from: "rows", columns: ["Columbus", "Reno"] } } }));
+    expect(all.ok && all.show.fallback).toBe(`${FALLBACK}\n\n| week | onhand |\n| --- | ---: |\n| w0 | 0 |\n| w1 | 1 |`);
+  });
+
+  test("fallback.table: null is no table", () => {
+    const r = checkShowInput(show({ fallback: { text: FALLBACK, table: null } }));
+    expect(r.ok && r.show.fallback).toBe(FALLBACK);
+  });
+
+  test("a grid's row_id is its row_key; a missing row_key is the first column whose values are unique", () => {
+    const columns = [{ key: "lot", label: "Lot", type: "text" }, { key: "state", label: "State", type: "state" }];
+    const rows2 = [{ lot: "N2-0813", state: "hold" }, { lot: "N2-0815", state: "hold" }];
+    const grid = (extra: Record<string, unknown>) => checkShowInput(show({ kind: "grid", spec: { columns, rows: rows2, ...extra } }));
+    for (const extra of [{ row_id: "lot", row_key: "lot" }, { row_id: "lot" }, {}]) {
+      const r = grid(extra);
+      expect([JSON.stringify(extra), r.ok && (r.show.spec as { row_key: string }).row_key]).toEqual([JSON.stringify(extra), "lot"]);
+      expect(r.ok && "row_id" in (r.show.spec as object)).toBe(false);
+    }
+    const differ = grid({ row_id: "state", row_key: "lot" });
+    expect(differ.ok ? null : [differ.error.path, differ.error.message]).toEqual(["spec.row_id", 'row_id "state" and row_key "lot" differ: a grid takes row_key only']);
+    const none = checkShowInput(show({ kind: "grid", spec: { columns, rows: [{ lot: "a", state: "x" }, { lot: "a", state: "x" }] } }));
+    expect(none.ok ? null : none.error.path).toBe("spec.row_key");
+  });
+});
+
 describe("checkShowInput", () => {
   const fault = (raw: unknown, opts?: Parameters<typeof checkShowInput>[1]) => {
     const r = checkShowInput(raw, opts);

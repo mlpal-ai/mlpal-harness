@@ -411,9 +411,9 @@ describe("Show: refusal and the one repair", () => {
   });
 
   test("every stage reports in the first refusal: the fallback's text and its table together", async () => {
-    const r = await tool().call(chart({ fallback: { text: "See the chart.", table: { from: "rows", columns: ["week", "units"] } } }));
+    const r = await tool().call(chart({ fallback: { text: "See the chart.", table: { from: "rows", max_rows: 21 } } }));
     const body = errorOf(r) as unknown as { faults: Array<{ code: string; path: string }> };
-    expect(body.faults.map((f) => `${f.code} ${f.path}`)).toEqual(["FALLBACK_UNINFORMATIVE fallback.text", "VALIDATION_FAILED fallback.table.columns[1]"]);
+    expect(body.faults.map((f) => `${f.code} ${f.path}`)).toEqual(["VALIDATION_FAILED fallback.table.max_rows", "FALLBACK_UNINFORMATIVE fallback.text"]);
   });
 
   test("every stage reports in the first refusal: the engine's block limits join the input's faults", async () => {
@@ -422,6 +422,11 @@ describe("Show: refusal and the one repair", () => {
     const r = await call(badChart({ block_id: "b-12" }));
     const body = errorOf(r) as unknown as { faults: Array<{ code: string; path: string }> };
     expect(body.faults.map((f) => `${f.code} ${f.path}`)).toEqual(["VALIDATION_FAILED spec.vl.mark", "TOO_MANY_BLOCKS block_id"]);
+  });
+
+  test("what the check normalised is told to the model in one line each", async () => {
+    const r = await tool().call(chart({ fallback: { text: FALLBACK, table: { from: "rows", columns: ["week", "units"] } } }));
+    expect(modelText(r)).toBe("Shown fig-1 r1 (chart) in the thread.\nNote: fallback.table: left out columns that are not fields of the rows (units).");
   });
 
   test("KIND_NOT_ALLOWED: a kind the client left out of its kinds", async () => {

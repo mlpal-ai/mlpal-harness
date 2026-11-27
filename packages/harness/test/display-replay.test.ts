@@ -18,9 +18,9 @@ const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catal
 const EXPECTED: Record<string, string> = {
   "fab-watch/g1-01-shift 7i4mevmc": "ok",
   "fab-watch/g1-01-shift cPuujyW8": "ok",
-  "fab-watch/g1-03-pareto Pi1kvbVn": "VALIDATION_FAILED fallback.table.columns[2]",
+  "fab-watch/g1-03-pareto Pi1kvbVn": "ok",
   "fab-watch/g1-03-pareto wJ6BYeZV": "ok",
-  "fab-watch/g1-04-colour BDQYFqqf": "VALIDATION_FAILED fallback.table.columns[3]",
+  "fab-watch/g1-04-colour BDQYFqqf": "ok",
   "fab-watch/g1-04-colour D8fQUXz5": "ok",
   "finance-desk/g1-01-book j9e2ffGJ": "ok",
   "finance-desk/g1-02-kstl sCobK7s8": "VALIDATION_FAILED spec",
@@ -30,7 +30,7 @@ const EXPECTED: Record<string, string> = {
   "mlpal/m1-csv-chart QYdccSP7": "ok",
   "sonnet/fab-watch/g1-01-shift YerSftJC": "ok",
   "sonnet/fab-watch/g1-01-shift J2BZzZxG": "ok",
-  "sonnet/fab-watch/g1-02-lots bv51Lz8a": "VALIDATION_FAILED fallback.table; VALIDATION_FAILED spec.row_id",
+  "sonnet/fab-watch/g1-02-lots bv51Lz8a": "ok",
   "sonnet/fab-watch/g1-02-lots aYj2Gmoh": "ok",
   "sonnet/finance-desk/g1-02-kstl gQAvQjfx": "ok",
   "sonnet/finance-desk/g1-02-kstl vq7K15WD": "ok",
@@ -48,7 +48,7 @@ const EXPECTED: Record<string, string> = {
   "supply-planner/g1-02-projection hWeaB8jv": "ok",
   "supply-planner/g1-03-waterfall 8VmXZ2J8": "VALIDATION_FAILED spec.vl.layer[0].mark.width",
   "supply-planner/g1-03-waterfall vq98fxUk": "ok",
-  "supply-planner/g1-05-inbound ertBirkT": "VALIDATION_FAILED fallback.table.columns[1]; VALIDATION_FAILED fallback.table.columns[2]; VALIDATION_FAILED fallback.table.columns[3]",
+  "supply-planner/g1-05-inbound ertBirkT": "ok",
   "supply-planner/g1-05-inbound rRHVgwoS": "ok",
 };
 

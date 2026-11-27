@@ -83,6 +83,11 @@
   nothing (`DisplayHistory.verifiableIds`; `foldDisplayHistory(entries, showToolUseId)`). No envelope change: `Note.verified` already tells a client which sources
   were checked. The Show description and the grammar ask for sources in words, an id only if the model has it
   verbatim; `sources` entries and `ref.tool_use_id` have no length rule (ids are no gate).
+- Normalised, not refused (the replay's most common remaining causes): fallback.table columns that are not fields of
+  the rows are left out (none left: all columns); `fallback.table: null` is no table; a grid's `row_id` is its
+  `row_key` (refused only when both are given and differ), and a missing `row_key` is the first column whose values
+  are unique. Each is one "Note:" line the model reads (`ValidShow.notices`). A string spec that is not valid JSON
+  and an unknown mark property stay refused, with messages that state the fix. No security or cost rule changed.
 - A block left repairing when its run ends (real-model run, E3): the engine settles it on the run's result,
   `ResultEvent.display?` (spec §2.2's reserved carrier), as a `fallback_only` text envelope on its last fallback,
   counted `display.repair{outcome=abandoned}`; `settleDisplays(messages)` (protocol) reads a session written before
