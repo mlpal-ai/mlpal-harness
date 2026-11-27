@@ -56,6 +56,9 @@ export interface ValidShow {
   as_of?: string;
   placement?: Placement;
   notes?: NoteInput[];
+  /** What the check normalised instead of refusing (a table column left out, a row_key taken from row_id): one line
+   *  each, for the model. */
+  notices?: string[];
 }
 
 /** A refused Show. `errors` lists every fault found, in the input's order, so one repair can fix them all; `error`
@@ -108,7 +111,7 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];
     return { block_id, kind, spec, fallback: complete, ...optional };
   });
-  if (r.errors.length === 0 && r.value) return { ok: true, show: r.value };
+  if (r.errors.length === 0 && r.value) return { ok: true, show: r.notices.length ? { ...r.value, notices: r.notices } : r.value };
   // A refusal, or (typed VALIDATION_INTERNAL) anything else the checks threw: never an exception for the caller.
   const errors = r.errors.length ? r.errors : [asDisplayError(new Error("no fault and no value"))];
   return { ok: false, error: errors[0]!, errors, ...(r.omitted ? { omitted: r.omitted } : {}), ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };

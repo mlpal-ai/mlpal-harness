@@ -93,6 +93,8 @@ export class DisplayRefusal extends Error {
  *  the allowlist) report it once. */
 class Faults {
   readonly list: DisplayError[] = [];
+  /** What the check normalised instead of refusing, for the model to read. */
+  readonly notices: string[] = [];
   total = 0;
   private readonly paths = new Set<string>();
 
@@ -127,6 +129,11 @@ export function collectedNow(): number {
   return current?.total ?? 0;
 }
 
+/** Record what a check normalised instead of refusing (one line the model reads), inside collectFaults. */
+export function notice(message: string): void {
+  current?.notices.push(inert(message));
+}
+
 /** Report a fault and go on, inside collectFaults; outside, it is a refusal like fail. */
 export function report(code: DisplayErrorCode, path: ReadonlyArray<string | number>, message: string, hint?: string): void {
   attempt(() => fail(code, path, message, hint));
@@ -134,7 +141,7 @@ export function report(code: DisplayErrorCode, path: ReadonlyArray<string | numb
 
 /** Run a whole check, collecting every fault its parts report. A fault the parts do not catch ends the check (it is
  *  fatal for what follows); anything else thrown is VALIDATION_INTERNAL. */
-export function collectFaults<T>(run: () => T): { value: T | undefined; errors: DisplayError[]; omitted: number } {
+export function collectFaults<T>(run: () => T): { value: T | undefined; errors: DisplayError[]; omitted: number; notices: string[] } {
   const outer = current;
   const faults = new Faults();
   current = faults;
@@ -147,7 +154,7 @@ export function collectFaults<T>(run: () => T): { value: T | undefined; errors: 
   } finally {
     current = outer;
   }
-  return { value: faults.total ? undefined : value, errors: faults.list, omitted: faults.total - faults.list.length };
+  return { value: faults.total ? undefined : value, errors: faults.list, omitted: faults.total - faults.list.length, notices: faults.notices };
 }
 
 /** An error's text quotes names the model chose (keys, fields, kinds), and the step's content shows it: made inert

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 import { checkBounds, isReservedName } from "./bounds.js";
 import { checkChartSpec } from "./chart.js";
-import { checked, DisplayRefusal, displayError, fail, report, type DisplayCheck } from "./errors.js";
+import { checked, DisplayRefusal, displayError, fail, notice, report, type DisplayCheck } from "./errors.js";
 import { CONTROL, plainText } from "./fields.js";
 
 /**
@@ -109,12 +109,45 @@ const CELL_TYPE: Record<GridColumn["type"], (v: GridCell) => boolean> = {
   state: (v) => typeof v === "string" || v === null,
 };
 
+/** `row_id` is taken as `row_key` (models write both); a missing row_key is the first column whose values are all
+ *  present and unique. Each is a notice, not a refusal. */
+function normaliseRowKey(spec: unknown, path: Path): unknown {
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return spec;
+  const g = { ...(spec as Record<string, unknown>) };
+  if (Object.hasOwn(g, "row_id")) {
+    if (Object.hasOwn(g, "row_key") && g.row_key !== g.row_id) {
+      fail("VALIDATION_FAILED", [...path, "row_id"], `row_id "${String(g.row_id)}" and row_key "${String(g.row_key)}" differ: a grid takes row_key only`, "drop row_id");
+    }
+    g.row_key = g.row_id;
+    delete g.row_id;
+    notice("spec.row_id: taken as row_key");
+  }
+  if (!Object.hasOwn(g, "row_key") && Array.isArray(g.columns) && Array.isArray(g.rows)) {
+    const rows = g.rows as unknown[];
+    const key = (g.columns as unknown[]).map((c) => (typeof c === "object" && c !== null ? (c as { key?: unknown }).key : undefined)).find((k) => {
+      if (typeof k !== "string") return false;
+      const seen = new Set<string>();
+      for (const r of rows) {
+        const v = typeof r === "object" && r !== null && Object.hasOwn(r, k) ? (r as Record<string, unknown>)[k] : undefined;
+        if (v === undefined || v === null || seen.has(JSON.stringify(v))) return false;
+        seen.add(JSON.stringify(v));
+      }
+      return true;
+    });
+    if (key !== undefined) {
+      g.row_key = key;
+      notice(`spec.row_key: none given; "${key}" is the first column whose values are unique`);
+    }
+  }
+  return g;
+}
+
 function checkGrid(spec: unknown, path: Path): GridSpec {
   const rows = (spec as { rows?: unknown } | null)?.rows;
   if (Array.isArray(rows) && rows.length > DISPLAY_LIMITS.gridRows) {
     fail("ROWS_OVER_LIMIT", [...path, "rows"], `${rows.length} rows; a grid carries at most ${DISPLAY_LIMITS.gridRows} inline`, "show the rows that matter (top N, exceptions) and say how many there are in the fallback");
   }
-  const grid = parseShape(gridSpecSchema, spec, path);
+  const grid = parseShape(gridSpecSchema, normaliseRowKey(spec, path), path);
   const columns = new Map<string, GridColumn>();
   grid.columns.forEach((c, i) => {
     if (isReservedName(c.key)) return report("VALIDATION_FAILED", [...path, "columns", i, "key"], `"${c.key}" is a name every object has, never a column key`, "rename the column");

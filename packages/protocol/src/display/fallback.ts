@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { blockRows, parseShape, type BlockSpec, type GridSpec } from "./blocks.js";
 import { DISPLAY_LIMITS, isBlockKind, type BlockKind } from "./catalog.js";
-import { fail, report } from "./errors.js";
+import { attempt, fail, notice } from "./errors.js";
 import { CONTROL, CONTROL_ALL, defuseReferences } from "./fields.js";
 
 /**
@@ -78,8 +78,21 @@ export function checkFallbackInput(raw: unknown, kind: unknown, path: Path): Fal
  *  fault and a text fault are reported together. */
 export function parseFallbackShape(raw: unknown, path: Path): FallbackInput {
   if (raw === undefined || raw === null) fail("FALLBACK_MISSING", path, "every Show needs a fallback", '"fallback": { "text": "the conclusion and the key numbers" }');
-  const obj = typeof raw === "string" ? { text: raw } : raw;
+  let obj = typeof raw === "string" ? { text: raw } : raw;
+  // `table: null` is no table (a missing optional, sent as null)
+  if (typeof obj === "object" && obj !== null && !Array.isArray(obj) && Object.hasOwn(obj, "table") && (obj as { table?: unknown }).table === null) {
+    const { table: _none, ...rest } = obj as Record<string, unknown>;
+    obj = rest;
+  }
   if (typeof obj === "object" && !Array.isArray(obj) && (obj as { text?: unknown }).text === undefined) fail("FALLBACK_MISSING", [...path, "text"], "the fallback has no text", '"fallback": { "text": "the conclusion and the key numbers" }');
+  // the table is parsed on its own, so a table fault does not hide the text's faults
+  const o = typeof obj === "object" && obj !== null && !Array.isArray(obj) ? (obj as Record<string, unknown>) : null;
+  if (o && Object.hasOwn(o, "table")) {
+    const table = attempt(() => parseShape(fallbackInputSchema.shape.table, o.table, [...path, "table"]));
+    const { table: _t, ...rest } = o;
+    const base = parseShape(fallbackInputSchema, rest, path);
+    return table ? { ...base, table } : base;
+  }
   return parseShape(fallbackInputSchema, obj, path);
 }
 
@@ -124,10 +137,12 @@ export function completeFallback(input: FallbackInput, kind: BlockKind, spec: Bl
   const rows = blockRows(kind, spec);
   if (!rows) fail("VALIDATION_FAILED", at, `a ${kind} block has no rows to tabulate`, kind === "kpis" ? "write one line per tile in the text" : undefined);
   const known = kind === "grid" ? (spec as GridSpec).columns.map((c) => c.key) : [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const columns = input.table.columns ?? known;
-  const unknown = columns.map((c, i) => [c, i] as const).filter(([c]) => !known.includes(c));
-  for (const [c, i] of unknown) report("VALIDATION_FAILED", [...at, "columns", i], `"${c}" is not a field of the rows`, `fields: ${known.join(", ")}`);
-  if (unknown.length) return input.text;
+  // a column the rows do not have is left out (the table is the engine's, so this costs nothing); none left: all
+  const asked = input.table.columns ?? known;
+  const missing = asked.filter((c) => !known.includes(c));
+  if (missing.length) notice(`fallback.table: left out columns that are not fields of the rows (${missing.join(", ")})`);
+  const kept = asked.filter((c) => known.includes(c));
+  const columns = kept.length ? kept : known;
   const labels = kind === "grid" ? new Map((spec as GridSpec).columns.map((c) => [c.key, c.label])) : new Map<string, string>();
   const shown = rows.slice(0, input.table.max_rows ?? DISPLAY_LIMITS.fallbackTableRows).map((r) => (c: string) => (Object.hasOwn(r, c) ? r[c] : undefined));
   const numeric = (c: string) => shown.some((r) => typeof r(c) === "number") && shown.every((r) => r(c) === null || r(c) === undefined || typeof r(c) === "number");

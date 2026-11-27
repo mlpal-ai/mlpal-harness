@@ -350,7 +350,8 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
     const notice = unknown
       ? `\nSOURCE_UNKNOWN (a notice, not an error): ${unknown === 1 ? "1 source is not a tool call" : `${unknown} sources are not tool calls`} of this session, so ${unknown === 1 ? "it is" : "they are"} shown as unverified.`
       : "";
-    return result({ model: `Shown ${show.block_id} r${revision} (${show.kind}) ${where}.${notice}`, shown: `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, display: [envelope], outcome: "shown" });
+    const normalised = (show.notices ?? []).map((n) => `\nNote: ${n}.`).join("");
+    return result({ model: `Shown ${show.block_id} r${revision} (${show.kind}) ${where}.${notice}${normalised}`, shown: `[shown ${show.block_id} r${revision} · ${show.kind}]\n${show.fallback}`, display: [envelope], outcome: "shown" });
   }
 
   /** One text envelope for a block, counted. */

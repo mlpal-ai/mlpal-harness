@@ -26,6 +26,28 @@
    "fallback": {
     "text": "Stock falls 800 a week from 2,140 today."
    }
+  },
+  {
+   "name": "a table column the rows lack is left out, with a notice",
+   "kind": "chart",
+   "fallback": {
+    "text": "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.",
+    "table": {
+     "from": "rows",
+     "columns": [
+      "week",
+      "units"
+     ]
+    }
+   }
+  },
+  {
+   "name": "table: null is no table",
+   "kind": "chart",
+   "fallback": {
+    "text": "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.",
+    "table": null
+   }
   }
  ],
  "invalid": [
@@ -159,22 +181,6 @@
     "text": "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.",
     "table": {
      "from": "spec"
-    }
-   }
-  },
-  {
-   "name": "a table column the rows lack",
-   "code": "VALIDATION_FAILED",
-   "path": "fallback.table.columns[1]",
-   "kind": "chart",
-   "fallback": {
-    "text": "Ridgeline 2P at Columbus runs out on 17 Dec, four days before PO 4471 lands.",
-    "table": {
-     "from": "rows",
-     "columns": [
-      "week",
-      "units"
-     ]
     }
    }
   },
