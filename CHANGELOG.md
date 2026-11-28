@@ -19,6 +19,8 @@ removed or renamed. The sections below keep each branch's own account. By capabi
 - **`hop_home`** (capability): `get_home` → `home`, then `home_update` per block, plus `hop_ref_invalid` and
   `hop_not_installed`.
 - **`tools_admin`** (capability): the owner's MCP servers and plugins on the wire, with `ToolsAdminErrorCode`.
+- **`Usage.compute_units_unconfirmed`** (optional): an estimated charge that could not be confirmed, kept apart
+  from `compute_units`.
 - **The catalog stays `harness.v1/1`.** When `Show` arrived (0.26.8), it introduced the catalog as an additive
   change gated by the client's own declaration (the `display` capability and `run.display.kinds`). The catalog
   then said that later kinds (`log`, `files`) follow inside it, offered to a client only when it names them. Media
