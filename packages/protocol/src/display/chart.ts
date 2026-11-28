@@ -1,7 +1,7 @@
 import { DISPLAY_LIMITS } from "./catalog.js";
 import { isReservedName } from "./bounds.js";
 import { chartCost } from "./cost.js";
-import { arrived, attempt, collectedNow, fail, failAt, report } from "./errors.js";
+import { arrived, attempt, collectedNow, fail, failAt, notice, report } from "./errors.js";
 import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./block-schemas.js";
 
@@ -474,8 +474,17 @@ function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): vo
 
 /** Throwing form for `checkBlockSpec`; the caller has run checkBounds. Returns the spec as drawn: the top-level
  *  `$schema`, `config` and `usermeta` removed. */
-export function checkChartSpec(spec: unknown, path: Path): ChartSpec {
-  if (!isObj(spec)) fail("VALIDATION_FAILED", path, `a chart spec is { vl, series_order? }; ${arrived(spec)} arrived`);
+/** Vega-Lite's own top-level keys: a chart spec that has one of them and no vl is the vl, written one level up. */
+const VL_TOP_KEYS = ["mark", "encoding", "layer", "data", "transform"];
+
+export function checkChartSpec(raw: unknown, path: Path): ChartSpec {
+  if (!isObj(raw)) fail("VALIDATION_FAILED", path, `a chart spec is { vl, series_order? }; ${arrived(raw)} arrived`);
+  let spec = raw;
+  if (!has(raw, "vl") && VL_TOP_KEYS.some((k) => has(raw, k))) {
+    const { series_order, ...vl } = raw;
+    spec = { vl, ...(has(raw, "series_order") ? { series_order } : {}) };
+    notice("spec: Vega-Lite's keys were at its top; taken as spec.vl");
+  }
   for (const k of Object.keys(spec)) if (k !== "vl" && k !== "series_order") report("VALIDATION_FAILED", [...path, k], `unknown field "${k}"`, "a chart spec is { vl, series_order? }");
   if (!isObj(spec.vl)) fail("VALIDATION_FAILED", [...path, "vl"], `vl is a Vega-Lite spec object; ${arrived(spec.vl)} arrived`);
   const vl: Obj = { ...spec.vl };

@@ -237,6 +237,22 @@ describe("chart limits", () => {
     expect(code(series(13))).toBe("VALIDATION_FAILED spec.vl.encoding.color.field");
   });
 
+  test("a chart spec with Vega-Lite's own keys at its top and no vl is taken as the vl (run 2), with a notice", () => {
+    const vl = line(rows(3)).vl;
+    const r = validateBlock("chart", { ...vl, series_order: ["onhand"] });
+    expect(r).toEqual({ ok: true, value: { vl, series_order: ["onhand"] } });
+    // any one of them is enough to be read as a vl
+    for (const k of ["mark", "encoding", "layer", "data", "transform"]) {
+      const one = validateBlock("chart", { [k]: null });
+      expect([k, one.ok ? [] : one.errors.map((e) => e.message).filter((m) => m.startsWith("vl is a Vega-Lite spec object"))]).toEqual([k, []]);
+    }
+    const s = checkShowInput(show({ spec: vl }));
+    expect(s.ok && s.show.notices).toEqual(["spec: Vega-Lite's keys were at its top; taken as spec.vl"]);
+    // with a vl beside them, nothing is guessed: the stray keys are refused
+    const both = validateBlock("chart", { vl, mark: "bar" });
+    expect(both.ok ? "ok" : `${both.error.code} ${both.error.path}`).toBe("VALIDATION_FAILED spec.mark");
+  });
+
   test("what the grammar cut is refused in one line that says what to do instead (review 7 ruling)", () => {
     const say = (vl: Record<string, unknown>) => {
       const r = validateBlock("chart", { vl: { data: { values: rows(3) }, ...vl } });
