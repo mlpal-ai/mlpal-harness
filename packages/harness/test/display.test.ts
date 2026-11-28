@@ -46,7 +46,7 @@ function tool(caps: DisplayCaps = WEB, h: DisplayHistory = history()) {
 }
 
 const modelText = (r: ToolResult) => (typeof r.content === "string" ? r.content : r.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
-const errorOf = (r: ToolResult) => JSON.parse(modelText(r).split("\n")[0]!) as { error: string; path?: string; attempt?: number; cause?: { code: string } };
+const errorOf = (r: ToolResult) => JSON.parse(modelText(r).split("\n").find((l) => l.startsWith("{"))!) as { error: string; path?: string; attempt?: number; cause?: { code: string } };
 
 describe("Show: a client that draws blocks", () => {
   test("a valid block: one envelope, revision 1; the model reads one line, the step shows the line and the fallback", async () => {
@@ -98,6 +98,17 @@ describe("Show: a client that draws blocks", () => {
     const e = errorOf(r) as unknown as { error: string; path: string; message: string };
     expect([e.error, e.path]).toEqual(["VALIDATION_FAILED", "spec"]);
     expect(e.message).toMatch(/spec arrived as a string that is not valid JSON \(.+\); send it as an object/);
+  });
+
+  test("a spec sent as a string and refused: the first line the model reads says to send an object (run 2)", async () => {
+    const first = (r: ToolResult) => modelText(r).split("\n")[0];
+    const broken = JSON.stringify(chart().spec).slice(0, -2) + "]}}";
+    expect(first(await tool().call(chart({ spec: broken })))).toBe("Send spec as a JSON object, not a string.");
+    // a string that parses, but whose content is refused, says so too
+    const parsed = JSON.stringify({ vl: { ...chart().spec.vl, mark: "image" } });
+    expect(first(await tool().call(chart({ spec: parsed })))).toBe("Send spec as a JSON object, not a string.");
+    // an object spec that is refused starts with the fault itself
+    expect(first(await tool().call(badChart()))?.startsWith("{")).toBe(true);
   });
 
   test("E4: a wrong type says which type arrived", async () => {

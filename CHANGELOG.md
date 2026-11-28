@@ -106,6 +106,8 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- A refusal of a `spec` that arrived as a JSON string starts with one line, "Send spec as a JSON object, not a
+  string.", before the fault (run 2: every Haiku string was malformed); a valid JSON string is still parsed.
 - A chart spec with no `vl` but Vega-Lite's own top-level keys (mark, encoding, layer, data, transform) is taken as
   the `vl`, with a notice to the model, then validated as usual (run 2); beside a `vl`, such keys are still refused.
 - Show's input schema types `spec` (run 2: Haiku sent it as a JSON string in 7 of 34 calls, every one malformed,
