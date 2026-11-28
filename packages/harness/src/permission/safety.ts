@@ -11,7 +11,7 @@
 import { homedir } from "node:os";
 import { foldName } from "./names";
 import { posix } from "node:path";
-import { decomposeBash } from "./shell-decompose";
+import { decomposeBash, homeTildeRest } from "./shell-decompose";
 
 /**
  * Split a shell command into its constituent simple-commands across operators and
@@ -365,8 +365,11 @@ const holdsState = (raw: string, home: string): boolean => {
  */
 export function normalWord(word: string, ctx: Required<Pick<ReachContext, "home">> & ReachContext): { path: string; literal: string; pattern: boolean } | null {
   let w = word;
-  const tilde = /^~([A-Za-z0-9_.-]*)(?=\/|$)/.exec(w);
-  if (tilde) w = (tilde[1] ? `/home/${tilde[1]}` : ctx.home) + w.slice(tilde[0].length);
+  // the home tilde as the decomposer defines it (homeTildeRest); `~user` as that user's home
+  const home = homeTildeRest(w);
+  const user = home === null ? /^~([A-Za-z0-9_.-]+)(?=\/|$)/.exec(w) : null;
+  if (home !== null) w = ctx.home + home;
+  else if (user) w = `/home/${user[1]}` + w.slice(user[0].length);
   else if (/^(?:\$HOME|\$\{HOME[^}]*\})(?=\/|$)/.test(w)) w = w.replace(/^(?:\$HOME|\$\{HOME[^}]*\})/, ctx.home);
   const proc = /^\/proc\/(?:self|thread-self|\d+)\/(root|cwd)(?=\/|$)/.exec(w);
   if (proc) {
