@@ -1,0 +1,17 @@
+{
+  "kind": "grid",
+  "spec": {
+    "columns": [
+      { "key": "slug", "label": "Site", "type": "code" },
+      { "key": "url", "label": "Address", "type": "text" },
+      { "key": "deployed", "label": "Last deploy", "type": "text" }
+    ],
+    "rows": [
+      { "slug": "side-project", "url": "https://side-project.mlpal.site", "deployed": "2026-11-26 21:04" },
+      { "slug": "docs-demo", "url": "https://docs-demo.mlpal.site", "deployed": "2026-11-20 10:15" }
+    ],
+    "row_key": "slug"
+  },
+  "fallback": { "text": "2 sites; the newest deploy is side-project, on 26 Nov at 21:04." },
+  "as_of": "2026-11-28T09:00:00Z"
+}

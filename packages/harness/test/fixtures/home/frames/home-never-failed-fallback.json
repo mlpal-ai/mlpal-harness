@@ -1,0 +1,97 @@
+{
+  "type": "home",
+  "requestId": "h4",
+  "hop": "mlpal@0.4.0",
+  "starters": [
+    "Publish my HOP",
+    "What did my agents do today?",
+    "Make a site for my side project"
+  ],
+  "blocks": [
+    {
+      "id": "spend",
+      "title": "Gateway spend, last 7 days",
+      "as_of": "2026-11-28T09:01:31.000Z",
+      "stale": false,
+      "display": {
+        "v": 1,
+        "block_id": "spend",
+        "revision": 1,
+        "op": "snapshot",
+        "level": "text",
+        "fallback": {
+          "text": "Gateway spend was 365 compute units over the last 7 days."
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Gateway spend, last 7 days",
+        "status": "fallback_only"
+      },
+      "error": "invalid_block"
+    },
+    {
+      "id": "agents",
+      "title": "Your agents",
+      "as_of": null,
+      "stale": false,
+      "display": null,
+      "error": "timeout"
+    },
+    {
+      "id": "sites",
+      "title": "Your sites",
+      "as_of": null,
+      "stale": false,
+      "display": null
+    },
+    {
+      "id": "hops",
+      "title": "Your published HOPs",
+      "as_of": "2026-11-28T09:00:00Z",
+      "stale": false,
+      "display": {
+        "v": 1,
+        "block_id": "hops",
+        "revision": 1,
+        "op": "snapshot",
+        "level": "block",
+        "kind": "kpis",
+        "catalog": "harness.v1/1",
+        "spec": {
+          "tiles": [
+            {
+              "id": "published",
+              "label": "Published HOPs",
+              "value": 2,
+              "format": "integer"
+            },
+            {
+              "id": "runs",
+              "label": "Runs today",
+              "value": 14,
+              "format": "integer"
+            },
+            {
+              "id": "spend",
+              "label": "Spend today",
+              "value": 3.42,
+              "format": "currency",
+              "unit": "USD"
+            }
+          ]
+        },
+        "fallback": {
+          "text": "2 published HOPs, 14 runs today, 3.42 USD spent today."
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Your published HOPs",
+        "status": "ok"
+      }
+    }
+  ]
+}

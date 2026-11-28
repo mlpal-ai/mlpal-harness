@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### W3-1 hop-home: the HOP-shaped home, first version (needs a protocol minor bump, 2026-11-28)
+
+- hop.yaml takes `ui` (inline or `ui: file:<relpath>`): up to 4 starters (60 characters each) and a home of 1 to 4
+  blocks, each `{id, title, script, refresh}` (`profile/ui.ts`). The loader refuses an unknown key, a limit passed, an id
+  used twice, a refresh under 5m or over 24h, and a script that is absolute, outside the HOP's directory after links,
+  missing, or neither a `.py`/`.sh` file nor executable. `ui` is the HOP's own: a child HOP does not inherit it.
+  `describe_hop` carries it as `HopView.ui`. A HOP with `ui` does not load on an older engine (the strict loader).
+- `HomeResolver` (`display/home.ts`) answers the cached view at once and refreshes each block whose last attempt is
+  older than 60 s, one script per block, at most 2 at a time; a block already refreshing is joined, never run twice. A
+  script's stdout, `{kind, spec, fallback, as_of?}`, is checked as a `Show` is (checkShowInput: validateBlock with the
+  chart cost walker, the fallback rules, 256 KiB). A timeout (10 s), a non-zero exit, junk, over 256 KiB, a refused
+  block, a deny rule or a sandbox reversal keeps the last good block, `stale` with the `error`; a block that never
+  resolved shows a valid fallback alone. Last good blocks are kept on disk (`<cacheDir>/<hop>@<version>/<id>.json`). No
+  model call. Logs carry ids, codes and sizes only.
+- `createHomeScriptRunner` (`display/home-script.ts`) runs a script as a session's commands run: the given ExecPolicy's
+  wrap and lease environment, `/bin/bash -c`, its own process group when the sandbox asks; the HOP's deny rules and the
+  hard denials judge its command line first.
+- Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
+  `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
+  may be `host`, with `origin: "home"` exactly then.
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or
