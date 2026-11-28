@@ -132,3 +132,48 @@ describe.skipIf(process.platform !== "darwin")("R51: under the real sandbox (sea
     }
   });
 });
+
+describe("REVIEW-1 RQ-7: every tool that opens a file by path keeps to the roots (Skill, Lsp)", () => {
+  test("SIB-1: a skill's bundled file, or its SKILL.md, that links to the store is refused / not loaded", async () => {
+    const { createSkillTool, loadSkills } = await import("../src/skills/skills");
+    const skills = join(work, ".yodex", "skills");
+    mkdirSync(join(skills, "helper"), { recursive: true });
+    writeFileSync(join(skills, "helper", "SKILL.md"), "---\nname: helper\ndescription: d\n---\nbody\n");
+    symlinkSync(join(home, ".yodex", "person-secrets.json"), join(skills, "helper", "ref.md"));
+    mkdirSync(join(skills, "linked"), { recursive: true });
+    symlinkSync(join(home, ".yodex", "person-secrets.json"), join(skills, "linked", "SKILL.md"));
+    symlinkSync(join(home, ".yodex", "person-secrets.json"), join(skills, "flat.md"));
+    const loaded = await loadSkills([skills]);
+    expect(loaded.map((s) => s.name).sort()).toEqual(expect.arrayContaining(["helper"]));
+    expect(JSON.stringify(loaded)).not.toContain(MARK);
+    const tool = createSkillTool(loaded);
+    const r = await tool.call({ name: "helper", file: "ref.md" }, ctx() as never);
+    expect(r.isError).toBe(true);
+    expect(text(r)).not.toContain(MARK);
+    writeFileSync(join(skills, "helper", "plain.md"), "inside\n");
+    expect(text(await tool.call({ name: "helper", file: "plain.md" }, ctx() as never))).toContain("inside");
+  });
+
+  test("SIB-2: an Lsp location outside the roots shows its path, never its line", async () => {
+    const { renderLocations } = await import("../src/tools/builtin/lsp");
+    const outside = { uri: `file://${join(home, ".yodex", "person-secrets.json")}`, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+    const inside = { uri: `file://${join(work, "notes.md")}`, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+    const out = renderLocations([outside, inside] as never, work, [work]);
+    expect(out).not.toContain(MARK);
+    expect(out).toContain("ordinary file");
+  });
+});
+
+describe("REVIEW-1 RQ-6(a): a command naming the stored keys or sign-ins is refused in every mode", () => {
+  test("the bypass-immune deny holds in cruise and autopilot, by path, ~, and after a cd", async () => {
+    const { createPolicy } = await import("../src/permission/engine");
+    for (const mode of ["cruise", "autopilot", "manual"] as const) {
+      const policy = createPolicy({ mode, allow: ["Bash"] });
+      for (const command of ["cat ~/.yodex/person-secrets.json", `cat ${home}/.yodex/person-secrets.json`, "cd ~/.yodex && cat person-secrets.json", "ls ~/.yodex/mcp-auth", "cd ~/.yodex; cat mcp-auth/linear.json", "cp $HOME/.yodex/person-secrets.json /tmp/x"]) {
+        const d = await policy({ toolName: "Bash", input: { command }, readOnly: true } as never);
+        expect([mode, command, d.behavior]).toEqual([mode, command, "deny"]);
+      }
+      expect((await policy({ toolName: "Bash", input: { command: "cat notes.md" }, readOnly: true } as never)).behavior).toBe("allow");
+    }
+  });
+});

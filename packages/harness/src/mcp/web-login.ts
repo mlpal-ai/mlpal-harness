@@ -47,6 +47,16 @@ class WebOAuthProvider extends StoredOAuthProvider {
   }
 }
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+function isWebPage(u: string): boolean {
+  try {
+    const url = new URL(u);
+    return url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
 const sameState = (a: string, b: string): boolean => {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
@@ -87,6 +97,9 @@ export async function startWebLogin(o: { server: string; config: HttpServerConfi
   } catch (e) {
     if (!(e instanceof UnauthorizedError) || !authorizeUrl) throw e;
   }
+  // The authorization server's metadata chose this URL: the client opens it, so it must be a web page (https, or http on
+  // loopback), whatever the SDK's own schema accepts.
+  if (!isWebPage(authorizeUrl)) throw new Error("the server's authorization address is not an https page");
   let done = false;
   return {
     kind: "redirect",

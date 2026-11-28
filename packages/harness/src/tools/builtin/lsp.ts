@@ -3,7 +3,7 @@ import { relative } from "node:path";
 import { z } from "zod";
 import { type LspDiagnostic, type LspLocation, type LspPosition, type LspSymbol, pathOf, SYMBOL_KINDS } from "../../lsp/client";
 import type { LspManager } from "../../lsp/manager";
-import { defineTool, err, ok, resolveInRoots, type Tool } from "../types";
+import { contextRoots, defineTool, err, ok, resolveInRoots, type Tool, withinRoots } from "../types";
 
 /**
  * Code intelligence through a language server: where a symbol is defined, who references it,
@@ -37,7 +37,9 @@ export function positionOfSymbol(text: string, symbol: string, fromLine = 0): Ls
   return null;
 }
 
-function lineText(cache: Map<string, string[]>, path: string, line: number): string {
+function lineText(cache: Map<string, string[]>, path: string, line: number, roots: readonly string[]): string {
+  // R51-7: a location the language server names outside the roots is shown by its path only.
+  if (!withinRoots(path, [...roots])) return "";
   if (!cache.has(path)) {
     try {
       cache.set(path, readFileSync(path, "utf8").split("\n"));
@@ -48,11 +50,11 @@ function lineText(cache: Map<string, string[]>, path: string, line: number): str
   return (cache.get(path)![line] ?? "").trim();
 }
 
-export function renderLocations(locs: LspLocation[], cwd: string): string {
+export function renderLocations(locs: LspLocation[], cwd: string, roots: readonly string[] = [cwd]): string {
   const cache = new Map<string, string[]>();
   const rows = locs.slice(0, MAX_ROWS).map((l) => {
     const p = pathOf(l.uri);
-    return `${relative(cwd, p) || p}:${l.range.start.line + 1}:${l.range.start.character + 1}  ${lineText(cache, p, l.range.start.line)}`;
+    return `${relative(cwd, p) || p}:${l.range.start.line + 1}:${l.range.start.character + 1}  ${lineText(cache, p, l.range.start.line, roots)}`;
   });
   const more = locs.length > MAX_ROWS ? `\n… ${locs.length - MAX_ROWS} more` : "";
   return rows.join("\n") + more;
@@ -113,11 +115,11 @@ export function createLspTool(manager: LspManager): Tool<LspToolInput> {
         switch (input.action) {
           case "definition": {
             const locs = await client.definition(uri, position!);
-            return ok(locs.length ? renderLocations(locs, ctx.cwd) : "no definition found");
+            return ok(locs.length ? renderLocations(locs, ctx.cwd, contextRoots(ctx)) : "no definition found");
           }
           case "references": {
             const locs = await client.references(uri, position!, input.includeDeclaration ?? true);
-            return ok(locs.length ? `${locs.length} reference${locs.length === 1 ? "" : "s"}\n${renderLocations(locs, ctx.cwd)}` : "no references found");
+            return ok(locs.length ? `${locs.length} reference${locs.length === 1 ? "" : "s"}\n${renderLocations(locs, ctx.cwd, contextRoots(ctx))}` : "no references found");
           }
           case "hover": {
             const text = await client.hover(uri, position!);

@@ -55,7 +55,19 @@ export interface ToolServerHeader {
   /** With `secretRef`: the secret is in this engine's environment or the local store (absent: not known here, e.g.
    *  held by MLPal secrets only). */
   present?: boolean;
+  /** R51-5: the stored key was entered for another address (the server's URL changed): it is not sent; enter it again
+   *  (`set_secret`). */
+  reenter?: true;
   literal?: true;
+}
+
+/** A `${VARIABLE}` a project's or plugin's server names in a header or its environment (an MLPal secret
+ *  `MLPAL_SECRET_*` included). Nothing is filled in until the person grants that one variable to that one server
+ *  (`grant_mcp_variable`); the engine's own credentials (`refused`) are never filled in for such a server. */
+export interface ToolServerVariable {
+  name: string;
+  granted: boolean;
+  refused?: true;
 }
 
 /** Where a header's secret can be kept by this serve: "local" (the serve's own store, `~/.yodex/person-secrets.json`,
@@ -92,6 +104,8 @@ export interface ToolServerSource {
   auth: ToolServerAuth;
   /** needs_approval: the signature of the config as it is now, for `approve_mcp_server.sig`. */
   approvalSig?: string;
+  /** Project and plugin servers: every variable the config asks for, and whether it is granted. */
+  variables?: ToolServerVariable[];
 }
 
 export interface PluginSource {
@@ -127,10 +141,11 @@ export interface PluginPlan {
   /** Namespaced `<plugin>:<skill>`. Skill text is prompt only; a script a skill names runs under the mode. */
   skills: string[];
   agents: string[];
-  /** Stdio servers: programs run at every session start, with the person's workspace access. */
-  programs: Array<{ server: string; command: string; args: string[] }>;
-  /** HTTP servers the session will talk to. */
-  remoteServers: Array<{ server: string; url: string; transport: "http" | "sse" }>;
+  /** Stdio servers: programs run at every session start, with the person's workspace access. `variables`: what its
+   *  environment asks for (nothing is filled in until the person grants each one). */
+  programs: Array<{ server: string; command: string; args: string[]; variables: string[] }>;
+  /** HTTP servers the session will talk to. `variables`: what its headers ask for, as for programs. */
+  remoteServers: Array<{ server: string; url: string; transport: "http" | "sse"; variables: string[] }>;
   /** Code run in the engine's process on every step. Not loaded by this install: a terminal consent turns it on. */
   hooksModule: { file: string; sha256: string } | null;
   /** Directories the plugin ships that are not loaded (hooks/, commands/, outputStyles/). */
@@ -179,6 +194,9 @@ export type ToolsAdminClientMessage =
   /** Replace the value of a secret in the local store (`name` = a header's `secretRef`); answered `secret_saved`.
    *  Applies at the server's next connect (`reload_tools`). */
   | { type: "set_secret"; requestId: string; name: string; value: string }
+  /** Grant (or with `granted: false` withdraw) one variable to one project or plugin server, for the address its
+   *  config names now; answered `mcp_server_saved`. An engine credential is refused `tool_variable_refused`. */
+  | { type: "grant_mcp_variable"; requestId: string; name: string; variable: string; granted: boolean }
   /** Reconnect this serve's servers from the config files now; answered with `tool_sources`. */
   | { type: "reload_tools"; requestId: string }
   /** Fetch a plugin (an https git URL or GitHub `owner/repo`) into staging and answer its plan. Nothing is installed. */
@@ -233,6 +251,8 @@ export type ToolsAdminErrorCode =
   | "tool_secret_not_found"
   /** A value was sent where this serve has no local store (`tool_sources.secrets` is not "local"). */
   | "tool_secrets_unavailable"
+  /** The variable is one of the engine's own credentials, or the server does not ask for it. */
+  | "tool_variable_refused"
   | "tool_server_not_found"
   | "tool_not_theirs"
   /** A config file that exists does not parse: nothing is written over it. */
@@ -263,6 +283,7 @@ export const TOOLS_ADMIN_CLIENT_TYPES = [
   "mcp_login",
   "mcp_login_complete",
   "set_secret",
+  "grant_mcp_variable",
   "reload_tools",
   "add_plugin",
   "approve_plugin",

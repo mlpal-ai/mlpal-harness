@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { hooksModuleOf, PackPlanError, planPack } from "../src/plugins/plan";
+import { createHash } from "node:crypto";
+import { chmodSync } from "node:fs";
+import { hooksModuleOf, PackPlanError, planPack, treeSha256 } from "../src/plugins/plan";
+import { vendoredTree } from "../src/plugins/vendored";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -43,8 +46,8 @@ describe("planPack (tools-admin T-3)", () => {
       commit: "abc123",
       skills: ["voice:speak"],
       agents: ["voice:narrator"],
-      programs: [{ server: "plugin:voice:tts", command: "node", args: ["server.js"] }],
-      remoteServers: [{ server: "plugin:voice:api", url: "https://api.example.com/mcp", transport: "http" }],
+      programs: [{ server: "plugin:voice:tts", command: "node", args: ["server.js"], variables: [] }],
+      remoteServers: [{ server: "plugin:voice:api", url: "https://api.example.com/mcp", transport: "http", variables: [] }],
       hooksModule: { file: "hooks.ts", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
       ignored: ["commands"],
       warnings: [],
@@ -102,5 +105,51 @@ describe("planPack (tools-admin T-3)", () => {
     const dir = pack({ "hooks.js": "a", "hooks.mjs": "b" });
     expect((await hooksModuleOf(dir))?.file).toBe("hooks.js");
     expect(await hooksModuleOf(pack({ "README.md": "x" }))).toBeNull();
+  });
+});
+
+describe("REVIEW-1 RQ-3/RQ-4: what a plan and a consent bind to", () => {
+  test("RQ-4: the plan lists every variable each server asks for (secrets and the engine's keys included)", async () => {
+    const dir = pack({
+      ".claude-plugin/plugin.json": manifest({ mcpServers: { t: { type: "http", url: "https://tele.example/mcp", headers: { "X-A": "${MLPAL_SECRET_ELEVEN_KEY}", "X-B": "Bearer ${YODEX_API_KEY}" } } } }),
+      ".mcp.json": JSON.stringify({ mcpServers: { p: { command: "node", args: ["s.js"], env: { K: "${OPENAI_API_KEY:-}" } } } }),
+    });
+    const { plan } = await planPack(dir, from);
+    expect(plan.remoteServers[0]?.variables).toEqual(["MLPAL_SECRET_ELEVEN_KEY", "YODEX_API_KEY"]);
+    expect(plan.programs[0]?.variables).toEqual(["OPENAI_API_KEY"]);
+  });
+
+  test("RQ-3(c): a directory named hooks.ts is never the module; the regular hooks.js is", async () => {
+    const dir = pack({ "hooks.js": "export default () => {}", "hooks.ts/index.ts": "throw 1" });
+    expect((await hooksModuleOf(dir))?.file).toBe("hooks.js");
+    expect((await planPack(dir, from)).plan.hooksModule?.file).toBe("hooks.js");
+  });
+
+  test("treeSha256 is the workspace image's tree_sha256: one sorted line per entry, links not followed, .git included", async () => {
+    const dir = pack({ "a.txt": "hi", "d/b.sh": "x", ".git/HEAD": "ref" });
+    chmodSync(join(dir, "d", "b.sh"), 0o755);
+    symlinkSync("a.txt", join(dir, "l"));
+    const sha = (b: string) => createHash("sha256").update(b).digest("hex");
+    const lines = [`f\0a.txt\0-\0${sha("hi")}\n`, "d\0d\n", `f\0d/b.sh\0x\0${sha("x")}\n`, "d\0.git\n", `f\0.git/HEAD\0-\0${sha("ref")}\n`, "l\0l\0a.txt\n"]
+      .map((l) => Buffer.from(l))
+      .sort(Buffer.compare);
+    const h = createHash("sha256");
+    for (const l of lines) h.update(l);
+    const pinned = h.digest("hex");
+    expect(await treeSha256(dir)).toBe(pinned);
+    writeFileSync(join(dir, "d", "b.sh"), "y");
+    expect(await treeSha256(dir)).not.toBe(pinned);
+  });
+});
+
+describe("REVIEW-1 RQ-2: vendored by the image is the file-ownership fact, never a default", () => {
+  test("root-owned and writable by no group or other: vendored; the person's own, or group-writable, or as root: not", () => {
+    const dir = pack({ "a.txt": "x" });
+    const root = { uid: 0, mode: 0o40755 };
+    expect(vendoredTree(dir, { uid: 1000, stat: () => root })).toEqual({ vendored: true });
+    expect(vendoredTree(dir, { uid: 1000, stat: () => ({ uid: 1000, mode: 0o40755 }) }).vendored).toBe(false);
+    expect(vendoredTree(dir, { uid: 1000, stat: (p) => (p.endsWith("a.txt") ? { uid: 0, mode: 0o100664 } : root) }).vendored).toBe(false);
+    expect(vendoredTree(dir, { uid: 0, stat: () => root }).vendored).toBe(false);
+    expect(vendoredTree(dir).vendored).toBe(false);
   });
 });

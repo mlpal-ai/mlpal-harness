@@ -257,6 +257,26 @@ export function contentSafetyDeny(path: string): string | null {
   return null;
 }
 
+/**
+ * R51-6(a): what no command may touch, in every mode, bypass-immune: the person's stored header keys and MCP sign-ins.
+ * With a kernel sandbox the same paths are on DEFAULT_UNREADABLE (sandbox/spec.ts, beside ~/.yodex/credentials.json);
+ * this is the layer that holds where commands run unconfined, as in the workspace. It reads the command's text, so a
+ * path the command computes (a glob, a variable, a script that opens it) is not seen: masking (obs/redact.ts) is the
+ * layer behind it.
+ */
+const PROTECTED_READ = [
+  { test: /person-secrets\.json/, reason: "the person's stored keys (~/.yodex/person-secrets.json)" },
+  { test: /\.yodex\/+mcp-auth\b|(^|[\s'"=])mcp-auth\//, reason: "the person's MCP sign-ins (~/.yodex/mcp-auth)" },
+];
+
+/** A deny reason when the command names a file of PROTECTED_READ, else null. */
+export function protectedReadDeny(command: string): string | null {
+  for (const c of [command, ...splitShellCommands(command)]) {
+    for (const rule of PROTECTED_READ) if (rule.test.test(c)) return `blocked: ${rule.reason} is not for commands`;
+  }
+  return null;
+}
+
 /** A file redirect target in a shell command, if any (`> path`, `>> path`, `tee path`). */
 export function redirectTargets(command: string): string[] {
   const out: string[] = [];

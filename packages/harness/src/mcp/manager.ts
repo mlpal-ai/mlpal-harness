@@ -13,7 +13,7 @@ import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/pro
 import type { DeferredTools } from "../tools/deferred";
 import { canonicalMcpServer, mcpServerNameProblem } from "../tools/tool-name";
 import { StoredOAuthProvider } from "./oauth";
-import { resolveSecretRefsIn, type SecretResolver, secretRefsIn } from "./secret-refs";
+import { type ReferencePolicy, resolveSecretRefsIn, type SecretResolver, secretRefsIn, variablesIn } from "./secret-refs";
 import { type ProcessHost, ProcessHostTransport } from "./process-host";
 import { host } from "../host";
 
@@ -163,6 +163,8 @@ export class McpManager {
   private readonly configByName = new Map<string, McpServerConfig>();
   /** Where `${MLPAL_SECRET_*}` header references are resolved at connect (tools-admin); absent: they fail the connect. */
   private secretResolver: SecretResolver | undefined;
+  /** R51-4: which `${VARIABLE}` a server may have filled in; absent: every one, as before. */
+  private referencePolicy: ReferencePolicy | undefined;
 
   /** Servers whose tools are working-MEMORY tools (memory v6 E5): every tool they expose is
    *  tagged `memory`, so a claim write passes recon and the safety envelope like a read while
@@ -199,11 +201,26 @@ export class McpManager {
     this.secretResolver = resolve;
   }
 
-  /** An HTTP server's headers as sent: a value with a secret reference resolved (and not env-expanded), every other
-   *  value env-expanded as before. */
-  private async connectHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+  /** Name which variables each server may have filled in (secret-refs.ts ReferencePolicy). Call before connectAll. */
+  setReferencePolicy(policy: ReferencePolicy | undefined): void {
+    this.referencePolicy = policy;
+  }
+
+  /** Refuse the connect when a value names a variable this server may not have: nothing is filled in, nothing sent. */
+  private checkReferences(server: string, values: readonly string[]): void {
+    if (!this.referencePolicy) return;
+    for (const v of new Set(values.flatMap(variablesIn))) {
+      const why = this.referencePolicy(server, v);
+      if (why !== null) throw new Error(`it asks for ${v}: ${why}`);
+    }
+  }
+
+  /** An HTTP server's headers as sent: a value with a secret reference resolved for this server and URL (and not
+   *  env-expanded), every other value env-expanded as before; both only as the reference policy allows. */
+  private async connectHeaders(server: string, url: string, headers: Record<string, string>): Promise<Record<string, string>> {
+    this.checkReferences(server, Object.values(headers));
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(headers)) out[k] = secretRefsIn(v).length ? await resolveSecretRefsIn(v, this.secretResolver) : expandEnv(v);
+    for (const [k, v] of Object.entries(headers)) out[k] = secretRefsIn(v).length ? await resolveSecretRefsIn(v, this.secretResolver, { server, url }) : expandEnv(v);
     return out;
   }
 
@@ -236,6 +253,7 @@ export class McpManager {
    *  so a `${VAR}` that is unset (and has no `:-default`) is said once per variable: it expands to
    *  "" as before, but a server missing its key is then debuggable from the log. */
   private declaredEnv(server: string, env: Record<string, string>): Record<string, string> {
+    this.checkReferences(server, Object.values(env));
     const unset = new Set<string>();
     const out = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, expandEnv(v, (n) => unset.add(n))]));
     for (const v of unset) this.logger.warn("mcp env: declared variable unset", { server, var: v });
@@ -399,7 +417,7 @@ export class McpManager {
       });
       transport = http;
     } else if (isHttp(config)) {
-      const requestInit = config.headers ? { headers: await this.connectHeaders(config.headers) } : undefined;
+      const requestInit = config.headers ? { headers: await this.connectHeaders(name, config.url, config.headers) } : undefined;
       // OAuth: a persisted token provider (non-interactive here; `yodex mcp login` seeds it).
       const authProvider =
         config.oauth && this.authDir

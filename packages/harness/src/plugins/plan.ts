@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PluginPlan } from "@mlpal/harness-protocol";
 import { host } from "../host";
 import type { McpServerConfig } from "../mcp/manager";
 import { mcpServerNameProblem } from "../tools/tool-name";
 import { loadPack, type Pack } from "./packs";
+import { configVariables } from "../mcp/secret-refs";
 
 /**
  * A plugin's install plan (tools-admin, T-3): what the pack will be able to run, read from its files before it is
@@ -40,38 +42,56 @@ const outside = (root: string, p: string): boolean => {
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 };
 
-/** Every file and link under `root` (not `.git`), hashed; a link that resolves outside the pack refuses it. */
-export async function packTreeHash(root: string): Promise<string> {
-  const real = await realpath(root);
-  const rows: string[] = [];
+/**
+ * A pack's content identity: every directory, file (exec bit and content hash) and link (its target) under `root`,
+ * links not followed, `.git` included. The same definition as the workspace image's `tree_sha256`
+ * (mlpal-workspace-image scripts/daemon/persontools.py: one line per entry, `d\0rel\n`, `f\0rel\0x|-\0sha256\n`,
+ * `l\0rel\0target\n`, sorted as bytes, hashed together), so an approval or a hooks consent recorded here is the
+ * digest the image keeps with the pack, and a test pins the two. A link that resolves outside the pack refuses it.
+ */
+export function treeSha256Sync(root: string): string {
+  const real = realpathSync(root);
+  const lines: Buffer[] = [];
   let files = 0;
   let bytes = 0;
-  const walk = async (dir: string): Promise<void> => {
-    const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const e of entries) {
-      if (dir === real && e.name === ".git") continue;
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
-      const rel = relative(real, p);
+      const rel = relative(real, p).split(sep).join("/");
+      const st = lstatSync(p);
+      if (st.isDirectory()) {
+        lines.push(Buffer.from(`d\0${rel}\n`));
+        walk(p);
+        continue;
+      }
       if (++files > PACK_LIMITS.files) throw new PackPlanError("plugin_invalid", `the plugin has more than ${PACK_LIMITS.files} files`);
-      const st = await lstat(p);
       if (st.isSymbolicLink()) {
-        const target = await realpath(p).catch(() => null);
+        let target: string | null = null;
+        try {
+          target = realpathSync(p);
+        } catch {
+          target = null;
+        }
         if (target === null || outside(real, target)) throw new PackPlanError("plugin_path_outside", `${rel} links outside the plugin`);
-        rows.push(`L\0${rel}\0${await readlink(p)}`);
-      } else if (st.isDirectory()) {
-        rows.push(`D\0${rel}`);
-        await walk(p);
+        lines.push(Buffer.from(`l\0${rel}\0${readlinkSync(p)}\n`));
       } else if (st.isFile()) {
         bytes += st.size;
         if (bytes > PACK_LIMITS.bytes) throw new PackPlanError("plugin_invalid", `the plugin is larger than ${PACK_LIMITS.bytes / 1024 / 1024} MB`);
-        rows.push(`F\0${rel}\0${(st.mode & 0o111) !== 0 ? "x" : "-"}\0${createHash("sha256").update(await readFile(p)).digest("hex")}`);
+        lines.push(Buffer.from(`f\0${rel}\0${(st.mode & 0o100) !== 0 ? "x" : "-"}\0${createHash("sha256").update(readFileSync(p)).digest("hex")}\n`));
       } else {
         throw new PackPlanError("plugin_invalid", `${rel} is not a file, a directory or a link`);
       }
     }
   };
-  await walk(real);
-  return createHash("sha256").update(rows.join("\n")).digest("hex");
+  walk(real);
+  const h = createHash("sha256");
+  for (const line of lines.sort(Buffer.compare)) h.update(line);
+  return h.digest("hex");
+}
+
+/** treeSha256Sync, for async callers. */
+export async function treeSha256(root: string): Promise<string> {
+  return treeSha256Sync(root);
 }
 
 async function readManifest(root: string): Promise<Record<string, unknown> | undefined> {
@@ -121,7 +141,7 @@ function serverRows(pack: Pack): Pick<PluginPlan, "programs" | "remoteServers" |
     if (isStdio(cfg)) {
       const args = cfg.args ?? [];
       if (!Array.isArray(args) || args.some((a) => typeof a !== "string")) throw new PackPlanError("plugin_invalid", `server ${server}: args must be strings`);
-      programs.push({ server: key, command: cfg.command, args });
+      programs.push({ server: key, command: cfg.command, args, variables: configVariables(cfg as { env?: Record<string, string> }) });
       continue;
     }
     const url = (cfg as { url?: unknown }).url;
@@ -134,7 +154,7 @@ function serverRows(pack: Pack): Pick<PluginPlan, "programs" | "remoteServers" |
     if (!/^https?:$/.test(parsed.protocol)) throw new PackPlanError("plugin_invalid", `server ${server}: the url must be http(s)`);
     if (parsed.username || parsed.password) throw new PackPlanError("plugin_invalid", `server ${server}: the url carries credentials`);
     if (parsed.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) warnings.push(`${server} talks plain http to ${parsed.host}`);
-    remoteServers.push({ server: key, url: `${parsed.origin}${parsed.pathname}`, transport: (cfg as { type?: string }).type === "sse" ? "sse" : "http" });
+    remoteServers.push({ server: key, url: `${parsed.origin}${parsed.pathname}`, transport: (cfg as { type?: string }).type === "sse" ? "sse" : "http", variables: configVariables(cfg as { headers?: Record<string, string> }) });
   }
   return { programs, remoteServers, warnings };
 }
@@ -149,7 +169,7 @@ export interface PackPlanResult {
 /** Read the pack at `dir` (a staging copy, never an installed one) into its plan. Throws PackPlanError. */
 export async function planPack(dir: string, from: { source: string; commit?: string; fallbackName: string }): Promise<PackPlanResult> {
   const root = await realpath(dir);
-  const tree = await packTreeHash(root);
+  const tree = await treeSha256(root);
   const manifest = await readManifest(root);
   if (manifest) {
     checkManifestPaths(root, manifest);
@@ -183,12 +203,14 @@ export async function planPack(dir: string, from: { source: string; commit?: str
   return { plan, sha256, pack };
 }
 
-/** The root hooks module the engine would import (the first of HOOKS_MODULE_FILES present, as main.ts picks it), with
- *  the sha256 of its content: what a terminal consent (`yodex plugin approve --hooks`) is recorded against. */
+/** The root hooks module the engine imports: the first of HOOKS_MODULE_FILES that is a regular file (a directory or a
+ *  link of that name is never one; Bun would import a directory's index). `sha256` is the module file's own hash, for
+ *  the plan; a hooks consent binds the whole pack (treeSha256), since the module may import any file of it. */
 export async function hooksModuleOf(root: string): Promise<{ file: string; sha256: string } | null> {
   for (const file of HOOKS_MODULE_FILES) {
-    const content = await readFile(join(root, file)).catch(() => null);
-    if (content !== null) return { file, sha256: createHash("sha256").update(content).digest("hex") };
+    const st = await lstat(join(root, file)).catch(() => null);
+    if (!st?.isFile()) continue;
+    return { file, sha256: createHash("sha256").update(await readFile(join(root, file))).digest("hex") };
   }
   return null;
 }

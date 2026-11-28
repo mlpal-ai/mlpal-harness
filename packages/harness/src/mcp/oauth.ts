@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
@@ -54,8 +54,11 @@ export class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   private write(): void {
-    if (!existsSync(dirname(this.file))) mkdirSync(dirname(this.file), { recursive: true });
+    // 0700 / 0600 whatever the umask, and for a file that existed with wider modes (one restored by the image).
+    if (!existsSync(dirname(this.file))) mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(this.file), 0o700);
     writeFileSync(this.file, JSON.stringify(this.cache, null, 2), { mode: 0o600 });
+    chmodSync(this.file, 0o600);
   }
 
   get redirectUrl(): string | undefined {

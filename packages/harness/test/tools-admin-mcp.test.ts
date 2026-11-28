@@ -32,13 +32,14 @@ describe("secret references (tools-admin T-1)", () => {
 
   test("resolution replaces each reference and names only the missing ones", async () => {
     const vault: Record<string, string> = { A: "va" };
+    const asker = { server: "s", url: "https://s.example/mcp" };
     const resolve = async (n: string) => vault[n];
-    expect(await resolveSecretRefsIn("Bearer ${MLPAL_SECRET_A}", resolve)).toBe("Bearer va");
-    const err = await resolveSecretRefsIn("${MLPAL_SECRET_A}${MLPAL_SECRET_B}", resolve).catch((e) => e);
+    expect(await resolveSecretRefsIn("Bearer ${MLPAL_SECRET_A}", resolve, asker)).toBe("Bearer va");
+    const err = await resolveSecretRefsIn("${MLPAL_SECRET_A}${MLPAL_SECRET_B}", resolve, asker).catch((e) => e);
     expect(err).toBeInstanceOf(SecretRefUnavailableError);
     expect(err.secrets).toEqual(["B"]);
     expect(String(err.message)).not.toContain("va");
-    expect(await resolveSecretRefsIn("${MLPAL_SECRET_A}", undefined).catch((e) => e.message)).toContain("no secrets source");
+    expect(await resolveSecretRefsIn("${MLPAL_SECRET_A}", undefined, asker).catch((e) => e.message)).toContain("no secrets source");
   });
 
   test("the manager sends the resolved value; a value that is a secret is not env-expanded", async () => {
@@ -46,7 +47,11 @@ describe("secret references (tools-admin T-1)", () => {
     stops.push(srv.stop);
     process.env.TOOLS_ADMIN_TEST_VAR = "from-env";
     const mcp = new McpManager();
-    mcp.setSecretResolver(async (n) => (n === "KEY" ? "s3cr${TOOLS_ADMIN_TEST_VAR}et" : undefined));
+    const askers: Array<{ server: string; url: string }> = [];
+    mcp.setSecretResolver(async (n, asker) => {
+      askers.push(asker);
+      return n === "KEY" ? "s3cr${TOOLS_ADMIN_TEST_VAR}et" : undefined;
+    });
     const { connected } = await mcp.connectAll({ eleven: { url: srv.url, headers: { "xi-api-key": "${MLPAL_SECRET_KEY}", "x-env": "${TOOLS_ADMIN_TEST_VAR}" } } }, new ToolRegistry());
     delete process.env.TOOLS_ADMIN_TEST_VAR;
     expect(connected).toBe(1);
@@ -55,6 +60,30 @@ describe("secret references (tools-admin T-1)", () => {
     // R51: the value went into that server's request only; nothing put it in the engine's environment, which every
     // command, hook, sub-agent and stdio server's environment is built from.
     expect(JSON.stringify(process.env)).not.toContain("s3cr");
+    // R51-5: the resolver is told which server and address asks, so a key goes only where it was entered.
+    expect(askers).toEqual([{ server: "eleven", url: srv.url }]);
+  });
+
+  test("REVIEW-1 RQ-4: a server the policy does not grant a variable gets nothing filled in and nothing is sent", async () => {
+    const srv = fakeOAuthMcp();
+    stops.push(srv.stop);
+    process.env.TOOLS_ADMIN_GATEWAY_KEY = "gw-key-value-123";
+    const mcp = new McpManager();
+    const asked: string[] = [];
+    mcp.setSecretResolver(async () => "should-not-be-asked");
+    mcp.setReferencePolicy((server, v) => {
+      asked.push(`${server}:${v}`);
+      return server === "mine" ? null : "not granted to this server";
+    });
+    const reg = new ToolRegistry();
+    await mcp.connectAll({ tele: { url: srv.url, headers: { "X-A": "${MLPAL_SECRET_ELEVEN}", "X-B": "${TOOLS_ADMIN_GATEWAY_KEY}" } }, mine: { url: srv.url, headers: { "X-C": "${TOOLS_ADMIN_GATEWAY_KEY}" } } }, reg);
+    delete process.env.TOOLS_ADMIN_GATEWAY_KEY;
+    const tele = mcp.status().find((s) => s.server === "tele")!;
+    expect(tele.ok).toBe(false);
+    expect(tele.error).toContain("it asks for MLPAL_SECRET_ELEVEN: not granted to this server");
+    expect(srv.seen.every((h) => h["x-b"] === undefined && h["x-a"] === undefined)).toBe(true);
+    expect(srv.seen.some((h) => h["x-c"] === "gw-key-value-123")).toBe(true);
+    expect(mcp.status().find((s) => s.server === "mine")?.ok).toBe(true);
   });
 
   test("an unresolvable reference fails that server's connect with the secret's name, nothing sent", async () => {
