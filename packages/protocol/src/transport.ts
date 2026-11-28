@@ -748,7 +748,12 @@ export type ErrorCode =
    *  memory grant, a remote session store, a child serve without the capability, a session whose mode cannot be read);
    *  `memory_mode_fixed`: the run named a memory mode other than the session's. Nothing ran or was created. */
   | "incognito_unavailable"
-  | "memory_mode_fixed";
+  | "memory_mode_fixed"
+  /** W3-2: a message's `hop` (on run, get_home, describe_hop, list_models, workspace_stats, a schedule) is a HOP name
+   *  with an optional `@x.y.z`, never a path; `hop_not_installed`: get_home names a HOP this serve does not have.
+   *  Nothing ran and no child serve was started. */
+  | "hop_ref_invalid"
+  | "hop_not_installed";
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one

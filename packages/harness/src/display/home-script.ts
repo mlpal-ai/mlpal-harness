@@ -45,6 +45,9 @@ export interface HomeScriptRunnerOptions {
   maxBytes?: number;
 }
 
+/** How long a script's pipes stay open after it exited or was killed. */
+const PIPE_GRACE_MS = 500;
+
 /** What `lint --home` shows the author of a failing script's stderr: its end, at most this. Never logged. */
 const STDERR_TAIL = 4 * 1024;
 
@@ -79,6 +82,7 @@ function spawnScript(command: string, exec: ExecPolicy, cwd: string, timeoutMs: 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       signal?.removeEventListener("abort", onAbort);
       resolve(o);
     };
@@ -89,10 +93,20 @@ function spawnScript(command: string, exec: ExecPolicy, cwd: string, timeoutMs: 
       void lease.release();
       return resolve({ ok: false, error: "not_started", detail: (e as Error).message, ms: Date.now() - started, stderrBytes: 0, stderrTail: "" });
     }
+    // A descendant that left the group (setsid) can hold stdout open past the script's own exit: once the script has
+    // exited or been killed, its pipes are closed after a short grace, so "close" comes and the bounds hold.
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const closePipesSoon = () => {
+      grace ??= setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, PIPE_GRACE_MS);
+    };
     const kill = (why: "timeout" | "output_too_large" | "cancelled") => {
       killedFor ??= why;
       killProcessGroup(child.pid);
       child.kill("SIGKILL");
+      closePipesSoon();
     };
     const onAbort = () => kill("cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -107,7 +121,10 @@ function spawnScript(command: string, exec: ExecPolicy, cwd: string, timeoutMs: 
       errTail = (errTail + d.toString()).slice(-STDERR_TAIL);
     });
     // what the script left in the background must not outlive it
-    child.once("exit", () => killProcessGroup(child.pid));
+    child.once("exit", () => {
+      killProcessGroup(child.pid);
+      closePipesSoon();
+    });
     child.once("error", (e) => {
       void lease.release();
       finish({ ok: false, error: "not_started", detail: e.message, ms: Date.now() - started, stderrBytes: errBytes, stderrTail: errTail });

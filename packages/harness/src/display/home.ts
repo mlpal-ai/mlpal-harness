@@ -1,9 +1,8 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   checkShowInput,
   DISPLAY_CATALOG,
-  displayEnvelopeSchema,
   HOME_LIMITS,
   type BlockDisplay,
   type DisplayError,
@@ -96,11 +95,13 @@ interface Entry {
   revision: number;
 }
 
+/** What the disk keeps of a block's last good run: the script's own stdout, checked again at every read exactly as a
+ *  fresh run's is, so a file anyone wrote never reaches the person unchecked. */
 interface CacheFile {
-  v: 1;
-  display: BlockDisplay;
-  as_of: string;
-  good_at: string;
+  v: 2;
+  stdout: string;
+  /** When the script ran (ISO 8601). */
+  ran_at: string;
   revision: number;
 }
 
@@ -222,25 +223,11 @@ export class HomeResolver {
     }
     const e = this.entries.get(b.id)!;
     const at = this.now();
-    const as_of = out.as_of ?? new Date(at).toISOString();
-    const display = {
-      v: 1,
-      block_id: b.id,
-      revision: e.revision + 1,
-      op: "snapshot",
-      level: "block",
-      kind: out.kind,
-      catalog: DISPLAY_CATALOG,
-      spec: out.spec,
-      fallback: { text: out.fallback },
-      source: { by: "host", origin: "home" },
-      title: b.title,
-      status: "ok",
-    } as BlockDisplay;
-    Object.assign(e, { display, as_of, goodAt: at, displayAt: at, current: true, error: undefined, revision: display.revision });
+    const display = blockDisplay(b, out, e.revision + 1);
+    Object.assign(e, { display, as_of: out.as_of ?? new Date(at).toISOString(), goodAt: at, displayAt: at, current: true, error: undefined, revision: display.revision });
     this.metrics.increment("home.refresh", 1, { outcome: "ok" });
     this.log.info("home.block.refreshed", { hop: this.hopLabel, block: b.id, kind: out.kind, ms: ran.ms, stdout_bytes: Buffer.byteLength(ran.stdout), revision: display.revision });
-    this.writeCache(b.id, { v: 1, display, as_of, good_at: new Date(at).toISOString(), revision: display.revision });
+    this.writeCache(b.id, { v: 2, stdout: ran.stdout, ran_at: new Date(at).toISOString(), revision: display.revision });
   }
 
   /** The refresh failed: the last good block stays (stale); a block with none shows the newest valid fallback alone. */
@@ -260,8 +247,9 @@ export class HomeResolver {
     return join(this.opts.cacheDir, this.hopLabel);
   }
 
-  /** Once: every block's last good result from disk; a file that is missing, unreadable or not a valid block of this
-   *  block is skipped (and said, unless it is simply missing). */
+  /** Once: every block's last good result from disk, its stored stdout checked by checkHomeOutput as a fresh run's is.
+   *  A file that is unreadable, of another shape, or whose output no longer passes is removed and said (the block then
+   *  resolves by running its script, as a block with no file does). */
   private loadCache(): void {
     if (this.loaded) return;
     this.loaded = true;
@@ -275,13 +263,15 @@ export class HomeResolver {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") this.log.warn("home.cache.unreadable", { hop: this.hopLabel, block: b.id, error: (e as NodeJS.ErrnoException).code ?? "read" });
         continue;
       }
-      const c = parseCache(text, b.id);
-      if (!c) {
-        this.log.warn("home.cache.unreadable", { hop: this.hopLabel, block: b.id, error: "invalid" });
+      const c = parseCache(text);
+      const out = c ? checkHomeOutput(b, c.stdout) : undefined;
+      if (!c || !out?.ok) {
+        this.log.warn("home.cache.unreadable", { hop: this.hopLabel, block: b.id, error: c ? "refused" : "invalid", ...(out && !out.ok && out.faults?.[0] ? { code: out.faults[0].code } : {}) });
+        rmSync(join(this.dir(), `${b.id}.json`), { force: true });
         continue;
       }
-      const at = Date.parse(c.good_at);
-      Object.assign(entry, { display: c.display, as_of: c.as_of, goodAt: at, displayAt: at, revision: c.revision });
+      const at = Date.parse(c.ran_at);
+      Object.assign(entry, { display: blockDisplay(b, out, c.revision), as_of: out.as_of ?? c.ran_at, goodAt: at, displayAt: at, revision: c.revision });
     }
   }
 
@@ -323,16 +313,33 @@ function joinRun(run: Run, signal: AbortSignal | undefined): void {
   run.cleanups.push(() => signal.removeEventListener("abort", leave));
 }
 
-function parseCache(text: string, id: string): CacheFile | null {
+/** A checked output as the block the person sees: the HOP's id and title, drawn by the host. */
+function blockDisplay(b: Pick<HopUiBlock, "id" | "title">, out: Extract<HomeOutput, { ok: true }>, revision: number): BlockDisplay {
+  return {
+    v: 1,
+    block_id: b.id,
+    revision,
+    op: "snapshot",
+    level: "block",
+    kind: out.kind,
+    catalog: DISPLAY_CATALOG,
+    spec: out.spec,
+    fallback: { text: out.fallback },
+    source: { by: "host", origin: "home" },
+    title: b.title,
+    status: "ok",
+  } as BlockDisplay;
+}
+
+/** The file's shape only; its stdout is checked by the caller. */
+function parseCache(text: string): CacheFile | null {
   let raw: Partial<CacheFile>;
   try {
     raw = JSON.parse(text) as Partial<CacheFile>;
   } catch {
     return null;
   }
-  if (raw?.v !== 1 || typeof raw.as_of !== "string" || typeof raw.good_at !== "string" || Number.isNaN(Date.parse(raw.good_at))) return null;
-  if (!Number.isInteger(raw.revision) || raw.revision! < 1) return null;
-  const env = displayEnvelopeSchema.safeParse(raw.display);
-  if (!env.success || env.data.level !== "block" || env.data.block_id !== id || env.data.source.by !== "host") return null;
-  return { v: 1, display: env.data as BlockDisplay, as_of: raw.as_of, good_at: raw.good_at, revision: raw.revision! };
+  if (raw?.v !== 2 || typeof raw.stdout !== "string" || typeof raw.ran_at !== "string" || Number.isNaN(Date.parse(raw.ran_at))) return null;
+  if (Buffer.byteLength(raw.stdout) > HOME_LIMITS.scriptOutputBytes || !Number.isInteger(raw.revision) || raw.revision! < 1) return null;
+  return { v: 2, stdout: raw.stdout, ran_at: raw.ran_at, revision: raw.revision! };
 }

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -288,21 +288,37 @@ describe("HomeResolver", () => {
     for (const b of await after.done) expect(b).toMatchObject({ stale: true, error: "timeout", display: { level: "block", revision: 1 } });
   });
 
-  test("a cache file that is corrupt, of another block, or not host-drawn is skipped; another version starts empty", async () => {
+  test("R2: the cache keeps the script's stdout, mode 0600 in a 0700 directory, and every read checks it as a fresh run", async () => {
     const first = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: cache, now });
     const u = updates(4);
     first.get(u.push);
     await u.done;
     const at = (id: string) => join(cache, "mlpal@0.3.0", `${id}.json`);
-    writeFileSync(at("spend"), "{not json");
-    writeFileSync(at("agents"), readFileSync(at("sites"), "utf8"));
-    const hops = JSON.parse(readFileSync(at("hops"), "utf8"));
-    hops.display.source = { by: "model" };
-    writeFileSync(at("hops"), JSON.stringify(hops));
+    expect(JSON.parse(readFileSync(at("hops"), "utf8"))).toEqual({ v: 2, stdout: output("hops"), ran_at: new Date(T0).toISOString(), revision: 1 });
+    expect(statSync(at("hops")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(cache, "mlpal@0.3.0")).mode & 0o777).toBe(0o700);
+    // what no script and no model could show: a chart expression, and markup in the fallback
+    const hostile = { kind: "chart", spec: { vl: { data: { values: [{ a: 1 }] }, transform: [{ calculate: "datum.a * 2", as: "b" }], mark: "bar", encoding: { x: { field: "a", type: "ordinal" }, y: { field: "b", type: "quantitative" } } } }, fallback: { text: '<img src=x onerror="alert(1)"> ![x](http://evil/x.png) [r]: http://evil and 1 number' } };
+    writeFileSync(at("spend"), JSON.stringify({ v: 2, stdout: JSON.stringify(hostile), ran_at: new Date(T0).toISOString(), revision: 3 }));
+    writeFileSync(at("agents"), "{not json");
+    // the first version's shape (a stored display, never re-checked) is dropped too
+    writeFileSync(at("sites"), JSON.stringify({ v: 1, display: { level: "block" }, as_of: "2026-11-28T09:00:00Z", good_at: "2026-11-28T09:00:00Z", revision: 1 }));
     const log = new CapturingLogger();
     const view = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: cache, now, logger: log }).view();
-    expect(view.blocks.map((b) => b.display === null)).toEqual([true, true, false, true]);
-    expect(log.lines.filter((l) => l.msg === "home.cache.unreadable").map((l) => l.fields?.block)).toEqual(["spend", "agents", "hops"]);
+    expect(view.blocks.map((b) => [b.id, b.display?.level ?? null])).toEqual([
+      ["spend", null],
+      ["agents", null],
+      ["sites", null],
+      ["hops", "block"],
+    ]);
+    expect(log.lines.filter((l) => l.msg === "home.cache.unreadable").map((l) => [l.fields?.block, l.fields?.error, l.fields?.code ?? null])).toEqual([
+      ["spend", "refused", "VALIDATION_FAILED"], // the first fault: the markup in the fallback (the expression is refused too)
+      ["agents", "invalid", null],
+      ["sites", "invalid", null],
+    ]);
+    for (const id of ["spend", "agents", "sites"]) expect(existsSync(at(id))).toBe(false);
+    expect(checkHomeOutput(block("spend"), JSON.stringify(hostile))).toMatchObject({ ok: false, faults: expect.arrayContaining([expect.objectContaining({ code: "EXPRESSION_NOT_ALLOWED" })]) });
+    expect(view.blocks[3]!.display).toEqual(u.list.find((b) => b.id === "hops")!.display);
     expect(new HomeResolver({ scripts: "run", hop: { ...HOP, version: "0.4.0" }, run: goodRunner(), cacheDir: cache, now }).view().blocks.every((b) => b.display === null)).toBe(true);
   });
 
@@ -369,6 +385,18 @@ describe("createHomeScriptRunner: real scripts, through the ExecPolicy", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     await Bun.sleep(1_300);
     expect(existsSync(marker)).toBe(false);
+  });
+
+  test("O3: a descendant that left the group (setsid) and holds stdout does not hold the run past its bound", async () => {
+    const p = script("daemon.py", "import os, sys, time\nif os.fork() == 0:\n    os.setsid()\n    time.sleep(30)\nelse:\n    time.sleep(30)\n");
+    const started = Date.now();
+    expect(await createHomeScriptRunner({ exec: exec(PATHONLY), cwd: dir, timeoutMs: 500 })({ block: "d", scriptPath: p })).toMatchObject({ ok: false, error: "timeout" });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    const q = script("leaves.py", "import os, sys, time\nprint('{}')\nsys.stdout.flush()\nif os.fork() == 0:\n    os.setsid()\n    time.sleep(30)\n");
+    const t = Date.now();
+    const r = await createHomeScriptRunner({ exec: exec(PATHONLY), cwd: dir, timeoutMs: 10_000 })({ block: "l", scriptPath: q });
+    expect(r.ok && r.stdout.trim()).toBe("{}");
+    expect(Date.now() - t).toBeLessThan(3_000);
   });
 
   test("a script that prints over 256 KiB is stopped", async () => {

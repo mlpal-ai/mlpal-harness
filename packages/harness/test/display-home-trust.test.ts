@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { HomeBlock } from "@mlpal/harness-protocol";
 import { HomeResolver } from "../src/display/home";
@@ -43,8 +43,13 @@ describe("homeTrust: what the loader and the filesystem say, never the HOP", () 
 
   test("builtin and a --hop <dir> are trusted; a workspace .yodex/hops HOP is not", () => {
     expect(homeTrust({ source: "builtin", dir: null })).toEqual({ trusted: true, why: "builtin" });
-    expect(homeTrust({ source: "path", dir: hop, ui: ui() })).toEqual({ trusted: true, why: "local_dir" });
+    expect(homeTrust({ source: "path", dir: hop, ui: ui() }, { pathNamedByPerson: true })).toEqual({ trusted: true, why: "local_dir" });
     expect(homeTrust({ source: "project", dir: hop, ui: ui() })).toMatchObject({ trusted: false, why: expect.stringContaining("cloned repository") });
+  });
+
+  test("R1: a path HOP is trusted only when this process's own command line named it", () => {
+    expect(homeTrust({ source: "path", dir: hop, ui: ui() })).toMatchObject({ trusted: false, why: expect.stringContaining("command line did not name") });
+    expect(homeTrust({ source: "path", dir: hop, ui: ui() }, { pathNamedByPerson: false }).trusted).toBe(false);
   });
 
   test("~/.yodex/hops: files this user owns (an install from the catalog) are not trusted", () => {
@@ -54,11 +59,15 @@ describe("homeTrust: what the loader and the filesystem say, never the HOP", () 
   test("~/.yodex/hops: root's and read-only (the image's vendoring) is trusted, checked path by path", () => {
     const u = ui();
     const seen: string[] = [];
+    writeFileSync(join(hop, "hop.yaml"), "spec: x\n");
+    mkdirSync(join(hop, "lib"));
+    writeFileSync(join(hop, "lib", "helper.py"), "X = 1\n");
     expect(homeTrust({ source: "user", dir: hop, ui: u }, { uid: 1000, stat: (p) => (seen.push(p), { uid: 0, mode: 0o755 }) })).toEqual({ trusted: true, why: "vendored" });
-    // the HOP dir, its parent, the script, and each directory between
-    expect(seen.length).toBe(5);
-    expect(seen).toContain(realpathSync(u.home!.blocks[0]!.scriptPath));
-    expect(seen).toContain(realpathSync(join(hop, "ui", "home")));
+    // O7: the whole tree, not only the scripts: the HOP dir, its parent and everything under it
+    const real = realpathSync(hop);
+    expect(new Set(seen)).toEqual(new Set([dirname(real), real, ...["hop.yaml", "ui", "ui/home", "ui/home/a.sh", "lib", "lib/helper.py"].map((e) => join(real, e))]));
+    // one file a script may import, this user's: not vendored
+    expect(homeTrust({ source: "user", dir: hop, ui: u }, { uid: 1000, stat: (p) => ({ uid: p.endsWith("helper.py") ? 1000 : 0, mode: 0o755 }) }).trusted).toBe(false);
   });
 
   test("one group- or other-writable path, a path this user owns, root as the engine, a stat that fails: not trusted", () => {

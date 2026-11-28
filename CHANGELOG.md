@@ -26,6 +26,11 @@
   required; anything but `run` answers the starters, `blocks: []` and `scripts: "not_trusted" | "off"`, and starts no
   process. A run every caller's signal has left is killed (its process group, always its own), `close` kills all, and
   a cancelled run is retried on the next request.
+- Review 1 (same day): a `path` HOP is trusted only with `pathNamedByPerson` (the caller's own command line named it;
+  default false); a vendored HOP's whole tree is checked, not only its scripts. The disk cache keeps the script's raw
+  stdout (`v: 2`) and every read runs `checkHomeOutput` on it as a fresh run does; a file that fails is removed and the
+  script runs again. A descendant that leaves the process group can no longer hold a run past its bound (its pipes are
+  closed 500 ms after the script exits or is killed). Error codes `hop_ref_invalid` and `hop_not_installed`.
 - Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
   `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
   may be `host`, with `origin: "home"` exactly then.
