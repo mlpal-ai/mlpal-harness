@@ -99,6 +99,8 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- A chart spec with no `vl` but Vega-Lite's own top-level keys (mark, encoding, layer, data, transform) is taken as
+  the `vl`, with a notice to the model, then validated as usual (run 2); beside a `vl`, such keys are still refused.
 - Show's input schema types `spec` (run 2: Haiku sent it as a JSON string in 7 of 34 calls, every one malformed,
   because the schema declared it unknown): one object with each kind's members named, two levels deep (chart `vl`
   with its top-level keys, `encoding.x`/`y`, `layer` views; kpis `tiles`; grid `columns`, `rows`, `row_key`). One
