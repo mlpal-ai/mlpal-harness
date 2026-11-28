@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
@@ -7,6 +7,7 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { host } from "../host";
+import { registerSecret } from "../obs/redact";
 
 /**
  * OAuth 2.0 for hosted MCP servers. Tokens (and any dynamically-registered client info) are
@@ -54,8 +55,11 @@ export class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   private write(): void {
-    if (!existsSync(dirname(this.file))) mkdirSync(dirname(this.file), { recursive: true });
+    // 0700 / 0600 whatever the umask, and for a file that existed with wider modes (one restored by the image).
+    if (!existsSync(dirname(this.file))) mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(this.file), 0o700);
     writeFileSync(this.file, JSON.stringify(this.cache, null, 2), { mode: 0o600 });
+    chmodSync(this.file, 0o600);
   }
 
   get redirectUrl(): string | undefined {
@@ -88,6 +92,8 @@ export class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
+    // REVIEW-2 RQ-6(b): a token obtained or refreshed now is masked from now on, in this process.
+    for (const t of [tokens.access_token, tokens.refresh_token]) registerSecret("MCP sign-in", t);
     this.cache.tokens = tokens;
     this.write();
   }

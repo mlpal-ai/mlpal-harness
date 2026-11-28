@@ -32,7 +32,30 @@ export const PLATFORM_SECRET_PATTERNS: ReadonlyArray<{ label: string; pattern: R
 
 export function registerSecret(label: string, value: string | undefined | null): void {
   if (!value || value.length < MIN_LEN) return;
-  secrets.set(value, label);
+  for (const form of encodedForms(value)) if (form.length >= MIN_LEN && !secrets.has(form)) secrets.set(form, label);
+}
+
+/**
+ * REVIEW-2 RQ-6(b): the forms a read of a secret commonly takes besides the value itself: JSON-escaped (as a JSON
+ * file holds it), URL-encoded, hex (as `xxd -p` and `od` print it, lower and upper), and base64 (standard and URL-safe)
+ * at each of the three alignments a value can have inside a larger encoded file: for a value that does not start the
+ * file, the characters that mix it with its neighbours are dropped and the rest is still unique to it. A determined
+ * transform (reversed, split, spaced) is not covered: masking is a backstop, not the boundary.
+ */
+export function encodedForms(value: string): string[] {
+  const bytes = Buffer.from(value, "utf8");
+  const forms = new Set<string>([value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value), bytes.toString("hex"), bytes.toString("hex").toUpperCase()]);
+  for (let k = 0; k < 3; k++) {
+    const b64 = Buffer.concat([Buffer.alloc(k), bytes]).toString("base64");
+    // The leading group mixes the k padding bytes in; the trailing group may mix in what follows the value.
+    const core = b64.slice(k === 0 ? 0 : 4, b64.length - 4);
+    if (core.length >= MIN_LEN) {
+      forms.add(core);
+      forms.add(core.replace(/\+/g, "-").replace(/\//g, "_"));
+    }
+  }
+  forms.add(bytes.toString("base64").replace(/=+$/, ""));
+  return [...forms];
 }
 
 export function registerSecrets(values: Record<string, string>): void {

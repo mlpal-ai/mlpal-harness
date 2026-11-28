@@ -2,7 +2,7 @@ import type { Author } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { shellCwd } from "../tools/shell-cwd";
-import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
+import { catastrophicDeny, contentSafetyDeny, protectedReadDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
 import { bashAsWritten, type Decomposed, decomposeBash, normalizeBashPattern, refusesAutoApproval } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
@@ -155,6 +155,8 @@ function hardDeny(req: PermissionRequest): string | null {
       ...(req.roots ? { roots: req.roots } : {}),
     });
     if (cat) return cat;
+    const keys = protectedReadDeny(command);
+    if (keys) return keys;
     for (const target of redirectTargets(command)) {
       const cs = contentSafetyDeny(target);
       if (cs) return cs;

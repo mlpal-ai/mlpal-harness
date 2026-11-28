@@ -3,7 +3,14 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { glob } from "tinyglobby";
 import { z } from "zod";
-import { defineTool, err, ok, resolveInRoots } from "../types";
+import { contextRoots, defineTool, err, ok, resolveInRoots, type ToolContext, withinRoots } from "../types";
+
+/** R51: a file a scan found is shown only when it resolves inside the roots, as Read requires of a path. A symbolic
+ *  link in the workspace to `~/.yodex` (its secrets, its sign-ins) or `~/.ssh` is not a way around the boundary. */
+const insideRoots = (ctx: ToolContext, base: string) => {
+  const roots = contextRoots(ctx);
+  return (rel: string): boolean => withinRoots(join(base, rel), roots);
+};
 
 // Fallback ignore list — used only when ripgrep is unavailable (rg respects .gitignore
 // natively, which covers these and more). Kept broad enough that a $HOME- or monorepo-rooted
@@ -129,7 +136,7 @@ export const globTool = defineTool({
       const res = await runRg([...baseRgArgs(), "--files", "-g", input.pattern], base, SCAN_TIMEOUT_MS);
       if (res) {
         if (res.code === 1) return ok("No files matched");
-        const files = res.stdout.split("\n").filter(Boolean).sort();
+        const files = res.stdout.split("\n").filter(Boolean).filter(insideRoots(ctx, base)).sort();
         return ok(files.length ? files.join("\n") : "No files matched");
       }
     } catch (e) {
@@ -143,15 +150,15 @@ export const globTool = defineTool({
 
     // rg unavailable (runRg returned null): JS fallback.
     const matches = await withScanTimeout(
-      glob(input.pattern, { cwd: base, ignore: IGNORE, onlyFiles: true, dot: false }),
+      glob(input.pattern, { cwd: base, ignore: IGNORE, onlyFiles: true, dot: false, followSymbolicLinks: false }),
     );
     if (matches === null) {
       return err(
         `glob timed out after ${SCAN_TIMEOUT_MS / 1000}s — the tree under ${base} is too large; narrow the pattern or pass a subdirectory as path`,
       );
     }
-    matches.sort();
-    return ok(matches.length ? matches.join("\n") : "No files matched");
+    const shown = matches.filter(insideRoots(ctx, base)).sort();
+    return ok(shown.length ? shown.join("\n") : "No files matched");
   },
 });
 
@@ -171,7 +178,8 @@ export const grepTool = defineTool({
     if ("error" in r) return r.error;
     const base = r.path;
 
-    const args = [...baseRgArgs(), "--line-number", "--max-columns", "500"];
+    // --null ends each path with a NUL, so a path is cut out exactly (it may hold ':') and checked against the roots.
+    const args = [...baseRgArgs(), "--line-number", "--null", "--max-columns", "500"];
     if (input.glob) args.push("-g", input.glob);
     // --regexp marks the pattern explicitly so a leading '-' isn't parsed as a flag. The path is explicit: with none, rg
     // searches stdin whenever stdin is readable, and execFile's always is (a pipe), so every call ran to the timeout.
@@ -181,7 +189,15 @@ export const grepTool = defineTool({
       if (res) {
         if (res.code === 1) return ok("No matches");
         // The explicit `.` puts `./` before every path; the JS fallback's paths have none.
-        const lines = res.stdout.split("\n").filter(Boolean).map((l) => (l.startsWith("./") ? l.slice(2) : l));
+        const inside = insideRoots(ctx, base);
+        const lines = res.stdout
+          .split("\n")
+          .filter(Boolean)
+          .flatMap((l) => {
+            const nul = l.indexOf("\0");
+            const file = nul < 0 ? "" : l.slice(0, nul).replace(/^\.\//, "");
+            return nul >= 0 && inside(file) ? [`${file}:${l.slice(nul + 1)}`] : [];
+          });
         if (lines.length > MAX_MATCHES) {
           return ok([...lines.slice(0, MAX_MATCHES), `[truncated at ${MAX_MATCHES} matches]`].join("\n"));
         }
@@ -206,7 +222,7 @@ export const grepTool = defineTool({
       return err(`invalid regex: ${(e as Error).message}`);
     }
     const files = await withScanTimeout(
-      glob(input.glob ?? "**/*", { cwd: base, ignore: IGNORE, onlyFiles: true, dot: false }),
+      glob(input.glob ?? "**/*", { cwd: base, ignore: IGNORE, onlyFiles: true, dot: false, followSymbolicLinks: false }),
     );
     if (files === null) {
       return err(
@@ -214,7 +230,9 @@ export const grepTool = defineTool({
       );
     }
     const out: string[] = [];
+    const inside = insideRoots(ctx, base);
     for (const f of files) {
+      if (!inside(f)) continue;
       let text: string;
       try {
         text = await readFile(join(base, f), "utf8");

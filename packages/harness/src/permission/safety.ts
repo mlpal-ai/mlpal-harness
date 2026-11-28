@@ -259,6 +259,42 @@ export function contentSafetyDeny(path: string): string | null {
   return null;
 }
 
+/**
+ * R51-6(a): what no command may touch, in every mode, bypass-immune: the person's stored header keys and MCP sign-ins.
+ * With a kernel sandbox the same paths are on DEFAULT_UNREADABLE (sandbox/spec.ts, beside ~/.yodex/credentials.json);
+ * this is the layer that holds where commands run unconfined, as in the workspace. It reads the command's text, so a
+ * path the command computes (a glob, a variable, a script that opens it) is not seen: masking (obs/redact.ts) is the
+ * layer behind it.
+ */
+const PROTECTED_READ = [
+  { test: /person-secrets\.json/, reason: "the person's stored keys (~/.yodex/person-secrets.json)" },
+  { test: /\.yodex\/+mcp-auth\b|(^|[\s'"=])mcp-auth\//, reason: "the person's MCP sign-ins (~/.yodex/mcp-auth)" },
+];
+
+/**
+ * REVIEW-2 RQ-6(a): the engine's own state directory, the home's `.yodex`, in any spelling a command can name it with
+ * (the spellings the workspace image's guard lists for `.mlpal`): `~/`, `$HOME`, `${HOME}`, an absolute home
+ * (`/home/<user>`, `/Users/<user>`, `/root`), and `../` out of the workspace into the home. A project's own
+ * `.yodex/` (a relative path, `$PWD/.yodex/hops/…`) is not this. Refused in every mode, bypass-immune, except the
+ * exact files the HOPs' skills tell the agent to read: `YODEX.md` (the environment's own description) and
+ * `AGENTS.md`.
+ */
+const STATE_DIR = /(?:(?:~|\$HOME|\$\{HOME\}|\/home\/[^/\s"'`]+|\/Users\/[^/\s"'`]+|\/root)\/+|(?:\.\.\/+)+)\.yodex(?=$|[/\s"'`;|&)<>*?[])([^\s"'`;|&)<>]*)/gi;
+/** Compared folded (lower case): on a case-insensitive file system `~/.yodex/yodex.md` is the same file. */
+const STATE_READABLE = new Set(["/yodex.md", "/agents.md"]);
+
+/** A deny reason when the command names a file of PROTECTED_READ or reaches the home's `.yodex`, else null. */
+export function protectedReadDeny(command: string): string | null {
+  // matched as a case-insensitive, normalising file system resolves names (review-media R8): `~/.YODEX` is `~/.yodex`
+  for (const c of [command, ...splitShellCommands(command)].map(foldName)) {
+    for (const rule of PROTECTED_READ) if (rule.test.test(c)) return `blocked: ${rule.reason} is not for commands`;
+    for (const m of c.matchAll(STATE_DIR)) {
+      if (!STATE_READABLE.has(m[1] ?? "")) return "blocked: the engine's own state (~/.yodex) is not for commands; ~/.yodex/YODEX.md and ~/.yodex/AGENTS.md are the files to read";
+    }
+  }
+  return null;
+}
+
 /** A file redirect target in a shell command, if any (`> path`, `>> path`, `tee path`). */
 export function redirectTargets(command: string): string[] {
   const out: string[] = [];

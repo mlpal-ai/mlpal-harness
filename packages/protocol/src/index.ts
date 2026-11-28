@@ -9,3 +9,4 @@ export * from "./transport.js";
 export * from "./page-context.js";
 export * from "./display/index.js";
 export * from "./home.js";
+export * from "./tools-admin.js";

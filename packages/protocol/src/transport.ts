@@ -6,6 +6,7 @@ import type { HomeBlock, HomeView, HopUiView } from "./home.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, ModelRefusal, PolicyNoVerdict, SDKMessage } from "./sdk.js";
+import type { ToolsAdminClientMessage, ToolsAdminErrorCode, ToolsAdminServerMessage } from "./tools-admin.js";
 import type { Usage } from "./usage.js";
 
 /**
@@ -101,7 +102,8 @@ export type ServerCapability =
   | "session_archive" // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
   | "incognito" // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
   | "display" // 0.26.8: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
-  | "hop_home"; // W3-1: get_home → home, then home_update per block: the HOP's declared starters and home blocks (home.ts)
+  | "hop_home" // W3-1: get_home → home, then home_update per block: the HOP's declared starters and home blocks (home.ts)
+  | "tools_admin"; // tools-admin (T-1, T-3): the owner's MCP servers and plugins (tools-admin.ts); a workspace's own serve only
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -580,7 +582,9 @@ export type ClientMessage =
   | { type: "secret_revealed"; sessionId: string; toolUseId: string }
   /** Internal to a front serve and its per-HOP children: a peer message for an idle session,
    *  delivered by the process that owns the session's inbox. Not for clients. */
-  | { type: "deliver_mail"; sessionId: string; message: PeerMessage };
+  | { type: "deliver_mail"; sessionId: string; message: PeerMessage }
+  /** tools-admin (capability "tools_admin"): tools-admin.ts. */
+  | ToolsAdminClientMessage;
 
 export type ServerMessage =
   | { type: "ready"; protocol: string; capabilities?: ServerCapability[]; hop?: string; cwd?: string; /** 0.20.0 */ engine?: EngineInfo }
@@ -706,6 +710,8 @@ export type ServerMessage =
   | AbuseFlagFrame
   | InboxRejectedFrame
   | WithdrawnFrame
+  /** tools-admin (capability "tools_admin"): tools-admin.ts. */
+  | ToolsAdminServerMessage
   | {
       type: "error";
       message: string;
@@ -753,7 +759,9 @@ export type ErrorCode =
    *  with an optional `@x.y.z`, never a path; `hop_not_installed`: get_home names a HOP this serve does not have.
    *  Nothing ran and no child serve was started. */
   | "hop_ref_invalid"
-  | "hop_not_installed";
+  | "hop_not_installed"
+  /** tools-admin (capability "tools_admin"): tools-admin.ts. */
+  | ToolsAdminErrorCode;
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one

@@ -1,3 +1,4 @@
+import { redactText } from "../obs/redact";
 /**
  * Event Inbox — the single async channel between background producers (background shells,
  * background sub-agents, monitors) and the main loop. Producers push typed events; the loop
@@ -70,8 +71,11 @@ export class EventInbox {
    * the replaced event's id is forgotten so the source can keep reusing one progress id
    * or mint fresh ones — either way only the newest is delivered.
    */
-  emit(e: AgentEvent): boolean {
-    if (this.seen.has(e.id)) return false;
+  emit(raw: AgentEvent): boolean {
+    if (this.seen.has(raw.id)) return false;
+    // REVIEW-2 RQ-6(b): what a background command, a monitor or a peer posts reaches the model's turn and the
+    // transcript without passing the tool boundary, so it is masked here.
+    const e: AgentEvent = { ...raw, body: redactText(raw.body), label: redactText(raw.label) };
     const event: AgentEvent = e.body.length > MAX_BODY_CHARS
       ? { ...e, body: `${e.body.slice(0, MAX_BODY_CHARS)}\n[truncated${e.detailPath ? ` — full output: ${e.detailPath}` : ""}]` }
       : e;

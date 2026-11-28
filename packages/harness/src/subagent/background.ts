@@ -12,6 +12,7 @@
  * a task researching or verifying in parallel can never race the main agent's edits. Mutation stays
  * on the blocking Task path, where ordering is guaranteed.
  */
+import { redactText } from "../obs/redact";
 import type { ModelRefusal } from "@mlpal/harness-protocol";
 import type { EventInbox } from "../events/inbox";
 import { ModelAccessError } from "../profile/model-policy";
@@ -258,7 +259,7 @@ export class BackgroundAgents {
         out.push(`[Background task ${t.id} "${t.description}" failed: ${t.error ?? "unknown error"}]`);
       }
     }
-    return out;
+    return out.map(redactText);
   }
 
   killAll(): void {

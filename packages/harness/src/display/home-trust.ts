@@ -1,5 +1,4 @@
-import { readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { vendoredTree } from "../plugins/vendored";
 import type { HopUi } from "../profile/ui";
 import type { Profile } from "../profile/types";
 
@@ -34,9 +33,6 @@ export interface HomeTrustOptions {
   stat?: (path: string) => { uid: number; mode: number };
 }
 
-/** A vendored HOP is a few dozen files; past this many entries the tree is not walked, and not trusted. */
-const MAX_TREE_ENTRIES = 5_000;
-
 export function homeTrust(p: Pick<Profile, "source" | "dir"> & { ui?: HopUi }, opts: HomeTrustOptions = {}): HomeTrust {
   switch (p.source) {
     case "builtin":
@@ -51,28 +47,8 @@ export function homeTrust(p: Pick<Profile, "source" | "dir"> & { ui?: HopUi }, o
 }
 
 function vendored(dir: string | null, opts: HomeTrustOptions): HomeTrust {
-  const uid = opts.uid ?? process.getuid?.();
-  if (uid === undefined) return { trusted: false, why: "file ownership cannot be checked on this platform" };
-  if (uid === 0) return { trusted: false, why: "the engine runs as root, so root-owned files say nothing about where a HOP came from" };
   if (!dir) return { trusted: false, why: "the HOP has no directory" };
-  const stat = opts.stat ?? ((path: string) => statSync(path));
-  let root: string;
-  let entries: string[];
-  try {
-    root = realpathSync(dir);
-    entries = readdirSync(root, { recursive: true }) as string[];
-  } catch {
-    return { trusted: false, why: "the HOP's directory cannot be read" };
-  }
-  if (entries.length > MAX_TREE_ENTRIES) return { trusted: false, why: `the HOP has over ${MAX_TREE_ENTRIES} files` };
-  for (const path of [dirname(root), root, ...entries.map((e) => join(root, e))]) {
-    let s: { uid: number; mode: number };
-    try {
-      s = stat(path);
-    } catch {
-      return { trusted: false, why: `${path} cannot be checked` };
-    }
-    if (s.uid !== 0 || (s.mode & 0o022) !== 0) return { trusted: false, why: "installed under ~/.yodex/hops by this user (the catalog), not vendored by the image" };
-  }
-  return { trusted: true, why: "vendored" };
+  const v = vendoredTree(dir, { withParent: true, ...(opts.uid !== undefined ? { uid: opts.uid } : {}), ...(opts.stat ? { stat: opts.stat } : {}) });
+  if (v.vendored) return { trusted: true, why: "vendored" };
+  return { trusted: false, why: v.byUser ? "installed under ~/.yodex/hops by this user (the catalog), not vendored by the image" : v.why };
 }

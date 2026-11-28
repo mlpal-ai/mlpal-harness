@@ -193,6 +193,27 @@
   `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
   may be `host`, with `origin: "home"` exactly then.
 
+### tools-admin (T-1, T-3): tool sources on the wire, secret references, web sign-in, plugin plans (2026-11-28)
+
+- Protocol (additive; needs a version bump at merge): capability `tools_admin` and its messages in
+  `protocol/src/tools-admin.ts`, joined to `ClientMessage`, `ServerMessage` and `ErrorCode`.
+- `McpManager.setSecretResolver`: a header value carrying `${MLPAL_SECRET_<NAME>}` is resolved through the host's
+  resolver at connect and never env-expanded; an unresolvable one fails that server's connect naming the secret only
+  (`mcp/secret-refs.ts`).
+- `startWebLogin` (`mcp/web-login.ts`): OAuth code + PKCE with the redirect on the client's page and a state the login
+  chose; a saved dynamic registration for another redirect is not reused. `StoredOAuthProvider` is exported.
+- R51: Grep and Glob show only files that resolve inside the roots (a workspace symlink to `~/.yodex` or `~/.ssh` was
+  followed by the JS fallback and not checked on rg's output; rg now runs with `--null`). `~/.yodex/mcp-auth` and
+  `~/.yodex/person-secrets.json` join `DEFAULT_UNREADABLE`. Protocol: `auth.header.value` (stored by a serve with a
+  local store), `set_secret` / `secret_saved`, `tool_sources.secrets`, `ToolServerHeader.present`, four error codes.
+- REVIEW-1/2: `treeSha256(Sync)` (the image's tree_sha256), `vendoredTree` and `vendoredPackHashes` (R52, a fixed
+  root-owned path), `McpManager.setReferencePolicy`, the bound `SecretResolver`; commands naming the home's
+  `.yodex` in any spelling are refused in every mode (except `YODEX.md`, `AGENTS.md`); masking covers encoded forms
+  and background/monitor/inbox notices, and OAuth tokens saved later; Skill and Lsp keep to the roots.
+- `planPack` (`plugins/plan.ts`): a staged pack's plan (skills, agents, stdio programs, remote servers, the hooks
+  module, ignored directories) and a sha256 over the plan and every file. Refuses a manifest path or link leading
+  outside the pack, unusable pack or server names, a string `mcpServers` and a url with credentials.
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or

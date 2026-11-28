@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { z } from "zod";
-import { defineTool, type Tool } from "../tools/types";
+import { defineTool, type Tool, withinRoots } from "../tools/types";
 import { BUILTIN_SKILLS } from "./builtin";
 
 /**
@@ -50,13 +50,16 @@ async function loadFromDir(dir: string): Promise<Skill[]> {
       if (entry.isDirectory()) {
         const skillDir = join(dir, entry.name);
         const file = join(skillDir, "SKILL.md");
-        if (existsSync(file)) {
+        // R51-7: the roots rule every file-opening tool applies (withinRoots, after links): a SKILL.md that is a link
+        // out of its skills directory (to ~/.yodex/person-secrets.json, say) is not a skill.
+        if (existsSync(file) && withinRoots(file, [dir])) {
           // Directory form carries `dir` so bundled resources (scripts/refs) are reachable.
           const s = toSkill(await readFile(file, "utf8"), file, entry.name, skillDir);
           if (s) out.push(s);
         }
       } else if (entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
         const file = join(dir, entry.name);
+        if (!withinRoots(file, [dir])) continue;
         const s = toSkill(await readFile(file, "utf8"), file, basename(entry.name, ".md"));
         if (s) out.push(s);
       }
@@ -153,7 +156,8 @@ export function createSkillTool(
       if (input.file) {
         if (!s.dir) return { content: `Skill "${s.name}" bundles no files.`, isError: true };
         const abs = resolve(s.dir, input.file);
-        if (abs !== s.dir && !abs.startsWith(s.dir + sep)) {
+        // R51-7: after links, as Read checks a path: a bundled file that is a link out of the skill is refused.
+        if (!withinRoots(abs, [s.dir])) {
           return { content: `Refusing to read outside the skill directory: ${input.file}`, isError: true };
         }
         try {
