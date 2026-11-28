@@ -1,0 +1,12 @@
+{
+  "kind": "kpis",
+  "spec": {
+    "tiles": [
+      { "id": "published", "label": "Published HOPs", "value": 2, "format": "integer" },
+      { "id": "runs", "label": "Runs today", "value": 14, "format": "integer" },
+      { "id": "spend", "label": "Spend today", "value": 3.42, "format": "currency", "unit": "USD" }
+    ]
+  },
+  "fallback": { "text": "2 published HOPs, 14 runs today, 3.42 USD spent today." },
+  "as_of": "2026-11-28T09:00:00Z"
+}

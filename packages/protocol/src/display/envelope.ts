@@ -65,16 +65,19 @@ export const noteSchema = noteInputSchema.extend({
 });
 export type Note = z.infer<typeof noteSchema>;
 
-/** §2.3 who made the block: the model (Show), or the engine (a tool's own result, such as GenerateImage's image).
- *  `mcp` and `host` sources arrive with the slices that map tool results and draw host blocks. */
+/** §2.3 who made the block: the model (Show), the engine (a tool's own result, such as GenerateImage's image), or the
+ *  host (a HOP's home script, W3-1). `mcp` sources arrive with the slice that maps tool results. */
 export const displaySourceSchema = z
   .object({
-    by: z.enum(["model", "engine"]),
+    by: z.enum(["model", "engine", "host"]),
+    /** W3-1: what the host drew the block from, present exactly when `by` is `host`: `home`, a HOP's home script. */
+    origin: z.literal("home").optional(),
     /** The tool calls of this session whose results the block shows (every one checked to exist). */
     tool_use_ids: z.array(z.string()).max(DISPLAY_LIMITS.sources).optional(),
     as_of: z.string().datetime({ offset: true }).optional(),
   })
-  .strict();
+  .strict()
+  .refine((s) => (s.by === "host") === (s.origin !== undefined), { message: "origin is given exactly when by is host", path: ["origin"] });
 export type DisplaySource = z.infer<typeof displaySourceSchema>;
 
 /** Every other string of an envelope (title, caption, note text, cells, labels, chart data) is plain text: a client

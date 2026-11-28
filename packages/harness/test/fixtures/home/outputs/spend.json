@@ -1,0 +1,18 @@
+{
+  "kind": "chart",
+  "spec": {
+    "vl": {
+      "data": { "values": [
+        { "day": "2026-11-22", "cu": 41.5 }, { "day": "2026-11-23", "cu": 12 }, { "day": "2026-11-24", "cu": 77.25 },
+        { "day": "2026-11-25", "cu": 63 }, { "day": "2026-11-26", "cu": 90.5 }, { "day": "2026-11-27", "cu": 58 }, { "day": "2026-11-28", "cu": 22.75 }
+      ] },
+      "mark": "bar",
+      "encoding": {
+        "x": { "field": "day", "type": "ordinal", "title": "Day" },
+        "y": { "field": "cu", "type": "quantitative", "title": "Compute units" }
+      }
+    }
+  },
+  "fallback": { "text": "Gateway spend over the last 7 days: 365 compute units in all, highest on 26 Nov (90.5).", "table": { "from": "rows" } },
+  "as_of": "2026-11-28T09:00:00Z"
+}

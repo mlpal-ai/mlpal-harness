@@ -2,3 +2,6 @@ export { createShowTool, SHOW_TOOL, type ShowTool, type ShowToolDeps } from "./s
 export { displayInstructions, KIND_EXAMPLES, resolveDisplay, type DisplayPolicy } from "./policy";
 export { foldDisplayHistory, type DisplayHistory } from "./history";
 export { localMediaProbe, probeMedia, type MediaProbe, type MediaRequest } from "./media";
+export { checkHomeOutput, HomeResolver, type HomeOutput, type HomeResolverOptions } from "./home";
+export { createHomeScriptRunner, type HomeScript, type HomeScriptRunner, type HomeScriptRunnerOptions, type ScriptOutcome } from "./home-script";
+export { homeTrust, type HomeTrust, type HomeTrustOptions } from "./home-trust";

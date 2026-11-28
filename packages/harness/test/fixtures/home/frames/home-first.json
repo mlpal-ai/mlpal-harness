@@ -1,0 +1,40 @@
+{
+  "type": "home",
+  "requestId": "h1",
+  "hop": "mlpal@0.3.0",
+  "starters": [
+    "Publish my HOP",
+    "What did my agents do today?",
+    "Make a site for my side project"
+  ],
+  "blocks": [
+    {
+      "id": "spend",
+      "title": "Gateway spend, last 7 days",
+      "as_of": null,
+      "stale": false,
+      "display": null
+    },
+    {
+      "id": "agents",
+      "title": "Your agents",
+      "as_of": null,
+      "stale": false,
+      "display": null
+    },
+    {
+      "id": "sites",
+      "title": "Your sites",
+      "as_of": null,
+      "stale": false,
+      "display": null
+    },
+    {
+      "id": "hops",
+      "title": "Your published HOPs",
+      "as_of": null,
+      "stale": false,
+      "display": null
+    }
+  ]
+}

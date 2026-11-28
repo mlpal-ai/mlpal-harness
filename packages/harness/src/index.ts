@@ -109,6 +109,7 @@ export * from "./catalog/catalog";
 export * from "./host";
 export * from "./profile/types";
 export * from "./profile/load";
+export { describeUi, scriptCommand, uiSchema, type HopUi, type HopUiBlock } from "./profile/ui";
 export * from "./profile/tool-rules";
 export * from "./tools/tool-name";
 export * from "./telemetry/contract";

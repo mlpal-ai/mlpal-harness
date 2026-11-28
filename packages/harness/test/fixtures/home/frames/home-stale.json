@@ -1,0 +1,250 @@
+{
+  "type": "home",
+  "requestId": "h3",
+  "hop": "mlpal@0.3.0",
+  "starters": [
+    "Publish my HOP",
+    "What did my agents do today?",
+    "Make a site for my side project"
+  ],
+  "blocks": [
+    {
+      "id": "spend",
+      "title": "Gateway spend, last 7 days",
+      "as_of": "2026-11-28T09:00:00Z",
+      "stale": false,
+      "display": {
+        "v": 1,
+        "block_id": "spend",
+        "revision": 2,
+        "op": "snapshot",
+        "level": "block",
+        "kind": "chart",
+        "catalog": "harness.v1/1",
+        "spec": {
+          "vl": {
+            "data": {
+              "values": [
+                {
+                  "day": "2026-11-22",
+                  "cu": 41.5
+                },
+                {
+                  "day": "2026-11-23",
+                  "cu": 12
+                },
+                {
+                  "day": "2026-11-24",
+                  "cu": 77.25
+                },
+                {
+                  "day": "2026-11-25",
+                  "cu": 63
+                },
+                {
+                  "day": "2026-11-26",
+                  "cu": 90.5
+                },
+                {
+                  "day": "2026-11-27",
+                  "cu": 58
+                },
+                {
+                  "day": "2026-11-28",
+                  "cu": 22.75
+                }
+              ]
+            },
+            "mark": "bar",
+            "encoding": {
+              "x": {
+                "field": "day",
+                "type": "ordinal",
+                "title": "Day"
+              },
+              "y": {
+                "field": "cu",
+                "type": "quantitative",
+                "title": "Compute units"
+              }
+            }
+          }
+        },
+        "fallback": {
+          "text": "Gateway spend over the last 7 days: 365 compute units in all, highest on 26 Nov (90.5).\n\n| day | cu |\n| --- | ---: |\n| 2026-11-22 | 41.5 |\n| 2026-11-23 | 12 |\n| 2026-11-24 | 77.25 |\n| 2026-11-25 | 63 |\n| 2026-11-26 | 90.5 |\n| 2026-11-27 | 58 |\n| 2026-11-28 | 22.75 |"
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Gateway spend, last 7 days",
+        "status": "ok"
+      }
+    },
+    {
+      "id": "agents",
+      "title": "Your agents",
+      "as_of": "2026-11-28T09:00:00Z",
+      "stale": true,
+      "display": {
+        "v": 1,
+        "block_id": "agents",
+        "revision": 1,
+        "op": "snapshot",
+        "level": "block",
+        "kind": "grid",
+        "catalog": "harness.v1/1",
+        "spec": {
+          "columns": [
+            {
+              "key": "name",
+              "label": "Agent",
+              "type": "text"
+            },
+            {
+              "key": "status",
+              "label": "Status",
+              "type": "state"
+            },
+            {
+              "key": "last_run",
+              "label": "Last run",
+              "type": "text"
+            }
+          ],
+          "rows": [
+            {
+              "name": "invoice-triage",
+              "status": "running",
+              "last_run": "2026-11-28 08:41"
+            },
+            {
+              "name": "weekly-digest",
+              "status": "idle",
+              "last_run": "2026-11-27 18:00"
+            },
+            {
+              "name": "lead-scorer",
+              "status": "failed",
+              "last_run": "2026-11-28 07:12"
+            }
+          ],
+          "row_key": "name"
+        },
+        "fallback": {
+          "text": "3 agents: 1 running, 1 idle, 1 failed (lead-scorer, at 07:12)."
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Your agents",
+        "status": "ok"
+      },
+      "error": "timeout"
+    },
+    {
+      "id": "sites",
+      "title": "Your sites",
+      "as_of": "2026-11-28T09:00:00Z",
+      "stale": false,
+      "display": {
+        "v": 1,
+        "block_id": "sites",
+        "revision": 2,
+        "op": "snapshot",
+        "level": "block",
+        "kind": "grid",
+        "catalog": "harness.v1/1",
+        "spec": {
+          "columns": [
+            {
+              "key": "slug",
+              "label": "Site",
+              "type": "code"
+            },
+            {
+              "key": "url",
+              "label": "Address",
+              "type": "text"
+            },
+            {
+              "key": "deployed",
+              "label": "Last deploy",
+              "type": "text"
+            }
+          ],
+          "rows": [
+            {
+              "slug": "side-project",
+              "url": "https://side-project.mlpal.site",
+              "deployed": "2026-11-26 21:04"
+            },
+            {
+              "slug": "docs-demo",
+              "url": "https://docs-demo.mlpal.site",
+              "deployed": "2026-11-20 10:15"
+            }
+          ],
+          "row_key": "slug"
+        },
+        "fallback": {
+          "text": "2 sites; the newest deploy is side-project, on 26 Nov at 21:04."
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Your sites",
+        "status": "ok"
+      }
+    },
+    {
+      "id": "hops",
+      "title": "Your published HOPs",
+      "as_of": "2026-11-28T09:00:00Z",
+      "stale": false,
+      "display": {
+        "v": 1,
+        "block_id": "hops",
+        "revision": 2,
+        "op": "snapshot",
+        "level": "block",
+        "kind": "kpis",
+        "catalog": "harness.v1/1",
+        "spec": {
+          "tiles": [
+            {
+              "id": "published",
+              "label": "Published HOPs",
+              "value": 2,
+              "format": "integer"
+            },
+            {
+              "id": "runs",
+              "label": "Runs today",
+              "value": 14,
+              "format": "integer"
+            },
+            {
+              "id": "spend",
+              "label": "Spend today",
+              "value": 3.42,
+              "format": "currency",
+              "unit": "USD"
+            }
+          ]
+        },
+        "fallback": {
+          "text": "2 published HOPs, 14 runs today, 3.42 USD spent today."
+        },
+        "source": {
+          "by": "host",
+          "origin": "home"
+        },
+        "title": "Your published HOPs",
+        "status": "ok"
+      }
+    }
+  ]
+}

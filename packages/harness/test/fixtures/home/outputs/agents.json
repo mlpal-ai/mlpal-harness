@@ -1,0 +1,18 @@
+{
+  "kind": "grid",
+  "spec": {
+    "columns": [
+      { "key": "name", "label": "Agent", "type": "text" },
+      { "key": "status", "label": "Status", "type": "state" },
+      { "key": "last_run", "label": "Last run", "type": "text" }
+    ],
+    "rows": [
+      { "name": "invoice-triage", "status": "running", "last_run": "2026-11-28 08:41" },
+      { "name": "weekly-digest", "status": "idle", "last_run": "2026-11-27 18:00" },
+      { "name": "lead-scorer", "status": "failed", "last_run": "2026-11-28 07:12" }
+    ],
+    "row_key": "name"
+  },
+  "fallback": { "text": "3 agents: 1 running, 1 idle, 1 failed (lead-scorer, at 07:12)." },
+  "as_of": "2026-11-28T09:00:00Z"
+}

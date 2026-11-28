@@ -23,6 +23,7 @@ import { toolRuleIssues } from "./tool-rules";
 import { CODING_PROFILE, CODING_ENV_BROKEN_RE, CODING_VERIFY_CMD_RE } from "./builtins/coding";
 import { REVIEWER_PROFILE } from "./builtins/reviewer";
 import { hostDir } from "../host";
+import { resolveUi, uiFieldSchema } from "./ui";
 
 /**
  * Profile loading: discovery → parse → validate → compose the extends chain → lock
@@ -454,6 +455,8 @@ export const profileYamlSchema = z
       .array(z.enum(DELEGATED_KINDS))
       .refine((l) => new Set(l).size === l.length, "a delegated kind is listed twice")
       .optional(),
+    // W3-1: the HOP's home (ui.ts): starters and script-fed blocks. The HOP's own, never inherited.
+    ui: uiFieldSchema.optional(),
     locked: z.array(z.string()).default([]),
     tunable: z
       .array(
@@ -991,6 +994,8 @@ export function composeProfile(
     ...(y.model_policy ? { modelPolicy: { allow: y.model_policy.allow ?? [], deny: y.model_policy.deny ?? [] } } : {}),
     // Not inherited: a credential grant is declared by the HOP that runs, never arrives through `extends`.
     ...(y.delegated?.length ? { delegated: y.delegated } : {}),
+    // Not inherited: a home's scripts are files of the HOP that declares it.
+    ...(y.ui !== undefined ? { ui: resolveUi(y.ui, dir, (abs, field) => confined(abs, confineTo, field)) } : {}),
     ...p4Blocks(parent, y),
     ...(modelWarnings.length ? { warnings: modelWarnings } : {}),
   };

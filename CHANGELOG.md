@@ -160,6 +160,39 @@
 - The cost walker costs an arc as a point-like mark. Every other mark still fails closed.
 - The model's grammar line names it. Replay: run 2's pie now draws (35 of 48 first time).
 
+### W3-1 hop-home: the HOP-shaped home, first version (needs a protocol minor bump, 2026-11-28)
+
+- hop.yaml takes `ui` (inline or `ui: file:<relpath>`): up to 4 starters (60 characters each) and a home of 1 to 4
+  blocks, each `{id, title, script, refresh}` (`profile/ui.ts`). The loader refuses an unknown key, a limit passed, an id
+  used twice, a refresh under 5m or over 24h, and a script that is absolute, outside the HOP's directory after links,
+  missing, or neither a `.py`/`.sh` file nor executable. `ui` is the HOP's own: a child HOP does not inherit it.
+  `describe_hop` carries it as `HopView.ui`. A HOP with `ui` does not load on an older engine (the strict loader).
+- `HomeResolver` (`display/home.ts`) answers the cached view at once and refreshes each block whose last attempt is
+  older than 60 s, one script per block, at most 2 at a time; a block already refreshing is joined, never run twice. A
+  script's stdout, `{kind, spec, fallback, as_of?}`, is checked as a `Show` is (checkShowInput: validateBlock with the
+  chart cost walker, the fallback rules, 256 KiB). A timeout (10 s), a non-zero exit, junk, over 256 KiB, a refused
+  block, a deny rule or a sandbox reversal keeps the last good block, `stale` with the `error`; a block that never
+  resolved shows a valid fallback alone. Last good blocks are kept on disk (`<cacheDir>/<hop>@<version>/<id>.json`). No
+  model call. Logs carry ids, codes and sizes only.
+- `createHomeScriptRunner` (`display/home-script.ts`) runs a script as a session's commands run: the given ExecPolicy's
+  wrap and lease environment, `/bin/bash -c`, its own process group when the sandbox asks; the HOP's deny rules and the
+  hard denials judge its command line first.
+- Controller ruling (same day): scripts run only for a trusted HOP (`display/home-trust.ts`): builtin, a `--hop <dir>`
+  (source `path`), or a `~/.yodex/hops` HOP whose directory, parent, scripts and the directories between are root's and
+  not group/other-writable (the workspace image's vendoring), with the engine not running as root. A catalog install
+  (the person's own files) and a workspace `.yodex/hops` HOP are not trusted. `HomeResolverOptions.scripts` is
+  required; anything but `run` answers the starters, `blocks: []` and `scripts: "not_trusted" | "off"`, and starts no
+  process. A run every caller's signal has left is killed (its process group, always its own), `close` kills all, and
+  a cancelled run is retried on the next request.
+- Review 1 (same day): a `path` HOP is trusted only with `pathNamedByPerson` (the caller's own command line named it;
+  default false); a vendored HOP's whole tree is checked, not only its scripts. The disk cache keeps the script's raw
+  stdout (`v: 2`) and every read runs `checkHomeOutput` on it as a fresh run does; a file that fails is removed and the
+  script runs again. A descendant that leaves the process group can no longer hold a run past its bound (its pipes are
+  closed 500 ms after the script exits or is killed). Error codes `hop_ref_invalid` and `hop_not_installed`.
+- Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
+  `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
+  may be `host`, with `origin: "home"` exactly then.
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or

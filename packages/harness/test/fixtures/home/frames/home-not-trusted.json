@@ -1,0 +1,12 @@
+{
+  "type": "home",
+  "requestId": "h6",
+  "hop": "mlpal@0.3.0",
+  "starters": [
+    "Publish my HOP",
+    "What did my agents do today?",
+    "Make a site for my side project"
+  ],
+  "blocks": [],
+  "scripts": "not_trusted"
+}
