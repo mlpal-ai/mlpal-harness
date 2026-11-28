@@ -472,7 +472,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
               ctx,
             )
           : undefined;
-      const check = checkShowInput(input, { kinds: policy.kinds, ...(media ? { media } : {}), ...(policy.formats ? { formats: policy.formats } : {}) });
+      const check = checkShowInput(input, { kinds: policy.kinds, marks: policy.marks, ...(media ? { media } : {}), ...(policy.formats ? { formats: policy.formats } : {}) });
       let history = EMPTY_HISTORY;
       let outcome: Outcome;
       try {

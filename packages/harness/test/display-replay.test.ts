@@ -19,7 +19,8 @@ const RUNS: Array<{ label: string; fixture: Fixture }> = [
   { label: "", fixture: load("workbox-v1-shows.json") },
   { label: "run2 ", fixture: load("workbox-v1-run2-shows.json") },
 ];
-const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], viewport: "desktop", theme: "dark", locale: "en-US", timeZone: "UTC" };
+// the web UI from this release names arc (run.display.marks)
+const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], marks: ["arc"], viewport: "desktop", theme: "dark", locale: "en-US", timeZone: "UTC" };
 
 /** Outcome per Show call, keyed by "[run2 ]<where> <last 8 of the tool_use id>": "ok", or the faults in order. */
 const EXPECTED: Record<string, string> = {

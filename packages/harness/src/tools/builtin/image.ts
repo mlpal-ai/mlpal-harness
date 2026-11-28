@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import { join, relative } from "node:path";
 import { z } from "zod";
 import {
@@ -9,11 +9,10 @@ import {
   MEDIA_EXTENSION,
   sniffMedia,
   type DisplayEnvelope,
-  type MediaProbeResult,
   type Usage,
 } from "@mlpal/harness-protocol";
-import { probeMedia } from "../../display/media";
-import { ImageGatewayError, type ImageGateway, type ImageReference, type ImageResult } from "../../gateway/images";
+import { probeMedia, readMedia } from "../../display/media";
+import { ImageGatewayError, type ImageGateway, type ImagePrice, type ImageReference, type ImageResult } from "../../gateway/images";
 import type { ModelInfo } from "../../registry/models";
 import { contextRoots, defineTool, err, type Tool, type ToolContext, type ToolResult } from "../types";
 
@@ -23,23 +22,39 @@ import { contextRoots, defineTool, err, type Tool, type ToolContext, type ToolRe
  * `media/<date>/` and shown as an engine-written `image` or `image_set` block.
  *
  * - References are checked as a media Show's files are (display/media.ts): inside the workspace, a regular file, at
- *   most 5 MiB, PNG, JPEG or WebP by its bytes.
- * - It is always put to the person for more than one image, hd, or an estimate over the HOP's threshold
- *   (`alwaysAsk`); otherwise the mode decides.
+ *   most 5 MiB, PNG, JPEG or WebP by its bytes. The bytes sent are the bytes checked: one bounded read of the
+ *   verified descriptor.
+ * - It is always put to the person (`alwaysAsk`) for more than one image, hd, an estimate over the HOP's threshold,
+ *   or a cost that is not known before the render.
+ * - Everything that can refuse locally (the folder, the free space) is checked before the job is created.
  * - The gateway's job form with the tool-use id as the idempotency key: a retried call never pays twice.
- * - Each result is downloaded within its hour (at most 50 MiB, 60 s, its type by magic number) and written by a
- *   temp file and a link, never over an existing file.
- * - Typed errors: IMAGE_NOT_PERMITTED, IMAGE_REFUSED, IMAGE_BUDGET, IMAGE_TIMEOUT, IMAGE_FAILED, and the media codes
- *   for the references.
+ * - The spend is recorded (`ctx.spend`) the moment the gateway reports the charge, whatever happens after; a paid
+ *   image that cannot be saved is IMAGE_NOT_SAVED, with the job id and what was saved.
+ * - Each result is downloaded within its hour (at most 50 MiB, 60 s, only from the gateway's asset origin, its type
+ *   by magic number before anything is written) and written by a temp file and a link, never over an existing file.
+ * - Typed errors: IMAGE_NOT_PERMITTED, IMAGE_REFUSED, IMAGE_BUDGET, IMAGE_TIMEOUT, IMAGE_FAILED, IMAGE_NOT_SAVED, and
+ *   the media codes for the references.
  */
+
+/** What a call would make, for its estimate. */
+export interface ImageEstimateQuery {
+  model: string;
+  n: number;
+  quality: string;
+  size: string;
+  references: number;
+}
 
 export interface GenerateImageDeps {
   images: ImageGateway;
   /** The gateway's image models (operation image_generation), for `model` and the listing's names. */
   models: () => ModelInfo[];
-  /** The estimated compute units of a call, from the model's pricing; null when unknown (then only the mode asks). */
-  estimate?: (model: string, n: number, quality: string) => number | null;
-  /** The HOP's `budgets.imageAskOverCu`: an estimate above it is always asked. Default 0.05. */
+  /** The image models' prices (`loadImagePrices`), for the default estimate. */
+  prices?: () => ReadonlyMap<string, ImagePrice>;
+  /** The estimated compute units of a call, or null when the price is known only after the render (then it is
+   *  asked). Default: `estimateFromPrices` over `prices` and `models`. */
+  estimate?: (q: ImageEstimateQuery) => number | null;
+  /** The HOP's `budgets.imageAskOverCu`: an estimate above it is always asked. Default IMAGE_ASK_OVER_CU. */
   askOverCu?: number;
   /** Seams for tests. */
   now?: () => Date;
@@ -49,12 +64,17 @@ export interface GenerateImageDeps {
   timeoutMs?: number;
 }
 
+/** The threshold when the HOP sets none: 0.02 CU (US$0.20 at 1 CU = US$10), under one image of the dearer per-image
+ *  models the gateway lists, so one of those is asked. */
+export const IMAGE_ASK_OVER_CU = 0.02;
+
 const L = {
   prompt: 4_000,
   references: 4,
   referenceBytes: 5 * 1024 * 1024,
   resultBytes: 50 * 1024 * 1024,
   downloadMs: 60_000,
+  pollBackoffMs: 30_000,
 } as const;
 const REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const RESULT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -92,15 +112,45 @@ function stemOf(text: string): string {
   return s || "image";
 }
 
-/** Why this call must be asked, whatever the mode, or null. */
-export function imageAskReason(input: Partial<Input>, deps: Pick<GenerateImageDeps, "estimate" | "askOverCu">): string | null {
-  const n = input.n ?? 1;
-  const quality = input.quality ?? "standard";
-  const model = input.model ?? "mlpal";
-  const est = deps.estimate?.(model, n, quality) ?? null;
-  const over = est !== null && est > (deps.askOverCu ?? 0.05);
-  const why = [n > 1 ? `${n} images` : null, quality === "hd" ? "hd quality" : null, over ? `an estimated ${est!.toFixed(3)} CU (over ${deps.askOverCu ?? 0.05})` : null].filter(Boolean);
+/**
+ * The estimate the gateway's prices allow: a `per_image` model costs n × its rate (the gateway bills images as input
+ * units, whatever the size or quality). A token-priced model, an unpriced one, and "mlpal" when any model the router
+ * may pick is not per-image priced, are null: known only after the render.
+ */
+export function estimateFromPrices(prices: ReadonlyMap<string, ImagePrice>, models: readonly ModelInfo[]): (q: ImageEstimateQuery) => number | null {
+  const perImage = (tag: string): number | null => {
+    const p = prices.get(tag);
+    return p && p.rateUnit === "per_image" ? p.inputCuRate : null;
+  };
+  return (q) => {
+    if (q.model !== "mlpal") {
+      const rate = perImage(q.model);
+      return rate === null ? null : q.n * rate;
+    }
+    const rates = models.filter((m) => m.capabilities.operation === "image_generation").map((m) => perImage(m.tag));
+    if (!rates.length || rates.some((r) => r === null)) return null;
+    return q.n * Math.max(...(rates as number[]));
+  };
+}
+
+/** Why this call must be asked, whatever the mode, or null. Fails closed: no estimate is an ask. */
+export function imageAskReason(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): string | null {
+  const q: ImageEstimateQuery = { model: input.model ?? "mlpal", n: input.n ?? 1, quality: input.quality ?? "standard", size: input.size ?? "1024x1024", references: input.references?.length ?? 0 };
+  const estimate = deps.estimate ?? estimateFromPrices(deps.prices?.() ?? new Map(), deps.models?.() ?? []);
+  const est = estimate(q);
+  const limit = deps.askOverCu ?? IMAGE_ASK_OVER_CU;
+  const why = [
+    q.n > 1 ? `${q.n} images` : null,
+    q.quality === "hd" ? "hd quality" : null,
+    est === null ? `the cost of ${q.model} is known only after the render` : est > limit ? `an estimated ${est.toFixed(3)} CU (over ${limit})` : null,
+  ].filter(Boolean);
   return why.length ? `GenerateImage: ${why.join(", ")}${est !== null ? `, estimated ${est.toFixed(3)} CU` : ""}` : null;
+}
+
+/** A render the gateway finished: the result and the job it came from. */
+interface Rendered {
+  result: ImageResult;
+  jobId: string;
 }
 
 export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
@@ -109,25 +159,20 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   const pollMs = deps.pollMs ?? 2_000;
   const timeoutMs = deps.timeoutMs ?? 600_000;
 
-  async function references(paths: string[], ctx: ToolContext): Promise<ImageReference[] | ToolResult> {
+  function references(paths: string[], ctx: ToolContext): ImageReference[] | ToolResult {
     const out: ImageReference[] = [];
     const faults: string[] = [];
     for (const p of paths) {
-      const f: MediaProbeResult = probeMedia({ path: p, maxBytes: L.referenceBytes }, ctx);
+      const f = readMedia({ path: p, maxBytes: L.referenceBytes }, ctx);
       if ("code" in f) {
         faults.push(`${f.code} references: ${f.message}`);
         continue;
       }
-      if (!REFERENCE_TYPES.has(f.mime)) {
-        faults.push(`MEDIA_TYPE_NOT_ALLOWED references: ${f.path} is ${f.mime}; a reference is PNG, JPEG or WebP`);
+      if (!REFERENCE_TYPES.has(f.facts.mime)) {
+        faults.push(`MEDIA_TYPE_NOT_ALLOWED references: ${f.facts.path} is ${f.facts.mime}; a reference is PNG, JPEG or WebP`);
         continue;
       }
-      const bytes = readFileSync(join(contextRoots(ctx)[0]!, f.path));
-      if (createHash("sha256").update(bytes).digest("hex") !== f.sha256) {
-        faults.push(`MEDIA_CHANGED references: ${f.path} changed while it was read`);
-        continue;
-      }
-      out.push({ base64: bytes.toString("base64"), mime_type: f.mime });
+      out.push({ base64: Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength).toString("base64"), mime_type: f.facts.mime });
     }
     if (faults.length) {
       const first = faults[0]!.split(" ")[0]!;
@@ -136,47 +181,81 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     return out;
   }
 
-  /** The render: submit with the tool-use id as the idempotency key, then poll the job. */
-  async function render(input: Input, refs: ImageReference[], key: string, signal?: AbortSignal): Promise<ImageResult | ToolResult> {
-    const req = { prompt: input.prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs } : {}) };
-    try {
-      const submitted = await deps.images.submit(req, { idempotencyKey: key, ...(signal ? { signal } : {}) });
-      if ("result" in submitted) return submitted.result;
-      let job = submitted.job;
-      const deadline = now().getTime() + timeoutMs;
-      while (job.status === "queued" || job.status === "running") {
-        if (now().getTime() >= deadline) return refuse("IMAGE_TIMEOUT", `the image was not ready after ${Math.round(timeoutMs / 60_000)} minutes`, "try again later, or a smaller size");
-        await sleep(pollMs);
-        job = await deps.images.job(job.id, signal);
-      }
-      if (job.status === "succeeded") return job.result;
-      if (job.status !== "failed") return refuse("IMAGE_FAILED", `the render ended as ${String((job as { status: unknown }).status)}`);
-      const e = job.error;
-      if (e.code === "provider_error") return refuse("IMAGE_REFUSED", `the image provider refused: ${e.message.slice(0, 300)}`, "say so in plain words and suggest a change to the prompt; do not retry the same prompt");
-      if (e.code === "worker_lost") return refuse("IMAGE_FAILED", "the render was lost on the gateway; nothing was billed", "try again once");
-      return refuse("IMAGE_FAILED", `the gateway could not make it: ${e.message.slice(0, 300)}`);
-    } catch (e) {
-      if (!(e instanceof ImageGatewayError)) return refuse("IMAGE_FAILED", `the gateway could not be reached: ${(e as Error).message.slice(0, 200)}`);
-      if (e.status === 403) return refuse("IMAGE_NOT_PERMITTED", "this workspace's gateway key may not make images", "tell the person images are not enabled for this workspace yet");
-      if (e.status === 402 || e.status === 429) return refuse("IMAGE_BUDGET", `the spend cap or the wallet stops it: ${e.message.slice(0, 200)}`, "tell the person; do not retry");
-      if (e.status === 409) return refuse("IMAGE_FAILED", "this call's id was already used for a different request", "change nothing and answer in text");
-      return refuse("IMAGE_FAILED", `the gateway answered ${e.status}: ${e.message.slice(0, 200)}`);
-    }
-  }
-
-  /** Download each result and write it under media/<date>/, never over an existing file. */
-  async function store(result: ImageResult, stem: string, ctx: ToolContext, signal?: AbortSignal): Promise<string[] | ToolResult> {
+  /**
+   * media/<date>/ as plain folders in the workspace, made one level at a time and never through a link, with room for
+   * every result: checked before anything is paid for.
+   */
+  function destination(ctx: ToolContext, n: number): { dir: string; dirRel: string } | ToolResult {
     const workspace = contextRoots(ctx)[0]!;
     const day = now().toISOString().slice(0, 10);
     const dirRel = `media/${day}`;
-    const dir = join(workspace, "media", day);
+    let dir: string;
     try {
-      mkdirSync(dir, { recursive: true });
-      const real = relative(realpathSync(workspace), realpathSync(dir));
-      if (real !== join("media", day)) return refuse("IMAGE_FAILED", `${dirRel} is not a plain folder in the workspace`, "remove the link at media/ and try again");
+      dir = realpathSync(workspace);
+      for (const part of ["media", day]) {
+        dir = join(dir, part);
+        try {
+          mkdirSync(dir);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        }
+        const st = lstatSync(dir);
+        if (st.isSymbolicLink() || !st.isDirectory()) return refuse("IMAGE_FAILED", `${dirRel} is not a plain folder in the workspace`, "nothing was paid for; remove the link or file at media/ and try again");
+      }
+      if (relative(realpathSync(workspace), realpathSync(dir)) !== join("media", day)) return refuse("IMAGE_FAILED", `${dirRel} is not a plain folder in the workspace`, "nothing was paid for; remove the link at media/ and try again");
     } catch (e) {
-      return refuse("IMAGE_FAILED", `${dirRel} could not be made: ${(e as Error).message.slice(0, 200)}`);
+      return refuse("IMAGE_FAILED", `${dirRel} could not be made: ${(e as Error).message.slice(0, 200)}`, "nothing was paid for");
     }
+    const denied = ctx.exec?.writeDenied?.(join(dir, "image.png"));
+    if (denied) return refuse("IMAGE_FAILED", `${dirRel} may not be written: ${denied.slice(0, 200)}`, "nothing was paid for");
+    try {
+      const fs = statfsSync(dir);
+      if (fs.bavail * fs.bsize < n * L.resultBytes) return refuse("IMAGE_FAILED", `not enough free space under ${dirRel} for ${n} image${n > 1 ? "s" : ""}`, "nothing was paid for; tell the person the disk is full");
+    } catch (e) {
+      return refuse("IMAGE_FAILED", `the free space under ${dirRel} could not be read: ${(e as Error).message.slice(0, 200)}`, "nothing was paid for");
+    }
+    return { dir, dirRel };
+  }
+
+  /** The render: submit with the tool-use id as the idempotency key, then poll the job until it ends or the deadline. */
+  async function render(input: Input, refs: ImageReference[], key: string, signal?: AbortSignal): Promise<Rendered | ToolResult> {
+    const req = { prompt: input.prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs } : {}) };
+    let submitted;
+    try {
+      submitted = await deps.images.submit(req, { idempotencyKey: key, ...(signal ? { signal } : {}) });
+    } catch (e) {
+      return submitRefusal(e);
+    }
+    if ("result" in submitted) return { result: submitted.result, jobId: key };
+    let job = submitted.job;
+    const pending = (why: string) =>
+      refuse("IMAGE_TIMEOUT", `${why}; job ${job.id} may still finish and bill`, `tell the person the job id (${job.id}); do not make it again, which would pay a second time`);
+    const deadline = now().getTime() + timeoutMs;
+    let wait = pollMs;
+    while (job.status === "queued" || job.status === "running") {
+      if (signal?.aborted) return pending("the call was stopped while the image was being made");
+      if (now().getTime() >= deadline) return pending(`the image was not ready after ${Math.round(timeoutMs / 60_000)} minutes`);
+      await sleep(wait);
+      try {
+        job = await deps.images.job(job.id, signal);
+        wait = pollMs;
+      } catch {
+        // the job is the gateway's and bills on whatever the poll met: keep asking, more slowly, until the deadline
+        wait = Math.min(wait * 2, L.pollBackoffMs);
+      }
+    }
+    if (job.status === "succeeded") return { result: job.result, jobId: job.id };
+    if (job.status !== "failed") return refuse("IMAGE_FAILED", `the render ended as ${String((job as { status: unknown }).status)}`);
+    const e = job.error;
+    if (e.code === "provider_error") return refuse("IMAGE_REFUSED", `the image provider refused: ${e.message.slice(0, 300)}`, "say so in plain words and suggest a change to the prompt; do not retry the same prompt");
+    if (e.code === "worker_lost") return refuse("IMAGE_FAILED", "the render was lost on the gateway; nothing was billed", "try again once");
+    return refuse("IMAGE_FAILED", `the gateway could not make it: ${e.message.slice(0, 300)}`);
+  }
+
+  /** Download each result and write it into `dir`, never over an existing file. Stops at the first failure and says
+   *  what was written before it. */
+  async function store(result: ImageResult, stem: string, where: { dir: string; dirRel: string }, signal?: AbortSignal): Promise<{ written: string[]; failure?: string }> {
+    const { dir, dirRel } = where;
     const written: string[] = [];
     for (const [i, image] of result.data.entries()) {
       let bytes: Uint8Array;
@@ -184,39 +263,44 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
         bytes = await deps.images.download(image.url, { maxBytes: L.resultBytes, timeoutMs: L.downloadMs, ...(signal ? { signal } : {}) });
       } catch (e) {
         const status = e instanceof ImageGatewayError ? e.status : 0;
-        return refuse("IMAGE_FAILED", status === 403 ? "the image's link expired before it was saved" : `the image could not be saved: ${(e as Error).message.slice(0, 200)}`, "make it again");
+        return { written, failure: status === 403 ? "the image's link expired before it was saved" : `the image could not be downloaded: ${(e as Error).message.slice(0, 200)}` };
       }
       const mime = sniffMedia(bytes);
-      if (!mime || !RESULT_TYPES.has(mime)) return refuse("IMAGE_FAILED", "the gateway returned something that is not a PNG, JPEG, WebP or GIF image");
+      if (!mime || !RESULT_TYPES.has(mime)) return { written, failure: "the gateway returned something that is not a PNG, JPEG, WebP or GIF image" };
       const ext = MEDIA_EXTENSION[mime]!;
       const tmp = join(dir, `.${stem}.${randomBytes(6).toString("hex")}.tmp`);
-      const fd = openSync(tmp, "wx", 0o644);
-      try {
-        writeSync(fd, bytes);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      // link() refuses an existing name, so no file is ever replaced; the next free suffix is taken instead
       let name = "";
-      for (let k = 0; k < 1000 && !name; k++) {
-        const candidate = `${stem}-${i + 1}${k ? `-${k + 1}` : ""}.${ext}`;
+      try {
+        const fd = openSync(tmp, "wx", 0o644);
         try {
-          linkSync(tmp, join(dir, candidate));
-          name = candidate;
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
-            unlinkSync(tmp);
-            return refuse("IMAGE_FAILED", `the image could not be written: ${(e as Error).message.slice(0, 200)}`);
+          writeSync(fd, bytes);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        // link() refuses an existing name, so no file is ever replaced; the next free suffix is taken instead
+        for (let k = 0; k < 1000 && !name; k++) {
+          const candidate = `${stem}-${i + 1}${k ? `-${k + 1}` : ""}.${ext}`;
+          try {
+            linkSync(tmp, join(dir, candidate));
+            name = candidate;
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
           }
         }
+      } catch (e) {
+        return { written, failure: `the image could not be written: ${(e as Error).message.slice(0, 200)}` };
+      } finally {
+        try {
+          unlinkSync(tmp);
+        } catch {
+          // never made
+        }
       }
-      unlinkSync(tmp);
-      if (!name) return refuse("IMAGE_FAILED", `no free file name under ${dirRel} for ${stem}`);
-      if (lstatSync(join(dir, name)).isSymbolicLink()) return refuse("IMAGE_FAILED", "the written file is a link");
+      if (!name) return { written, failure: `no free file name under ${dirRel} for ${stem}` };
       written.push(`${dirRel}/${name}`);
     }
-    return written;
+    return { written };
   }
 
   return defineTool<Input>({
@@ -236,17 +320,34 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
         const names = deps.models().filter((m) => m.capabilities.operation === "image_generation").map((m) => m.tag);
         return refuse("IMAGE_FAILED", `"${model}" is not an image model this gateway serves`, names.length ? `image models: mlpal, ${names.join(", ")}` : 'use "mlpal"');
       }
-      const refs = await references(input.references ?? [], ctx);
+      const refs = references(input.references ?? [], ctx);
       if (!Array.isArray(refs)) return refs;
+      const where = destination(ctx, input.n ?? 1);
+      if (!("dir" in where)) return where;
       const key = ctx.toolUseId ?? `generate-image-${randomBytes(8).toString("hex")}`;
-      const result = await render(input, refs, key, ctx.signal);
-      if (!("data" in result)) return result;
-      if (!result.data.length) return refuse("IMAGE_FAILED", "the gateway returned no image");
-      const written = await store(result, stemOf(input.name ?? input.prompt), ctx, ctx.signal);
-      if (!Array.isArray(written)) return written;
+      const rendered = await render(input, refs, key, ctx.signal);
+      if (!("result" in rendered)) return rendered;
+      const { result, jobId } = rendered;
+      // paid: on the turn now, whatever happens to the files
+      const usage: Usage = { input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: result.cost.compute_units };
+      ctx.spend?.(usage);
+      if (!result.data.length) return notSaved(result, jobId, [], "the gateway returned no image");
+      const { written, failure } = await store(result, stemOf(input.name ?? input.prompt), where, ctx.signal);
+      if (failure) return notSaved(result, jobId, written, failure);
       return shown(input, result, written, key, ctx);
     },
   });
+}
+
+/** A paid render that was not (all) saved: what it cost, the job, what was saved, and that making it again pays again. */
+function notSaved(result: ImageResult, jobId: string, written: string[], failure: string): ToolResult {
+  const cu = result.cost.compute_units;
+  const saved = written.length ? `; saved before it failed: ${written.join(", ")}` : "; nothing was saved";
+  return refuse(
+    "IMAGE_NOT_SAVED",
+    `the render was paid (${cu} CU, job ${jobId}) but ${result.data.length > 1 ? "not every image was" : "the image was not"} saved: ${failure}${saved}`,
+    "tell the person what failed, the job id and where any saved image is; making it again pays a second time, so only on their word",
+  );
 }
 
 /** The step: what the model reads, and the engine-written image or image_set block. */
@@ -262,7 +363,6 @@ function shown(input: Input, result: ImageResult, paths: string[], key: string, 
   const spec = kind === "image" ? { path: paths[0], alt, made_by } : { images: paths.map((p) => ({ path: p, alt })), made_by };
   const lead = `Made with ${model} from the prompt: ${input.prompt.replace(/\s+/g, " ").slice(0, 500)}${revised ? `\nAs the model read it: ${revised.replace(/\s+/g, " ").slice(0, 500)}` : ""}\nCost: ${cu} CU.`;
   const check = checkShowInput({ block_id: blockId, kind, spec, fallback: { text: lead } }, { kinds: new Set([kind]), media });
-  const usage: Usage = { input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: cu };
   const sizes = paths.map((p) => {
     const f = media.get(p)!;
     return "code" in f ? p : `${p} (${f.width ?? "?"}×${f.height ?? "?"}, ${humanBytes(f.bytes)})`;
@@ -270,9 +370,17 @@ function shown(input: Input, result: ImageResult, paths: string[], key: string, 
   const line = `wrote ${sizes.join(", ")}; ${cu} CU`;
   if (!check.ok) {
     // the files are written; only the block failed its own checks (an image the probe cannot read): say where they are
-    return { content: `${line}\n(not shown as a block: ${check.error.code} ${check.error.message})`, meta: { usage } };
+    return { content: `${line}\n(not shown as a block: ${check.error.code} ${check.error.message})` };
   }
   const v = check.show;
   const envelope = { v: 1, block_id: blockId, revision: 1, op: "snapshot", level: "block", kind: v.kind, catalog: DISPLAY_CATALOG, spec: v.spec, fallback: { text: v.fallback }, source: { by: "engine", tool_use_ids: [key] }, status: "ok" } as DisplayEnvelope;
-  return { content: line, meta: { display: [envelope], displayText: `${line}\n${v.fallback}`, usage } };
+  return { content: line, meta: { display: [envelope], displayText: `${line}\n${v.fallback}` } };
+}
+
+function submitRefusal(e: unknown): ToolResult {
+  if (!(e instanceof ImageGatewayError)) return refuse("IMAGE_FAILED", `the gateway could not be reached: ${(e as Error).message.slice(0, 200)}`);
+  if (e.status === 403) return refuse("IMAGE_NOT_PERMITTED", "this workspace's gateway key may not make images", "tell the person images are not enabled for this workspace yet");
+  if (e.status === 402 || e.status === 429) return refuse("IMAGE_BUDGET", `the spend cap or the wallet stops it: ${e.message.slice(0, 200)}`, "tell the person; do not retry");
+  if (e.status === 409) return refuse("IMAGE_FAILED", "this call's id was already used for a different request", "change nothing and answer in text");
+  return refuse("IMAGE_FAILED", `the gateway answered ${e.status}: ${e.message.slice(0, 200)}`);
 }

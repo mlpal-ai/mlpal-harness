@@ -328,12 +328,15 @@ export interface AskContext {
   stamp?: RunStamp;
   /** E-12: an answerer's model spend, added to the asking turn's usage (its result and run.completed). */
   spend?: (usage: Usage) => void;
+  /** The call is always the person's (`Tool.alwaysAsk`: a paid action past its threshold), and why. */
+  alwaysAsk?: string;
 }
 
-/** An ask only the person may answer, one action at a time: a §10 safety edge, or a call a policy hook got no verdict
- *  on. No judge, session grant, project rule or live-mode raise stands in for the person's answer. */
+/** An ask only the person may answer, one action at a time: a §10 safety edge, a call a policy hook got no verdict
+ *  on, or a call that is always the person's (a paid action past its threshold). No judge, session grant, project rule
+ *  or live-mode raise stands in for the person's answer. */
 export function personOnlyAsk(ask: AskContext | undefined): boolean {
-  return Boolean(ask?.safetyReason || ask?.noVerdict);
+  return Boolean(ask?.safetyReason || ask?.noVerdict || ask?.alwaysAsk);
 }
 
 /** A PreToolUse policy hook's no verdict on the call: the mark the ask carries and the words the person reads. */
@@ -2259,6 +2262,8 @@ export class AgentSession {
           exec: cfg.exec,
           toolUseId: tu.id,
           emit: (e) => this.emitSide(e),
+          // a tool's own gateway spend (GenerateImage) is the turn's, and so the session's
+          spend: (u) => this.askSpend?.(u),
         }),
         cfg.signal,
       );
@@ -2269,8 +2274,6 @@ export class AgentSession {
       sandboxRefusal = res.meta?.sandboxRefusal;
       display = this.drawable(res.meta?.display);
       displayText = res.meta?.displayText;
-      // a tool's own gateway spend (GenerateImage) is the turn's, and so the session's
-      if (res.meta?.usage) this.askSpend?.(res.meta.usage);
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
       this.observed(
@@ -2330,7 +2333,8 @@ export class AgentSession {
     // no answer means the ask proceeds exactly as before. It is told when the call's policy check reached no verdict.
     if (this.cfg.hooks?.has("PermissionRequest")) {
       const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}), ...(undecided ? { noVerdict: undecided.noVerdict } : {}) }, this.hookCtx());
-      const answer = results.find((r) => r.decision);
+      // a hook may refuse a call that is always the person's, never approve it
+      const answer = results.find((r) => r.decision && !(req.alwaysAsk && r.decision === "allow"));
       if (answer?.decision) {
         const decided: Decision = answer.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: answer.reason ?? "denied by hook" };
         return { decision: decided.behavior === "allow" ? decided : this.observed(req, decided, "policy"), via: "policy" };
@@ -2348,6 +2352,7 @@ export class AgentSession {
         stamp: this.stamp(),
         ...(spend ? { spend } : {}),
         ...(undecided ? { noVerdict: undecided.noVerdict } : {}),
+        ...(req.alwaysAsk ? { alwaysAsk: req.alwaysAsk } : {}),
       });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
@@ -2356,7 +2361,7 @@ export class AgentSession {
     // A §10 safety edge with no interactive answerer (with `every_ask`, any ask): park the whole run
     // (stop-and-wait) instead of denying just this action and continuing — the infra HOP must not
     // proceed past the edge.
-    if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
+    if (((d.safetyReason || req.alwaysAsk) && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
       throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req), undecided ? { noVerdict: undecided.noVerdict, detail: undecided.text } : undefined);
     }

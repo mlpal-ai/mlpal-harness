@@ -63,6 +63,12 @@ export interface ImageGateway {
 
 export interface ImageGatewayConfig {
   baseUrl: string;
+  /**
+   * Review R2: the only origins a result is downloaded from, exactly (scheme, host and port). Default: the gateway's
+   * own origin when it is https. An http origin (a test gateway on loopback) is accepted only by being named here;
+   * nothing is accepted by pattern.
+   */
+  assetOrigins?: readonly string[];
   /** The Authorization header's value for one request, read when it is made. */
   authorization: () => string;
   /** Headers every gateway request carries (the on-behalf-of header of an owner-paid run). */
@@ -86,9 +92,63 @@ async function failure(res: Response): Promise<ImageGatewayError> {
   return new ImageGatewayError(res.status, message.slice(0, 500), code);
 }
 
+/**
+ * An image model's price as `GET /v1/models/{tag}` reports it (`pricing`: ModelPricingInfo). The listing
+ * (`GET /v1/models`) carries only `pricing_tier`, so prices are read per model, once, when the tool is made.
+ * `per_image` models bill `n × input_cu_rate` (the gateway's PricingService.calculate_image_cost: n images as input
+ * units, none as output, whatever the size or quality); a token-priced model's cost is known only after the render.
+ */
+export interface ImagePrice {
+  rateUnit: string;
+  inputCuRate: number;
+  outputCuRate: number;
+}
+
+/** The prices of `tags`; a model whose price cannot be read is left out (its calls are then always asked). */
+export async function loadImagePrices(cfg: Pick<ImageGatewayConfig, "baseUrl" | "authorization" | "headers" | "fetch">, tags: readonly string[], signal?: AbortSignal): Promise<Map<string, ImagePrice>> {
+  const f = cfg.fetch ?? fetch;
+  const base = cfg.baseUrl.replace(/\/$/, "");
+  const out = new Map<string, ImagePrice>();
+  await Promise.all(
+    tags.map(async (tag) => {
+      try {
+        const res = await f(`${base}/v1/models/${encodeURIComponent(tag)}`, { headers: { ...cfg.headers, authorization: cfg.authorization() }, ...(signal ? { signal } : {}) });
+        if (!res.ok) return;
+        const p = ((await res.json()) as { pricing?: { rate_unit?: unknown; input_cu_rate?: unknown; output_cu_rate?: unknown } | null }).pricing;
+        if (p && typeof p.rate_unit === "string" && typeof p.input_cu_rate === "number" && typeof p.output_cu_rate === "number") out.set(tag, { rateUnit: p.rate_unit, inputCuRate: p.input_cu_rate, outputCuRate: p.output_cu_rate });
+      } catch {
+        // unpriced: asked
+      }
+    }),
+  );
+  return out;
+}
+
+/** The origins `download` may fetch from (ImageGatewayConfig.assetOrigins). */
+export function assetOriginsOf(cfg: Pick<ImageGatewayConfig, "baseUrl" | "assetOrigins">): ReadonlySet<string> {
+  if (cfg.assetOrigins) return new Set(cfg.assetOrigins.map((o) => new URL(o).origin));
+  const base = new URL(cfg.baseUrl);
+  return new Set(base.protocol === "https:" ? [base.origin] : []);
+}
+
+/** Why `url` may not be downloaded, or null: https (or an origin configured by name), on an allowed origin, with no
+ *  credentials in it. A job answer names the URL, so it is checked as untrusted input. */
+export function downloadRefusal(url: string, allowed: ReadonlySet<string>): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "the image's link is not a URL";
+  }
+  if (u.username || u.password) return "the image's link carries credentials";
+  if (!allowed.has(u.origin)) return `the image's link is on ${u.protocol === "https:" || u.protocol === "http:" ? u.origin : `a ${u.protocol} URL`}, not the gateway's asset origin`;
+  return null;
+}
+
 export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
   const f = cfg.fetch ?? fetch;
   const base = cfg.baseUrl.replace(/\/$/, "");
+  const allowed = assetOriginsOf(cfg);
   const headers = () => ({ ...cfg.headers, authorization: cfg.authorization(), "content-type": "application/json" });
   return {
     async submit(req, opts) {
@@ -104,12 +164,16 @@ export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
       return (await res.json()) as ImageJob;
     },
     async download(url, opts) {
+      const refused = downloadRefusal(url, allowed);
+      if (refused) throw new ImageGatewayError(0, refused, "asset_origin");
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), opts.timeoutMs);
       const onAbort = () => ctl.abort();
       opts.signal?.addEventListener("abort", onAbort);
       try {
-        const res = await f(url, { signal: ctl.signal });
+        // never followed: a redirect would leave the checked origin
+        const res = await f(url, { signal: ctl.signal, redirect: "manual" });
+        if (res.status >= 300 && res.status < 400) throw new ImageGatewayError(res.status, `the image's link redirected (${res.status}); redirects are not followed`, "asset_origin");
         if (!res.ok) throw new ImageGatewayError(res.status, `the image's link answered ${res.status}`);
         const reader = res.body?.getReader();
         if (!reader) throw new ImageGatewayError(0, "the image's link sent no body");

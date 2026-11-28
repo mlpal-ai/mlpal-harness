@@ -22,6 +22,9 @@ export function isBlockKind(kind: string): kind is BlockKind {
 
 /** The media kinds (DISPLAY-PROTOCOL-v0.1-media §1): offered only to a client that names them in `kinds` and
  *  declares `media` (caps.ts), and only where the engine can read the workspace's files. */
+/** Chart marks a client draws only by naming them in `run.display.marks` (a UI pinned before them refuses them). */
+export const CHART_OPTIONAL_MARKS = ["arc"] as const;
+export type ChartOptionalMark = (typeof CHART_OPTIONAL_MARKS)[number];
 export const MEDIA_KINDS = ["image", "image_set", "audio", "video", "file"] as const;
 export type MediaKind = (typeof MEDIA_KINDS)[number];
 export function isMediaKind(kind: string): kind is MediaKind {

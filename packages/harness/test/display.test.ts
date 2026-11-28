@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ConversationEntry, DisplayCaps, DisplayEnvelope, EngineEvent, ToolResultEvent } from "@mlpal/harness-protocol";
-import { DISPLAY_LIMITS, gridColumnSchema, kpiTileSchema, validateBlock } from "@mlpal/harness-protocol";
+import { CHART_OPTIONAL_MARKS, DISPLAY_LIMITS, gridColumnSchema, kpiTileSchema, validateBlock } from "@mlpal/harness-protocol";
 
 type Js = { type?: unknown; properties?: Record<string, Js>; items?: Js; enum?: unknown[]; required?: string[] };
 import { createShowTool, displayInstructions, foldDisplayHistory, KIND_EXAMPLES, resolveDisplay, type DisplayHistory } from "../src/display";
@@ -688,7 +688,8 @@ describe("capability gating in the engine", () => {
     expect(Object.keys(spec.properties!.columns!.items!.properties!).sort()).toEqual(Object.keys(gridColumnSchema.shape).sort());
     expect(spec.properties!.tiles!.items!.properties!.format!.enum).toEqual(kpiTileSchema.shape.format.options);
     expect(spec.properties!.columns!.items!.properties!.type!.enum).toEqual(gridColumnSchema.shape.type.options);
-    for (const m of CHART_GRAMMAR.marks) expect((vl.properties!.mark as { description: string }).description).toContain(`"${m}"`);
+    // every mark but the optional ones, which the system section names to a client that declared them (run.display.marks)
+    for (const m of CHART_GRAMMAR.marks.filter((x) => !(CHART_OPTIONAL_MARKS as readonly string[]).includes(x))) expect((vl.properties!.mark as { description: string }).description).toContain(`"${m}"`);
     // every Vega-Lite key the schema names is one the grammar takes
     for (const k of Object.keys(vl.properties!)) {
       const r = validateBlock("chart", { vl: { data: { values: [{ a: 1 }] }, mark: "point", encoding: { x: { field: "a", type: "quantitative" } }, [k]: null } });

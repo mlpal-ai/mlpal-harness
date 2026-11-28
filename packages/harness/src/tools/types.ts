@@ -28,6 +28,9 @@ export interface ToolContext {
   /** Raise an event on the calling session's stream while this call runs (a sub-agent's
    *  lifecycle, a child's forwarded events). Absent when the host has no stream to carry it. */
   emit?: (e: SubagentEvent | SubagentStreamEvent) => void;
+  /** Record what the call spends on the gateway beyond the turn's own model calls (GenerateImage's compute units), the
+   *  moment the gateway reports the charge: it is the turn's, and so the session's, whatever the call does after. */
+  spend?: (usage: Usage) => void;
 }
 
 /** What a command-running tool consults before it spawns. Implemented by the sandbox. */
@@ -109,9 +112,6 @@ export interface ToolResult {
     /** The step's display string when it is not what the model reads: Show's model reads a short line, while a client
      *  that draws no display shows the line and the fallback. Absent = the display string is derived from `content`. */
     displayText?: string;
-    /** What the call spent on the gateway beyond the turn's own model calls (GenerateImage's compute units): added to
-     *  the turn's usage, and so to the session's. */
-    usage?: Usage;
   };
 }
 

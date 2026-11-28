@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### engine-media: review-media round 1 fixes (needs the same version bump, 2026-11-28)
+
+- "Always ask" is a property of the call. `defaultForMode` asks for a call that carries `alwaysAsk`, in every
+  mode but recon (which denies it), because a host re-runs it with the live mode. `AskContext.alwaysAsk` makes the
+  ask `personOnlyAsk`, so no judge, session grant or Shift+Tab answers it. A `PermissionRequest` hook may refuse
+  such a call but never approve it, and a headless run parks it as it parks a safety edge.
+- Media probe: the file is opened once, as the workspace's real path joined with the relative path (O_NONBLOCK).
+  The kernel confirms no link is on that path: macOS opens with O_NOFOLLOW_ANY, and Linux compares
+  /proc/self/fd/N with the path. Any other platform admits no media file. The lexical jail and hidden checks are
+  therefore exact. A dev/ino comparison after the open was tried and is not enough, because the stat walks the path
+  again. `readMedia` returns the bytes it hashed, and GenerateImage sends those bytes, so a reference is never
+  opened a second time.
+- `gatewayImages` downloads a result only from `assetOrigins`. The default is the gateway's own https origin; an
+  http (test) origin is admitted only by being named, never by pattern. URLs carrying credentials are refused, and
+  so are redirects (`redirect: "manual"`); the refusal code is `asset_origin`. `loadImagePrices` reads
+  `GET /v1/models/{tag}` pricing.
+- GenerateImage:
+  - It checks `media/<date>/` before the job: made one level at a time, never through a link, writable, with free
+    space for n results.
+  - It records the charge through the new `ToolContext.spend` the moment the gateway reports it. This replaces
+    `ToolResult.meta.usage`.
+  - A paid result it cannot save is `IMAGE_NOT_SAVED`, which names the job id, the cost and what was saved.
+  - A poll error backs off until the deadline, and a timeout or a stop names the job, which may still bill.
+- The budget ask fails closed: no estimate is an ask. `estimateFromPrices` prices `per_image` models at n × rate.
+  A token-priced model, and `mlpal` whenever any model it routes to is token-priced, has no estimate. The default
+  threshold is `IMAGE_ASK_OVER_CU` = 0.02 CU; `askOverCu` takes `budgets.imageAskOverCu`.
+- Pie slices are bounded with no inference. The colour and detail fields are counted only when they are fields
+  of the inline rows that no in-scope transform writes; otherwise the rows after transforms bound the slices.
+  Layer-shared encodings count. Two new invalid vectors.
+- The arc mark is gated by `run.display.marks` (`CHART_OPTIONAL_MARKS`). A client that does not name `arc` is
+  not offered it in the system section, and Show refuses one as `KIND_NOT_ALLOWED`. `ChartCheckOptions.marks` and
+  `ShowCheckOptions.marks` default to every mark. The Show tool's schema no longer names arc.
+
 ### engine-media: image and image_set kinds in the protocol (needs a protocol and catalog version bump, 2026-11-28)
 
 - `MEDIA_KINDS` (`image`, `image_set`), `isMediaKind` and `DisplayKind`. `BLOCK_KINDS` is unchanged (the wave-1

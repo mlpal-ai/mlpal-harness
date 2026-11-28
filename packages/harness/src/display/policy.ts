@@ -1,4 +1,4 @@
-import { AUDIO_MIME_TYPES, BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, IMAGE_MIME_TYPES, VIDEO_MIME_TYPES, isMediaKind, MEDIA_KINDS, type BlockKind, type DisplayCaps, type DisplayKind, type MediaKind } from "@mlpal/harness-protocol";
+import { AUDIO_MIME_TYPES, BLOCK_KINDS, CHART_OPTIONAL_MARKS, DISPLAY_CATALOG, DISPLAY_LIMITS, IMAGE_MIME_TYPES, VIDEO_MIME_TYPES, isMediaKind, MEDIA_KINDS, type BlockKind, type DisplayCaps, type DisplayKind, type MediaKind } from "@mlpal/harness-protocol";
 
 /**
  * What this engine shows a run's client (DISPLAY-PROTOCOL-v0 §4.2): the block kinds it draws. Only a client that
@@ -14,6 +14,8 @@ export interface DisplayPolicy {
   kinds: ReadonlySet<DisplayKind>;
   /** With a media kind: the media types the client draws (`run.display.media.formats`). */
   formats?: ReadonlySet<string>;
+  /** The optional chart marks the client named in `run.display.marks` (arc): offered, and admitted by Show, only then. */
+  marks: ReadonlySet<string>;
 }
 
 /** `media`: the engine can read this run's workspace files (local hands), so a media kind can be checked. A media kind
@@ -35,7 +37,8 @@ export function resolveDisplay(caps: DisplayCaps, opts: { media?: boolean } = {}
   }
   if (!caps.levels.includes("block") || !caps.catalogs.includes(DISPLAY_CATALOG) || kinds.size === 0) return null;
   const media = [...kinds].some((k) => isMediaKind(k));
-  return { client: caps.client, viewport: caps.viewport, kinds, ...(media && formats ? { formats } : {}) };
+  const marks = new Set<string>(CHART_OPTIONAL_MARKS.filter((m) => caps.marks?.includes(m)));
+  return { client: caps.client, viewport: caps.viewport, kinds, marks, ...(media && formats ? { formats } : {}) };
 }
 
 /** The smallest valid spec of each kind, shown to the model (a test holds each to validateBlock). */
@@ -58,13 +61,16 @@ const KIND_RULES: Record<BlockKind, string> = {
     `optional sub, delta {value, good: up|down}, spark [numbers], status ok|warn|bad|neutral; at most ${DISPLAY_LIMITS.kpiTiles} tiles.`,
   grid: `grid: column type text|code|num|bar|state; row_key is the column whose values are unique; at most ${DISPLAY_LIMITS.gridRows.toLocaleString("en-US")} rows.`,
   chart:
-    `chart: Vega-Lite 6 with inline data.values only (at most ${DISPLAY_LIMITS.chartRows.toLocaleString("en-US")} rows, ${DISPLAY_LIMITS.chartCells.toLocaleString("en-US")} cells, ${DISPLAY_LIMITS.chartSeries} series; the whole input at most ${DISPLAY_LIMITS.inputBytes / 1024} KiB). Marks line, area, bar, point, rule, rect, text, tick, errorband, errorbar, boxplot, and arc for a pie (theta and color; innerRadius for a donut; at most ${DISPLAY_LIMITS.chartSlices} slices); ` +
+    `chart: Vega-Lite 6 with inline data.values only (at most ${DISPLAY_LIMITS.chartRows.toLocaleString("en-US")} rows, ${DISPLAY_LIMITS.chartCells.toLocaleString("en-US")} cells, ${DISPLAY_LIMITS.chartSeries} series; the whole input at most ${DISPLAY_LIMITS.inputBytes / 1024} KiB). Marks line, area, bar, point, rule, rect, text, tick, errorband, errorbar, boxplot; ` +
     `layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (${DISPLAY_LIMITS.chartVconcat}); transforms filter (field predicates), aggregate, bin, timeUnit, window, fold, stack. ` +
     "No URL, calculate, expression, facet or concat. No ci0, ci1 or extent \"ci\": compute an interval upstream and draw its low and high fields (errorband with y and y2). " +
     'Sort by a channel ("-y") or {field, order}, never an op; a condition sets a value, never a field. series_order keeps series colours in that order. ' +
     `Cost: ${DISPLAY_LIMITS.chartWholeFrameOps.join(", ")} windows only with frame [null, null]; at most ${DISPLAY_LIMITS.chartMarks.toLocaleString("en-US")} marks across views (every point, bar, tick, rule, rect and text counts); ` +
     `an estimated draw of at most ${DISPLAY_LIMITS.chartCostBudgetMs} ms (TOO_COSTLY: aggregate or draw fewer layers).`,
 };
+
+/** The arc mark, for a client that named it in `run.display.marks`. */
+const ARC_RULE = `chart mark arc, for a pie: theta and color, innerRadius for a donut; at most ${DISPLAY_LIMITS.chartSlices} slices, counted on a colour field of the data (one a transform makes counts every row).`;
 
 /** Kinds in the order the model should consider them. */
 const ORDER: BlockKind[] = ["kpis", "grid", "chart"];
@@ -107,6 +113,7 @@ export function displayInstructions(p: DisplayPolicy): string {
     `Every Show: block_id, kind, spec, and fallback.text: the conclusion and the key numbers in ${DISPLAY_LIMITS.fallbackMinChars} to ${DISPLAY_LIMITS.fallbackMaxChars.toLocaleString("en-US")} characters of markdown, ` +
       `never "see the chart" (fallback.table {"from": "rows"} adds a grid's or chart's rows). Name sources in words: which tool or data, as of when.`,
     ...kinds.map((k) => KIND_RULES[k]),
+    ...(p.kinds.has("chart") && p.marks.has("arc") ? [ARC_RULE] : []),
     ...(media.length ? [MEDIA_RULE] : []),
     "A refusal lists every fault with a path and a hint: fix them all and call Show again with the same block_id, once.",
     ...(p.viewport === "phone" ? ["This person is on a phone: prefer one series, at most four grid columns and short labels."] : []),

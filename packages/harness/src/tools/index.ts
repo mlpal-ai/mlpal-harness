@@ -43,5 +43,5 @@ export function defaultRegistry(): ToolRegistry {
   return r;
 }
 export { createAskModelTool, createListModelsTool, resolveModelRef, type GatewayToolDeps, type AskModelInput } from "./builtin/gateway";
-export { createGenerateImageTool, imageAskReason, type GenerateImageDeps } from "./builtin/image";
+export { createGenerateImageTool, estimateFromPrices, IMAGE_ASK_OVER_CU, imageAskReason, type GenerateImageDeps, type ImageEstimateQuery } from "./builtin/image";
 export { createWebSearchTools, parseSearchResult, SEARCH_MAX_CHARS, SEARCH_MAX_SOURCES, RESEARCH_HEAD_CHARS, type SearchKind, type WebSearchDeps, type SearchAnswer } from "./builtin/websearch";

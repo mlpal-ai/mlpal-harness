@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { displayEnvelopeSchema, type DisplayCaps } from "@mlpal/harness-protocol";
+import { displayEnvelopeSchema, type DisplayCaps, type Usage } from "@mlpal/harness-protocol";
 import { gatewayImages, ImageGatewayError, type ImageGateway, type ImageJob, type ImageRequest, type ImageResult } from "../src/gateway/images";
 import { createPolicy } from "../src/permission/engine";
 import type { ModelInfo } from "../src/registry/models";
@@ -51,7 +51,9 @@ const result = (n = 1, cu = 0.04): ImageResult => ({
 const IMAGE_MODEL: ModelInfo = { tag: "gpt-image-2", displayName: "GPT Image 2", provider: "openai", capabilities: { operation: "image_generation", streaming: false, tools: false, vision: false, pdf: false, audio: false }, contextLength: null, maxOutputTokens: null, deprecated: false, effortLevels: [] };
 
 let root: string;
+let spent: Usage[] = [];
 beforeEach(() => {
+  spent = [];
   root = mkdtempSync(join(tmpdir(), "genimg-"));
   mkdirSync(join(root, "uploads"), { recursive: true });
   writeFileSync(join(root, "uploads", "ref-a.png"), PNG);
@@ -61,7 +63,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 function tool(gw: ImageGateway, extra: Partial<GenerateImageDeps> = {}) {
   const t = createGenerateImageTool({ images: gw, models: () => [IMAGE_MODEL], now, sleep: async () => {}, ...extra });
-  return (input: Record<string, unknown>, toolUseId = "toolu_01") => t.call(input as never, { cwd: root, roots: [root], toolUseId });
+  return (input: Record<string, unknown>, toolUseId = "toolu_01") => t.call(input as never, { cwd: root, roots: [root], toolUseId, spend: (u) => spent.push(u) });
 }
 const text = (r: ToolResult) => (typeof r.content === "string" ? r.content : "");
 const code = (r: ToolResult) => (JSON.parse(text(r).split("\n")[0]!) as { error: string }).error;
@@ -82,7 +84,7 @@ describe("GenerateImage writes the result under media/<date>/ and shows it", () 
     });
     expect(env.fallback.text).toContain("Cost: 0.04 CU.");
     expect(env.fallback.text).toContain(`media/${DAY}/fox-1.png`);
-    expect(r.meta!.usage).toEqual({ input_tokens: 0, output_tokens: 0, compute_units: 0.04 });
+    expect(spent).toEqual([{ input_tokens: 0, output_tokens: 0, compute_units: 0.04 }]);
     expect(gw.submits[0]).toMatchObject({ key: "toolu_01", req: { prompt: "A red fox on snow", model: "mlpal", n: 1, size: "1024x1024", quality: "standard" } });
     // the temp file is gone
     expect(readdirSync(join(root, "media", DAY))).toEqual(["fox-1.png"]);
@@ -154,11 +156,12 @@ describe("GenerateImage's typed errors", () => {
     expect(code(r)).toBe("IMAGE_TIMEOUT");
   });
 
-  test("an expired link, and a result that is not an image, write nothing", async () => {
+  test("an expired link, and a result that is not an image, write nothing: paid and not saved, the spend recorded", async () => {
     const expired = new FakeGateway({ files: { "https://assets.test/img-0.png?sig=x": new ImageGatewayError(403, "expired") } });
-    expect(code(await tool(expired)({ prompt: "x" }))).toBe("IMAGE_FAILED");
+    expect(code(await tool(expired)({ prompt: "x" }))).toBe("IMAGE_NOT_SAVED");
     const html = new FakeGateway({ files: { "https://assets.test/img-0.png?sig=x": head("html") } });
-    expect(code(await tool(html)({ prompt: "x" }))).toBe("IMAGE_FAILED");
+    expect(code(await tool(html)({ prompt: "x" }))).toBe("IMAGE_NOT_SAVED");
+    expect(spent.map((u) => u.compute_units)).toEqual([0.04, 0.04]);
     expect(existsSync(join(root, "media", DAY)) ? readdirSync(join(root, "media", DAY)).filter((f) => !f.startsWith(".")) : []).toEqual([]);
   });
 
@@ -171,11 +174,11 @@ describe("GenerateImage's typed errors", () => {
 
 describe("GenerateImage asks the person when it costs more", () => {
   test("more than one image, hd, or an estimate over the threshold; one cheap image is the mode's", () => {
-    const estimate = (_m: string, n: number, q: string) => n * (q === "hd" ? 0.08 : 0.02);
+    const estimate = ({ n, quality }: { n: number; quality: string }) => n * (quality === "hd" ? 0.08 : 0.01);
     expect(imageAskReason({ prompt: "x" }, { estimate })).toBeNull();
     expect(imageAskReason({ prompt: "x", n: 4 }, { estimate })).toMatch(/4 images/);
     expect(imageAskReason({ prompt: "x", quality: "hd" }, { estimate })).toMatch(/hd quality/);
-    expect(imageAskReason({ prompt: "x" }, { estimate: () => 0.06 })).toMatch(/over 0.05/);
+    expect(imageAskReason({ prompt: "x" }, { estimate: () => 0.06 })).toMatch(/over 0.02/);
     expect(imageAskReason({ prompt: "x" }, { estimate: () => 0.06, askOverCu: 0.1 })).toBeNull();
   });
 
@@ -201,9 +204,9 @@ describe("the gateway's images API over HTTP", () => {
     const body = JSON.parse(String(calls[0]!.init!.body)) as Record<string, unknown>;
     expect([body.wait, body.idempotency_key, (calls[0]!.init!.headers as Record<string, string>).authorization]).toEqual([false, "toolu_1", "Bearer k"]);
     expect((await gw.job("job-1")).status).toBe("failed");
-    await gw.download("https://assets.test/a.png", { maxBytes: 4096, timeoutMs: 1000 });
+    await gw.download("https://gw.test/a.png", { maxBytes: 4096, timeoutMs: 1000 });
     expect(calls.at(-1)!.init?.headers).toBeUndefined();
-    await expect(gw.download("https://assets.test/a.png", { maxBytes: 1000, timeoutMs: 1000 })).rejects.toThrow(/over 1000 bytes/);
+    await expect(gw.download("https://gw.test/a.png", { maxBytes: 1000, timeoutMs: 1000 })).rejects.toThrow(/over 1000 bytes/);
   });
 
   test("a gateway error carries its status and code", async () => {
@@ -233,7 +236,7 @@ describe("in the engine: the block reaches only a client that draws images, and 
   const done: MR = { model: "test", message: { role: "assistant", content: [{ type: "text", text: "Here it is." }] }, usage: { input_tokens: 10, output_tokens: 5 }, stopReason: "end_turn" };
   const caps = (kinds: string[]): DisplayCaps => ({ v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], kinds, media: { formats: ["image/png"] }, viewport: "desktop", theme: "light", locale: "en-US", timeZone: "UTC" });
   async function run(kinds: string[] | null) {
-    const tools = defaultRegistry().withTools([createGenerateImageTool({ images: new FakeGateway(), models: () => [], now, sleep: async () => {} }) as never]);
+    const tools = defaultRegistry().withTools([createGenerateImageTool({ images: new FakeGateway(), models: () => [], estimate: () => 0.01, now, sleep: async () => {} }) as never]);
     const s = new AgentSession({ agentId: "a", sessionId: `s-${kinds?.length ?? 0}`, workspace: "w", cwd: root, model: "test", systemPrompt: "t", tools, store: new LocalStore(join(root, ".store")), model_client: scripted([use, done]), canUseTool: createPolicy({ mode: "autopilot" }), ...(kinds ? { display: caps(kinds) } : {}) });
     const events: Array<Record<string, unknown>> = [];
     for await (const e of s.run({ text: "make a fox" })) events.push(e as never);

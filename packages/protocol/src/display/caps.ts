@@ -23,6 +23,9 @@ export const displayCapsSchema = z.object({
   catalogs: z.array(z.string().min(1).max(40)).max(8),
   /** A subset of the catalogs' kinds; absent: all of them but the media kinds, which a client names to get. */
   kinds: z.array(z.string().min(1).max(40)).max(64).optional(),
+  /** The optional chart marks it draws (CHART_OPTIONAL_MARKS: `arc`, a pie); absent: none of them. A client pinned before a
+   *  mark never names it, so it is never offered one. */
+  marks: z.array(z.string().min(1).max(40)).max(32).optional().catch(undefined),
   /** The media this client draws (DISPLAY-PROTOCOL-v0.1-media §3.2): the types it decodes or plays, and whether the
    *  person asked for reduced data. Absent: no media kind is offered, whatever `kinds` names. */
   media: z

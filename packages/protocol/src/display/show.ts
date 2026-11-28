@@ -81,6 +81,9 @@ export interface ShowCheckOptions {
   media?: MediaFactsMap;
   /** The media types this client draws (`run.display.media.formats`). */
   formats?: ReadonlySet<string>;
+  /** The optional chart marks this client draws (`run.display.marks`: arc); one outside them is KIND_NOT_ALLOWED. Default:
+   *  every mark. */
+  marks?: ReadonlySet<string>;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -120,7 +123,7 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
       if ((given && !fb) || !input || !spec) return undefined;
       return withOptional(input, { block_id: input.block_id, kind, spec, fallback: mediaFallback(kind, spec, fb?.text) });
     }
-    const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"])) : undefined;
+    const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"], opts.marks ? { marks: opts.marks } : {})) : undefined;
     // the table is checked against the rows even when the text itself was refused, so both faults come together
     const tabled = fb ?? shape;
     const complete = tabled && kind && spec ? attempt(() => completeFallback(tabled, kind, spec, ["fallback"])) : undefined;

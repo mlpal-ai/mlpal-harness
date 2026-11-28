@@ -1400,6 +1400,185 @@
    }
   },
   {
+   "name": "a pie whose colour a window writes, over 13 rows (review R7: counted as its rows)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "v": 1
+       },
+       {
+        "v": 2
+       },
+       {
+        "v": 3
+       },
+       {
+        "v": 4
+       },
+       {
+        "v": 5
+       },
+       {
+        "v": 6
+       },
+       {
+        "v": 7
+       },
+       {
+        "v": 8
+       },
+       {
+        "v": 9
+       },
+       {
+        "v": 10
+       },
+       {
+        "v": 11
+       },
+       {
+        "v": 12
+       },
+       {
+        "v": 13
+       }
+      ]
+     },
+     "transform": [
+      {
+       "window": [
+        {
+         "op": "row_number",
+         "as": "w"
+        }
+       ]
+      }
+     ],
+     "mark": {
+      "type": "arc",
+      "innerRadius": 30
+     },
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "w",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a pie of 3 colours by 5 details (15 slices)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "c": "c0",
+        "d": "d0",
+        "v": 1
+       },
+       {
+        "c": "c1",
+        "d": "d1",
+        "v": 2
+       },
+       {
+        "c": "c2",
+        "d": "d2",
+        "v": 3
+       },
+       {
+        "c": "c0",
+        "d": "d3",
+        "v": 4
+       },
+       {
+        "c": "c1",
+        "d": "d4",
+        "v": 5
+       },
+       {
+        "c": "c2",
+        "d": "d0",
+        "v": 6
+       },
+       {
+        "c": "c0",
+        "d": "d1",
+        "v": 7
+       },
+       {
+        "c": "c1",
+        "d": "d2",
+        "v": 8
+       },
+       {
+        "c": "c2",
+        "d": "d3",
+        "v": 9
+       },
+       {
+        "c": "c0",
+        "d": "d4",
+        "v": 10
+       },
+       {
+        "c": "c1",
+        "d": "d0",
+        "v": 11
+       },
+       {
+        "c": "c2",
+        "d": "d1",
+        "v": 12
+       },
+       {
+        "c": "c0",
+        "d": "d2",
+        "v": 13
+       },
+       {
+        "c": "c1",
+        "d": "d3",
+        "v": 14
+       },
+       {
+        "c": "c2",
+        "d": "d4",
+        "v": 15
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "c",
+       "type": "nominal"
+      },
+      "detail": {
+       "field": "d",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
    "name": "a donut's innerRadius out of range",
    "code": "VALIDATION_FAILED",
    "path": "spec.vl.mark.innerRadius",
