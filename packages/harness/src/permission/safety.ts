@@ -380,6 +380,8 @@ export function expandLeading(word: string, ctx: { home: string; cwd?: string })
   // the home tilde is the decomposer's own definition (homeTildeRest), so the two never disagree about `~` and `~/…`
   const home = homeTildeRest(word);
   if (home !== null) return { word: ctx.home + home };
+  // ~N, ~+N, ~-N: bash's directory stack, known only at run time (REVIEW-7).
+  if (/^~[+-]?\d+(?=\/|$)/.test(word)) return { runtime: true };
   const t = /^~(?:([+-])|([A-Za-z0-9_][A-Za-z0-9_.-]*))?(?=\/|$)/.exec(word);
   if (t) {
     if (t[1] === "+") return ctx.cwd ? { word: ctx.cwd + word.slice(2) } : null;
@@ -419,14 +421,14 @@ export function normalWord(word: string, ctx: Ctx): { path: string; literal: str
 
 /** Why a word could reach the home's .yodex or .mlpal without naming a file there, or null. */
 function reachWithoutNaming(word: string, ctx: Ctx): string | null {
-  if (/^~[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/|$)/.test(word)) return `${word.slice(0, 40)} names a home by its user`;
+  if (/^~(?![+-]?\d+(?:\/|$))[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/|$)/.test(word)) return `${word.slice(0, 40)} names a home by its user`;
   const n = normalWord(word, ctx);
   if (!n) {
     const segs = word.split("/");
     const reachable = /yodex|mlpal/.test(word) || segs.some((s) => couldName(s));
     // ~- and $OLDPWD are known only at run time: the rest of the word decides.
     const lead = expandLeading(word, ctx);
-    if (lead && "runtime" in lead && (reachable || segs.includes("..") || PATTERN_CHARS.test(word.slice(2)))) return `${word.slice(0, 60)} starts at a folder known only at run time`;
+    if (lead && "runtime" in lead && (reachable || segs.includes("..") || PATTERN_CHARS.test(word.replace(/^[^/]*/, "")))) return `${word.slice(0, 60)} starts at a folder known only at run time`;
     // The folder is unknown (or held in $PWD): a word that climbs (a `..` segment) toward a state directory asks.
     if (segs.includes("..") && (reachable || PATTERN_CHARS.test(word))) return `${word.slice(0, 60)} climbs from an unknown folder toward a home's .yodex or .mlpal`;
     return null;
@@ -492,7 +494,8 @@ function readsMany(tool: string, args: string[]): boolean {
  * `ls ~`, `cd ~`, an exact file under ~/.yodex (YODEX.md, a skill script) and the open trees are not asked.
  */
 /** REVIEW-6 R6-2: a redirection operator glued to its file (`<f`, `2>f`, `&>f`, `<>f`, `>|f`), split off. */
-const REDIRECT = /^(?:\d*(?:<<<|<>|<<-?|<&|>&|>>|>\||<|>)|&>>|&>)/;
+// A numbered (`2>`) or named-descriptor (`{fd}<`, REVIEW-7) redirection, or `&>`.
+const REDIRECT = /^(?:(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:<<<|<>|<<-?|<&|>&|>>|>\||<|>)|&>>|&>)/;
 
 /** REVIEW-6 R6-3: the options that name the folder a tool works in, by tool. */
 const DIR_OPTIONS: Record<string, { short?: string; long?: string[] }> = {

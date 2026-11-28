@@ -553,3 +553,29 @@ describe("REVIEW-6: redirect files, directory options and ~+ / ~- are operands",
     expect(expandLeading("${PWD}/x", ctx)).toEqual({ word: "/home/mlpaluser/workspace/proj/x" });
   });
 });
+
+describe("REVIEW-7: directory-stack tildes and named-descriptor redirects", () => {
+  const ctx = { home: "/home/mlpaluser", cwd: "/home/mlpaluser/workspace/proj" };
+
+  test("the reviewer's two lines and a variant of each ask", async () => {
+    const { protectedReachAsk, expandLeading } = await import("../src/permission/safety");
+    for (const command of [
+      "cat ~+0/../.yodex/person-secret?.json",
+      "cat ~-1/../../.y*/p*",
+      "cat ~2/.mlpal/*",
+      "exec {fd}<~/.yodex/person-secret?.json",
+      "exec {out}> ~/.yodex/p*",
+      "exec {rw}<>~/.y*/person-secret?.json",
+    ]) {
+      expect([command, protectedReachAsk(command, ctx) !== null]).toEqual([command, true]);
+    }
+    for (const w of ["~+0/x", "~-1/x", "~3/x", "~+12"]) expect([w, expandLeading(w, ctx)]).toEqual([w, { runtime: true }]);
+  });
+
+  test("must-not-break: stack tildes and named descriptors on workspace files stay free", async () => {
+    const { protectedReachAsk } = await import("../src/permission/safety");
+    for (const c of ["cat ~+0/README.md", "ls ~-1", "exec {fd}<input.json", "exec {log}>>build.log", "exec {fd}>&-"]) {
+      expect([c, protectedReachAsk(c, ctx)]).toEqual([c, null]);
+    }
+  });
+});
