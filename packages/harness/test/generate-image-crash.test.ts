@@ -79,10 +79,12 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const tool = (gw: ImageGateway, at = `${DAY}T10:00:00Z`) => createGenerateImageTool({ images: gw, models: () => [], estimate: () => 0.01, now: () => new Date(at), sleep: async () => {}, pollMs: 1 });
-function session(store: LocalStore, model: ModelClient, gw: ImageGateway, at?: string) {
+type ToolOpts = { estimate?: number | null; payer?: string };
+const tool = (gw: ImageGateway, at = `${DAY}T10:00:00Z`, o: ToolOpts = {}) =>
+  createGenerateImageTool({ images: gw, models: () => [], estimate: () => (o.estimate === undefined ? 0.01 : o.estimate), now: () => new Date(at), sleep: async () => {}, pollMs: 1, ...(o.payer ? { payer: () => o.payer } : {}) });
+function session(store: LocalStore, model: ModelClient, gw: ImageGateway, at?: string, o: ToolOpts = {}) {
   const tools = new ToolRegistry();
-  tools.register(tool(gw, at) as never);
+  tools.register(tool(gw, at, o) as never);
   return new AgentSession({ agentId: "ag", sessionId: "s1", workspace: "w", cwd, model: "test", systemPrompt: "t", tools, store, model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), onAsk: async () => ({ behavior: "allow" }) });
 }
 async function drain(gen: AsyncGenerator<EngineEvent, unknown, void>): Promise<EngineEvent[]> {
@@ -94,21 +96,22 @@ async function drain(gen: AsyncGenerator<EngineEvent, unknown, void>): Promise<E
   }
 }
 /** Runs the first engine until it dies at the gateway's point, then a second resumes the session from disk. */
-async function crashAndResume(gw: Gateway, input: Record<string, unknown> = { prompt: "a red fox" }, resume: { at?: string; apiKey?: string } = {}) {
+async function crashAndResume(gw: Gateway, input: Record<string, unknown> = { prompt: "a red fox" }, resume: { at?: string; apiKey?: string; first?: ToolOpts; second?: ToolOpts } = {}) {
   const dir = join(root, "store");
   const first = new LocalStore(dir);
-  void drain(session(first, new ScriptedModel([toolUse(input), done("ok")]), gw.client(1)).run({ text: "make a fox" }));
+  void drain(session(first, new ScriptedModel([toolUse(input), done("ok")]), gw.client(1), undefined, resume.first).run({ text: "make a fox" }));
   // the first engine is now stuck where it died; what it wrote durably is all the second one finds
   for (let i = 0; i < 200 && !(await deadYet(first, gw)); i++) await new Promise((r) => setTimeout(r, 5));
   await first.flush?.();
   const second = new LocalStore(dir);
-  const events = await drain(session(second, new ScriptedModel([done("resumed")]), gw.client(2, resume.apiKey), resume.at).resume() as never);
+  const events = await drain(session(second, new ScriptedModel([done("resumed")]), gw.client(2, resume.apiKey), resume.at, resume.second).resume() as never);
   const entries = (await new LocalStore(dir).conversation.read("s1")).map((e) => e.payload as SDKMessage & { usage?: { compute_units?: number } });
   const recorded = entries.reduce((s, e) => s + (e.type === "result" ? (e.usage?.compute_units ?? 0) : 0), 0);
+  const unpriced = entries.reduce((s, e) => s + (e.type === "result" ? ((e.usage as { unpriced_charges?: number } | undefined)?.unpriced_charges ?? 0) : 0), 0);
   const unconfirmed = entries.reduce((s, e) => s + (e.type === "result" ? ((e.usage as { compute_units_unconfirmed?: number } | undefined)?.compute_units_unconfirmed ?? 0) : 0), 0);
   const result = events.find((e) => e.type === "tool_result") as { content: string; isError?: boolean } | undefined;
   const spends = (await new LocalStore(dir).readEvents("s1", "tool_spend")).length;
-  return { result, recorded, unconfirmed, spends, files: existsSync(join(cwd, "media", DAY)) ? readdirSync(join(cwd, "media", DAY)).filter((f) => !f.startsWith(".")).sort() : [] };
+  return { result, recorded, unconfirmed, unpriced, spends, files: existsSync(join(cwd, "media", DAY)) ? readdirSync(join(cwd, "media", DAY)).filter((f) => !f.startsWith(".")).sort() : [] };
 }
 /** The first engine reached its death point. */
 async function deadYet(store: LocalStore, gw: Gateway): Promise<boolean> {
@@ -159,6 +162,84 @@ describe("R5: a GenerateImage call whose engine dies is reconciled on resume, by
     const gw = new Gateway({ at: "submit" });
     const r = await crashAndResume(gw, { prompt: "a red fox" }, { at: `${DAY}T10:30:00Z`, apiKey: "key-b" });
     expect([gw.submits.map((x) => x.apiKey), gw.jobs.size, r.spends, r.recorded, r.files]).toEqual([["key-a", "key-b"], 1, 1, CU, ["a-red-fox-1.png"]]);
+  });
+});
+
+describe("R5, round 3: the payer, and an unconfirmed charge with no estimate", () => {
+  test("a resume whose paying user is not the request's: no resubmit, the unconfirmed note", async () => {
+    const gw = new Gateway({ at: "submit" });
+    const r = await crashAndResume(gw, { prompt: "a red fox" }, { at: `${DAY}T10:30:00Z`, first: { payer: "user-1" }, second: { payer: "user-2" } });
+    expect([gw.submits.length, r.recorded, r.unconfirmed, r.result?.content.includes("IMAGE_UNCONFIRMED"), r.result?.content.includes("paying user")]).toEqual([1, 0, 0.01, true, true]);
+  });
+
+  test("the same payer resumes as before: one job, one charge", async () => {
+    const same = new Gateway({ at: "submit" });
+    const ok = await crashAndResume(same, { prompt: "a red fox" }, { at: `${DAY}T10:30:00Z`, first: { payer: "user-1" }, second: { payer: "user-1" } });
+    expect([same.jobs.size, ok.recorded]).toEqual([1, CU]);
+  });
+
+  test("an unconfirmed charge with no estimate is counted as unknown (an unpriced charge), never as zero", async () => {
+    const late = new Gateway({ at: "submit" });
+    const r = await crashAndResume(late, { prompt: "a red fox" }, { at: "2026-11-29T10:00:01Z", first: { estimate: null }, second: { estimate: null } });
+    expect([late.submits.length, r.recorded, r.unconfirmed, r.unpriced]).toEqual([1, 0, 0, 1]);
+    expect(r.result?.content).toContain("an unknown amount");
+  });
+});
+
+/** A gateway whose job runs past the caller's deadline, then finishes (and bills) once `finish()` is called. */
+function lateGateway() {
+  let finished = false;
+  const result: ImageResult = { data: [{ url: "https://assets.test/late/0.png" }], model: "m", cost: { compute_units: CU } };
+  const submits: string[] = [];
+  const gw: ImageGateway = {
+    submit: async (_req, opts) => (submits.push(opts.idempotencyKey), { job: { status: "queued", id: "job-late" } as ImageJob }),
+    job: async (id) => (finished ? ({ status: "succeeded", id, result } as ImageJob) : ({ status: "running", id } as ImageJob)),
+    download: async () => PNG,
+  };
+  return { gw, submits, finish: () => void (finished = true) };
+}
+function lateSession(store: LocalStore, sessionId: string, calls: Array<Record<string, unknown>>, gw: ImageGateway, afterCall?: (n: number) => void) {
+  let t = new Date(`${DAY}T10:00:00Z`).getTime();
+  const tools = new ToolRegistry();
+  // the clock moves a minute per look, so a running job reaches the 10-minute deadline
+  const img = createGenerateImageTool({ images: gw, models: () => [], estimate: () => 0.01, now: () => new Date((t += 60_000)), sleep: async () => {}, pollMs: 1 });
+  const call = img.call.bind(img);
+  let n = 0;
+  img.call = async (input, ctx) => {
+    const r = await call(input, ctx);
+    afterCall?.(n++);
+    return r;
+  };
+  tools.register(img as never);
+  const model = new ScriptedModel([...calls.map((input, i) => ({ ...toolUse(input), message: { role: "assistant" as const, content: [{ type: "tool_use" as const, id: `toolu_${sessionId}_${i}`, name: "GenerateImage", input }] } })), done("ok")]);
+  return new AgentSession({ agentId: "ag", sessionId, workspace: "w", cwd, model: "test", systemPrompt: "t", tools, store, model_client: model, canUseTool: createPolicy({ mode: "autopilot" }) });
+}
+const charges = async (store: LocalStore, sid: string) => (await store.readEvents(sid, "tool_spend")).map((e) => [e.once, (e.usage as { compute_units?: number }).compute_units]);
+
+describe("R5b: a charge is recorded where the engine first learns of it, once per job", () => {
+  test("a call that times out, then {job} twice: the charge recorded once, by the first save", async () => {
+    const late = lateGateway();
+    const store = new LocalStore(join(root, "store"));
+    // the gateway finishes and bills after the first call gave up
+    const s = lateSession(store, "s1", [{ prompt: "a red fox" }, { job: "job-late" }, { job: "job-late" }], late.gw, (n) => n === 0 && late.finish());
+    const events = await drain(s.run({ text: "make a fox" }));
+    const results = events.filter((e) => e.type === "tool_result") as Array<{ content: string; isError?: boolean }>;
+    expect(results[0]!.content).toContain('GenerateImage {job: "job-late"}');
+    expect([results[1]!.isError ?? false, results[2]!.isError ?? false, late.submits.length]).toEqual([false, false, 1]);
+    expect(await charges(store, "s1")).toEqual([["job:job-late", CU]]);
+    expect((events.at(-1) as { usage?: { compute_units?: number } }).usage?.compute_units).toBeCloseTo(CU, 6);
+  });
+
+  test("another session of the same person cannot save the job, so the charge is recorded in the session that made it, when it learns of it", async () => {
+    const late = lateGateway();
+    const store = new LocalStore(join(root, "store"));
+    await drain(lateSession(store, "s1", [{ prompt: "a red fox" }], late.gw).run({ text: "make a fox" }));
+    late.finish();
+    const other = await drain(lateSession(store, "s2", [{ job: "job-late" }], late.gw).run({ text: "save it" }));
+    const refused = other.find((e) => e.type === "tool_result") as { content: string; isError?: boolean };
+    expect([refused.isError, refused.content.includes("not one this session made"), (await charges(store, "s2")).length]).toEqual([true, true, 0]);
+    await drain(lateSession(store, "s1", [{ job: "job-late" }], late.gw).run({ text: "save it" }));
+    expect(await charges(store, "s1")).toEqual([["job:job-late", CU]]);
   });
 });
 

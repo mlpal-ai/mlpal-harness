@@ -29,9 +29,10 @@ export interface ToolContext {
    *  lifecycle, a child's forwarded events). Absent when the host has no stream to carry it. */
   emit?: (e: SubagentEvent | SubagentStreamEvent) => void;
   /** Record what the call spends on the gateway beyond the turn's own model calls (GenerateImage's compute units), the
-   *  moment the gateway reports the charge. It is durable once the promise resolves (a resumed engine counts it), at
-   *  most once per tool call, and the turn's, so the session's, whatever the call does after. */
-  spend?: (usage: Usage) => Promise<void>;
+   *  moment the engine learns of the charge. It is durable once the promise resolves (a resumed engine counts it), and
+   *  the turn's, so the session's, whatever the call does after. At most once per tool call; with `once`, at most once
+   *  per that key across the session (a job's charge, whichever call learns of it first). */
+  spend?: (usage: Usage, opts?: { once?: string }) => Promise<void>;
   /** This call's durable journal: what a tool with an outside effect must find again if its engine dies mid-call. */
   journal?: ToolJournal;
 }

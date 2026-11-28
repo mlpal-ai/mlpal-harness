@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### engine-media: review-media round 3 (needs the same version bump, 2026-11-28)
+
+- R5b: a job's charge is recorded where the engine first learns of it, on any path, once per job.
+  - The paths are the original call, a poll on resume and `GenerateImage {job}` after a timeout or a stop.
+  - `ToolContext.spend(usage, {once})` records at most once per key across the session's durable record.
+    GenerateImage uses `job:<id>`, so saving a job twice never doubles the charge.
+  - Only this session's jobs can be saved by id, so the charge lands in the session that made the job.
+  - `IMAGE_TIMEOUT` names `GenerateImage {job}`.
+- A resume never repeats a submit for a different payer. `GenerateImageDeps.payer` is a host-supplied, non-secret
+  fingerprint of the paying user, journalled with the request. On a mismatch the call is `IMAGE_UNCONFIRMED` and
+  nothing is submitted.
+- An unconfirmed charge with no estimate is counted as `Usage.unpriced_charges` (new and optional), never as 0, and
+  its note says the amount is unknown and that the gateway cannot confirm it later.
+
 ### engine-media: review-media round 2 fixes (needs the same version bump, 2026-11-28)
 
 - R9: the probe reads and hashes any file in 1 MiB chunks up to the kind's cap. A file over 1 MiB was refused as

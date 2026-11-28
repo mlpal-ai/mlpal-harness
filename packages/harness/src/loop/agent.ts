@@ -2014,11 +2014,25 @@ export class AgentSession {
     const read = this.store.readEvents?.bind(this.store);
     const sessionId = this.cfg.sessionId;
     // the turn's at once (a tool that does not await it still counts), at most once per call; durable when it resolves
-    const spend = (usage: Usage): Promise<void> => {
-      if (this.spentCalls.has(tu.id)) return Promise.resolve();
-      this.spentCalls.add(tu.id);
+    const record = (usage: Usage, once?: string): Promise<void> => {
       this.askSpend?.(usage);
-      return append ? append(sessionId, "tool_spend", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, usage, ts: now() }).then(() => undefined) : Promise.resolve();
+      return append ? append(sessionId, "tool_spend", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, usage, ...(once ? { once } : {}), ts: now() }).then(() => undefined) : Promise.resolve();
+    };
+    const spend = (usage: Usage, opts?: { once?: string }): Promise<void> => {
+      const once = opts?.once;
+      if (once === undefined) {
+        if (this.spentCalls.has(tu.id)) return Promise.resolve();
+        this.spentCalls.add(tu.id);
+        return record(usage);
+      }
+      // keyed across the session: what this engine and any engine before it recorded under the key (review R5b)
+      return (async () => {
+        if (!this.spentOnce) this.spentOnce = new Set(((await read?.(sessionId, "tool_spend")) ?? []).map((e) => e.once).filter((k): k is string => typeof k === "string"));
+        if (this.spentOnce.has(once)) return;
+        this.spentOnce.add(once);
+        this.spentCalls.add(tu.id);
+        await record(usage, once);
+      })();
     };
     if (!append || !read) return { spend };
     return {
@@ -2502,6 +2516,8 @@ export class AgentSession {
   private askSpend: ((usage: Usage) => void) | null = null;
   /** The tool calls whose gateway charge this engine has recorded (`ToolContext.spend`): once per call. */
   private readonly spentCalls = new Set<string>();
+  /** The `once` keys of the charges on the session's record (`ToolContext.spend`), read on first use. */
+  private spentOnce: Set<string> | null = null;
   /** C1 §7.4: the reason of the abuse marker this run's model ended a reply with; reported on its result. */
   private abuseReason: string | null = null;
   private currentPrompt: string | null = null;

@@ -240,7 +240,7 @@ export interface EngineInfo {
 export type StatsRange = "24h" | "7d" | "30d" | "all";
 
 /** Token counts for a bucket: input excludes cache reads and writes, as on `Usage`. */
-export type StatsUsage = Required<Omit<Usage, "compute_units" | "compute_units_unconfirmed">>;
+export type StatsUsage = Required<Omit<Usage, "compute_units" | "compute_units_unconfirmed" | "unpriced_charges">>;
 
 export interface StatsModelSlice {
   /** Input (incl. cache reads and writes) plus output tokens. */

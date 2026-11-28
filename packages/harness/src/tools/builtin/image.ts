@@ -64,6 +64,9 @@ export interface GenerateImageDeps {
   /** How long after its request a call whose engine died before the gateway named its job may submit the same request
    *  under the same idempotency key again (the gateway answers with the original job). Default RESUBMIT_WITHIN_MS. */
   resubmitWithinMs?: number;
+  /** A non-secret fingerprint of the user who pays (the host's account id), when the host knows it. A resumed call
+   *  never repeats a submit for a different payer: the gateway's idempotency is per user, so it would bill twice. */
+  payer?: () => string | undefined;
 }
 
 /**
@@ -254,7 +257,7 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   async function poll(first: ImageJob, signal?: AbortSignal): Promise<Rendered | ToolResult> {
     let job = first;
     const pending = (why: string) =>
-      refuse("IMAGE_TIMEOUT", `${why}; job ${job.id} may still finish and bill`, `tell the person the job id (${job.id}); do not make it again, which would pay a second time`);
+      refuse("IMAGE_TIMEOUT", `${why}; job ${job.id} may still finish and bill`, `tell the person the job id (${job.id}); GenerateImage {job: "${job.id}"} saves it once it is done and records its charge then. Do not make it again, which would pay a second time`);
     const deadline = now().getTime() + timeoutMs;
     let wait = pollMs;
     while (job.status === "queued" || job.status === "running") {
@@ -280,7 +283,8 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   /** A finished render: its charge on record (at most once per call), then its files saved and shown. */
   async function finish(rendered: Rendered, o: { prompt: string; stem: string; key: string; charge: boolean }, ctx: ToolContext): Promise<ToolResult> {
     const { result, jobId } = rendered;
-    if (o.charge) await ctx.spend?.({ input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: result.cost.compute_units });
+    // the charge is recorded where the engine first learns of it, on any path, once per job (review R5b)
+    if (o.charge) await ctx.spend?.({ input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: result.cost.compute_units }, { once: `job:${jobId}` });
     if (!result.data.length) return notSaved(result, jobId, [], "the gateway returned no image");
     const where = destination(ctx, result.data.length);
     if (!("dir" in where)) return notSaved(result, jobId, [], "media/<date> could not be used");
@@ -296,6 +300,9 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     const key = String(asked.key);
     const prompt = typeof asked.prompt === "string" ? asked.prompt : "";
     if (!Number.isFinite(at) || now().getTime() - at > resubmitWithinMs || !prompt) return unconfirmed(asked, ctx, "too long ago to ask the gateway again under its key");
+    // a session cannot change owner: if the engine can tell the payer differs, the key's idempotency is not this user's
+    const payer = deps.payer?.();
+    if (typeof asked.payer === "string" && payer !== undefined && payer !== asked.payer) return unconfirmed(asked, ctx, "the paying user is not the one who made the request");
     const files = Array.isArray(asked.references) ? (asked.references as Array<{ path: string; sha256: string }>) : [];
     const refs = references(files.map((f) => f.path), ctx);
     if (!Array.isArray(refs) || refs.some((r, i) => r.sha256 !== files[i]!.sha256)) return unconfirmed(asked, ctx, "a reference image changed since, so the same request cannot be made again");
@@ -313,10 +320,11 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   /** A charge that may have happened and cannot be confirmed: on the session as a flagged estimate, said once. */
   async function unconfirmed(asked: Record<string, unknown>, ctx: ToolContext, why: string): Promise<ToolResult> {
     const est = typeof asked.estimate === "number" ? asked.estimate : null;
-    await ctx.spend?.({ input_tokens: 0, output_tokens: 0, compute_units_unconfirmed: est ?? 0 });
+    // with no estimate the amount is unknown, never zero: counted as an unpriced charge (review O-b)
+    await ctx.spend?.({ input_tokens: 0, output_tokens: 0, ...(est !== null ? { compute_units_unconfirmed: est } : { unpriced_charges: 1 }) }, { once: `unconfirmed:${String(asked.key)}` });
     return refuse(
       "IMAGE_UNCONFIRMED",
-      `the engine stopped while an image was being requested at ${String(asked.at ?? "an unknown time")} (key ${String(asked.key)}), and it was not asked again (${why}). It may have been charged${est !== null ? `, an estimated ${est.toFixed(3)} CU` : " (its price is known only after a render)"}; that could not be confirmed. Nothing was saved.`,
+      `the engine stopped while an image was being requested at ${String(asked.at ?? "an unknown time")} (key ${String(asked.key)}), and it was not asked again (${why}). It may have been charged${est !== null ? `, an estimated ${est.toFixed(3)} CU` : ", an unknown amount (its price is known only after a render)"}; that could not be confirmed, and the gateway has no lookup that could confirm it later. Nothing was saved.`,
       "tell the person this once, with the time and the estimate; making it again may pay a second time, so only on their word",
     );
   }
@@ -344,7 +352,8 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     const rendered = await poll(job, ctx.signal);
     if (!("result" in rendered)) return rendered;
     const prompt = typeof asked.prompt === "string" ? asked.prompt : "an image made earlier in this session";
-    return finish(rendered, { prompt, stem: stemOf(input.name ?? (typeof asked.stem === "string" ? asked.stem : prompt)), key: ctx.toolUseId ?? jobId, charge: false }, ctx);
+    // a timed-out or stopped call never learned the charge: this one may be the first to (once per job)
+    return finish(rendered, { prompt, stem: stemOf(input.name ?? (typeof asked.stem === "string" ? asked.stem : prompt)), key: ctx.toolUseId ?? jobId, charge: true }, ctx);
   }
 
   /** Download each result and write it into `dir`, never over an existing file. Stops at the first failure and says
@@ -438,6 +447,7 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
         stem,
         prompt,
         references: refs.map((r) => ({ path: r.path, sha256: r.sha256 })),
+        ...(deps.payer?.() !== undefined ? { payer: deps.payer!() } : {}),
       });
       const rendered = await render(prompt, input, refs, key, async (jobId) => ctx.journal?.append({ phase: "job", jobId }), ctx.signal);
       if (!("result" in rendered)) return rendered;
