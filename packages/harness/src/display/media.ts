@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, real
 import { isAbsolute, join, relative, sep } from "node:path";
 import { DISPLAY_LIMITS, imageInfo, sniffMedia, type DisplayErrorCode, type MediaFacts, type MediaFactsMap, type MediaProbeFault, type MediaProbeResult } from "@mlpal/harness-protocol";
 import { foldName } from "../permission/names";
-import { contextRoots, resolveInRoots, type ToolContext } from "../tools/types";
+import { contextRoots, resolveInRoots, resolvePath, type ToolContext } from "../tools/types";
 
 /**
  * The media pipeline's filesystem half (DISPLAY-PROTOCOL-v0.1-media §1.3, steps 1-8): for each path a media Show or
@@ -76,7 +76,23 @@ export function readMedia(req: MediaRequest, ctx: ToolContext): MediaRead {
   return inspect(req, ctx, true);
 }
 
+/**
+ * Where a person expects a relative path to be (pre-flight B2): the session's folder first, then the workspace root,
+ * both inside the run's roots. A miss names every place looked, workspace-relative.
+ */
 function inspect(req: MediaRequest, ctx: ToolContext, keep: boolean): MediaRead {
+  const first = inspectAt(req, ctx, keep);
+  if (!("code" in first) || first.code !== "MEDIA_NOT_FOUND" || isAbsolute(req.path) || req.path.startsWith("~")) return first;
+  const workspace = contextRoots(ctx)[0]!;
+  if (resolvePath(ctx.cwd, ".") === resolvePath(workspace, ".")) return first;
+  const second = inspectAt(req, { ...ctx, cwd: workspace }, keep);
+  if (!("code" in second)) return second;
+  if (second.code !== "MEDIA_NOT_FOUND") return first;
+  const at = (cwd: string) => posix(relative(workspace, resolvePath(cwd, req.path)));
+  return fault("MEDIA_NOT_FOUND", `no file at ${at(ctx.cwd)} (from the session's folder ${posix(relative(workspace, ctx.cwd)) || "."}) or at ${at(workspace)} (from the workspace root)`, "check the path: list the folder, or give the path the person's attachment note names");
+}
+
+function inspectAt(req: MediaRequest, ctx: ToolContext, keep: boolean): MediaRead {
   const p = req.path;
   if (p.length === 0 || p.length > DISPLAY_LIMITS.media.pathChars || p.includes("\0")) return fault("PATH_NOT_ALLOWED", "a media path is 1 to 4,096 characters with no NUL");
   if (/^(?:[A-Za-z][A-Za-z0-9+.-]*:|\/\/|\\\\)/.test(p)) return fault("URL_NOT_ALLOWED", "a media source is a workspace path, never a URL");

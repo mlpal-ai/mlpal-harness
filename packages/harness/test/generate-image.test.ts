@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { checkDownload, presignedUrl } from "./image-gateway-fixture";
 import { displayEnvelopeSchema, type DisplayCaps, type Usage } from "@mlpal/harness-protocol";
 import { gatewayImages, ImageGatewayError, type ImageGateway, type ImageJob, type ImageRequest, type ImageResult } from "../src/gateway/images";
 import { createPolicy } from "../src/permission/engine";
@@ -37,6 +38,7 @@ class FakeGateway implements ImageGateway {
     return j;
   }
   async download(url: string) {
+    checkDownload(url);
     this.downloads.push(url);
     const f = this.script.files?.[url] ?? PNG;
     if (f instanceof ImageGatewayError) throw f;
@@ -44,7 +46,7 @@ class FakeGateway implements ImageGateway {
   }
 }
 const result = (n = 1, cu = 0.04): ImageResult => ({
-  data: Array.from({ length: n }, (_, i) => ({ url: `https://assets.test/img-${i}.png?sig=x`, content_type: "image/png", size_bytes: PNG.length, ...(i === 0 ? { revised_prompt: "a red fox on fresh snow at dawn" } : {}) })),
+  data: Array.from({ length: n }, (_, i) => ({ url: presignedUrl("img", i), content_type: "image/png", size_bytes: PNG.length, ...(i === 0 ? { revised_prompt: "a red fox on fresh snow at dawn" } : {}) })),
   model: "mlpal",
   cost: { model_name: "gpt-image-2", provider: "openai", images_generated: n, compute_units: cu },
 });
@@ -157,9 +159,9 @@ describe("GenerateImage's typed errors", () => {
   });
 
   test("an expired link, and a result that is not an image, write nothing: paid and not saved, the spend recorded", async () => {
-    const expired = new FakeGateway({ files: { "https://assets.test/img-0.png?sig=x": new ImageGatewayError(403, "expired") } });
+    const expired = new FakeGateway({ files: { [presignedUrl("img", 0)]: new ImageGatewayError(403, "expired") } });
     expect(code(await tool(expired)({ prompt: "x" }))).toBe("IMAGE_NOT_SAVED");
-    const html = new FakeGateway({ files: { "https://assets.test/img-0.png?sig=x": head("html") } });
+    const html = new FakeGateway({ files: { [presignedUrl("img", 0)]: head("html") } });
     expect(code(await tool(html)({ prompt: "x" }))).toBe("IMAGE_NOT_SAVED");
     expect(spent.map((u) => u.compute_units)).toEqual([0.04, 0.04]);
     expect(existsSync(join(root, "media", DAY)) ? readdirSync(join(root, "media", DAY)).filter((f) => !f.startsWith(".")) : []).toEqual([]);

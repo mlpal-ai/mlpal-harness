@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### engine-media: pre-flight B2, the first real image (2026-11-28)
+
+- A presigned result URL's query is opaque. The encoded-slash, backslash and dot-segment checks apply to the scheme,
+  authority and path only, since every S3 presigned URL carries `%2F` in `X-Amz-Credential`, which refused every
+  real result after its render was paid. The fetch sends the parsed origin and the checked path, then the query
+  byte for byte.
+- Every scripted gateway in the tests now answers with production-shaped presigned URLs
+  (`test/image-gateway-fixture.ts`, fake bucket and account), and its downloads go through the engine's own check.
+- A relative media path (a Show, a GenerateImage reference) resolves from the session's folder first, then from the
+  workspace root, inside the roots. `MEDIA_NOT_FOUND` names every place it looked.
+
 ### engine-media: the image approval card's detail (additive, 2026-11-28)
 
 - `permission_request.askDetail?: ToolAskDetail` is new. Its first variant is `ImageAskDetail`: count, size,
