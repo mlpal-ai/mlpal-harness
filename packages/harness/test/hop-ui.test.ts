@@ -111,6 +111,11 @@ describe("hop.yaml ui: accepted", () => {
     expect(load().ui?.home?.blocks.every((b) => !("kind" in b))).toBe(true);
   });
 
+  test("the display titles' own rule, shared: a zero-width joiner (emoji need it) and a soft hyphen pass, as in a display title", () => {
+    writeHop(`ui:\n  starters: ["Ask my \\U0001F469\\u200D\\U0001F4BB agent", "re\\u00ADport"]\n  home:\n    headline: "Your work\\u200D, at a glance"\n    blocks:\n      - { id: a, title: "Spend\\u00AD", script: ui/home/spend.py }\n`);
+    expect(load().ui?.starters).toEqual(["Ask my \u{1F469}\u200D\u{1F4BB} agent", "re\u00ADport"]);
+  });
+
   test("starters alone, no home", () => {
     writeHop("ui:\n  starters: [One, Two]\n");
     expect(load().ui).toEqual({ starters: ["One", "Two"] });
@@ -144,15 +149,19 @@ describe("hop.yaml ui: refused with a load error naming the field", () => {
     ["five starters", "ui:\n  starters: [a, b, c, d, e]\n", /at ui\.starters: at most 4 starters/],
     ["a starter over 60 characters", `ui:\n  starters: ["${"x".repeat(61)}"]\n`, /at ui\.starters\.0: a starter is at most 60 characters/],
     ["an empty starter", `ui:\n  starters: ["  "]\n`, /a starter is empty/],
-    ["a starter with a control character", `ui:\n  starters: ["a\\u001b[31mb"]\n`, /a starter has a control character/],
+    ["a starter with a control character", `ui:\n  starters: ["a\\u001b[31mb"]\n`, /a starter has a control or invisible character/],
     ["a starter twice", "ui:\n  starters: [a, a]\n", /a starter is listed twice/],
     ["no blocks", "ui:\n  home:\n    blocks: []\n", /a home has at least one block/],
     ["five blocks", `ui:\n  home:\n    blocks:\n${["spend", "agents", "hops", "five", "six"].map((id) => `      - { id: ${id}, title: T, script: ui/home/spend.py }\n`).join("")}`, /a home has at most 4 blocks/],
     ["an id used twice", `ui:\n  home:\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n      - { id: a, title: U, script: ui/home/hops.py }\n`, /a home block id is used twice/],
     ["a bad id", block("{ id: Spend_1, title: T, script: ui/home/spend.py }"), /at ui\.home\.blocks\.0\.id: a home block id is lowercase/],
     ["a title over 120 characters", block(`{ id: a, title: "${"t".repeat(121)}", script: ui/home/spend.py }`), /a home block title is at most 120 characters/],
+    ["a starter with a right-to-left override", `ui:\n  starters: ["Pay \\u202Eexe.txt"]\n`, /at ui\.starters\.0: a starter has a control or invisible character \(a bidi override/],
+    ["a headline with a zero-width space", `ui:\n  home:\n    headline: "pay\\u200Bpal"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /at ui\.home\.headline: a home headline has a control or invisible character/],
+    ["a block title with a left-to-right isolate", block('{ id: a, title: "Spend \\u2066x", script: ui/home/spend.py }'), /at ui\.home\.blocks\.0\.title: a home block title has a control or invisible character/],
+    ["a starter with a line break", `ui:\n  starters: ["one\\ntwo"]\n`, /a starter has a control or invisible character/],
     ["a headline over 120 characters", `ui:\n  home:\n    headline: "${"h".repeat(121)}"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /at ui\.home\.headline: a home headline is at most 120 characters/],
-    ["a headline with a control character", `ui:\n  home:\n    headline: "a\\u0007b"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /a home headline has a control character/],
+    ["a headline with a control character", `ui:\n  home:\n    headline: "a\\u0007b"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /a home headline has a control or invisible character/],
     ["an empty headline", `ui:\n  home:\n    headline: " "\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /a home headline is empty/],
     ["a kind no home block may be", block("{ id: a, title: T, script: ui/home/spend.py, kind: image }"), /at ui\.home\.blocks\.0\.kind: kind is one of chart, kpis, grid/],
     ["refresh under 5m", block("{ id: a, title: T, script: ui/home/spend.py, refresh: 4m }"), /refresh is <n>m or <n>h, from 5m to 24h/],

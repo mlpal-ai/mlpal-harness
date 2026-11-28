@@ -36,6 +36,10 @@
   `HOME_BLOCK_KINDS`), sent as `HomeBlock.kind` from the first `home` on. A script printing another kind leaves the
   block in its error state, `error: "kind_mismatch"` (last good kept, stale; a cached output of the old kind is
   dropped); `lint --home` fails on it through `checkHomeOutput`.
+- Review 2: the `ui` loader's starters, headline and block titles take the display titles' character rule, the shared
+  `CONTROL` (now exported from the protocol's wire half), plus no tab or newline: a bidi override or isolate, a
+  zero-width space or a BOM fails the load and `yodex hop lint`. A zero-width joiner and a soft hyphen pass, as they
+  do in a display title.
 - Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
   `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
   may be `host`, with `origin: "home"` exactly then.
