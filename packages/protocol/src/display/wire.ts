@@ -11,3 +11,6 @@ export * from "./block-schemas.js";
 export * from "./media-schemas.js";
 export * from "./caps.js";
 export { settleDisplays } from "./settle.js";
+/** The character rule of every plain-text field a person reads (display titles, a HOP's home text): no C0/C1 control
+ *  but tab and newline, no bidi mark, embedding, override or isolate, no zero-width space, no BOM. */
+export { CONTROL } from "./fields.js";

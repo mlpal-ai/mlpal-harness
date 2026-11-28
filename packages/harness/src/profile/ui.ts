@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { BLOCK_ID, HOME_BLOCK_KINDS, HOME_LIMITS, type HomeBlockKind, type HopUiView } from "@mlpal/harness-protocol";
+import { BLOCK_ID, CONTROL, HOME_BLOCK_KINDS, HOME_LIMITS, type HomeBlockKind, type HopUiView } from "@mlpal/harness-protocol";
 import { z } from "zod";
 
 /**
@@ -10,7 +10,8 @@ import { z } from "zod";
  * it is not a tunable surface. A script path is always relative to the HOP's directory, whichever file declares it.
  */
 
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+/** A home line is one line: the display titles' character rule (CONTROL, shared), and no tab or newline either. */
+const LINE_BREAK = /[\t\n]/;
 const REFRESH = /^(\d{1,4})(m|h)$/;
 
 const plain = (max: number, what: string) =>
@@ -18,7 +19,7 @@ const plain = (max: number, what: string) =>
     .string()
     .refine((s) => s.trim().length > 0, `${what} is empty`)
     .refine((s) => [...s].length <= max, `${what} is at most ${max} characters`)
-    .refine((s) => !CONTROL.test(s), `${what} has a control character`);
+    .refine((s) => !CONTROL.test(s) && !LINE_BREAK.test(s), `${what} has a control or invisible character (a bidi override or isolate, a zero-width space, a line break): it would read differently from what it is`);
 
 function refreshMinutes(s: string): number | null {
   const m = REFRESH.exec(s);
