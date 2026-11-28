@@ -120,7 +120,8 @@ function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading
 interface Readings {
   legacy?: string[];
   wild?: string;
-  /** ANSI-C or locale quoting: a readOnly entry never admits it (the forms are decoded; before, they were not). */
+  /** ANSI-C or locale quoting, or a line that changes which code a name runs (PATH, LD_PRELOAD…): a readOnly entry
+   *  never admits it. */
   special?: boolean;
 }
 
@@ -168,7 +169,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
         continue;
       }
       if (canon) forms.push(canon);
-      const cls = classifyForms(tc, action, forms, written, { legacy: c.legacy, wild: c.wild, special: c.specialQuoting });
+      const cls = classifyForms(tc, action, forms, written, { legacy: c.legacy, wild: c.wild, special: c.specialQuoting === true || c.codePathChanged === true });
       if (worst === null || RANK[cls] > RANK[worst]) worst = cls;
     }
     if (worst !== null) return worst;

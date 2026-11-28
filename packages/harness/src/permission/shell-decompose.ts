@@ -73,6 +73,9 @@ export interface DecomposedCommand {
    *  (`bashDenyOverlap`), so `mlpal mcp $(echo delete) srv` meets `mlpal mcp delete*`. Present only when the command
    *  has such a part. */
   wild?: string;
+  /** The line sets a variable that picks the code a command runs (PATH, LD_PRELOAD, BASH_ENV…): a gating entry still
+   *  matches it by name, but a readOnly entry never admits it (a planted file could answer to a read-only name). */
+  codePathChanged?: boolean;
   /** A word of it was written in ANSI-C (`$'…'`) or locale (`$"…"`) quoting. Its forms hold the decoded words, as bash
    *  runs them, for the deny side; the line is never auto-approved (`refusesAutoApproval`). */
   specialQuoting?: boolean;
@@ -118,6 +121,17 @@ const COMPOUND = new Set(["if", "then", "else", "elif", "fi", "do", "done", "whi
 const UNSUPPORTED = new Set(["select", "function", "coproc"]);
 /** Builtins that assign a variable, an alias or a command's path for the rest of the line. */
 const ASSIGNING_BUILTINS = new Set(["export", "declare", "typeset", "local", "readonly", "unset", "read", "mapfile", "readarray", "let", "getopts", "alias", "unalias", "hash", "enable"]);
+/** Variables that choose the code a later command runs (which file a name is, a library, a startup script, an
+ *  interpreter's options): a line that sets one is never admitted as read-only (`codePathChanged`). */
+const CODE_VARS: ReadonlySet<string> = new Set([
+  "PATH", "BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "PERL5LIB",
+  "RUBYOPT", "RUBYLIB", "GIT_EXEC_PATH", "BASH_LOADABLES_PATH", "CDPATH",
+]);
+/** `set` options that change no later word: errors, tracing, globbing off, clobbering; and `--` (positional words,
+ *  already run-time values). Any other (`-k` makes a later `X=1` an assignment, `-a` exports) is opaque. */
+const SAFE_SET_FLAGS = /^[-+][euxvfCEBhT]+$/;
+const SAFE_SET_OPTIONS: ReadonlySet<string> = new Set(["errexit", "nounset", "xtrace", "verbose", "noglob", "noclobber", "errtrace", "pipefail", "functrace", "hashall"]);
 /** An assignment in arithmetic (`x=1`, `x+=1`, `x<<=1`, `a[i]=1`, `x++`, `--x`); `==`, `!=`, `<=`, `>=` are not. */
 const ARITHMETIC_ASSIGNMENT = /[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\s*(?:<<|>>|[-+*/%&^|])?=(?!=)|\+\+|--/;
 /** A parameter expansion that assigns (`${x=…}`, `${x:=…}`). */
@@ -133,6 +147,8 @@ interface Line {
   writes: Redirection[];
   /** For tests (`shellWords`): every simple command's words as written, before anything is stripped. */
   words?: string[][];
+  /** A variable that picks the code that runs (CODE_VARS) is set somewhere on the line. */
+  codePath?: boolean;
 }
 
 const newWord = (): Word => ({ text: "", legacy: "", wild: "", expanded: false, literal: true });
@@ -222,6 +238,7 @@ export function decomposeBash(command: string): Decomposed {
   try {
     decompose(command, 0, commands, line);
     if (line.envChanged) for (const c of commands) c.envInjected = true;
+    if (line.codePath) for (const c of commands) c.codePathChanged = true;
     return { commands, opaque: null, writes: line.writes };
   } catch (e) {
     if (e instanceof Opaque) return { commands: [], opaque: e.form, writes: [] };
@@ -630,10 +647,10 @@ const ANSI_SIMPLE: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: 
 
 /**
  * ANSI-C quoting at `i` (`$'…'`), decoded to what bash passes: the simple escapes, `\nnn` (one to three octal digits),
- * `\xHH` (one or two hex digits), `\cX` for a letter X, and any other backslash kept with its character; a NUL ends
- * the string. Bash versions differ on `\u`, `\U` and `\c` before a non-letter, and a byte past ASCII depends on the
- * locale: such a string is kept as written and its value is UNKNOWN. A `\'` inside it makes the line opaque (the
- * reading before this one split it there, so opaque is never less strict than that was). Answers the closing quote.
+ * `\xHH` (one or two hex digits) and `\cX` for a letter X; a NUL ends the string. Any other escape makes the line
+ * opaque (review R1): bash decodes forms this table does not (`\x{HH}`), reads `\u`, `\U` and `\c` before a
+ * non-letter differently by version, and keeps an unknown one with its backslash; a byte past ASCII depends on the
+ * locale. A `\'` inside it is opaque too. Answers the closing quote.
  */
 function ansiC(s: string, i: number, w: Word): number {
   let j = i + 2;
@@ -662,11 +679,8 @@ function ansiC(s: string, i: number, w: Word): number {
     } else if (e === "c" && /[A-Za-z]/.test(s[j + 1] ?? "")) {
       ch = String.fromCharCode(s[j + 1]!.charCodeAt(0) & 0x1f);
       j++;
-    } else if (e === "u" || e === "U" || e === "c") {
-      exact = false;
-      ch = "";
-    } else ch = `\\${e}`;
-    if (ch.charCodeAt(0) > 0x7f) exact = false;
+    } else throw new Opaque(`an ANSI-C escape \\${e} the matcher does not decode exactly`);
+    if (ch.charCodeAt(0) > 0x7f) throw new Opaque("an ANSI-C escape past ASCII (its byte depends on the locale)");
     if (ch === "\0") ended = true;
     if (!ended) out += ch;
   }
@@ -695,6 +709,7 @@ function arithmetic(body: string, inner: (cmd: string) => void, line: Line, quot
 /** A `${…}` body: its substitutions decomposed, an assigning form recorded. */
 function parameter(body: string, inner: (cmd: string) => void, line: Line, quotes: boolean): void {
   if (PARAMETER_ASSIGNMENT.test(body)) line.envChanged = true;
+  if (PARAMETER_ASSIGNMENT.test(body) && CODE_VARS.has(/^[A-Za-z_][A-Za-z0-9_]*/.exec(body)![0])) line.codePath = true;
   substitutions(body, inner, line, quotes);
 }
 
@@ -842,10 +857,12 @@ function commandOf(input: Word[], depth: number, out: DecomposedCommand[], line:
       // `for NAME in WORDS`: its words' substitutions were decomposed; any loop variable is an assignment (the matcher
       // does not judge which name is safe)
       line.envChanged = true;
+      if (CODE_VARS.has(words[1]?.text ?? "")) line.codePath = true;
       return;
     }
     if (head.literal && (UNSUPPORTED.has(head.text) || head.text === "case" || head.text === "esac")) throw new Opaque(clip(text(words)));
     if (ASSIGNMENT.test(head.text) && !head.text.slice(0, head.text.indexOf("=")).includes("$")) {
+      if (CODE_VARS.has(head.text.slice(0, head.text.indexOf("=")).replace(/\+$/, ""))) line.codePath = true;
       words = words.slice(1);
       // before a command, its environment; alone, the environment of the rest of the line
       line.envChanged = true;
@@ -857,6 +874,7 @@ function commandOf(input: Word[], depth: number, out: DecomposedCommand[], line:
       if (rest === null) return;
       // `env` with any option or NAME=VALUE sets the command's environment
       if (basename(head.text) === "env" && rest.length < words.length - 1) line.envChanged = true;
+      if (basename(head.text) === "env" && words.slice(1, words.length - rest.length).some((w) => CODE_VARS.has(w.text.split("=")[0]!))) line.codePath = true;
       // With no command after it, the prefix is the program that runs: a bare `env` prints the environment, and a rule
       // must see it (managed-v1, C8).
       if (rest.length === 0) break;
@@ -871,6 +889,7 @@ function commandOf(input: Word[], depth: number, out: DecomposedCommand[], line:
   const name = basename(head.text);
   if (OPAQUE_HEAD.has(name)) throw new Opaque(clip(text(words)));
   if (ASSIGNING_BUILTINS.has(name) || (name === "printf" && words.slice(1).some((w) => /^-[A-Za-z]*v/.test(w.text)))) line.envChanged = true;
+  laterMeaning(name, words, line);
   // `trap '<command>' SIG` runs a string later, as eval would; `trap - SIG`, `trap '' SIG`, `trap -l|-p` run nothing
   if (name === "trap" && words[1] && !["-", "", "-l", "-p", "--"].includes(words[1].text)) throw new Opaque(clip(`${text(words)} (trap runs a command string)`));
   if (name === "xargs") {
@@ -926,6 +945,39 @@ export function shellWords(command: string): string[][] | null {
     if (e instanceof Opaque) return null;
     throw e;
   }
+}
+
+/**
+ * Review R2: what a command defines for the lines after it. Bash runs a script line by line, so an alias defined on
+ * one line expands on the next (with `expand_aliases`, or in an interactive shell); `enable` and `hash -p` change
+ * what a name runs; some `set` options change what a later word is. Each is opaque, as a function definition already
+ * is: the matcher cannot see what a later word will mean. A variable that picks the code that runs (CODE_VARS) is
+ * resolved instead: the line runs, but nothing of it is admitted as read-only.
+ */
+function laterMeaning(name: string, words: Word[], line: Line): void {
+  const args = words.slice(1).map((w) => w.text);
+  const opaque = (why: string): never => {
+    throw new Opaque(clip(`${text(words)} (${why})`));
+  };
+  if (name === "alias" && args.some((a) => a.includes("="))) opaque("an alias definition: a later line runs what it names");
+  if (name === "shopt" && args.includes("expand_aliases")) opaque("aliases expanded on later lines");
+  if (name === "enable" && args.length) opaque("enable changes what a builtin's name runs");
+  if (name === "hash" && args.some((a) => /^-[A-Za-z]*p/.test(a))) opaque("hash -p maps a name to a file");
+  if (name === "set") {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === "--" || a === "-") break;
+      if (!a.startsWith("-") && !a.startsWith("+")) break; // positional words
+      // a bundle with `o` takes the next word as an option name (`set -euo pipefail`)
+      const flags = a.replace(/o/g, "");
+      if (flags.length > 1 && !SAFE_SET_FLAGS.test(flags)) opaque(`set ${a} changes what later words mean`);
+      if (a.includes("o")) {
+        i++;
+        if (!SAFE_SET_OPTIONS.has(args[i] ?? "")) opaque(`set -o ${args[i] ?? ""} changes what later words mean`);
+      }
+    }
+  }
+  if (ASSIGNING_BUILTINS.has(name) && args.some((a) => CODE_VARS.has(a.split("=")[0]!))) line.codePath = true;
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */

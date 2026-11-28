@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### What a line defines for a later one, and escapes the decomposer does not decode (2026-11-28)
+
+- In `$'…'`, an escape outside the decoded table makes the line opaque: `\x{HH}`, `\u`, `\U`, `\c` before a
+  non-letter, an unknown escape, and a byte past ASCII. Bash decodes some of these, and versions differ on others.
+- A definition that changes what a later word means is opaque, as a function definition already was:
+  - an `alias` definition;
+  - `shopt … expand_aliases`;
+  - `enable` with arguments;
+  - `hash -p`;
+  - `set` with an option other than errors, tracing, noglob, noclobber or pipefail.
+  `set -euo pipefail`, `set --`, `unalias`, `alias` listing and `shopt -s nullglob` are unchanged.
+- A line that sets a variable choosing the code a later command runs (PATH, BASH_ENV, LD_PRELOAD, DYLD_*,
+  NODE_OPTIONS, PYTHONPATH and the like) still runs as before. Its commands are matched by name by every gating
+  entry, but a readOnly entry never admits them (`codePathChanged`).
+
 ### The shell decomposer reads words as bash passes them (2026-11-28)
 
 - Permission classes, deny rules and approval entries now see the words bash will actually run:
