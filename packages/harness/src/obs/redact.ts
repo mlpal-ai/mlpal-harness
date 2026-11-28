@@ -22,8 +22,9 @@ const patterns = new Map<string, RegExp>(); // label → pattern (global)
 export const PLATFORM_SECRET_PATTERNS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   { label: "jwt", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
   // 16 or more after the prefix: a key's 8-character display prefix (`mlpal_sk_abcd1234...`, C1 §2.4) is no secret, and
-  // the person needs it to tell keys apart (review F1).
-  { label: "mlpal-key", pattern: /\b(?:mlpal_(?:sk|hk|svc)|cde_sk)_[A-Za-z0-9_-]{16,}/g },
+  // the person needs it to tell keys apart (review F1). `mlpal_rc_` is a delegated runner code (hop-service
+  // `runner_codes`, 43 urlsafe characters): a runner who pastes one into a session must not have it read back.
+  { label: "mlpal-key", pattern: /\b(?:mlpal_(?:sk|hk|svc|rc)|cde_sk)_[A-Za-z0-9_-]{16,}/g },
   { label: "sandbox-stand-in", pattern: /\bmlpal-se-[0-9a-f]{32}\b/g },
   // Only the password: the scheme, user and host stay readable.
   { label: "db-url-password", pattern: /(?<=\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^:@/\s]+:)[^@\s]+(?=@)/g },

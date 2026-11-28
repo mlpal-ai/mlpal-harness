@@ -7,10 +7,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 import { type Logger, silentLogger } from "../obs/logger";
 import type { ToolRegistry } from "../tools/registry";
-import { sanitizeJsonSchema, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../tools/types";
+import { declaredArgsOf, sanitizeJsonSchema, type Tool, type ToolContext, type ToolHands, type ToolResult } from "../tools/types";
 import { isLostResponse, lostResponseFetch } from "./lost-response";
 import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/proxy";
 import type { DeferredTools } from "../tools/deferred";
+import { canonicalMcpServer, mcpServerNameProblem } from "../tools/tool-name";
 import { StoredOAuthProvider } from "./oauth";
 import { type ProcessHost, ProcessHostTransport } from "./process-host";
 import { host } from "../host";
@@ -323,6 +324,15 @@ export class McpManager {
   }
 
   private async connectInner(name: string, config: McpServerConfig, registry: ToolRegistry): Promise<number> {
+    // Rules compare MCP server names canonically (`-` and `_` are one: tools/tool-name.ts), so a second server whose
+    // tools would share those names is refused: a rule written for one must never name the other's tools (#72).
+    const clash = [...this.configByName.keys()].find((other) => other !== name && canonicalMcpServer(other) === canonicalMcpServer(name));
+    const problem = clash !== undefined ? `its tool names (${mcpToolPrefix(name)}*) are the same as server "${clash}"'s once - and _ are read as one: rename one of them` : mcpServerNameProblem(name);
+    if (problem !== null) {
+      this.statuses.set(name, { server: name, ok: false, tools: 0, error: problem });
+      this.logger.error("mcp server refused: tool names collide", { server: name, ...(clash !== undefined ? { collides_with: clash } : { ambiguous: true }) });
+      return 0;
+    }
     this.configByName.set(name, config);
     const prev = this.clientByName.get(name);
     if (prev) {
@@ -438,6 +448,9 @@ export class McpManager {
     this.clientByName.set(name, client);
 
     const result = (await client.listTools()) as { tools: RawMcpTool[] };
+    for (const t of result.tools) {
+      if (unreadableSchema(t.inputSchema)) this.logger.warn("mcp tool's arguments are not readable from its schema: a rule with an argument pattern on it fails closed", { server: name, tool: t.name });
+    }
     return result.tools.map((t) =>
       wrapMcpTool(name, client, t, mcpEndpoint(config), (ctx) => this.callMeta?.(ctx) ?? null, {
         hands: mcpHands(config),
@@ -456,6 +469,9 @@ export class McpManager {
     const client = this.clientByName.get(name);
     this.clientByName.delete(name);
     this.statuses.delete(name);
+    // Forgotten, so a server whose tool names it would share may connect after it (review S6); reconnectAll reads the
+    // config before it disconnects.
+    this.configByName.delete(name);
     await client?.close().catch(() => undefined);
     const prefix = mcpToolPrefix(name);
     for (const registry of registries) {
@@ -499,6 +515,13 @@ export function mcpEndpoint(config: McpServerConfig): string {
   return isHttp(config) ? config.url : [config.command, ...(config.args ?? [])].join(" ");
 }
 
+
+/** A schema whose arguments sit behind a reference or a combinator: `declaredArgsOf` reads none of them. */
+export function unreadableSchema(schema: unknown): boolean {
+  if (schema === null || typeof schema !== "object" || "properties" in schema) return false;
+  return ["$ref", "allOf", "anyOf", "oneOf", "patternProperties"].some((k) => k in schema);
+}
+
 export function wrapMcpTool(
   server: string,
   client: Client,
@@ -513,6 +536,7 @@ export function wrapMcpTool(
   const js = (
     def.inputSchema ? structuredClone(def.inputSchema) : { type: "object", properties: {} }
   ) as Record<string, unknown>;
+  const declared = declaredArgsOf(js);
   sanitizeJsonSchema(js);
 
   return {
@@ -523,6 +547,7 @@ export function wrapMcpTool(
     readOnly: def.annotations?.readOnlyHint === true,
     ...(opts.hands ? { hands: opts.hands } : {}),
     ...(opts.memory ? { memory: true } : {}),
+    ...(declared ? { declaredArgs: declared } : {}),
     schema: z.record(z.unknown()) as unknown as Tool<unknown>["schema"],
     jsonSchema: js,
     async call(input, ctx): Promise<ToolResult> {

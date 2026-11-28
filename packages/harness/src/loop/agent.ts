@@ -30,16 +30,17 @@ import { maybeCompact, renderTranscript } from "../context/compaction";
 import { type EventInbox, renderEvents, waitForEvent } from "../events/inbox";
 import { type SessionEventBus, type SideEvent, SideQueue } from "../events/session-bus";
 import type { HookEngine } from "../hooks/engine";
-import type { HookContext, SessionEndInput } from "../hooks/types";
+import type { HookContext, HookNoVerdict, HookResult, SessionEndInput } from "../hooks/types";
 import { classifyStartRung } from "../routing/classifier";
 import type { ModelRouter } from "../routing/router";
-import { chargedUsage, GatewayError, type ModelClient, type ModelResult } from "../gateway/client";
-import { budgetRefusal, modelRefusal } from "../profile/model-policy";
+import { chargedUsage, GatewayError, type ModelClient, type ModelResult, SIDE_CALL_EFFORT } from "../gateway/client";
+import { budgetRefusal, ModelAccessError, modelRefusal, spendRefusal } from "../profile/model-policy";
 import { type Logger, silentLogger } from "../obs/logger";
 import { type RunStamp, type StampConfig, stampFields } from "../telemetry/stamp";
 import { stripInvisible } from "../input/sanitize";
 import { type Metrics, noopMetrics } from "../obs/metrics";
-import type { CanUseTool, Decision, PermissionRequest } from "../permission/engine";
+import { type CanUseTool, canonicalInput, type Decision, filePathOf, type PermissionRequest, undeclaredArgs } from "../permission/engine";
+import { isReadOnlyShell } from "../permission/readonly-shell";
 import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
@@ -85,6 +86,8 @@ export interface AgentConfig {
    *  that opened it and how it came to exist (`ui` | `api` | `schedule:<id>`). */
   owner?: string;
   origin?: string;
+  /** Protocol 0.26.5: written to a new session's record (never changed after); a sub-agent inherits its parent's. */
+  memory?: "incognito";
   /** Routes side events (a sub-agent's lifecycle, a child's forwarded events) to this session
    *  whether or not its loop is running. Without it, side events raised while a tool runs still
    *  reach the stream; those raised after the run (a background child's end) are dropped. */
@@ -236,7 +239,7 @@ export interface AgentConfig {
    * (pre-split behavior, byte-identical — pinned by golden tests).
    */
   loop?: LoopPolicy;
-  /** 0.27.0 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
+  /** 0.26.8 display protocol: what the run's client draws (`run.display`, checked at the host's edge with
    *  parseDisplayCaps). When it declares the block level and draws a kind of catalog `harness.v1/1`, the Show tool is
    *  offered and the catalog's grammar joins the system prompt. Any other declaration, and none, is served exactly as
    *  before: no Show, no display on any event. Showing a block later, on another surface, for a session a text client
@@ -313,6 +316,9 @@ export type DecisionVia = "policy" | "interactive" | "headless_park" | "headless
 export interface AskContext {
   reason?: string;
   safetyReason?: SafetyReason;
+  /** A PreToolUse policy hook got no verdict from its model on this call (`reason` names it): its rule was never
+   *  checked, so the ask is the person's (`personOnlyAsk`). */
+  noVerdict?: HookNoVerdict;
   /** The call the ask guards: a host derives a stable ask id from it (P2 1.1, `ask:<toolUseId>`). */
   toolUseId?: string;
   /** The session whose loop asks (a sub-agent's own, when its asks go to its parent's route). */
@@ -323,6 +329,31 @@ export interface AskContext {
   spend?: (usage: Usage) => void;
 }
 
+/** An ask only the person may answer, one action at a time: a §10 safety edge, or a call a policy hook got no verdict
+ *  on. No judge, session grant, project rule or live-mode raise stands in for the person's answer. */
+export function personOnlyAsk(ask: AskContext | undefined): boolean {
+  return Boolean(ask?.safetyReason || ask?.noVerdict);
+}
+
+/** A PreToolUse policy hook's no verdict on the call: the mark the ask carries and the words the person reads. */
+interface UndecidedCheck {
+  noVerdict: HookNoVerdict;
+  text: string;
+}
+
+function undecidedOf(results: HookResult[]): UndecidedCheck | undefined {
+  const r = results.find((x) => x.noVerdict);
+  return r?.noVerdict ? { noVerdict: r.noVerdict, text: r.reason ?? `policy check ${r.noVerdict.hook} reached no verdict` } : undefined;
+}
+
+/** The policy's decision with an undecided check folded in: an allow becomes the person's ask, an ask gains the
+ *  check's reason, a deny stands. */
+function withUndecided(d: Decision, u: UndecidedCheck | undefined): Decision {
+  if (!u || d.behavior === "deny") return d;
+  if (d.behavior === "allow") return { behavior: "ask", reason: u.text };
+  return { ...d, reason: d.reason ? `${d.reason}; ${u.text}` : u.text };
+}
+
 /** Thrown from the permission gate when a headless run hits the §10 approval edge, so the run
  *  ENDS as NEEDS_APPROVAL (stop-and-wait) instead of denying the action and continuing. */
 class SafetyParkSignal extends Error {
@@ -331,6 +362,10 @@ class SafetyParkSignal extends Error {
     readonly reason: SafetyReason | "approval_required",
     /** The held call: an approval settles exactly this one (D-48), named by its position in its message. */
     readonly call: CallAt,
+    /** What a person is shown of the call (`parkedCall`). */
+    readonly shown: { toolName: string; args?: string },
+    /** Held because a policy check reached no verdict: the mark and its words go on the approval card. */
+    readonly undecided?: { noVerdict: HookNoVerdict; detail: string },
   ) {
     super("safety approval edge (headless park)");
     this.name = "SafetyParkSignal";
@@ -421,6 +456,19 @@ function unansweredToolUses(turn: ConversationEntry[]): PendingCall[] {
 /** What a needs_approval result records of the held call. */
 type PendingApprovalRecord = NonNullable<Extract<EngineEvent, { type: "result" }>["pendingApproval"]>;
 
+/** The incognito engine floor (protocol 0.26.5): mlpal-code-server-base scripts/fetch-sources.sh refuses a harness tree
+ *  without this export, so an image can never pair an incognito engine with a harness that lacks the record's mode and
+ *  SessionMemoryModeError. Bump it only with that check; never remove it. */
+export const INCOGNITO_FLOOR = 1;
+
+/** Protocol 0.26.5: a session recorded incognito was opened by a host that did not build it incognito. Nothing ran. */
+export class SessionMemoryModeError extends Error {
+  override name = "SessionMemoryModeError";
+  constructor(readonly sessionId: string) {
+    super(`session ${sessionId.slice(0, 8)} is incognito (memory off) but this host built it with memory on: refused before it ran`);
+  }
+}
+
 /** An approval with no call to settle: nothing is held, the held call was settled or overtaken by a later turn, or the
  *  client named another call than the held one. Nothing was written. */
 export class NoHeldCallError extends Error {
@@ -438,9 +486,20 @@ function movesTurn(entries: ConversationEntry[]): boolean {
   return entries.some((e) => e.payload.type === "user" || e.payload.type === "assistant" || e.payload.type === "tool_result");
 }
 
-/** What a park names a call by: its command, or the path it touches. */
+/** What a park's binding names a call by: its command, or the path it touches. On a tool other than Bash and the file
+ *  tools these are just keys of its input, so this is never what a person approves by: see `parkedCall`. */
 function parkCommand(input: Record<string, unknown>): string {
   return String(input.command ?? input.path ?? "");
+}
+
+/** The most of a parked call's input a result carries. */
+const PARK_ARGS_MAX = 8000;
+
+/** What a person is shown of a parked call: its tool and, where `parkCommand` says nothing reliable, its whole input. */
+function parkedCall(req: PermissionRequest): { toolName: string; args?: string } {
+  if (req.toolName === "Bash" || filePathOf(req) !== undefined) return { toolName: req.toolName };
+  const args = canonicalInput(req.input);
+  return { toolName: req.toolName, args: args.length > PARK_ARGS_MAX ? `${args.slice(0, PARK_ARGS_MAX)}… (${args.length - PARK_ARGS_MAX} more characters)` : args };
 }
 
 /** The tool call a `needs_approval` park holds (D-48), read from the log so that it binds in any engine process. */
@@ -590,6 +649,28 @@ function summarizeBlocks(blocks: ToolResultBlocks): string {
  * against the callModel seam, the unified store, and an author-tagged input.
  */
 /** The transcript record of a model switch; `reason` is redacted and bounded whatever the model client gave. */
+/**
+ * The typed refusal a gateway error ends a run with, or undefined for any other error: the gateway refused the model
+ * for this HOP (rule 4) or the session token's models_allow (P6 1.1), refused the call on the account's spend (a spent
+ * cap 0.22.1; an empty wallet, or a cap or billing it could not check, 0.26.2), or refused the session token itself
+ * after its re-read (P6). The frontend reads it from fields, not from a thrown exception it must parse.
+ */
+function gatewayRefusal(e: unknown, activeModel: string, stampHop: string | undefined, log: Logger, metrics: Metrics): ModelRefusal | undefined {
+  if (!(e instanceof GatewayError) || !(e.modelAccessDenied || e.spendCode || e.sessionTokenRejected)) return undefined;
+  const hop = (stampHop ?? "?").split("@")[0]!;
+  const model = e.model ?? activeModel;
+  const spend = e.spendCode;
+  const refusal =
+    spend === "budget_exceeded"
+      ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt, subject: e.subject, message: e.gatewayMessage })
+      : spend
+        ? spendRefusal(spend, model, hop)
+        : modelRefusal(model, hop, "gateway");
+  log.warn(spend === "budget_exceeded" ? "budget cap spent: the gateway refused the call" : spend ? "the gateway refused the call on the account's spend" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
+  metrics.increment(`agent.${refusal.code}`, 1, { model, cause: spend ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
+  return refusal;
+}
+
 function fallbackEvent(from: string, to: string, code: string, reason: string): ModelFallbackEvent {
   return { type: "model_fallback", from, to, code: code.slice(0, 32), reason: redactText(reason).slice(0, 160), ts: now() };
 }
@@ -659,15 +740,22 @@ export class AgentSession {
       lastSeen: ts,
     });
     const existing = await store.registry.getSession(cfg.sessionId);
+    // Protocol 0.26.5, the narrow waist: a session recorded incognito never runs under a builder that did not say so.
+    // Every host path (serve, a wake, a peer, a CLI resume, a future one) fails here, before its first model call,
+    // rather than run a memory-on prompt and tools over an incognito conversation.
+    if (existing?.memory === "incognito" && cfg.memory !== "incognito") throw new SessionMemoryModeError(cfg.sessionId);
     // R18: the record says whether this run's commands are confined; a session once confined says `none` when a later
     // run is not, so a sandboxed sender never takes a stale record for a confined peer.
     const sandbox = cfg.sandbox && cfg.sandbox.platform !== "none" ? cfg.sandbox.platform : undefined;
     if (!existing) {
       // 0.21: a sub-agent belongs to whoever owns its parent (and came to exist the same way), so a
       // principal's listing and guard cover its children; an explicit owner on the child wins.
-      const inherited = cfg.parent && (!cfg.owner || !cfg.origin) ? await store.registry.getSession(cfg.parent.sessionId).catch(() => null) : null;
+      // An incognito parent's child is incognito whatever its builder said: memory off is never narrowed back on. A
+      // parent record that cannot be read fails the child's start: its mode cannot be known.
+      const inherited = cfg.parent ? await store.registry.getSession(cfg.parent.sessionId) : null;
       const owner = cfg.owner ?? inherited?.owner;
       const origin = cfg.origin ?? inherited?.origin;
+      const memory = cfg.memory ?? inherited?.memory;
       await store.registry.putSession({
         sessionId: cfg.sessionId,
         agentId: cfg.agentId,
@@ -681,6 +769,7 @@ export class AgentSession {
         ...(cfg.parent ? { parent: cfg.parent } : {}),
         ...(owner ? { owner } : {}),
         ...(origin ? { origin } : {}),
+        ...(memory ? { memory } : {}),
         createdAt: ts,
         updatedAt: ts,
       });
@@ -716,7 +805,22 @@ export class AgentSession {
   }
 
   /** Run one turn to completion, yielding the live event stream. */
-  async *run(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
+  /** A turn. It holds the session's live lock (Store.lifecycle) while it goes, as resume and approve do. */
+  run(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
+    return this.holdingLive(this.runTurn(input));
+  }
+
+  /** Another process asking whether this session runs (a delete) reads the lock, whatever a step's length. */
+  private async *holdingLive<R>(inner: AsyncGenerator<EngineEvent, R, void>): AsyncGenerator<EngineEvent, R, void> {
+    const release = this.store.lifecycle?.holdLive(this.cfg.sessionId);
+    try {
+      return yield* inner;
+    } finally {
+      release?.();
+    }
+  }
+
+  private async *runTurn(input: TurnInput): AsyncGenerator<EngineEvent, void, void> {
     await this.init();
     const { cfg } = this;
     const author = input.author ?? HUMAN;
@@ -785,7 +889,11 @@ export class AgentSession {
     this.currentRun = runId;
     if (cfg.hooks?.has("UserPromptSubmit")) {
       const results = await cfg.hooks.run({ event: "UserPromptSubmit", prompt: promptText }, this.hookCtx());
-      const blocker = results.find((r) => r.block);
+      // A policy check that got no verdict rejects the prompt too: a person who sent it reads why and can send it
+      // again; an unattended prompt is refused, never run unchecked.
+      // A model that said it could not tell (`unsure`) is not one: the prompt is the person's own text, and a doubt about it
+      // would refuse the same prompt every time it is sent.
+      const blocker = results.find((r) => r.block) ?? results.find((r) => r.noVerdict && r.noVerdict.reason !== "unsure");
       if (blocker) {
         this.currentRun = previousRun; // a rejected prompt leaves no turn and no run
         unsubscribe?.();
@@ -1127,15 +1235,8 @@ export class AgentSession {
           parent = yield* this.finish("cancelled", turns, totalUsage, parent);
           return;
         }
-        // The gateway refused the model for this HOP (rule 4) or the session token's models_allow (P6 1.1), the
-        // key's budget cap is spent (0.22.1), or it refused the session token itself after its re-read (P6): the
-        // run ends as a typed error the frontend reads from fields, not a thrown exception it must parse.
-        if (e instanceof GatewayError && (e.modelAccessDenied || e.budgetExceeded || e.sessionTokenRejected)) {
-          const hop = (cfg.stamp?.hop ?? "?").split("@")[0]!;
-          const model = e.model ?? activeModel;
-          const refusal = e.budgetExceeded ? budgetRefusal(model, hop, { window: e.window, resetsAt: e.resetAt, subject: e.subject }) : modelRefusal(model, hop, "gateway");
-          log.warn(e.budgetExceeded ? "budget cap spent: the gateway refused the call" : e.sessionTokenRejected ? "session token refused by the gateway after its re-read" : "model refused by the gateway", { model, hop, code: e.code, detail: e.message });
-          metrics.increment(`agent.${refusal.code}`, 1, { model, cause: e.budgetExceeded ? "budget" : e.sessionTokenRejected ? "session_token" : "model_policy" });
+        const refusal = gatewayRefusal(e, activeModel, cfg.stamp?.hop, log, metrics);
+        if (refusal) {
           outcome = "error";
           parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
           return;
@@ -1316,7 +1417,7 @@ export class AgentSession {
           }
           const events = cfg.inbox.drain();
           if (events.length > 0) {
-            const text = renderEvents(events);
+            const text = renderEvents(events, { incognito: cfg.memory === "incognito" });
             const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
             parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
             yield { ...ue, uuid: parent };
@@ -1557,7 +1658,7 @@ export class AgentSession {
       // The model reacts on the very next step — or ignores it and keeps working.
       if (cfg.inbox && cfg.inbox.size() > 0) {
         const events = cfg.inbox.drain();
-        const text = renderEvents(events);
+        const text = renderEvents(events, { incognito: cfg.memory === "incognito" });
         const ue: UserEvent = { type: "user", message: { role: "user", content: text }, author: SYSTEM, ts: now() };
         parent = (await this.store.conversation.append(cfg.sessionId, ue, parent)).uuid;
         yield { ...ue, uuid: parent };
@@ -1577,9 +1678,14 @@ export class AgentSession {
         outcome = "needs_approval";
         log.info("run parked for approval", { reason: e.reason });
         metrics.increment("agent.needs_approval", 1, { reason: e.reason });
-        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index });
+        parent = yield* this.finish("needs_approval", turns, totalUsage, parent, { command: e.command, reason: e.reason, toolUseId: e.call.toolUseId, index: e.call.index, ...e.shown, ...(e.undecided ?? {}) });
       } else {
-        throw e;
+        // A call outside the turn's own model call (the compaction summary) met the same gateway refusal: the run ends
+        // as the same typed error. The turn's own call never reaches here typed: it ended above.
+        const refusal = gatewayRefusal(e, activeModel, cfg.stamp?.hop, log, metrics);
+        if (!refusal) throw e;
+        outcome = "error";
+        parent = yield* this.finish("error", turns, totalUsage, parent, undefined, refusal);
       }
     } finally {
       this.askSpend = null;
@@ -1747,6 +1853,7 @@ export class AgentSession {
         system: (this.cfg.loop ?? CODING_PROFILE.loop).condenserSystem,
         messages: [{ role: "user", content: text }],
         maxTokens: 1024,
+        effort: SIDE_CALL_EFFORT,
         signal: this.cfg.signal,
       });
       let r = await gen.next();
@@ -1779,6 +1886,7 @@ export class AgentSession {
       system: (cfg.loop ?? CODING_PROFILE.loop).summarizerSystem + focus,
       messages: [{ role: "user", content: `Summarize this transcript:\n\n${renderTranscript(older)}` }],
       maxTokens: 1536,
+      effort: SIDE_CALL_EFFORT,
       signal: cfg.signal,
     });
     let r = await gen.next();
@@ -1812,7 +1920,14 @@ export class AgentSession {
         this.hookCtx(),
       );
     }
-    const summary = await this.summarize(messages, instructions);
+    let summary: string;
+    try {
+      summary = await this.summarize(messages, instructions);
+    } catch (e) {
+      // The same typed refusal a run ends with, for the host to show (`/compact` has no run to end).
+      const refusal = gatewayRefusal(e, cfg.model, cfg.stamp?.hop, cfg.logger ?? silentLogger, cfg.metrics ?? noopMetrics);
+      throw refusal ? new ModelAccessError(refusal) : e;
+    }
     let parent = await this.store.conversation.head(cfg.sessionId);
     const ce = {
       type: "compact" as const,
@@ -1898,7 +2013,11 @@ export class AgentSession {
    * turn continues from the head (no new user entry) to its result, as `run()` does. A held call whose
    * approved run began (its marker) but whose result was lost with the engine (D-48) is such a turn too.
    */
-  async *resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
+  resume(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
+    return this.holdingLive(this.resumeTurn());
+  }
+
+  private async *resumeTurn(): AsyncGenerator<EngineEvent, { resumed: boolean }, void> {
     const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
     const turnEntries = turnToResume(all, await this.startedCalls());
     if (turnEntries.length === 0) return { resumed: false };
@@ -1921,7 +2040,11 @@ export class AgentSession {
    * `parkId` names the park the person answered (`HeldCall.parkId`); another park held by now, or none, is
    * NoHeldCallError and nothing is written.
    */
-  async *approve(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
+  approve(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
+    return this.holdingLive(this.approveTurn(d));
+  }
+
+  private async *approveTurn(d: { decision: "allow" | "deny"; reason?: string; parkId: string }): AsyncGenerator<EngineEvent, void, void> {
     const all = effectiveEntries(await this.store.conversation.read(this.cfg.sessionId));
     const held = heldCall(all);
     if (!held || movesTurn(all.slice(held.resultAt + 1))) throw new NoHeldCallError(this.cfg.sessionId);
@@ -2039,6 +2162,7 @@ export class AgentSession {
     });
 
     let input = tu.input;
+    let undecided: UndecidedCheck | undefined;
 
     // PreToolUse hooks: may block or rewrite the tool input.
     if (cfg.hooks?.has("PreToolUse")) {
@@ -2058,6 +2182,7 @@ export class AgentSession {
         return make(`Blocked by hook: ${blocker.reason ?? "denied"}`, true);
       }
       for (const r of results) if (r.updatedInput) input = r.updatedInput;
+      undecided = undecidedOf(results);
     }
 
     // D-48 (M4): the person approved the call the park showed; one a PreToolUse hook now rewrites is asked again.
@@ -2069,15 +2194,24 @@ export class AgentSession {
     // resolve() lets tools that register asynchronously (MCP servers still connecting)
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
     const tool = await this.tools.resolve(tu.name);
+    const undeclared = undeclaredArgs(tool, input);
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
       readOnly: tool?.readOnly ?? false,
       isEdit: tool?.edits ?? false,
       isMemory: tool?.memory ?? false,
+      isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
+      ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
       principal,
+      cwd: cfg.cwd,
+      roots: cfg.roots ?? [cfg.cwd],
     };
-    const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at);
+    // A policy hook with no verdict puts a call that may change something before the person; a read stays the
+    // policy's to decide, so a harmless read never starts asking because a check could not decide.
+    const callReadOnly =
+      tool !== undefined && ((tool.isCallReadOnly?.(input) ?? tool.readOnly) || (tu.name === "Bash" && typeof input.command === "string" && isReadOnlyShell(input.command)));
+    const { decision, via } = approved ? await this.resolveDecided(permReq, approved.decision) : await this.resolve(permReq, at, callReadOnly ? undefined : undecided);
     const toolStartMs = Date.now();
 
     let raw: string | ToolResultBlocks;
@@ -2165,13 +2299,17 @@ export class AgentSession {
 
   /** Resolve the permission decision. Denials and parks are observed here; an ALLOW is observed by
    *  the caller after the tool ran, so a tool-boundary refusal can turn it into the effective deny. */
-  private async resolve(req: PermissionRequest, call: CallAt): Promise<{ decision: Decision; via: DecisionVia }> {
-    const d = await this.cfg.canUseTool(req);
+  private async resolve(req: PermissionRequest, call: CallAt, undecided?: UndecidedCheck): Promise<{ decision: Decision; via: DecisionVia }> {
+    const d = withUndecided(await this.cfg.canUseTool(req), undecided);
     if (d.behavior !== "ask") return { decision: d.behavior === "allow" ? d : this.observed(req, d, "policy"), via: "policy" };
+    // The turn was cancelled while the check ran (it stops with the session): nobody is asked about a cancelled turn.
+    if (undecided && this.cfg.signal?.aborted) {
+      return { decision: this.observed(req, { behavior: "deny", reason: `the turn was cancelled: ${undecided.text}`, source: "mode" }, "policy"), via: "policy" };
+    }
     // PermissionRequest: a hook may answer in the person's place (the first answer wins);
-    // no answer means the ask proceeds exactly as before.
+    // no answer means the ask proceeds exactly as before. It is told when the call's policy check reached no verdict.
     if (this.cfg.hooks?.has("PermissionRequest")) {
-      const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}) }, this.hookCtx());
+      const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}), ...(undecided ? { noVerdict: undecided.noVerdict } : {}) }, this.hookCtx());
       const answer = results.find((r) => r.decision);
       if (answer?.decision) {
         const decided: Decision = answer.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: answer.reason ?? "denied by hook" };
@@ -2189,6 +2327,7 @@ export class AgentSession {
         sessionId: this.cfg.sessionId,
         stamp: this.stamp(),
         ...(spend ? { spend } : {}),
+        ...(undecided ? { noVerdict: undecided.noVerdict } : {}),
       });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
@@ -2199,10 +2338,10 @@ export class AgentSession {
     // proceed past the edge.
     if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
-      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call);
+      throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req), undecided ? { noVerdict: undecided.noVerdict, detail: undecided.text } : undefined);
     }
     return {
-      decision: this.observed(req, { behavior: "deny", reason: "approval required but running non-interactively", source: "mode" }, "headless_refused"),
+      decision: this.observed(req, { behavior: "deny", reason: `approval required but running non-interactively${undecided ? `: ${undecided.text}` : ""}`, source: "mode" }, "headless_refused"),
       via: "headless_refused",
     };
   }
@@ -2251,7 +2390,7 @@ export class AgentSession {
     void this.event("run.end", { subtype, turns: numTurns, usage, ...(pendingApproval ? { pending: pendingApproval.reason } : {}) });
     if (subtype !== "success" && this.cfg.hooks?.has("Notification")) {
       const kind = subtype === "needs_approval" ? "needs_approval" : subtype === "max_turns" ? "max_turns" : subtype === "cancelled" ? "cancelled" : "error";
-      const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.command}` : `run ended: ${subtype}`;
+      const message = pendingApproval ? `${pendingApproval.reason}: ${pendingApproval.args ? `${pendingApproval.toolName} ${pendingApproval.args}` : pendingApproval.command}` : `run ended: ${subtype}`;
       void this.cfg.hooks.run({ event: "Notification", kind, message }, this.hookCtx()).catch(() => undefined);
     }
     const abuse = this.abuseReason;

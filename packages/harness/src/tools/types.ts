@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
 import type { z } from "zod";
@@ -103,7 +104,7 @@ export interface ToolResult {
     refusal?: ModelRefusal;
     /** 0.22.4: the remote sandbox had no capacity for the call */
     sandboxRefusal?: SandboxRefusal;
-    /** 0.27.0: what the call showed the person (Show), copied onto the event like `diff` */
+    /** 0.26.8: what the call showed the person (Show), copied onto the event like `diff` */
     display?: DisplayEnvelope[];
     /** The step's display string when it is not what the model reads: Show's model reads a short line, while a client
      *  that draws no display shows the line and the fallback. Absent = the display string is derived from `content`. */
@@ -137,10 +138,10 @@ export interface Tool<I = unknown> {
    *  for verification signals — a capability tag, so profiles with renamed toolsets keep
    *  self-check/anti-churn instead of silently losing them to name matching. */
   executes?: boolean;
-  /** v1.1 — this tool can APPLY real-world/infra changes (mutative or destructive). The safety
-   *  evaluator (§10) gates these; the specific class (mutative vs destructive) of an individual
-   *  call is resolved against the HOP's `safety.toolClasses`, since two tags cannot encode three
-   *  classes. A `readOnly`-role subagent is denied every `applies`-tagged tool. */
+  /** v1.1 — this tool can APPLY real-world/infra changes (mutative, consequential or destructive).
+   *  The safety evaluator (§10) gates these; the specific class of an individual call is resolved
+   *  against the HOP's `safety.toolClasses`, since two tags cannot encode the classes. A
+   *  `readOnly`-role subagent is denied every `applies`-tagged tool. */
   applies?: boolean;
   /** v1.1 — this tool touches cloud/infra control planes (aws/az/gcloud/kubectl/terraform via
    *  Bash, or an infra MCP). Pairs with `applies` for the safety envelope; informational for
@@ -156,6 +157,12 @@ export interface Tool<I = unknown> {
    *  (Agent with read_only/run_in_background). The loop's concurrency gate prefers this
    *  over the static flag; permission policy still uses `readOnly`. */
   isCallReadOnly?: (input: unknown) => boolean;
+  /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
+   *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
+  isCallGlobalMemory?: (input: unknown) => boolean;
+  /** The input keys this tool declares. A key outside it may never reach the tool, so a rule that reads arguments
+   *  cannot judge that call. Absent: any key. */
+  declaredArgs?: ReadonlySet<string>;
   schema: z.ZodType<I>;
   /** JSON Schema handed to the model as `input_schema`. Derived from `schema`. */
   jsonSchema: Record<string, unknown>;
@@ -193,6 +200,15 @@ export function sanitizeJsonSchema(node: unknown): void {
   }
 }
 
+/** The arguments an input schema declares, or undefined when it takes any key. A schema silent on
+ *  additionalProperties is read as closed, the way servers that drop unknown keys publish theirs. Read it before
+ *  `sanitizeJsonSchema`, which drops additionalProperties. */
+export function declaredArgsOf(schema: unknown): ReadonlySet<string> | undefined {
+  const s = (schema ?? {}) as { properties?: object; additionalProperties?: unknown };
+  if (s.additionalProperties !== undefined && s.additionalProperties !== false) return undefined;
+  return new Set(Object.keys(s.properties ?? {}));
+}
+
 export function defineTool<I>(def: {
   name: string;
   description: string;
@@ -204,10 +220,13 @@ export function defineTool<I>(def: {
   infra?: boolean;
   memory?: boolean;
   isCallReadOnly?: (input: unknown) => boolean;
+  isCallGlobalMemory?: (input: unknown) => boolean;
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
 }): Tool<I> {
   const js = zodToJsonSchema(def.schema, { $refStrategy: "none" }) as Record<string, unknown>;
+  // A schema that is no plain object (a union) says nothing about its keys here, and zod is its contract at the call.
+  const declared = "properties" in js ? declaredArgsOf(js) : undefined;
   sanitizeJsonSchema(js);
   return {
     name: def.name,
@@ -220,13 +239,22 @@ export function defineTool<I>(def: {
     infra: def.infra,
     memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
+    isCallGlobalMemory: def.isCallGlobalMemory,
+    ...(declared ? { declaredArgs: declared } : {}),
     schema: def.schema,
     jsonSchema: js,
     call: def.call,
   };
 }
 
-export function resolvePath(cwd: string, p: string): string {
+/**
+ * `p` as an absolute path. `~` and `~/…` are `$HOME`, as the shell reads them, so a file tool and a
+ * shell command agree on where `~/x` is; any other relative path is under `cwd`. `~user` and a `~`
+ * anywhere else in a name are left as they are.
+ */
+export function resolvePath(cwd: string, p: string, home: string = process.env.HOME || homedir()): string {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join(home, p.slice(2));
   return isAbsolute(p) ? p : join(cwd, p);
 }
 
@@ -277,12 +305,13 @@ export function resolveInRoots(
   const roots = contextRoots(ctx);
   const abs = resolvePath(ctx.cwd, p);
   if (!withinRoots(abs, roots)) {
+    // Said so the agent can correct itself: where to save instead, and why it matters to the user.
     return {
       error: {
         ...err(
-          `Path is outside the allowed directories: ${p}\n` +
-            `Allowed: ${roots.join(", ")}\n` +
-            `Grant access by starting ${host().name} with --add-dir <dir>.`,
+          `Path is outside the allowed directories: ${p}${abs === p ? "" : ` (${abs})`}\n` +
+            `Use a path under ${roots.join(" or ")} instead. Files outside these directories are not shown to the user and may not be kept.\n` +
+            `Only the user can allow another directory, by starting ${host().name} with --add-dir <dir>.`,
         ),
         meta: { refused: "outside_roots" },
       },

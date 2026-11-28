@@ -75,7 +75,7 @@ describe("plan gate: through the envelope", () => {
   test("a mutative apply with planApproved false is denied with the gate's reason in the detail; undefined stays ungated", async () => {
     const { evaluateSafety } = await import("../src/permission/safety-envelope");
     const safety = {
-      toolClasses: { readOnly: ["Bash(kubectl get *)"], mutative: ["Bash(kubectl apply *)"], destructive: ["Bash(kubectl delete *)"] },
+      toolClasses: { readOnly: ["Bash(kubectl get *)"], mutative: ["Bash(kubectl apply *)"], consequential: [], destructive: ["Bash(kubectl delete *)"] },
       preApply: { requirePlanArtifact: true, hash: ["plan"] },
       blastRadius: {},
       approval: {},

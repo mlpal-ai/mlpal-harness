@@ -721,6 +721,42 @@ describe("capability gating in the engine", () => {
   });
 });
 
+describe("permissions on the next/ws line", () => {
+  test("Show declares its arguments, so a rule that reads arguments can judge a call and an extra key is undeclared", () => {
+    const { show } = tool();
+    expect([...(show.declaredArgs ?? [])].sort()).toEqual(["as_of", "block_id", "caption", "fallback", "kind", "notes", "placement", "sources", "spec", "title"]);
+  });
+
+  test("a deny rule refuses Show; recon and a read-only run admit it (read-only, hands pure)", async () => {
+    const denied = new Scripted([use("toolu_1", "Show", chart()), done("ok")]);
+    const d = toolResults(await run(session(denied, { display: WEB, canUseTool: createPolicy({ mode: "autopilot", deny: ["Show"] }) })))[0]!;
+    expect([d.isError, d.content.startsWith("Permission denied"), "display" in d]).toEqual([true, true, false]);
+    for (const [i, policy] of [createPolicy({ mode: "recon" }), createPolicy({ mode: "manual", readOnlyRun: true })].entries()) {
+      const m = new Scripted([use(`toolu_r${i}`, "Show", chart()), done("ok")]);
+      const r = toolResults(await run(session(m, { display: WEB, canUseTool: policy, sessionId: `s-ro-${i}` })))[0]!;
+      expect([r.isError, r.display?.[0]?.level]).toEqual([false, "block"]);
+    }
+  });
+
+  test("an argument-reading allow cannot approve a call carrying a key Show does not declare", async () => {
+    const policy = createPolicy({ mode: "manual", allow: ['Show({"block_id":"fig-1",*)'] });
+    const { show } = tool();
+    const input = { ...chart(), smuggled: 1 };
+    const decision = await policy({ toolName: "Show", input, readOnly: false, isEdit: false, principal: { type: "human" }, undeclaredArgs: Object.keys(input).filter((k) => !show.declaredArgs!.has(k)) });
+    expect(decision.behavior).not.toBe("allow");
+  });
+});
+
+describe("two sessions showing at once (concurrent_runs)", () => {
+  test("each session's Show keeps its own revisions and repairs", async () => {
+    const a = new Scripted([use("toolu_a", "Show", badChart()), use("toolu_a2", "Show", chart()), done("ok")]);
+    const b = new Scripted([use("toolu_b", "Show", chart()), done("ok")]);
+    const [ea, eb] = await Promise.all([run(session(a, { display: WEB, sessionId: "sa" })), run(session(b, { display: WEB, sessionId: "sb" }))]);
+    expect(toolResults(ea).map((r) => [r.display?.[0]?.revision, r.display?.[0]?.status])).toEqual([[1, "repairing"], [2, "ok"]]);
+    expect(toolResults(eb).map((r) => [r.display?.[0]?.revision, r.display?.[0]?.status])).toEqual([[1, "ok"]]);
+  });
+});
+
 describe("E3: a block left repairing when its run ends is settled fallback_only", () => {
   test("the run's result carries the final envelope; it is stored, and a later run starts afresh", async () => {
     const model = new Scripted([use("toolu_1", "Show", badChart()), done("I could not draw it.")]);

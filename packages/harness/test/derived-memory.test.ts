@@ -26,6 +26,18 @@ afterEach(async () => {
 const ctx = { cwd: "/" };
 
 describe("Memorize tool", () => {
+  test("names how to remove a memory when the host keeps topics as files: the file each scope writes, and no retract tool", async () => {
+    const dir = join(root, "memory");
+    const tool = createMemorizeTool({ store, workspace: "myrepo", topicDir: dir });
+    expect(tool.description).toContain(`To remove a memory, delete its topic file, ${dir}/myrepo--<slug>.md (global--<slug>.md for scope=global); there is no tool that retracts one`);
+    // The named file is the one a write makes, for either scope.
+    await tool.call({ slug: "deploy-process", content: "Deploys go through CI." }, ctx);
+    await tool.call({ slug: "tone", content: "Prefers short answers.", scope: "global" }, ctx);
+    expect([await Bun.file(join(dir, "myrepo--deploy-process.md")).exists(), await Bun.file(join(dir, "global--tone.md")).exists()]).toEqual([true, true]);
+    // A store whose topics are not files there says nothing of removing one.
+    expect(createMemorizeTool({ store, workspace: "myrepo" }).description).not.toContain("To remove a memory");
+  });
+
   test("saves a project memory with sync-ready frontmatter", async () => {
     const tool = createMemorizeTool({ store, workspace: "myrepo", sessionId: "abcd1234-x" });
     const r = await tool.call(

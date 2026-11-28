@@ -10,8 +10,9 @@ import { defaultRegistry } from "../../../src/tools";
 /**
  * A run by a client that says nothing about display: one Read, then an answer. Everything random or
  * machine-specific (uuids, times, the temp directory) is replaced by a fixed token, so the recording is comparable
- * across engines. `no-display-run.golden.json` is this recording made on origin/main 9ede1ea, before the display
- * protocol existed: the contract is that such a client sees exactly that, byte for byte.
+ * across engines. `no-display-run.golden.json` is this recording made on next/ws-2026-11-16 51ea891, before the
+ * display protocol existed (it is byte-identical to the recording on origin/main 9ede1ea): the contract is that such a
+ * client sees exactly that, byte for byte.
  */
 export interface NoDisplayRecording {
   events: unknown[];

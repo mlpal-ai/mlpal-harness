@@ -17,10 +17,11 @@ import {
   type ValidShow,
 } from "@mlpal/harness-protocol";
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Logger } from "../obs/logger";
 import type { Metrics } from "../obs/metrics";
 import { parseJsonLenient } from "../tools/json";
-import { defineTool, type Tool, type ToolContext, type ToolResult } from "../tools/types";
+import { declaredArgsOf, defineTool, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import type { DisplayHistory } from "./history";
 import type { DisplayPolicy } from "./policy";
 // The model's schema (schema.ts). The tool's own schema accepts anything, so that every fault is answered with a
@@ -58,6 +59,9 @@ export interface ShowToolDeps {
   metrics: Metrics;
 }
 
+/** The keys Show declares, read from the protocol's input before sanitising (which drops additionalProperties: false):
+ *  a rule that reads arguments can judge a Show call, and a key outside them is undeclared (permission/engine.ts). */
+const SHOW_DECLARED_ARGS = declaredArgsOf(zodToJsonSchema(showInputSchema, { $refStrategy: "none" }));
 
 const DESCRIPTION =
   "Show the person one block beside your answer: kpis for 2 to 6 headline numbers, grid for rows they will scan or sort, chart for a trend or a comparison. " +
@@ -467,7 +471,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
       return (strings.has("spec") || strings.has("spec.vl")) && atSpec ? leadWith(r, SPEC_AS_OBJECT) : r;
     },
   });
-  return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, settle };
+  return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}), settle };
 }
 
 /** A metric label from the model's kind: a catalog or host kind as it is, anything else one bucket (low cardinality,

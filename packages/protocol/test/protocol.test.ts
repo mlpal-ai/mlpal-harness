@@ -18,7 +18,11 @@ import {
   type WithdrawnFrame,
   type HopView,
   type ModelFallbackEvent,
+  type BudgetSubject,
   type ModelRefusal,
+  type SpendCode,
+  type PendingApproval,
+  type PolicyNoVerdict,
   type ResultEvent,
   type SandboxNoneReason,
   type SandboxRecord,
@@ -27,6 +31,8 @@ import {
   type ScheduleView,
   type ServerMessage,
   type SessionStoreGrant,
+  type SessionArchiveFilter,
+  type SessionMemoryMode,
   type SessionSummary,
   type ToolResultEvent,
   addUsage,
@@ -202,6 +208,66 @@ describe("0.22.3 (ScheduleSpec.delivery.webhookSecret, write-only)", () => {
   });
 });
 
+describe("0.26.4 (session_archive: archive, restore and delete a session; additive)", () => {
+  test("archive_sessions and delete_session are client messages; their answers and refusal codes are typed", () => {
+    const archive = { type: "archive_sessions", requestId: "r1", sessionIds: ["a", "b"], archived: true } satisfies ClientMessage;
+    const restore = { type: "archive_sessions", requestId: "r2", sessionIds: ["a"], archived: false } satisfies ClientMessage;
+    const del = { type: "delete_session", requestId: "r3", sessionId: "a" } satisfies ClientMessage;
+    const filters: SessionArchiveFilter[] = ["exclude", "include", "only"];
+    const list = { type: "list_sessions", requestId: "r4", archived: "only" } satisfies ClientMessage;
+    const archived = { type: "sessions_archived", requestId: "r1", sessionIds: ["a", "b"], archived: true, archivedAt: "2026-11-12T00:00:00.000Z" } satisfies ServerMessage;
+    const deleted = { type: "session_deleted", requestId: "r3", sessionId: "a", deleted: ["a", "a-child"] } satisfies ServerMessage;
+    const running = { type: "error", requestId: "r3", code: "session_running", sessionId: "a", message: "m" } satisfies ServerMessage;
+    const codes: ErrorCode[] = ["session_running", "session_not_found", "session_id_invalid"];
+    const capability: ServerCapability = "session_archive";
+    const row: SessionSummary = { sessionId: "a", agentId: "x", status: "idle", model: "m", updatedAt: "t", title: "t", archivedAt: "2026-11-12T00:00:00.000Z" };
+    // @ts-expect-error the filter is a closed set
+    const wrong: SessionArchiveFilter = "all";
+    expect([archive.sessionIds.length, restore.archived, del.sessionId, filters.length, list.archived, archived.archived, deleted.deleted, running.code, codes.length, capability, row.archivedAt, wrong]).toEqual([
+      2, false, "a", 3, "only", true, ["a", "a-child"], "session_running", 3, "session_archive", "2026-11-12T00:00:00.000Z", "all",
+    ]);
+  });
+});
+
+describe("0.26.6 (a policy check with no verdict, on the card and on a parked call; additive)", () => {
+  test("permission_request and pendingApproval may carry the no-verdict mark; a 0.26.5 frame is still valid", () => {
+    const mark: PolicyNoVerdict = { hook: "cfg:PreToolUse#1", reason: "cut_off" };
+    const card = { type: "permission_request", id: "a1", sessionId: "s1", toolName: "Bash", input: { command: "git push" }, reason: "policy check cfg:PreToolUse#1 reached no verdict", noVerdict: mark } satisfies ServerMessage;
+    const older = { type: "permission_request", id: "a2", sessionId: "s1", toolName: "Bash", input: {} } satisfies ServerMessage;
+    const pending: PendingApproval = { command: "git push", reason: "approval_required", noVerdict: mark, detail: "policy check cfg:PreToolUse#1 reached no verdict" };
+    const result: ResultEvent = { type: "result", subtype: "needs_approval", numTurns: 1, usage: emptyUsage(), ts: "t", pendingApproval: { ...pending } };
+    // @ts-expect-error the reasons are a closed set
+    const other: PolicyNoVerdict = { hook: "h", reason: "maybe" };
+    const back = JSON.parse(JSON.stringify({ card, older, result })) as { card: ServerMessage; older: ServerMessage; result: ResultEvent };
+    expect(back.card.type === "permission_request" && back.card.noVerdict).toEqual(mark);
+    expect(back.older.type === "permission_request" && back.older.noVerdict).toBeUndefined();
+    expect(back.result.pendingApproval?.noVerdict?.reason).toBe("cut_off");
+    expect(other.reason as string).toBe("maybe");
+  });
+});
+
+describe("0.26.5 (incognito: a session with memory off; additive)", () => {
+  test("run.memory, SessionSummary.memory, the capability and the refusal codes are typed and survive the wire", () => {
+    const modes: SessionMemoryMode[] = ["on", "incognito"];
+    const run = { type: "run", requestId: "r1", sessionId: "s1", prompt: "hi", memory: "incognito" } satisfies ClientMessage;
+    const row: SessionSummary = { sessionId: "s1", agentId: "x", status: "idle", model: "m", updatedAt: "t", title: "t", memory: "incognito" };
+    const refused = { type: "error", requestId: "r1", code: "incognito_unavailable", sessionId: "s1", message: "m" } satisfies ServerMessage;
+    const fixed = { type: "error", requestId: "r2", code: "memory_mode_fixed", sessionId: "s1", message: "m" } satisfies ServerMessage;
+    const codes: ErrorCode[] = ["incognito_unavailable", "memory_mode_fixed"];
+    const capability: ServerCapability = "incognito";
+    // @ts-expect-error the memory mode is a closed set: no boolean, no "off"
+    const off: SessionMemoryMode = "off";
+    // @ts-expect-error a summary only ever names the non-default mode
+    const on: SessionSummary["memory"] = "on";
+    const back = JSON.parse(JSON.stringify({ run, row, refused, fixed })) as { run: ClientMessage; row: SessionSummary; refused: ServerMessage; fixed: ServerMessage };
+    expect(back.run).toEqual(run);
+    expect(back.run.type === "run" && back.run.memory).toBe("incognito");
+    expect(back.row.memory).toBe("incognito");
+    expect([back.refused, back.fixed].map((m) => (m.type === "error" ? m.code : null))).toEqual(codes);
+    expect([modes, capability, off, on] as unknown[]).toEqual([["on", "incognito"], "incognito", "off", "on"]);
+  });
+});
+
 describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   test("a sandbox_capacity refusal rides the tool_result, the result and the error event, beside refusal", () => {
     const capacity: SandboxRefusal = { code: "sandbox_capacity", reason: "quota_global", retryAfterS: 5, sandboxId: "sbx_1", message: "remote sandbox at capacity (quota_global): retry after 5 s" };
@@ -215,12 +281,20 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.27.0 (display protocol: tool_result.display, run.display, capability display; additive)", () => {
+describe("0.27.1 (one line again: main and next/ws merged; additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.27.0");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.27.0");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.27.1");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.27.1");
   });
 
+  test("the capabilities of both lines are named", () => {
+    const both: ServerCapability[] = ["live_attach", "concurrent_runs", "session_archive", "incognito", "display"];
+    const init: SystemInitEvent = { type: "system", subtype: "init", sessionId: "s", agentId: "a", model: "m", cwd: "/w", ts: "t", sandbox: { platform: "none", filesystem: null, network: null, required: false, reason: "off" } };
+    expect([both.length, init.sandbox?.platform]).toEqual([5, "none"]);
+  });
+});
+
+describe("0.26.8 (display protocol: tool_result.display, run.display, capability display; additive)", () => {
   test("display is optional on tool_result and on run; the capability is named", () => {
     const envelope: DisplayEnvelope = { v: 1, block_id: "fig-1", revision: 1, op: "snapshot", level: "text", fallback: { text: "Runs out on 17 Dec, four days before PO 4471." }, source: { by: "model" }, status: "repairing" };
     const shown: ToolResultEvent = { type: "tool_result", toolUseId: "tu", toolName: "Show", content: "c", display: [envelope], isError: false, ts: "t" };
@@ -248,6 +322,33 @@ describe("0.26.7 (E-17: system/init names the sandbox that confines the session'
     const codes: SandboxNoneReason[] = ["off", "missing", "cannot_confine", "unsupported"];
     expect([text.platform, codes.length]).toEqual(["none", 4]);
     expect([init.sandbox?.platform, remote.template, none.reason, "sandbox" in before, fc.required]).toEqual(["bwrap", "hands", "off", false, false]);
+  });
+});
+
+describe("0.26.2 (the gateway's spend codes on a model refusal: additive)", () => {
+  test("wallet_empty, budget_unavailable and billing_unavailable ride a refusal beside budget_exceeded", () => {
+    const codes: SpendCode[] = ["budget_exceeded", "wallet_empty", "budget_unavailable", "billing_unavailable"];
+    const refusals: ModelRefusal[] = codes.map((code) => ({ code, model: "claude-opus-5-5", hop: "infra", reason: "gateway", message: "m" }));
+    const results: ResultEvent[] = refusals.map((refusal) => ({ type: "result", subtype: "error", reason: refusal.message, refusal, numTurns: 1, usage: emptyUsage(), ts: "t" }));
+    // @ts-expect-error insufficient_quota is the OpenAI wire's error type, not a code
+    const wrong: ModelRefusal = { code: "insufficient_quota", model: "m", hop: "h", message: "m" };
+    expect([results.map((r) => r.refusal?.code), wrong.hop]).toEqual([codes, "h"]);
+  });
+
+  test("a cap's subject may be tag, or a subject this protocol does not name, as sent", () => {
+    const tag: BudgetSubject = "tag";
+    const spent: ModelRefusal = { code: "budget_exceeded", model: "m", hop: "h", reason: "gateway", message: "m", subject: tag };
+    const newer: ModelRefusal = { ...spent, subject: "org" };
+    expect([spent.subject, newer.subject]).toEqual(["tag", "org"]);
+  });
+});
+
+describe("0.26.1 (a parked call's tool and arguments: additive)", () => {
+  test("pendingApproval may carry toolName and args, on the result event and on the session's history", () => {
+    const pending: PendingApproval = { command: "send_email", reason: "approval_required", toolName: "mcp__mail__send", args: '{"to":"a@b.c"}' };
+    const result: ResultEvent = { type: "result", subtype: "needs_approval", numTurns: 1, usage: emptyUsage(), ts: "t", pendingApproval: { ...pending } };
+    const bare: PendingApproval = { command: "rm -rf build", reason: "approval_required" };
+    expect([result.pendingApproval?.toolName, result.pendingApproval?.args, bare.toolName]).toEqual(["mcp__mail__send", '{"to":"a@b.c"}', undefined]);
   });
 });
 

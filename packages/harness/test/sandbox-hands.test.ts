@@ -46,13 +46,17 @@ class FakeGuest implements HandsClient {
         const hits = inBase.filter((p) => p.endsWith(ext));
         return this.result(hits.length ? { stdout: hits.join("\n") + "\n" } : { exitCode: 1 });
       }
-      const pat = /--regexp (\S+)$/.exec(args)![1]!.replace(/^'|'$/g, "");
+      // As real rg: with no path it would search stdin (it never returns while stdin stays open), so the fake refuses
+      // that; with `-- .` it prints every path with `./` before it.
+      const search = /--regexp (\S+) -- \.$/.exec(args);
+      if (!search) return this.result({ stderr: `rg: no path given, would read stdin: ${args}\n`, exitCode: 2 });
+      const pat = search[1]!.replace(/^'|'$/g, "");
       const glob = /-g (\S+)/.exec(args)?.[1]?.replace(/^'|'$/g, "");
       const lines: string[] = [];
       for (const rel of inBase) {
         if (glob && !rel.endsWith(glob.replace(/^\*/, ""))) continue;
         this.files.get(`${base}/${rel}`)!.split("\n").forEach((l, i) => {
-          if (new RegExp(pat).test(l)) lines.push(`${rel}:${i + 1}:${l}`);
+          if (new RegExp(pat).test(l)) lines.push(`./${rel}:${i + 1}:${l}`);
         });
       }
       return this.result(lines.length ? { stdout: lines.join("\n") + "\n" } : { exitCode: 1 });
@@ -193,7 +197,7 @@ describe("sandbox hands: the same nine tools, over a session", () => {
     expect(String(g.calls[0]!.argv)).toBe("cd /workspace && rg --files -g '**/*.ts'");
     expect((await t.Glob!.call({ pattern: "**/*.py" }, ctx)).content).toBe("No files matched");
     expect((await t.Grep!.call({ pattern: "const", path: "src" }, ctx)).content).toBe("a.ts:1:const a = 1;\na.ts:2:export const b = a + 1;");
-    expect(String(g.calls[2]!.argv)).toBe("cd /workspace/src && rg --line-number --max-columns 500 --regexp const");
+    expect(String(g.calls[2]!.argv)).toBe("cd /workspace/src && rg --line-number --max-columns 500 --regexp const -- .");
     expect((await t.Grep!.call({ pattern: "console", glob: "*.ts" }, ctx)).content).toBe("src/b.ts:2:console.log(b);");
     expect((await t.Grep!.call({ pattern: "nothing-here" }, ctx)).content).toBe("No matches");
     expect((await t.List!.call({}, ctx)).content).toBe("README.md\nsrc/");

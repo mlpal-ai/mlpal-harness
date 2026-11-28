@@ -10,10 +10,13 @@
  * terminal outcome (§10.1). `deny` is a hard policy denial. `allow` proceeds inside the envelope.
  */
 import type { SafetyPolicy } from "../profile/types";
-import { bashAllowMatcher, bashDenyMatcher, globMatch, type RuleReading, TOOL_CLASS_RULE, writtenAlone } from "./engine";
+import { bashAllowMatcher, bashDenyMatcher, globMatch, type RuleReading, toolMatches, writtenAlone } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
+
+/** What the person and the model are told a `consequential` park is for (the card's "Safety check: …"). */
+export const CONSEQUENTIAL_DETAIL = "costs money or changes something outside the workspace, so it needs approval";
 
 /** Stable disposition reason for the attempt trace — pinned so safety graders can assert on it.
  *  Do not reorder or rename without coordinating the memory-side graders. */
@@ -21,7 +24,7 @@ export type SafetyReason =
   | "policy_denied" // a mutative/destructive apply with no reviewed plan artifact — hard deny
   | "out_of_envelope" // outside the account / region / required-tag allowlist
   | "over_ceiling" // exceeds maxResources or the monthly cost ceiling
-  | "needs_approval" // a reviewed destructive plan parked at the approval edge
+  | "needs_approval" // a reviewed destructive or consequential action parked at the approval edge
   | "missing_info"; // required information for the action is absent (needs_clarification)
 
 /** `unknown`: a command matching no toolClasses pattern on a tool without capability tags. The
@@ -29,7 +32,10 @@ export type SafetyReason =
  *  attempt trace labels it honestly instead of as a read. */
 /** `memory`: a write to the HOP's memory server, never an estate change; admitted in every mode;
  *  deny rules and hard denials still apply (§10.2, memory v6 E5). */
-export type SafetyClass = "readOnly" | "memory" | "mutative" | "destructive" | "unknown";
+/** `consequential` (BREAKAGES #67): parks at the approval edge every time, as `destructive` does, but the person is
+ *  told what it is: it costs money or changes something outside the workspace (a create, a deploy, a new credential).
+ *  Nothing is ever classed `consequential` unless the HOP lists it. */
+export type SafetyClass = "readOnly" | "memory" | "mutative" | "consequential" | "destructive" | "unknown";
 export type SafetyOutcome = "allow" | "deny" | "park";
 
 export interface SafetyDisposition {
@@ -70,6 +76,31 @@ export interface SafetyEvalState {
   hasRequiredInfo?: boolean;
 }
 
+/** A toolClasses entry's `Tool(pattern)` form. The tool part takes digits and `-` (an MCP server named `my-tools`):
+ *  before #72 such an entry did not parse and was read as a command glob that never matched. */
+const CLASS_TOOL_ENTRY = /^([A-Za-z0-9_:.-]+)\((.*)\)$/;
+
+/** The tool a toolClasses entry names: the tool part of `Tool(pattern)`, or a bare entry that is an MCP tool name or
+ *  pattern (`mcp__<server>__<tool>`, `mcp__<server>__*`). Null for a bare command glob (`kubectl delete*`), which names
+ *  commands, not a tool. */
+export function classEntryTool(entry: string): string | null {
+  const m = CLASS_TOOL_ENTRY.exec(entry);
+  if (m) return m[1]!;
+  return entry.startsWith("mcp__") ? entry : null;
+}
+
+/** Whether one toolClasses entry names this action on some of its forms: `Tool(pattern)` on that tool, a bare entry
+ *  as the tool's own name (an MCP server part compared canonically, `*` a wildcard in an `mcp__` entry), or a bare
+ *  command glob against any form. A Bash pattern takes the entry's reading (E-11): `allow` for a readOnly entry, which
+ *  admits the call (`written`: the whole line when this command is all it runs), `deny` for the classes that gate. */
+function entryMatches(entry: string, action: SafetyAction, forms: string[], reading: RuleReading, written: string | null): boolean {
+  const hits = (pattern: string) => (reading === "allow" && action.toolName === "Bash" ? bashAllowMatcher(pattern)(forms, written) : forms.some(entryMatcher(pattern, action)));
+  const m = CLASS_TOOL_ENTRY.exec(entry);
+  if (m) return toolMatches(m[1]!, action.toolName) && hits(m[2]!);
+  if (entry.startsWith("mcp__") ? toolMatches(entry, action.toolName) : entry === action.toolName) return true;
+  return hits(entry);
+}
+
 /** Does any entry in a toolClass list match this action? Entries use the permissions rule grammar
  *  `Tool(pattern)` (sub-command aware for Bash) or a bare command/tool glob. */
 function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading): boolean {
@@ -77,13 +108,7 @@ function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading
   const cmdParts = subs.length > 0 ? subs : [action.command];
   const allowsBash = reading === "allow" && action.toolName === "Bash";
   const written = allowsBash ? writtenAlone(decomposeBash(action.command), action.command) : null;
-  const hits = (pattern: string) => (allowsBash ? bashAllowMatcher(pattern)(cmdParts, written) : cmdParts.some(entryMatcher(pattern, action)));
-  return patterns.some((entry) => {
-    const m = entry.match(TOOL_CLASS_RULE);
-    if (m) return m[1] === action.toolName && hits(m[2]!);
-    // bare entry: the tool name itself, or a command glob against any sub-command.
-    return entry === action.toolName || hits(entry);
-  });
+  return patterns.some((entry) => entryMatches(entry, action, cmdParts, reading, written));
 }
 
 /** A toolClasses pattern against a Bash command (E-11, R19): a readOnly entry admits the call, so it takes the allow
@@ -93,8 +118,8 @@ function entryMatcher(pattern: string, action: SafetyAction): (s: string) => boo
   return action.toolName === "Bash" ? bashDenyMatcher(pattern) : (s) => globMatch(pattern, s);
 }
 
-/** Classify an action against the envelope's toolClasses. Precedence destructive > mutative >
- *  readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
+/** Classify an action against the envelope's toolClasses. Precedence destructive > consequential >
+ *  mutative > readOnly; an unlisted action on an `applies`-tagged tool defaults to `mutative` (never
  *  `destructive` — that must be explicit), everything else to `readOnly`. A `memory`-tagged tool
  *  (a working-memory write, not an estate change) is `memory` unless the HOP lists it
  *  explicitly: the explicit lists always win, so a HOP can still gate its memory writes.
@@ -135,6 +160,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
     }
     if (worst !== null) return worst;
   }
+  if (anyMatch(tc.consequential, action, "deny")) return "consequential";
   if (anyMatch(tc.mutative, action, "deny")) return "mutative";
   if (anyMatch(tc.readOnly, action, "allow")) return "readOnly";
   return defaultClass(action);
@@ -155,7 +181,7 @@ function verbLed(form: string): string | null | "unreadable" {
 }
 
 /** How dangerous a class is, for "the worst command of the line wins". */
-const RANK: Record<SafetyClass, number> = { memory: 0, readOnly: 1, unknown: 2, mutative: 3, destructive: 4 };
+const RANK: Record<SafetyClass, number> = { memory: 0, readOnly: 1, unknown: 2, mutative: 3, consequential: 4, destructive: 5 };
 /** Commands that only set the line's context and run nothing on the estate. */
 const CONTEXT_ONLY = new Set(["cd", "pushd", "popd", "export", "unset", "true", "false", ":", "set"]);
 
@@ -165,18 +191,12 @@ function defaultClass(action: SafetyAction): SafetyClass {
   return action.tags.readOnly ? "readOnly" : "unknown";
 }
 
-/** One simple command's class: the first list (destructive, mutative, readOnly) with an entry matching any of its forms,
- *  else the tool's default. `written` is the whole line when this command is all it runs (`writtenAlone`). */
+/** One simple command's class: the first list (destructive, consequential, mutative, readOnly) with an entry matching any
+ *  of its forms, else the tool's default. `written` is the whole line when this command is all it runs (`writtenAlone`). */
 function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[], written: string | null): SafetyClass {
-  const hit = (patterns: string[], reading: RuleReading) =>
-    patterns.some((entry) => {
-      const m = entry.match(TOOL_CLASS_RULE);
-      const pattern = m ? m[2]! : entry;
-      if (m && m[1] !== action.toolName) return false;
-      if (!m && entry === action.toolName) return true;
-      return reading === "allow" && action.toolName === "Bash" ? bashAllowMatcher(pattern)(forms, written) : forms.some(entryMatcher(pattern, action));
-    });
+  const hit = (patterns: string[], reading: RuleReading) => patterns.some((entry) => entryMatches(entry, action, forms, reading, written));
   if (hit(tc.destructive, "deny")) return "destructive";
+  if (hit(tc.consequential, "deny")) return "consequential";
   if (hit(tc.mutative, "deny")) return "mutative";
   if (hit(tc.readOnly, "allow")) return "readOnly";
   return defaultClass(action);
@@ -227,6 +247,10 @@ export function evaluateSafety(
   // A reviewed destructive plan still stops at the approval edge.
   if (cls === "destructive" && safety.approval.destructive === "always") {
     return { outcome: "park", reason: "needs_approval", detail: "destructive action requires approval" };
+  }
+  // The HOP listed it to be asked every time; the detail is what the person reads on the card.
+  if (cls === "consequential") {
+    return { outcome: "park", reason: "needs_approval", detail: CONSEQUENTIAL_DETAIL };
   }
 
   return { outcome: "allow" };

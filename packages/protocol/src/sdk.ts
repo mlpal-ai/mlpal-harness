@@ -91,7 +91,7 @@ export interface ToolResultEvent {
   refusal?: ModelRefusal;
   /** 0.22.4: the step's remote sandbox refused for lack of capacity. */
   sandboxRefusal?: SandboxRefusal;
-  /** 0.27.0 (capability "display"): what the step showed the person, on a run whose client declared `run.display`.
+  /** 0.26.8 (capability "display"): what the step showed the person, on a run whose client declared `run.display`.
    *  Render-only, like `diff`: the model reads a short line, and `content` carries the line and the fallback, which is
    *  what a client that draws no display shows. Absent on every other run. */
   display?: DisplayEnvelope[];
@@ -119,13 +119,36 @@ export interface ResultEvent {
   /** Present on subtype `needs_approval`: the pending action + its safety reason code, for the
    *  host's hop-run-result-v1 artifact. D-48: the held call an approval settles, by its id and its `index` in its
    *  assistant message's content (a provider id alone may not be unique). */
-  pendingApproval?: { command: string; reason: string; toolUseId?: string; index?: number };
+  pendingApproval?: {
+    command: string;
+    reason: string;
+    toolUseId?: string;
+    index?: number;
+    /** 0.26.1: the held call's tool. */
+    toolName?: string;
+    /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
+     *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
+    args?: string;
+    /** 0.26.6: the call was held because a policy check reached no verdict on it (its rule was never checked). */
+    noVerdict?: PolicyNoVerdict;
+    /** 0.26.6: why it was held, in words for the person, when `reason` (a code) does not say. */
+    detail?: string;
+  };
   /** 0.26.0 (C1 §7.4): the HOP ended a reply with `[[mlpal:abuse reason=…]]` (stripped from the message); recorded on
    *  the turn as data. The host tells its front with an `abuse_flag` frame. */
   abuse?: { reason: string };
   /** Display protocol (E3): blocks this run left `repairing` (the model never retried), settled `fallback_only` at
    *  its end. Render-only; absent on every other run. settleDisplays does the same for a session written before. */
   display?: DisplayEnvelope[];
+}
+
+/** 0.26.6: a model-judged policy check (a configured `prompt` hook) that reached no verdict on a call: no answer, the
+ *  output budget ran out first, an answer that is not a verdict, a model that could not tell, or a failed call. The ask
+ *  it raises is the person's alone: no session rule, grant or judge may answer it, one action at a time. */
+export interface PolicyNoVerdict {
+  /** The hook's id (`cfg:PreToolUse#1`). */
+  hook: string;
+  reason: "empty" | "cut_off" | "unparsable" | "unsure" | "error";
 }
 
 /**
@@ -138,13 +161,17 @@ export interface ResultEvent {
 export interface ModelRefusal {
   /** `model_access_denied`: the HOP's, the key's or the gateway's policy refused the model.
    *  `budget_exceeded` (0.22.1): the gateway refused the call for a spent budget cap; mid-run
-   *  (reason `gateway`). */
-  code: "model_access_denied" | "budget_exceeded";
+   *  (reason `gateway`).
+   *  0.26.2, the account's spend codes, all mid-run with reason `gateway`, none failed over to another model:
+   *  `wallet_empty`, the wallet has no balance left; `budget_unavailable`, the spend cap could not be checked;
+   *  `billing_unavailable`, billing could not be reached. The last two were retried first. */
+  code: "model_access_denied" | SpendCode;
   model: string;
   /** The HOP's name. */
   hop: string;
   reason?: "hop_policy" | "key_policy" | "not_served" | "gateway";
-  /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". */
+  /** The sentence to show: "HOP reviewer does not allow gpt-6-sol here". On `budget_exceeded` (0.26.2), the gateway's
+   *  own sentence, which names the amounts and the reset time. */
   message: string;
   /** The budget window the cap belongs to, e.g. `daily`, `monthly` — `budget_exceeded` only
    *  (0.22.2), present when the gateway names it. */
@@ -153,12 +180,16 @@ export interface ModelRefusal {
    *  gateway names it. */
   resetsAt?: string;
   /** 0.26.0 (C1 §7.5, C6): whose cap is spent, when the gateway names it. A shared pool's (`anonymous_pool`,
-   *  `signed_in_pool`) is "busy" to the person; their own (`end_user`) or the key's is a cap. */
-  subject?: BudgetSubject;
+   *  `signed_in_pool`) is "busy" to the person; their own (`end_user`), the key's or a key tag's (`tag`, 0.26.2) is a
+   *  cap. 0.26.2: a subject this protocol does not name is passed through as the gateway sent it. */
+  subject?: BudgetSubject | (string & {});
 }
 
-/** C6: the subjects a budget cap counts spend for. */
-export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user";
+/** 0.26.2: the gateway's spend codes. They concern the account, not the model. */
+export type SpendCode = "budget_exceeded" | "wallet_empty" | "budget_unavailable" | "billing_unavailable";
+
+/** C6: the subjects a budget cap counts spend for. 0.26.2: `tag`, the keys that share a tag's value (a workspace's). */
+export type BudgetSubject = "key" | "anonymous_pool" | "signed_in_pool" | "end_user" | "tag";
 
 /** 0.22.4: the remote sandbox refused for lack of capacity — a transient "not now", never a lost session. */
 export interface SandboxRefusal {

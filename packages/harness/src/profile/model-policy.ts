@@ -1,4 +1,4 @@
-import type { ModelRefusal } from "@mlpal/harness-protocol";
+import type { ModelRefusal, SpendCode } from "@mlpal/harness-protocol";
 import { isTier } from "../catalog/catalog";
 import type { Profile } from "./types";
 
@@ -94,18 +94,31 @@ export function modelRefusal(model: string, hop: string, reason: ModelRefusal["r
 }
 
 /** The gateway refused a call because a budget cap of the key is spent (protocol 0.22.1); the
- *  cap's window and when it resets ride along only when the gateway named them (0.22.2). */
-export function budgetRefusal(model: string, hop: string, cap: Pick<ModelRefusal, "window" | "resetsAt" | "subject"> = {}): ModelRefusal {
+ *  cap's window and when it resets ride along only when the gateway named them (0.22.2). The message is the
+ *  gateway's own sentence, which names the amounts and the reset time (0.26.2); ours only when it sent none. */
+export function budgetRefusal(model: string, hop: string, cap: Pick<ModelRefusal, "window" | "resetsAt" | "subject"> & { message?: string } = {}): ModelRefusal {
   return {
     code: BUDGET_EXCEEDED,
     model,
     hop,
     reason: "gateway",
-    message: `HOP ${hop} cannot call ${model} now (the gateway refused it: a budget cap is spent)`,
+    message: cap.message || `HOP ${hop} cannot call ${model} now (the gateway refused it: a budget cap is spent)`,
     ...(cap.window !== undefined && { window: cap.window }),
     ...(cap.resetsAt !== undefined && { resetsAt: cap.resetsAt }),
     ...(cap.subject !== undefined && { subject: cap.subject }),
   };
+}
+
+/** The sentence for each spend code the gateway's own text is not shown for (0.26.2). */
+const SPEND_WORDS = {
+  wallet_empty: "Your wallet is empty, top up at mlpal.ai/billing",
+  budget_unavailable: "The spend cap could not be checked, try again shortly",
+  billing_unavailable: "Billing could not be checked, try again shortly",
+} as const satisfies Partial<Record<SpendCode, string>>;
+
+/** The gateway refused a call for the account's wallet or billing, or could not check its spend cap (0.26.2). */
+export function spendRefusal(code: keyof typeof SPEND_WORDS, model: string, hop: string): ModelRefusal {
+  return { code, model, hop, reason: "gateway", message: SPEND_WORDS[code] };
 }
 
 /** Raised by a chooser before a call; hosts turn it into the typed event the UI reads. */

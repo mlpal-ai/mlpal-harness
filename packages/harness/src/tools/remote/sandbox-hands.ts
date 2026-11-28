@@ -314,12 +314,15 @@ export function createSandboxHands(opts: SandboxHandsOptions): Tool<unknown>[] {
     async call(input, ctx) {
       const args = ["--line-number", "--max-columns", "500"];
       if (input.glob) args.push("-g", input.glob);
-      args.push("--regexp", input.pattern);
+      // The path is explicit, as the local Grep's: with none, rg searches stdin whenever stdin is readable, and what the
+      // guest's exec gives it is the router's to decide.
+      args.push("--regexp", input.pattern, "--", ".");
       try {
         const r = await rg(args, guestPath(input.path, cwd), ctx.signal);
         if (r.exitCode === 1) return ok("No matches");
         if (r.exitCode !== 0) return err(`grep failed: ${r.stderr.trim() || `exit ${r.exitCode}`}`);
-        const lines = r.stdout.split("\n").filter(Boolean);
+        // The explicit `.` puts `./` before every path; the local tools' paths have none.
+        const lines = r.stdout.split("\n").filter(Boolean).map((l) => (l.startsWith("./") ? l.slice(2) : l));
         if (lines.length > MAX_MATCHES) return ok([...lines.slice(0, MAX_MATCHES), `[truncated at ${MAX_MATCHES} matches]`].join("\n"));
         return ok(lines.length ? lines.join("\n") : "No matches");
       } catch (e) {

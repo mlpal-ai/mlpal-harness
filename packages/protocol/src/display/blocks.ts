@@ -7,7 +7,7 @@ import { CONTROL } from "./fields.js";
 import { parseShape } from "./shape.js";
 
 /**
- * 0.27.0 display protocol: the first-wave block specs of `harness.v1/1` (DISPLAY-PROTOCOL-v0 §5.1). zod states each
+ * 0.26.8 display protocol: the first-wave block specs of `harness.v1/1` (DISPLAY-PROTOCOL-v0 §5.1). zod states each
  * shape; `validateBlock` adds what a shape cannot (unique keys, types per column, the chart allowlist) and is the one
  * check both the engine and a client run.
  */

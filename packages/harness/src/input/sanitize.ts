@@ -35,7 +35,7 @@ export function stripInvisible(text: string): Stripped {
 /** Markup that imitates the harness or a chat template, in text that is data, not the host:
  *  system reminders and role tags, tool result wrappers, the function-call envelope, and the
  *  common chat-template tokens. Each is turned into a visible, inert form. */
-const IMITATING_TAGS = /<\/?(?:system-reminder|system|user|assistant|human|tool_result|tool_use|function_results|function_calls|invoke|parameter|antml:[a-z_]+)\b[^>]*>/gi;
+const IMITATING_TAGS = /<\/?(?:system[-_]reminder|system|user|assistant|human|tool_result|tool_use|function_results|function_calls|invoke|parameter|antml:[a-z_]+)\b[^>]*>/gi;
 const TEMPLATE_TOKENS = /<\|[a-z_]+\|>|\[\/?INST\]|<<\/?SYS>>/gi;
 
 export interface Neutralized {

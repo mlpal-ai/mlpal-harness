@@ -1,5 +1,5 @@
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import { type ModelClient, SIDE_CALL_EFFORT } from "../gateway/client";
 
 /**
  * Answer a quick side question ("/btw …") about an in-flight session WITHOUT touching it: a single
@@ -48,6 +48,7 @@ export async function answerAside(opts: AsideOptions): Promise<string> {
         } satisfies Message,
       ],
       maxTokens: opts.maxOutputTokens ?? 500,
+      effort: SIDE_CALL_EFFORT,
       signal: opts.signal,
     });
     let r = await gen.next();

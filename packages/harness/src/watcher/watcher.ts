@@ -12,7 +12,7 @@
  * action taken quietly). A turn that only read files pays nothing.
  */
 import type { Message } from "@mlpal/harness-protocol";
-import type { ModelClient } from "../gateway/client";
+import { type ModelClient, SIDE_CALL_EFFORT } from "../gateway/client";
 import { type Logger, silentLogger } from "../obs/logger";
 
 export type WatchNoticeKind = "unverified_claim" | "unchecked_edits" | "rule_miss" | "unaddressed" | "quiet_risk" | "other";
@@ -164,6 +164,7 @@ export async function modelNotices(d: WatchDigest, opts: ModelWatchOptions): Pro
       system: WATCHER_SYSTEM,
       messages: [{ role: "user", content: renderDigest(d) }],
       maxTokens: 400,
+      effort: SIDE_CALL_EFFORT,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 25_000),
     });
     let r = await gen.next();

@@ -141,7 +141,7 @@ describe("allow rules with quotes (R19): only the command written identically", 
   });
 
   test("a readOnly class reads the same way", () => {
-    const s = (readOnly: string[]): SafetyPolicy => ({ toolClasses: { readOnly, mutative: [], destructive: [] }, preApply: { requirePlanArtifact: false, hash: [] }, blastRadius: {}, approval: { destructive: "always", outOfScope: "never" }, identities: { neverSelfGrant: true } });
+    const s = (readOnly: string[]): SafetyPolicy => ({ toolClasses: { readOnly, mutative: [], consequential: [], destructive: [] }, preApply: { requirePlanArtifact: false, hash: [] }, blastRadius: {}, approval: { destructive: "always", outOfScope: "never" }, identities: { neverSelfGrant: true } });
     const cls = (readOnly: string[], command: string) => classifyAction(s(readOnly), { toolName: "Bash", command, tags: {} });
     for (const entry of [`Bash(cat "$HOME/x")`, `cat "$HOME/x"`]) {
       expect(cls([entry], "cat $HOME/x")).toBe("unknown");
@@ -204,7 +204,7 @@ describe("deny rules with quotes", () => {
 
 describe("toolClasses with quotes", () => {
   const safety = (toolClasses: Partial<SafetyPolicy["toolClasses"]>): SafetyPolicy => ({
-    toolClasses: { readOnly: [], mutative: [], destructive: [], ...toolClasses },
+    toolClasses: { readOnly: [], mutative: [], consequential: [], destructive: [], ...toolClasses },
     preApply: { requirePlanArtifact: false, hash: [] },
     blastRadius: {},
     approval: { destructive: "always", outOfScope: "never" },

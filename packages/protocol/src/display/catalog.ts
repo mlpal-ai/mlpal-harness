@@ -1,5 +1,5 @@
 /**
- * 0.27.0 display protocol: the catalog's names and the limits the engine enforces (DISPLAY-PROTOCOL-v0 §2.6, §5).
+ * 0.26.8 display protocol: the catalog's names and the limits the engine enforces (DISPLAY-PROTOCOL-v0 §2.6, §5).
  */
 
 /** Every level a client may declare (§2.4). This engine writes `text` and `block`. */

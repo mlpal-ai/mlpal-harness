@@ -4,7 +4,7 @@ import { parseShape } from "./shape.js";
 import { checked, type DisplayCheck } from "./errors.js";
 
 /**
- * 0.27.0 display protocol: what a client draws, declared on every `run` (DISPLAY-PROTOCOL-v0 §4.2) and sent only to a
+ * 0.26.8 display protocol: what a client draws, declared on every `run` (DISPLAY-PROTOCOL-v0 §4.2) and sent only to a
  * server whose `ready.capabilities` has "display". A run without it is served exactly as before: no Show tool, no
  * display in any event. What this version does not know is dropped, not refused, so a newer client's declaration
  * still parses: unknown fields, levels and an unknown `a2ui` version. `client`, `viewport` and `theme` are closed sets

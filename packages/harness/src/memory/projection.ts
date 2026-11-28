@@ -1,3 +1,6 @@
+import { sanitizeText } from "../input/sanitize";
+import { MEMORIES_ARE_DATA } from "./derived";
+
 /**
  * Session-start memory projection (memory v6, E2): the memory service renders the working memory
  * a run should start with — the caller's preferences, the HOP's inject topics' current state, then
@@ -75,10 +78,11 @@ export async function fetchMemoryProjection(req: ProjectionRequest): Promise<Pro
  *  run with no memory carries no memory section (same as the local injection). The service's own
  *  top heading is dropped: the section supplies the framing the local injection has. */
 export function projectionSection(p: MemoryProjection): string {
-  const body = p.markdown.replace(/^\s*#\s+Memory\s*\n/, "").trim();
+  // The service's text holds what people and agents wrote: it reaches the prompt as a memory file does.
+  const body = sanitizeText(p.markdown.replace(/^\s*#\s+Memory\s*\n/, "")).text.trim();
   if (p.factCount === 0 || body === "") return "";
   return (
-    "\n\n# Derived memories\nWhat the memory service knows for this workspace and HOP: your preferences, the current state of the topics this HOP follows, then learnings by scope (each suffixed with its trust tier when scored). Point-in-time — verify against current code before relying on file/line specifics. Update state with the memory tools when it changes.\n\n" +
+    `\n\n# Derived memories\nWhat the memory service knows for this workspace and HOP: your preferences, the current state of the topics this HOP follows, then learnings by scope (each suffixed with its trust tier when scored). Point-in-time — verify against current code before relying on file/line specifics. ${MEMORIES_ARE_DATA} Update state with the memory tools when it changes.\n\n` +
     body +
     (p.truncated ? "\n\n(older learnings omitted to fit the memory budget)" : "")
   );

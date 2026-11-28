@@ -2,10 +2,36 @@
 
 ## Unreleased
 
-### An agent can show a typed block, with a text fallback always; protocol 0.27.0 (Harness UI Next P1, additive, 2026-11-27)
+### One engine line again: main and next/ws merged; protocol 0.27.1 (additive, 2026-11-28)
 
-- 0.27.0, not the next patch, for the reason 0.26.7 gives: `next/ws` numbers 0.26.1–0.26.6. Carry this onto `next/ws`
-  when the lines merge.
+- `main` now holds both lines, with both histories kept:
+  - its own 25 commits: the sandbox and hosted-stack work (E-11, E-12, E-15, E-16, E-17, E-26, E-54/E-55, R18,
+    R21, R22);
+  - `next/ws-2026-11-27`'s 99, which production has run since 16 Nov: incognito, concurrent sessions, session
+    archive and listing, the hosted-skill work, `run.memory`, `undeclaredArgs`, the spend codes and the policy check
+    with no verdict.
+  The display protocol is in once.
+- Protocol 0.27.1 is greater than both lines: main's display twin was 0.27.0 and never published; `next/ws` is 0.26.8,
+  in production.
+  - Every capability and field of both lines is kept, and nothing is removed or renamed, so the change is additive
+    for a client of either line.
+  - The numbers each line gave its changes stand: 0.26.1 to 0.26.6 and 0.26.8 from `next/ws`, 0.26.7 from `main`.
+- Where both lines changed the same code, the merge keeps both behaviours:
+  - toolClasses entries take `next/ws`'s tool grammar (#72: digits and `-` in a tool part, MCP names compared
+    canonically) and its `consequential` class, together with main's Bash readings (E-11: a readOnly entry is read
+    as an allow, the gating classes as a deny);
+  - main's narrower allow-rule grammar gives way to #72's;
+  - the profile check for Bash patterns reads `consequential` too;
+  - Bash runs in `next/ws`'s resolved working directory (`shellCwd`) under main's own process group (R22i);
+  - an ask carries main's stamp and spend sink and `next/ws`'s no-verdict.
+- Consumers pin `@mlpal/harness-protocol` 0.27.1 (yodex, the web UI). `ready.engine.harnessProtocol` reports 0.27.1.
+
+### An agent can show a typed block, with a text fallback always; protocol 0.26.8 (Harness UI Next P1, additive, 2026-11-27)
+
+- First released as 0.26.8 on `next/ws`: the next patch after 0.26.6, skipping main's 0.26.7. Main's twin numbered it
+  0.27.0 and never published it.
+- On the merged line there is one copy, with `next/ws`'s `Show` argument declaration (`Tool.declaredArgs`), so the
+  argument-reading rules judge it.
 - Protocol (`display/`, DISPLAY-PROTOCOL-v0 §2–5): `DisplayEnvelope` (a `TextDisplay` or a `ChartDisplay` /
   `KpisDisplay` / `GridDisplay` block of catalog `harness.v1/1`), its zod schema `displayEnvelopeSchema`, and
   `ToolResultEvent.display?`: render-only like `diff`. Every envelope carries a complete `fallback.text`.
@@ -373,6 +399,256 @@
   from `$HOME` and `$USER`, so it cannot be used (review round 2). A failed lookup fails closed to `$HOME` alone and is
   logged `sandbox.real_home_unknown {reason}` through the new `logger` option, never thrown. An explicit `realHome`
   must be absolute (null: none).
+### A prompt hook that gets no verdict is not an allow (2026-11-14)
+
+- A `prompt` hook (a cheap model judging an event against a rule) returned no result, the same as "do not block",
+  whenever its model's answer was empty, cut off, not a verdict, or the call failed (an error, a timeout, a gateway
+  401/429/5xx): a policy check that could not decide let the call run. With `maxTokens: 200` a reasoning model often
+  spent the whole budget reasoning (the gateway counted 57 of 98 gpt-6-luna calls at 200 answering no text in a day).
+- Now a verdict is a JSON object whose `block` is a boolean; anything else is `HookResult.noVerdict`
+  (`{hook, reason: empty | cut_off | unparsable | error}`) with a sentence for the person in `reason`, and one
+  structured warn line, `prompt hook: no verdict` (hook, event, reason, and a gateway failure's status and code;
+  never the answer, the event or an error's text). The hook keeps its own deadline, as the permission judge does.
+- What the loop does with it: on PreToolUse, a call that may change something becomes an ask carrying
+  `AskContext.noVerdict` (the policy's own ask gains the check's reason; a deny stands); with nobody to ask it is
+  denied, the denial naming the check; a read (a read-only tool, a read-only shell line) stays the policy's to decide,
+  so harmless reads never start asking. On UserPromptSubmit the prompt is rejected with the check's reason. On Stop and
+  the observational events it changes nothing (a block there refuses nothing).
+- `personOnlyAsk(ask)`: a §10 safety edge or a no-verdict ask, which no judge, session grant or mode raise may answer
+  for the person.
+- The hook's output budget is 1024 (`PROMPT_HOOK_MAX_TOKENS`), room for a reasoning model to answer; a model that does
+  not reason stops at its answer.
+- Every small side call now sends `effort: "none"` (`SIDE_CALL_EFFORT`): the prompt hook, the compaction summary and
+  condensed tool output, the start-rung classifier, suggestions, asides and the watcher. The
+  gateway reads a missing effort as the model's default, never `none`, so the caller says it. It rides as
+  `output_config.effort` on the gateway's Anthropic wire; the gateway (live `fd421b3`, from `687b79b`) maps it per
+  model: OpenAI `reasoning.effort: none` (gpt-6-luna and gpt-5.6-luna list `none`), Anthropic thinking off where the
+  model has a `none` rung, the lowest rung otherwise (Opus 5.5 `low`, Gemini 3.5 Flash `minimal`), dropped for a model
+  with no lever (Haiku 4.5). The main loop keeps the session's own effort.
+- The permission judge alone reasons: `JUDGE_EFFORT = "low"` with a 1024-token budget (`JUDGE_MAX_TOKENS`, was 200).
+  Its failures already reach the person as `unsure`; a wrong ALLOW reaches nobody, so it gets reasoning, and the room
+  for it (`low` at 200 would be cut off into `unsure`).
+- Doubt is a no verdict too: the hook's prompt asks for `{"block": null}` when the model cannot tell whether the rule
+  applies (it used to say "when in doubt, do not block", a clean allow), read as reason `unsure`. On UserPromptSubmit
+  a doubt does not refuse the person's prompt (it would refuse the same text every time); a failure still does.
+- `hooks.prompt.no_verdict` (PromptHookOptions `metrics`): one count per no verdict, tagged `reason`, `event`, `hook`,
+  and a gateway failure's `status` and `code`.
+- PermissionRequest hooks are told (`noVerdict` on their input), and a park for an undecided check carries the mark and
+  its sentence (`pendingApproval.noVerdict`, `detail`), so the approval card says which check went unchecked.
+- The hook stops with the session's interrupt (`HookContext.signal`), and the loop asks nobody about a turn cancelled
+  while its check ran; a malformed model result is a no verdict, never a throw the engine would drop as no result.
+
+### Protocol 0.26.6: a policy check with no verdict, on the card and on a parked call (2026-11-14)
+
+- `PolicyNoVerdict {hook, reason: empty | cut_off | unparsable | unsure | error}`. `permission_request.noVerdict`: the
+  ask is answered per action, and no client-side session rule may answer it. `pendingApproval.noVerdict` and
+  `pendingApproval.detail` (on the `needs_approval` result and on `PendingApproval`): the held call's undecided check,
+  and why it was held in words. Additive: a 0.26.5 client ignores them.
+
+### The permission judge reads a listing as a read (BREAKAGES #69, 2026-11-14)
+
+- The judge denied `mlpal mcp keys list` as "credential-store information the HOP explicitly protects": its ALLOW
+  examples said nothing about listings, and the HOP's deny rules (on the person's `~/.mlpal` sign-in) read as a
+  policy to extend. The system prompt now says listing or showing names, ids, status or help is a read, also for
+  keys, secrets and credentials, and only reading or printing a credential's value touches it; the context names the
+  deny rules as already enforced, with this action matching none.
+- The module doc states the host contract a served engine now keeps: with a person to ask, a deny is carried to the
+  prompt like unsure; the person's answer is final.
+
+### A tool rule cannot silently match nothing: MCP server names are canonical (BREAKAGES #72, 2026-11-14)
+
+- An MCP server's tools are named `mcp__<server>__<tool>` with the server's `-` kept (`mcpToolPrefix`). A HOP that
+  spelled them with `_` (`mcp__cascade_planner_tools__decide_order` for `cascade-planner-tools`) had every
+  tool-specific rule match nothing: deny rules, allow rules, `tools.include`, and the `destructive` class that must
+  ask every time. A tool name now also matches when the canonical forms agree (`tools/tool-name.ts`): in the server
+  part `-` and `_` are one character (and a character a tool name cannot hold reads as `_`, as the prefix writes it).
+  The match as written still counts, so a rule only ever gains calls (a glob whose `*` spans the server/tool
+  boundary, `mcp__*send-alert`, keeps every call it matched). The tool part is never changed. Deny rules, approval
+  entries (P7), allow rules and `safety.toolClasses` all match this way.
+- An allow rule's tool part takes digits, `-`, `.` and `:` (`mcp__s3-tools__list`): before, such a rule did not parse
+  and was inert, so no tool of a hyphenated server could be allowed at all. **Such allow rules, in a HOP or in a
+  person's settings, now admit the calls they name.** Allow rules still name one tool (no `*`). A toolClasses entry
+  `Tool(pattern)` takes the same characters, and a bare `mcp__<server>__*` entry classes every tool of that server.
+- Two servers that would share tool names (`a-b` and `a_b`; `plugin:a:b` and `plugin_a_b`; `a*b` and `a_b`) are
+  refused, and so is a server whose canonical name holds `__` or starts or ends with `_` (`my--tools`, `x-_y`, `a-`):
+  its tools could be read as another server's. `McpManager.connect` refuses it (`mcp server refused: tool names
+  collide`, the status error says why); a disconnected server is forgotten, so the other spelling may connect after
+  it. The loader refuses a HOP declaring such servers. So the equivalence never makes a rule name another server's
+  tools.
+- The loader checks every tool rule against the servers the HOP declares (`requires.mcp`, `processes.mcp_stdio`, and
+  `memory` when it sets `requires.memory`; `toolRuleIssues`, `profile/tool-rules.ts`): a `safety.toolClasses` entry
+  naming an undeclared server refuses the load (a class that matches nothing fails open); an allow/deny/include entry
+  naming one, an allow that cannot parse, or `mcp__<server>` with no tool is a load warning. `yodex hop lint` fails on
+  every one, and warns (an `advisory` issue) on a class `Tool(pattern)` entry on an MCP tool: it reads only the call's
+  `command` or `path`.
+- Compatibility: no load result changes for any `hop.yaml` on any mlpal-hops branch. The infra, infra-ro and status
+  HOPs name `mcp__gmail__*` and `mcp__memory__memory_write` in `permissions.allow` and declare both servers, so they
+  load and lint clean. A HOP whose safety class names an MCP server it does not declare no longer loads. A rule that
+  matched a call before still matches it.
+
+### Grep with ripgrep on PATH no longer waits on stdin (2026-11-13)
+
+- Grep ran `rg` with no path, and execFile's stdin is always a readable pipe, so rg searched stdin and every call ended
+  at the 20 s timeout as "the tree is too large". It went unseen because no image or laptop had rg on PATH (the JS
+  fallback ran). Grep now names `.` after `--`; the `./` that puts before each path is taken off, so rg's output is the
+  fallback's. Glob (`rg --files`) never read stdin.
+- The sandbox's Grep (`tools/remote/sandbox-hands.ts`) names `-- .` too and takes off the `./`, so it never depends on
+  what stdin the router gives a guest exec (review S3).
+
+### A create is not called destructive: `safety.toolClasses.consequential` (BREAKAGES #67, schema; 2026-11-13)
+
+- A fourth gated class, `consequential`: what the HOP lists there parks at the approval edge every time, as
+  `destructive` does (reason `needs_approval`), with the detail `CONSEQUENTIAL_DETAIL` ("costs money or changes
+  something outside the workspace, so it needs approval") instead of "destructive action requires approval". It is for
+  creates, deploys, schedules and new credentials; deletes, drops and revokes stay `destructive`.
+- Precedence destructive > consequential > mutative > readOnly, per simple command of a Bash line (D-57); the attempt
+  trace's `class` may now be `consequential`. Nothing is classed `consequential` unless the HOP lists it, and the plan
+  gate, blast radius and ceiling checks apply to it as to every gated class. The `SafetyReason` codes are unchanged.
+- Schema: `toolClasses.consequential` defaults to `[]`, so every existing HOP loads unchanged. A HOP that sets it does
+  not load on an engine built before this (the block is strict). Not a wire change: the protocol stays 0.26.5.
+
+### Protocol 0.26.5: incognito sessions (2026-11-12)
+
+- Capability `incognito`. `run.memory` (`SessionMemoryMode`: `"on"` | `"incognito"`) sets a new session's memory mode;
+  on an existing session it may only repeat the session's own mode. `SessionSummary.memory` is `"incognito"` for such a
+  session and absent otherwise. Refusals, typed, nothing run or created: `incognito_unavailable` (the engine cannot
+  keep memory off), `memory_mode_fixed` (a run named another mode than the session's). Additive: a client sends
+  `"incognito"` only to a server listing the capability.
+- Store: `SessionRecord.memory` (`"incognito"`, absent = on), written once by `AgentSession.init` from
+  `AgentSessionConfig.memory`. A sub-agent inherits its parent's (its parent's record is now always read at a child's
+  creation, so a builder that passes owner and origin cannot drop it).
+- Review round 1 (F4, L4, L9): `AgentSession.init` refuses a session recorded incognito when its builder did not set
+  `memory: "incognito"` (`SessionMemoryModeError`, before any model call): any host path that resumes an incognito
+  conversation with memory on fails closed. A sub-agent whose parent record cannot be read no longer starts as memory
+  on (the read error propagates). `memorySection(files, "instructions")` titles the instruction files "Project
+  instructions" for an incognito prompt.
+- Review round 2 (R2-2, R2-3): `INCOGNITO_FLOOR` (exported from loop/agent) is the marker mlpal-code-server-base's
+  fetch floor checks for. `fitPromptToIncognito` swaps the coding prompt's peers-and-routines bullet
+  (`CODING_PEERS_HABIT`) for `CODING_PEERS_INCOGNITO`; `renderEvents(events, {incognito})` does not tell an incognito
+  session to answer a peer with SendMessage (the loop passes `cfg.memory === "incognito"`).
+
+### Protocol 0.26.4: archive and delete a session (2026-11-12)
+
+- Capability `session_archive`. `archive_sessions {sessionIds, archived}` archives (or, with `archived: false`, restores)
+  1–100 top-level sessions, all or none, answered `sessions_archived`. `delete_session {sessionId}` deletes a session
+  and its sub-agents for good, answered `session_deleted {deleted}`. Refusals are typed and change nothing:
+  `session_running` (the session or a sub-agent runs: stop it first), `session_not_found`, `session_id_invalid`.
+- `list_sessions.archived` (`exclude`, the default, `include`, `only`) and `SessionSummary.archivedAt`. A sub-agent
+  carries its parent's `archivedAt`, so it is listed beside its parent. A run on an archived session leaves it
+  archived; a client restores it first. Additive: a client that does not see the capability lists what it listed
+  before, minus archived sessions, which only a client with the capability can create.
+- Store: `SessionRecord.archivedAt`, and `Store.lifecycle` (`SessionLifecycle`: `setArchived`, `deleteSession`,
+  `deletedIds`, `sweepDeleted`), which the file backend implements. Archiving keeps `updatedAt`. A delete marks the id
+  dead first (`registry/deleted/<id>`, an empty file that is never removed), then removes the record and every
+  `conversation/`, `logs/`, `mailbox/` and `artifacts/` entry named `<id>` or `<id>.*`. A dead id is left out of
+  `listSessions` and `getSession` even when a sync restores its files, and `sweepDeleted` removes those again. Ids are
+  `SAFE_SESSION_ID` (`[A-Za-z0-9_-]{1,128}`) or refused `UnsafeSessionIdError` before any file is touched.
+- A dead id takes no writes: `putSession`, `patchSession`, `conversation.append`, `mailbox.post` and `logs.write` throw
+  `SessionDeletedError` for it, in any process (the marker is read from disk; a positive answer is cached), so no
+  wake, resume or second process brings a deleted session back. `SessionLifecycle.isDeleted`.
+- Live locks: `AgentSession.run`, `resume` and `approve` hold `SessionLifecycle.holdLive` for as long as they go
+  (one file per holding process, `<root>/live/<id>/<host>_<pid>`, holding the process's start time; nested holds
+  counted), and `isLive` reads it: a run is seen as running however long a step takes. A lock reads free, and is
+  removed, when its host is another, its process is gone or not ours (EPERM), or its pid now names a process that
+  started at another time (pid reuse). A lock that cannot be written is logged (`store.live_lock.write_failed`), and a
+  release never throws.
+- A delete marks the id dead before it flushes the append queue, so no append is accepted between the flush and the
+  removal.
+- A delete matches the backend's exact per-directory names, so a session with a dotted id (`abc.x`) is never taken
+  for `abc`'s.
+
+### Protocol 0.26.3: several runs on one connection (2026-11-11)
+
+- Capability `concurrent_runs`: one connection runs several sessions at once. Each run's frames carry its `sessionId`
+  (a `done` and an `error` also carry the run's `requestId`), `interrupt {sessionId}` stops only that run, and a run's
+  end closes only its own asks. A second run on a session already running is still refused. Additive: a client that
+  does not see the capability keeps one run per connection.
+
+### Protocol 0.26.2: the gateway's spend codes (2026-11-09)
+
+- `ModelRefusal.code` may be `wallet_empty`, `budget_unavailable` or `billing_unavailable`, beside `budget_exceeded`
+  (`SpendCode`). Each is mid-run with reason `gateway`. Additive for a client that falls back on `message`; a client that
+  checks `code` against a closed list should add the three.
+- The client reads these from `error.code`, whatever the HTTP status: a 402 is `wallet_empty` or `budget_exceeded` on
+  the OpenAI wire, and only the code tells them apart. `GatewayError.spendCode` names it.
+- None of them is failed over to another model: they concern the account, so every model gets the same answer.
+  `budget_exceeded` and `wallet_empty` are not retried. `budget_unavailable` and `billing_unavailable` are retried after
+  the gateway's `Retry-After` (never sooner), within `SPEND_RETRY_ATTEMPTS` (3) requests or `SPEND_RETRY_BUDGET_MS`
+  (20 s), whichever ends first, and then end the run as their refusal.
+- `budget_exceeded`'s `message` is the gateway's own sentence, which names the amounts and the reset time; the
+  harness's sentence only when the gateway sent none. `window`, `resetsAt` and `subject` are kept.
+- `GatewayError.gatewayMessage` is the body's `error.message`. `GatewayConfig.sleep` and `now` make the retry waits
+  injectable. `spendRefusal(code, model, hop)` builds the other three refusals.
+- `BudgetSubject` adds `tag`: a cap on the keys that share a tag's value, such as a workspace's. A cap's `subject`
+  (`ModelRefusal.subject`, `GatewayError.subject`) is kept as sent when it is any other non-empty string, where before
+  a subject this build did not name was dropped. A subject is kept only as a machine token of 1–64 characters
+  (`[A-Za-z0-9_.-]`).
+- A spend code met outside the turn's own model call (the compaction summary, automatic or `/compact`) ends the run
+  with the same typed refusal. `compact()` throws it as a `ModelAccessError`.
+- A stream's `error` event carries the same fields as a non-2xx body (`code`, `window`, `reset_at`, `subject`), so a
+  spend code there is typed too. It is never failed over or re-streamed. Before content, a transient one is retried on
+  the same model within the same bound; after content it ends the call.
+- A `Retry-After` of zero or less on a transient spend code waits the client's own backoff (1 s, then 2 s).
+
+### Memorize says how to remove a memory (2026-11-09)
+
+- `MemorizeDeps.topicDir`: when the host keeps topic files there, the tool's description names the file a memory lives
+  in (`<topicDir>/<workspace>--<slug>.md`, `global--<slug>.md` for scope=global) and says no tool retracts one, so an
+  agent deletes the file instead of saving a "retracted" memory.
+
+### Protocol 0.26.1: a parked call's tool and arguments (2026-11-07)
+
+- `pendingApproval` (on the `needs_approval` result and on `PendingApproval`) may carry `toolName` and `args`. Additive: a
+  0.26.0 client ignores them.
+
+### A stored memory reaches the prompt as quoted, sanitized data (2026-11-07)
+
+- Each line of a derived memory is quoted, so its text cannot open a heading or a fence of its own.
+- `fitMemorySection` handles a memory section; `fitPromptToMemoryTools` is for the HOP's prompt only and no longer runs
+  over stored text.
+- `projectionSection` is sanitized and carries the same frame as the local section.
+- The sanitizer also takes the underscore spelling of the system-reminder tag.
+
+### Rule argument patterns: file tools by path, everything else by its declared arguments (2026-11-07)
+
+- A rule's argument pattern reads `path` only on the builtin file tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `List`,
+  `Lsp`). On any other tool it reads the whole input, as canonical JSON (keys sorted at every depth) or as sent. A pattern
+  anchored on a key that does not sort first still depends on the order sent, so a deny should not anchor. The permission
+  judge is shown the same subject.
+- MCP rules match declared arguments only. `wrapMcpTool` records the arguments a server's schema declares
+  (`Tool.declaredArgs`); a schema silent on `additionalProperties` is read as closed. A call with an undeclared argument
+  cannot be judged: no allow with a pattern admits it, and every deny or approval entry with a pattern names it. A rule
+  with no pattern is unaffected.
+- A deny or approval entry still fires on a declared `path` of a non-file tool. An allow does not.
+- On a tool other than Bash and the file tools, an allow's argument pattern is a literal prefix of the input's JSON, with
+  at most a trailing `*` (`Tool({"to":"a",*)`), or a lone `*`. Any other wildcard never admits a call, and a HOP declaring
+  one is refused at load (`unjudgeableAllow`).
+- `*` spans every character of a value.
+- Builtin tools declare their arguments as MCP tools do (`defineTool`; a schema that is no plain object declares none).
+- A parked call records `toolName` and, for a tool other than Bash and the file tools, its canonical input as `args`
+  (`pendingApproval`, additive). `command` stays the D-48 binding; a client shows `args` when present.
+- `callSubject(req)`: what a call is read by outside a rule.
+- An MCP tool whose arguments sit behind a `$ref` or a combinator is logged at connect (`unreadableSchema`): a rule
+  with an argument pattern on it fails closed.
+
+### Memorize is a memory write, not a read (2026-11-07)
+
+- `Memorize` is tagged `memory: true` and `readOnly: false`, the standing of the memory server's tools. Every mode still
+  admits it with no stop. It no longer runs concurrently with reads, and a call on record as started is not run twice.
+- A global-scope write (`Tool.isCallGlobalMemory`, `PermissionRequest.isGlobalMemory`) is refused in recon and in a
+  read-only run (`PermissionConfig.readOnlyRun`), ahead of allow rules and the safety envelope. Project scope is unchanged
+  there.
+- Derived memories are sanitized like instruction files and the section frames them as data.
+
+### The prompt names only the memory tools a session has (2026-11-07)
+
+- `fitPromptToMemoryTools(prompt, has)` and `memoryToolsNamed(prompt)` (`memory/prompt-tools.ts`). The coding HOP's
+  `work-memory` module told every session it had the memory server's tools, and the prompt's other memory sentences
+  assumed `Memorize` or `memory_write`. What a session has is known only at session build, so a host now fits the prompt
+  there: the module stays when all its tools are present, becomes a short one on a store grant
+  (`memory_checkpoint`, `memory_search`), and goes otherwise, along with the sentences about a missing tool. With a local
+  store only, `Memorize` is the memory and nothing calls it scratch.
+- With every tool present the prompt is byte-identical. Text a HOP wrote itself is not edited.
 
 ### A sandboxed Bash that exits non-zero is an error result (2026-11-06)
 

@@ -4,7 +4,7 @@ import type { PeerMessage } from "./control.js";
 import type { DisplayCaps } from "./display/caps.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
-import type { EngineEvent, ModelRefusal, SDKMessage } from "./sdk.js";
+import type { EngineEvent, ModelRefusal, PolicyNoVerdict, SDKMessage } from "./sdk.js";
 import type { Usage } from "./usage.js";
 
 /**
@@ -52,7 +52,22 @@ export interface SessionSummary {
   owner?: string;
   /** 0.21.0: present when a hosted serve started the session (`run.origin`, default "ui"). */
   origin?: SessionOrigin;
+  /** 0.26.4 (capability "session_archive"): when the person archived the session, or the parent it is a sub-agent of
+   *  (ISO 8601); absent when neither is archived. Listed only when `list_sessions.archived` is `include` or `only`. */
+  archivedAt?: string;
+  /** 0.26.5 (capability "incognito"): the session runs with memory off; absent = memory on. */
+  memory?: "incognito";
 }
+
+/** 0.26.5 (capability "incognito"): a session's memory, fixed when the session is created. `on`: the engine reads and
+ *  writes memory as configured. `incognito`: nothing from memory reaches the session's prompt, it is offered no memory
+ *  tool, and nothing it does is written to memory (no checkpoint, no deviation, no consent item). Its own history is
+ *  kept as any session's is. */
+export type SessionMemoryMode = "on" | "incognito";
+
+/** 0.26.4 (capability "session_archive"): which sessions `list_sessions` returns by their archive state. `exclude`
+ *  (the default, also on a server without the capability) lists the sessions not archived; `only` the archived ones. */
+export type SessionArchiveFilter = "exclude" | "include" | "only";
 
 /** What a server can do beyond yodex/1. Absent from `ready` on a yodex/1 server. */
 export type ServerCapability =
@@ -81,7 +96,10 @@ export type ServerCapability =
   | "secret_reveal" // 0.26.0 (C1 §7.2): secret_reveal frames, session_history.secretReveals, the secret_revealed client frame
   | "abuse_flag" // 0.26.0 (C1 §7.4): a HOP's trailing abuse marker is stripped and sent as abuse_flag
   | "live_attach" // 0.26.0: load_session / watch from any socket of the session's owner streams its live run; interrupt {sessionId} stops it
-  | "display"; // 0.27.0: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
+  | "concurrent_runs" // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
+  | "session_archive" // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
+  | "incognito" // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
+  | "display"; // 0.26.8: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -366,11 +384,20 @@ export interface WorkspaceStats {
 export interface PendingApproval {
   command: string;
   reason: string;
+  /** 0.26.1: the held call's tool. */
+  toolName?: string;
+  /** Its canonical input, for a tool other than Bash and the file tools, whose `command` is only what the call's
+   *  `command` or `path` key said. Show this instead. A long input ends with a note of what was cut. */
+  args?: string;
   /** D-48: the held call's id (informational: a provider id may repeat across messages). */
   toolUseId?: string;
   /** D-48: the park (its needs_approval result entry's uuid; the store's approval park id). An approval_response
    *  echoes it: it binds the answer to the ask the client was shown. */
   parkId?: string;
+  /** 0.26.6: held because a policy check reached no verdict on the call. */
+  noVerdict?: PolicyNoVerdict;
+  /** 0.26.6: why it was held, in words for the person, when `reason` (a code) does not say. */
+  detail?: string;
 }
 
 /** 0.22.5: the session store credential for this message's session (phase 1 token delivery, seam P2); never
@@ -462,7 +489,12 @@ export type ClientMessage =
       /** 0.26.0 (capability "page_context", C2): the page the person is on, as data. An invalid one is dropped, never
        *  the run. (Not the RunContext: the scheduler carries that beside the message, never in it.) */
       context?: PageContextV1;
-      /** 0.27.0 (capability "display"): what this client draws, sent with every run. Absent: the run is served exactly
+      /** 0.26.5 (capability "incognito"): on a new session, its memory mode (absent: "on"). On an existing session it
+       *  may only repeat the session's own mode: any other is refused `memory_mode_fixed`. An engine that cannot keep
+       *  memory off refuses "incognito" with `incognito_unavailable`; nothing runs and no session is created. A client
+       *  sends "incognito" only to a server that lists the capability. */
+      memory?: SessionMemoryMode;
+      /** 0.26.8 (capability "display"): what this client draws, sent with every run. Absent: the run is served exactly
        *  as before. An invalid one (parseDisplayCaps) is dropped, never the run. */
       display?: DisplayCaps;
     }
@@ -476,7 +508,18 @@ export type ClientMessage =
    *  `before` as that row's `{updatedAt, sessionId}` (0.20.1) seeks by position and survives the
    *  row being updated in between; as a bare id it is looked up, so an updated row restarts the
    *  order (refetch from the top on a repeat). */
-  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number }
+  /** 0.26.4 (capability "session_archive"): `archived` filters by archive state (default `exclude`). */
+  | { type: "list_sessions"; requestId?: string; includeChildren?: boolean; before?: string | { updatedAt: string; sessionId: string }; limit?: number; archived?: SessionArchiveFilter }
+  /** 0.26.4 (capability "session_archive"): archive (`archived: true`) or restore sessions, 1–100 at once,
+   *  all or none: an id that is not this principal's session in this workspace refuses the whole message
+   *  (`session_not_found`, `session_id_invalid`), nothing changed. Archiving keeps everything, and a run on an archived
+   *  session leaves it archived (a client that sends one restores it first). Answered with `sessions_archived`. */
+  | { type: "archive_sessions"; requestId?: string; sessionIds: string[]; archived: boolean }
+  /** 0.26.4 (capability "session_archive"): delete a session for good: its record, transcript, logs, mail, parked
+   *  question and plan, and those of its sub-agents. Refused `session_running` while it or a sub-agent runs (stop it
+   *  first), `session_not_found` / `session_id_invalid` as for archive_sessions. The id stays dead: no message can
+   *  address it again. Answered with `session_deleted`. */
+  | { type: "delete_session"; requestId?: string; sessionId: string }
   /** 0.20.5: under hop_per_run, `hop` lists the models that HOP's key may use. */
   | { type: "list_models"; requestId?: string; hop?: string }
   | { type: "list_skills"; requestId?: string }
@@ -547,11 +590,17 @@ export type ServerMessage =
       /** yodex/2: why the policy asked (a mode rule, or a HOP safety reason code). */
       reason?: string;
       safetyReason?: string;
+      /** 0.26.6: a policy check reached no verdict on this call. Answer it per action: no session rule may. */
+      noVerdict?: PolicyNoVerdict;
     }
   /** yodex/2: the engine asks the person structured questions mid-run. */
   | { type: "question_request"; id: string; sessionId: string; questions: AskQuestion[] }
   /** 0.20.0: `hasMore` when rows exist past this page. */
   | { type: "sessions"; requestId?: string; sessions: SessionSummary[]; hasMore?: boolean }
+  /** 0.26.4 (capability "session_archive"): the sessions now archived (`archivedAt` set) or restored. */
+  | { type: "sessions_archived"; requestId?: string; sessionIds: string[]; archived: boolean; archivedAt?: string }
+  /** 0.26.4 (capability "session_archive"): `deleted` is the session and every sub-agent session deleted with it. */
+  | { type: "session_deleted"; requestId?: string; sessionId: string; deleted: string[] }
   | {
       type: "session_history";
       requestId?: string;
@@ -678,7 +727,18 @@ export type ErrorCode =
   | "delegated_not_declared"
   | "delegated_subject_mismatch"
   | "delegated_invalid"
-  | "delegated_expired";
+  | "delegated_expired"
+  /** 0.26.4 (capability "session_archive"): nothing was changed. `session_running`: the session or a sub-agent of it
+   *  runs (stop it, then delete); `session_not_found`: no such session for this principal in this workspace, or one
+   *  already deleted; `session_id_invalid`: an id that cannot name a session (path characters, too long, empty). */
+  | "session_running"
+  | "session_not_found"
+  | "session_id_invalid"
+  /** 0.26.5 (capability "incognito"): `incognito_unavailable`: the engine cannot keep memory off for this run (a hosted
+   *  memory grant, a remote session store, a child serve without the capability, a session whose mode cannot be read);
+   *  `memory_mode_fixed`: the run named a memory mode other than the session's. Nothing ran or was created. */
+  | "incognito_unavailable"
+  | "memory_mode_fixed";
 
 /** P2 1.1 (capability "queue"): the run was queued on the session's inbox behind another holder's turn. `position` is
  *  the store's (1 = next to run; answers to open asks go first), null when the item no longer waits (a replay of one
@@ -749,4 +809,4 @@ export const CLOSE_PRINCIPAL_REFUSED = { code: 4403, reason: "principal refused"
 
 /** This package's version, sent as `ready.engine.harnessProtocol`. Kept equal to package.json
  *  (a test checks). */
-export const HARNESS_PROTOCOL_VERSION = "0.27.0";
+export const HARNESS_PROTOCOL_VERSION = "0.27.1";

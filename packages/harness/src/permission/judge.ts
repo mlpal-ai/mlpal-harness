@@ -1,7 +1,7 @@
 import type { Message, Usage } from "@mlpal/harness-protocol";
-import { chargedUsage, type ModelClient } from "../gateway/client";
+import { chargedUsage, type Effort, type ModelClient } from "../gateway/client";
 import type { RunStamp } from "../telemetry/stamp";
-import type { PermissionRequest } from "./engine";
+import { callSubject, type PermissionRequest } from "./engine";
 
 /**
  * The permission judge: a cheap-tier classifier that decides a request the cascade would
@@ -11,7 +11,9 @@ import type { PermissionRequest } from "./engine";
  * Three verdicts. `allow` proceeds with the reason on record; `deny` names the rule and tells
  * the model to find a safer route; `unsure` falls through to the prompt. Fail-safe by
  * construction: a timeout, an error or an unparseable reply is `unsure`, so a bad judge can
- * only ever ask more, never allow more.
+ * only ever ask more, never allow more. A host with a person to ask treats `deny` as it does
+ * `unsure`, carrying the reason to the prompt: the judge decides what runs without asking, and
+ * the person's answer is final (BREAKAGES #69).
  */
 
 export type JudgeVerdict = "allow" | "deny" | "unsure";
@@ -52,9 +54,16 @@ export interface CreateJudgeOptions {
  *  HOP (E-12); without one the call is unstamped. */
 export type PermissionJudge = (req: PermissionRequest, stamp?: RunStamp) => Promise<JudgeDecision>;
 
+/** The judge reasons, unlike the other side calls (SIDE_CALL_EFFORT, `none`). Every failure it can have is `unsure` and
+ *  reaches the person, but a wrong ALLOW reaches nobody: scope, roots, exfiltration through a pipeline, obfuscation
+ *  and irreversibility are judgments a cheap model gets wrong without reasoning. */
+export const JUDGE_EFFORT: Effort = "low";
+/** Room for `low` reasoning and the one-line verdict; at 200 the reasoning used the whole budget (an empty answer). */
+export const JUDGE_MAX_TOKENS = 1024;
+
 export const JUDGE_SYSTEM = `You are the permission judge for an autonomous software agent running inside a Harness Operating Profile (HOP). The agent wants to perform a tool call that its policy would otherwise stop and ask a human about. Decide for the human.
 
-Answer ALLOW when the action is routine for the HOP's purpose and task, reversible or confined to the workspace roots, and does not touch credentials, other people's systems or the wider machine. Examples: running the project's tests or build, git status/diff/log/add/commit on the workspace, installing project dependencies, reading project files, starting a local dev server.
+Answer ALLOW when the action is routine for the HOP's purpose and task, reversible or confined to the workspace roots, and does not touch credentials, other people's systems or the wider machine. Examples: running the project's tests or build, git status/diff/log/add/commit on the workspace, installing project dependencies, reading project files, starting a local dev server. Listing or showing names, ids, status or help is a read, also for keys, secrets and credentials (a "keys list", a "secrets list"): only reading or printing a credential's value touches it.
 
 Answer DENY when the action would exfiltrate data or secrets (piping files or environment to the network, reading credential stores), escalate privilege (sudo, changing system settings, persistence via cron/launchd/systemd/shell profiles), destroy data outside the workspace, push/publish/deploy/send to shared or external systems, or plainly falls outside the HOP's purpose. Also DENY when the command hides its intent (obfuscation, base64-decoded execution, curl-pipe-shell).
 
@@ -67,9 +76,7 @@ function extractText(content: Message["content"]): string {
 }
 
 function subjectOf(req: PermissionRequest): string {
-  if (req.toolName === "Bash") return String(req.input.command ?? "");
-  if (typeof req.input.path === "string") return req.input.path;
-  return JSON.stringify(req.input).slice(0, 2000);
+  return req.toolName === "Bash" ? callSubject(req) : callSubject(req).slice(0, 2000);
 }
 
 export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge {
@@ -94,7 +101,7 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
         `Purpose: ${ctx.purpose}`,
         `Workspace roots: ${ctx.roots.join(", ")}`,
         ctx.allow.length ? `Allow rules: ${ctx.allow.join(", ")}` : "Allow rules: (none)",
-        ctx.deny.length ? `Deny rules: ${ctx.deny.join(", ")}` : "Deny rules: (none)",
+        ctx.deny.length ? `Deny rules (already enforced; this action matched none): ${ctx.deny.join(", ")}` : "Deny rules: (none)",
         ctx.task ? `Task: ${ctx.task.slice(0, 1500)}` : undefined,
         "",
         `Tool: ${req.toolName}`,
@@ -107,7 +114,8 @@ export function createPermissionJudge(opts: CreateJudgeOptions): PermissionJudge
           model: opts.model,
           system: JUDGE_SYSTEM,
           messages: [{ role: "user", content: user } satisfies Message],
-          maxTokens: opts.maxOutputTokens ?? 200,
+          maxTokens: opts.maxOutputTokens ?? JUDGE_MAX_TOKENS,
+          effort: JUDGE_EFFORT,
           signal: ac.signal,
           ...(stamp ? { trace: { stamp, callId: `judge:${crypto.randomUUID()}` } } : {}),
         });

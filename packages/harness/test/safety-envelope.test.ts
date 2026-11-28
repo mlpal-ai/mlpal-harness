@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CONSEQUENTIAL_DETAIL,
   classifyAction,
   evaluateSafety,
   type SafetyAction,
@@ -12,6 +13,7 @@ const SAFETY: SafetyPolicy = {
   toolClasses: {
     readOnly: ["Bash(aws * describe*)", "Read"],
     mutative: ["Bash(terraform apply*)", "Write"],
+    consequential: ["Bash(mlpal db create*)", "mcp__billing__subscribe"],
     destructive: ["Bash(terraform destroy*)", "Bash(*rm -rf*)"],
   },
   preApply: { requirePlanArtifact: true, hash: ["plan", "identity"] },
@@ -28,10 +30,17 @@ const act = (command: string, tags: SafetyAction["tags"] = {}, plan?: SafetyActi
 });
 
 describe("classifyAction", () => {
-  test("precedence: destructive > mutative > readOnly", () => {
+  test("precedence: destructive > consequential > mutative > readOnly", () => {
     expect(classifyAction(SAFETY, act("terraform destroy -auto-approve"))).toBe("destructive");
+    expect(classifyAction(SAFETY, act("mlpal db create planning-db --size small"))).toBe("consequential");
     expect(classifyAction(SAFETY, act("terraform apply -auto-approve"))).toBe("mutative");
     expect(classifyAction(SAFETY, act("aws s3 describe-bucket"))).toBe("readOnly");
+  });
+
+  test("consequential, BREAKAGES #67: a line is its worst command, and a non-Bash tool is matched by name", () => {
+    expect(classifyAction(SAFETY, act("terraform apply && mlpal db create x"))).toBe("consequential");
+    expect(classifyAction(SAFETY, act("mlpal db create x; terraform destroy"))).toBe("destructive");
+    expect(classifyAction(SAFETY, { toolName: "mcp__billing__subscribe", command: "", tags: {} })).toBe("consequential");
   });
 
   test("a memory-tagged tool classes memory unless the HOP lists it explicitly (E5)", () => {
@@ -84,7 +93,7 @@ describe("classifyAction, D-57: a line is as dangerous as its most dangerous com
 });
 
 describe("classifyAction, re-review: global flags before the verb", () => {
-  const K: SafetyPolicy = { ...SAFETY, toolClasses: { readOnly: ["Bash(kubectl get *)"], mutative: ["Bash(kubectl apply *)", "Bash(terraform apply*)"], destructive: ["Bash(kubectl delete ns *)", "Bash(helm uninstall *)"] } };
+  const K: SafetyPolicy = { ...SAFETY, toolClasses: { readOnly: ["Bash(kubectl get *)"], mutative: ["Bash(kubectl apply *)", "Bash(terraform apply*)"], consequential: [], destructive: ["Bash(kubectl delete ns *)", "Bash(helm uninstall *)"] } };
   test("the verb-led form is classified; an unknown global is destructive", () => {
     expect(classifyAction(K, act("kubectl -s https://prod delete ns prod"))).toBe("destructive");
     expect(classifyAction(K, act("kubectl --as=admin --context p delete ns prod"))).toBe("destructive");
@@ -143,6 +152,18 @@ describe("evaluateSafety", () => {
     expect(d).toMatchObject({ outcome: "deny", reason: "policy_denied" });
   });
 
+  test("consequential parks at the approval edge, worded as a cost or an outside change, never as destructive (BREAKAGES #67)", () => {
+    const create = evaluateSafety(SAFETY, act("mlpal db create planning-db"));
+    expect(create).toEqual({ outcome: "park", reason: "needs_approval", detail: CONSEQUENTIAL_DETAIL });
+    expect(create.detail).not.toContain("destructive");
+    // A destructive action keeps its own words.
+    expect(evaluateSafety(SAFETY, act("terraform destroy"), { planApproved: true })).toEqual({ outcome: "park", reason: "needs_approval", detail: "destructive action requires approval" });
+    // The edge asks whatever approval.destructive says: consequential is listed to be asked every time.
+    expect(evaluateSafety({ ...SAFETY, approval: { ...SAFETY.approval, destructive: "never" } }, act("mlpal db create x")).outcome).toBe("park");
+    // An unreviewed apply is still refused before the edge, as for every gated class.
+    expect(evaluateSafety(SAFETY, act("mlpal db create x"), { planApproved: false })).toMatchObject({ outcome: "deny", reason: "policy_denied" });
+  });
+
   test("a reviewed destructive plan still parks at the approval edge (needs_approval)", () => {
     const d = evaluateSafety(SAFETY, act("terraform destroy", {}, { resourceCount: 3, accounts: ["self"], regions: ["us-east-2"], tagged: true }), { planApproved: true });
     expect(d).toMatchObject({ outcome: "park", reason: "needs_approval" });
@@ -168,5 +189,7 @@ describe("toTraceEntry", () => {
     const a = act("terraform destroy", {}, { resourceCount: 1, accounts: ["self"], regions: ["us-east-2"], tagged: true });
     const e = toTraceEntry(SAFETY, a, evaluateSafety(SAFETY, a, { planApproved: true }));
     expect(e).toMatchObject({ tool: "Bash", class: "destructive", disposition: "parked", reason: "needs_approval" });
+    const c = act("mlpal db create x");
+    expect(toTraceEntry(SAFETY, c, evaluateSafety(SAFETY, c))).toEqual({ tool: "Bash", command: "mlpal db create x", class: "consequential", disposition: "parked", reason: "needs_approval", detail: CONSEQUENTIAL_DETAIL });
   });
 });

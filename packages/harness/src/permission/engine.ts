@@ -1,11 +1,13 @@
 import type { Author } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
+import { shellCwd } from "../tools/shell-cwd";
 import { catastrophicDeny, contentSafetyDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
 import { bashAsWritten, type Decomposed, decomposeBash, normalizeBashPattern, refusesAutoApproval } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
+import { canonicalToolName } from "../tools/tool-name";
 
 /**
  * Permission engine: a deny → allow → mode-default cascade. Pure data + string
@@ -48,12 +50,22 @@ export interface PermissionRequest {
   /** A working-memory write (a `memory`-tagged tool). Not a change to the estate, so no mode
    *  guards it: recon admits it alongside reads. Deny rules and the hard denials still apply. */
   isMemory?: boolean;
+  /** A memory write that reaches every later session (`Tool.isCallGlobalMemory`). */
+  isGlobalMemory?: boolean;
+  /** Input keys the tool's schema does not declare (`undeclaredArgs`): the tool may never see them, so a rule that reads
+   *  arguments cannot judge this call. */
+  undeclaredArgs?: string[];
   principal: Author;
+  /** The session's working folder and folders: the rm -rf guard resolves relative paths where the shell will run
+   *  and refuses the session's own folders. Absent: neither is judged. */
+  cwd?: string;
+  roots?: readonly string[];
 }
 
 export interface PermissionConfig {
   mode: PermissionMode;
-  /** Rules like "Read", "Bash", or "Bash(git*)" — trailing * is a wildcard. */
+  /** Rules like "Read", "Bash", or "Bash(git*)". On Bash and the file tools `*` is a wildcard anywhere. On any other tool
+   *  an argument pattern is a literal prefix of the input's JSON, with at most a trailing `*`: `Tool({"to":"a",*)`. */
   allow?: string[];
   deny?: string[];
   /**
@@ -67,6 +79,9 @@ export interface PermissionConfig {
    * maps that to needs_approval headless); `deny` is a hard policy denial.
    */
   safety?: (req: PermissionRequest) => SafetyDisposition | null;
+  /** A run restricted to read-only tools whatever its mode (a read-only sub-agent). The restriction is its registry;
+   *  this adds what a registry cannot say, a refusal of the global memory writes its memory tools could make. */
+  readOnlyRun?: boolean;
   /** Where `bash.rule_opaque` is logged (a Bash command a rule could check only as named). */
   logger?: Logger;
 }
@@ -85,6 +100,11 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // or model choice can override it. This is the whole point: allow is earned, deny is absolute.
     const hard = hardDeny(req);
     if (hard) return { behavior: "deny", reason: hard, source: "hard_deny" };
+    // A global memory lands in every later session of every HOP, so a run that may change nothing cannot write one.
+    // Here, not in the mode default: an allow rule or the envelope must not widen it.
+    if (req.isGlobalMemory === true && (config.mode === "recon" || config.readOnlyRun === true)) {
+      return { behavior: "deny", reason: "a read-only run cannot write a global memory: use scope project", source: "mode" };
+    }
     // Autopilot asks nobody, so the containment-escape routes (cloud metadata, curl-pipe-shell,
     // privilege escalation, persistence, credential dumps) are refused outright there. In every
     // other mode the same commands reach the human through the mode default.
@@ -124,7 +144,10 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
 function hardDeny(req: PermissionRequest): string | null {
   if (req.toolName === "Bash") {
     const command = String(req.input.command ?? "");
-    const cat = catastrophicDeny(command);
+    const cat = catastrophicDeny(command, {
+      ...(req.cwd !== undefined ? { cwd: shellCwd(req.cwd, req.roots ?? []).cwd } : {}),
+      ...(req.roots ? { roots: req.roots } : {}),
+    });
     if (cat) return cat;
     for (const target of redirectTargets(command)) {
       const cs = contentSafetyDeny(target);
@@ -177,7 +200,7 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
   if (!m) return false;
   const tool = m[1]!;
   const pattern = m[2];
-  if (tool !== req.toolName) return false;
+  if (tool !== req.toolName && canonicalToolName(tool) !== canonicalToolName(req.toolName)) return false;
   if (pattern === undefined) return true;
   if (req.toolName === "Bash") {
     // Every simple command it runs must match (one of its forms); a line that cannot be decomposed, changes the
@@ -191,7 +214,23 @@ function ruleMatches(rule: string, req: PermissionRequest): boolean {
     const written = writtenAlone(subjects, command);
     return run.length > 0 && run.every((c) => !c.argsUnknown && matches(c.forms, written));
   }
-  return globMatch(pattern, representativeArg(req));
+  const path = filePathOf(req);
+  if (path !== undefined) return globMatch(pattern, path);
+  return !req.undeclaredArgs?.length && prefixPattern(pattern) && inputForms(req).some((f) => globMatch(pattern, f));
+}
+
+/** What an allow may say about a whole input: `*`, or a literal with at most a trailing `*`. Text after a wildcard could
+ *  be any argument's value at any depth, so it says nothing about the argument it names. A string value cannot hold a
+ *  raw quote, so a literal prefix can only be the input's real start. */
+function prefixPattern(pattern: string): boolean {
+  const star = pattern.indexOf("*");
+  return star === -1 || star === pattern.length - 1;
+}
+
+/** An allow rule with an argument pattern that can never admit a call: a host says so rather than leave it inert. */
+export function unjudgeableAllow(rule: string): boolean {
+  const m = rule.match(ALLOW_RULE);
+  return m !== null && m[2] !== undefined && m[1] !== "Bash" && !FILE_TOOLS.has(m[1]!) && !prefixPattern(m[2]);
 }
 
 /** What a match of a rule does: `allow` admits the call (an allow rule, a readOnly class); `deny` only ever stops more
@@ -251,7 +290,7 @@ export interface BashPatternNote {
  *  (E-11): the author should write the form the matcher sees. */
 export function bashPatternNotes(profile: {
   permissions: { allow: readonly string[]; deny: readonly string[] };
-  safety?: { toolClasses: { readOnly: readonly string[]; mutative: readonly string[]; destructive: readonly string[] } };
+  safety?: { toolClasses: { readOnly: readonly string[]; mutative: readonly string[]; consequential?: readonly string[]; destructive: readonly string[] } };
   approvals?: { require: readonly string[] };
 }): BashPatternNote[] {
   const notes: BashPatternNote[] = [];
@@ -281,11 +320,11 @@ export function bashPatternNotes(profile: {
   });
   const tc = profile.safety?.toolClasses;
   if (tc) {
-    for (const cls of ["readOnly", "mutative", "destructive"] as const) {
-      // a bare entry is a command glob over a Bash command's forms too
-      check(`safety.toolClasses.${cls}`, tc[cls], (rule) => {
+    for (const cls of ["readOnly", "consequential", "mutative", "destructive"] as const) {
+      // a bare entry is a command glob over a Bash command's forms too, except an MCP tool name (classEntryTool)
+      check(`safety.toolClasses.${cls}`, tc[cls] ?? [], (rule) => {
         const m = rule.match(TOOL_CLASS_RULE);
-        return m ? (m[1] === "Bash" ? m[2] : undefined) : rule;
+        return m ? (m[1] === "Bash" ? m[2] : undefined) : rule.startsWith("mcp__") ? undefined : rule;
       }, cls === "readOnly" ? "allow" : "deny");
     }
   }
@@ -293,21 +332,35 @@ export function bashPatternNotes(profile: {
 }
 
 /** The tool part of a deny rule or an approval entry (P7 1.7): an exact name, or a glob whose only wildcard is `*`,
- *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). */
-function toolMatches(tool: string, name: string): boolean {
-  return tool.includes("*") ? globMatch(tool, name) : tool === name;
+ *  case-sensitive (`Deploy*` names `DeployProd`; `mcp__github__*` every tool of that server). It matches as written,
+ *  or with both MCP server parts canonical (`cascade-planner-tools` and `cascade_planner_tools` are one server:
+ *  tools/tool-name.ts). Either suffices, so a rule only gains calls: a glob whose `*` spans the server/tool boundary
+ *  (`mcp__*send-alert`, `*cascade-planner*`) splits the two names differently, and its canonical form alone would miss
+ *  calls the written one names (review M1). */
+export function toolMatches(tool: string, name: string): boolean {
+  if (tool.includes("*")) return globMatch(tool, name) || globMatch(canonicalToolName(tool), canonicalToolName(name));
+  return tool === name || canonicalToolName(tool) === canonicalToolName(name);
 }
 
-/** An allow rule: an exact tool name and an optional argument pattern. */
-const ALLOW_RULE = /^([A-Za-z_]+)(?:\((.*)\))?$/;
 /** A deny rule or an approval entry: its tool part (P7's characters and `*`) and an optional argument pattern. */
 const DENY_RULE = /^([A-Za-z0-9_*:.-]+)(?:\((.*)\))?$/;
-/** A toolClasses entry naming a tool (`Bash(terraform apply*)`); any other entry is a bare tool name or command glob. */
-export const TOOL_CLASS_RULE = /^([A-Za-z_]+)\((.*)\)$/;
+/** A toolClasses entry naming a tool (`Bash(terraform apply*)`), its tool part in the #72 grammar (digits, `-`, `:` and
+ *  `.` too, as safety-envelope.ts reads it); any other entry is a bare tool name or command glob. */
+export const TOOL_CLASS_RULE = /^([A-Za-z0-9_:.-]+)\((.*)\)$/;
+/** An allow rule: an exact tool name (no wildcard: an allow names what it admits) and an optional argument pattern.
+ *  Digits and `-` are tool-name characters (an MCP server is often named `my-tools`): before #72 an allow naming such
+ *  a tool did not parse and was silently inert. */
+const ALLOW_RULE = /^([A-Za-z0-9_:.-]+)(?:\((.*)\))?$/;
+
+/** The tool part a permission rule names, or null when the rule does not parse (it can then never match a call). */
+export function ruleTool(rule: string, kind: "allow" | "deny"): string | null {
+  return rule.match(kind === "allow" ? ALLOW_RULE : DENY_RULE)?.[1] ?? null;
+}
 
 /**
  * Whether a deny rule (or a publication's approval entry, matched the same way) names this call, and what it matched:
  * null when it does not; `""` when it names the call outright (no argument pattern, or a tool other than Bash);
+ * for a tool with arguments it does not declare, those names: such a call cannot be judged, so every pattern names it;
  * for Bash, the simple command that matched, or `undecomposable: <form>` when the command could not be decomposed (it
  * then fires every rule on Bash, whatever the pattern: fail closed). For Bash a rule fires if ANY simple command the
  * shell would run matches (inside `sh -c '…'`, substitutions, groups, compound bodies, behind prefixes), so `Bash(rm*)`
@@ -327,7 +380,7 @@ export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger)
     return r !== null && "hit" in r ? r.hit : null;
   }
   if (!toolMatches(m[1]!, req.toolName)) return null;
-  if (req.toolName !== "Bash") return pattern === undefined || globMatch(pattern, representativeArg(req)) ? "" : null;
+  if (req.toolName !== "Bash") return pattern === undefined ? "" : argumentHit(pattern, req);
   const { commands, opaque } = bashSubjects(String(req.input.command ?? ""));
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
@@ -399,16 +452,64 @@ export function parseApprovalEntry(entry: string): { tool: string; pattern?: str
   return { tool: m[1]!, ...(pattern !== undefined ? { pattern } : {}) };
 }
 
-/** The arg a rule pattern is matched against, per tool. */
-function representativeArg(req: PermissionRequest): string {
+/** The tools whose `path` is what they act on, so it is what their rules read. On any other tool `path` is one more
+ *  argument, and the model writes the input. */
+const FILE_TOOLS = new Set(["Read", "Write", "Edit", "Glob", "Grep", "List", "Lsp"]);
+
+/** A builtin file tool's path; undefined for every other tool. */
+export function filePathOf(req: Pick<PermissionRequest, "toolName" | "input">): string | undefined {
+  return FILE_TOOLS.has(req.toolName) && typeof req.input.path === "string" ? req.input.path : undefined;
+}
+
+/** What a call is read by outside a rule (a judge, an `--answers` policy, a line about it): its command, a file tool's
+ *  path, or its whole input. */
+export function callSubject(req: Pick<PermissionRequest, "toolName" | "input">): string {
   if (req.toolName === "Bash") return String(req.input.command ?? "");
-  if (typeof req.input.path === "string") return req.input.path;
-  return JSON.stringify(req.input);
+  return filePathOf(req) ?? canonicalInput(req.input);
+}
+
+/** JSON with its keys sorted at every depth: one form for an input, whatever order a call sent it in. */
+export function canonicalInput(input: unknown): string {
+  return JSON.stringify(input, (_key, value: unknown) =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  );
+}
+
+/** The input keys `tool` does not declare. A tool with no `declaredArgs` takes its input as it comes. */
+export function undeclaredArgs(tool: { declaredArgs?: ReadonlySet<string> } | undefined, input: Record<string, unknown>): string[] {
+  const declared = tool?.declaredArgs;
+  return declared ? Object.keys(input).filter((k) => !declared.has(k)) : [];
+}
+
+/** The forms a pattern may match: canonical, one form whatever order a call used, and as sent, for a rule written that
+ *  way. A pattern anchored on a key that does not sort first still depends on the order sent; a deny should not anchor. */
+function inputForms(req: PermissionRequest): string[] {
+  return [canonicalInput(req.input), JSON.stringify(req.input)];
+}
+
+/** A deny rule or approval entry's argument pattern against a tool other than Bash: as `ruleMatch` answers. */
+function argumentHit(pattern: string, req: PermissionRequest): string | null {
+  const path = filePathOf(req);
+  if (path !== undefined) return globMatch(pattern, path) ? "" : null;
+  if (req.undeclaredArgs?.length) return `arguments the tool does not declare: ${req.undeclaredArgs.map(shownKey).join(", ").slice(0, 200)}`;
+  // Every key here is one the tool takes, so a deny written against its `path` still holds. An allow gets no such form:
+  // it would admit the call on one argument and leave the rest unread.
+  const forms = typeof req.input.path === "string" ? [...inputForms(req), req.input.path] : inputForms(req);
+  return forms.some((f) => globMatch(pattern, f)) ? "" : null;
+}
+
+/** The model wrote this key, and the reason reaches a person: only a plain name is repeated. */
+function shownKey(key: string): string {
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(key) ? key : "(unnamed)";
 }
 
 export function globMatch(pattern: string, value: string): boolean {
+  // `s`: a wildcard spans every character, or one line-breaking character in a value would hide the rest from a rule.
   const re = new RegExp(
     `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`,
+    "s",
   );
   return re.test(value);
 }

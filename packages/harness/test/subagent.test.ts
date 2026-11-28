@@ -47,6 +47,18 @@ describe("Task tool", () => {
     expect(JSON.stringify(tool.jsonSchema)).toContain("worktree");
   });
 
+  test("the caller's cwd goes to the runner on both paths, so the child's relative paths are the caller's (R1)", async () => {
+    const seen: Array<string | undefined> = [];
+    const tool = createTaskTool(async (args) => {
+      seen.push(args.cwd);
+      return { text: "ok", sessionId: "c" };
+    });
+    await tool.call({ description: "fg", prompt: "write it" }, { cwd: "/ws/a" });
+    await tool.call({ description: "bg", prompt: "look", run_in_background: true }, { cwd: "/ws/b" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual(["/ws/a", "/ws/b"]);
+  });
+
   test("empty sub-agent output yields a placeholder", async () => {
     const tool = createTaskTool(async () => ({ text: "", sessionId: "s" }));
     const r = await tool.call({ description: "x", prompt: "y" }, { cwd: "/tmp" });

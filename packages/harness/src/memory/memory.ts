@@ -131,9 +131,15 @@ export async function loadMemoryFiles(opts: LoadMemoryOptions): Promise<MemoryFi
   return files;
 }
 
+/** How the instruction files are introduced. `memory` (default): "Project & user memory". `instructions` (an incognito
+ *  session, protocol 0.26.5): the same files under "Project instructions", so nothing in a memory-off prompt is called
+ *  memory and the model does not say it remembers something it read from a file. */
+export type InstructionFilesHeading = "memory" | "instructions";
+
 /** Format loaded memory for appending to the system prompt. */
-export function memorySection(files: MemoryFile[]): string {
+export function memorySection(files: MemoryFile[], heading: InstructionFilesHeading = "memory"): string {
   if (files.length === 0) return "";
   const blocks = files.map((f) => `## ${f.path}${f.sanitized ? `\n(sanitized: ${sanitizeNote(f.sanitized)})` : ""}\n${f.content.trim()}`).join("\n\n");
-  return `\n\n# Project & user memory\nThese files define project conventions, commands, and the user's preferences. Treat them as authoritative.\n\n${blocks}`;
+  const title = heading === "instructions" ? "Project instructions" : "Project & user memory";
+  return `\n\n# ${title}\nThese files define project conventions, commands, and the user's preferences. Treat them as authoritative.\n\n${blocks}`;
 }

@@ -42,6 +42,38 @@ describe("catastrophicDeny", () => {
     expect(catastrophicDeny("rm -rf ./build dist")).toBeNull();
     expect(catastrophicDeny("rm file.txt")).toBeNull();
   });
+  test("blocks rm -rf on a home folder itself, by path or alias", () => {
+    for (const target of [
+      "~",
+      "~/",
+      "~/*",
+      "$HOME",
+      "/home",
+      "/home/",
+      "/home/*",
+      "/home/mlpaluser",
+      "/home/mlpaluser/",
+      "/home/mlpaluser/*",
+      "/Users",
+      "/Users/me",
+      "/Users/me/*",
+      "/root",
+      "/root/project",
+    ]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBe("blocked: recursive-force rm targeting a system/home root");
+    }
+  });
+  test("still blocks every path in a system folder", () => {
+    for (const target of ["/usr/local/lib", "/var/tmp/x", "/etc/nginx", "/bin/*", "/Library/Caches"]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBeTruthy();
+    }
+  });
+  test("allows rm -rf on a project folder inside a home", () => {
+    expect(catastrophicDeny("rm -rf /home/mlpaluser/workspace/r2check")).toBeNull();
+    expect(catastrophicDeny("rm -rf /home/mlpaluser/workspace/app/node_modules")).toBeNull();
+    expect(catastrophicDeny("rm -rf /Users/me/code/app/build")).toBeNull();
+    expect(catastrophicDeny("cd /home/mlpaluser/workspace && rm -rf r2check")).toBeNull();
+  });
   test("blocks mkfs, dd-to-device, fork bomb, chmod -R /", () => {
     expect(catastrophicDeny("mkfs.ext4 /dev/sda1")).toBeTruthy();
     expect(catastrophicDeny("dd if=/dev/zero of=/dev/sda")).toBeTruthy();
@@ -102,5 +134,95 @@ describe("policy integration — safety is bypass-immune", () => {
     const policy = createPolicy({ mode: "autopilot" });
     expect((policy(bash("npm test")) as { behavior: string }).behavior).toBe("allow");
     expect((policy(bash("rm -rf node_modules")) as { behavior: string }).behavior).toBe("allow");
+  });
+});
+
+describe("rm -rf guard: spellings of a protected folder (review M1)", () => {
+  const HOME = "/home/mlpaluser";
+  const WS = `${HOME}/workspace`;
+  const ctx = { cwd: WS, roots: [WS] };
+  let saved: string | undefined;
+  const withHome = (fn: () => void) => {
+    saved = process.env.HOME;
+    process.env.HOME = HOME;
+    try {
+      fn();
+    } finally {
+      if (saved === undefined) delete process.env.HOME;
+      else process.env.HOME = saved;
+    }
+  };
+
+  test("a home reached through //, . or .. is still a home", () => {
+    for (const target of [
+      `${HOME}/workspace/../*`,
+      `${HOME}//`,
+      "/home//mlpaluser",
+      "/home/./mlpaluser",
+      `${HOME}/.*`,
+      `${HOME}/.`,
+      `${HOME}/workspace/..`,
+      "/home/mlpaluser/../mlpaluser/",
+    ]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBe("blocked: recursive-force rm targeting a system/home root");
+    }
+  });
+
+  test("every spelling of the home folder", () => {
+    withHome(() => {
+      for (const target of ["~", "~/", "~/*", "~/.*", "~/../*", "$HOME", "$HOME/*", "${HOME}", "${HOME}/*", '"$HOME"', `'${HOME}'`]) {
+        expect(catastrophicDeny(`rm -rf ${target}`)).toBeTruthy();
+      }
+    });
+  });
+
+  test("the added system folders: sbin, lib64, proc, opt", () => {
+    for (const target of ["/opt", "/opt/mlpal", "/sbin", "/proc", "/lib64", "/bin*"]) {
+      expect(catastrophicDeny(`rm -rf ${target}`)).toBe("blocked: recursive-force rm targeting a system/home root");
+    }
+  });
+
+  test("the session's own folder, its contents, and any folder containing it", () => {
+    withHome(() => {
+      for (const target of [WS, `${WS}/`, `${WS}/*`, `${WS}/.*`, "/home/*/workspace", "~/workspace", "~/workspace/*", "*", ".", "./*"]) {
+        expect(catastrophicDeny(`rm -rf ${target}`, ctx)).toBeTruthy();
+      }
+      expect(catastrophicDeny(`rm -rf ${WS}`, ctx)).toBe("blocked: recursive-force rm targeting the session's own folder");
+      expect(catastrophicDeny("rm -rf ../*", ctx)).toBe("blocked: recursive-force rm targeting a system/home root");
+    });
+  });
+
+  test("a project folder inside the session's folder stays allowed", () => {
+    withHome(() => {
+      for (const target of [`${WS}/r2check`, "r2check", "./r2check/", `${WS}/app/node_modules`, "~/workspace/r2check", `${WS}/r2check/*`]) {
+        expect(catastrophicDeny(`rm -rf ${target}`, ctx)).toBeNull();
+      }
+      expect(catastrophicDeny("rm -rf build dist", { cwd: `${WS}/r2check`, roots: [WS] })).toBeNull();
+    });
+  });
+
+  test("without the session's folders, a project under a home is allowed as before", () => {
+    expect(catastrophicDeny(`rm -rf ${WS}/r2check`)).toBeNull();
+    expect(catastrophicDeny("rm -rf /Users/me/code/app/build")).toBeNull();
+  });
+
+  test("the policy judges relative paths where the shell will run: a removed folder's parent", async () => {
+    const { mkdtemp, realpath, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ws = await realpath(await mkdtemp(join(tmpdir(), "rm-guard-")));
+    try {
+      const gone = join(ws, "r2check");
+      const policy = createPolicy({ mode: "autopilot" });
+      const req = (command: string) => ({ ...bash(command), cwd: gone, roots: [ws] });
+      const reason = async (command: string) => {
+        const d = await policy(req(command));
+        return d.behavior === "allow" ? undefined : d.reason;
+      };
+      expect(await reason("rm -rf *")).toBe("blocked: recursive-force rm targeting the session's own folder");
+      expect((await reason(`rm -rf ${join(ws, "other")}`)) ?? "").not.toContain("recursive-force");
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
   });
 });

@@ -6,7 +6,7 @@ import { CONTROL } from "./fields.js";
 import type { ChartSpec } from "./block-schemas.js";
 
 /**
- * 0.27.0 display protocol: the Vega-Lite subset a `chart` block may use (DISPLAY-PROTOCOL-v0 §5.2), as a strict
+ * 0.26.8 display protocol: the Vega-Lite subset a `chart` block may use (DISPLAY-PROTOCOL-v0 §5.2), as a strict
  * allowlist at every depth. Every object is checked against the keys its position allows, every value against its
  * type and bounds; nothing reaches the renderer unread. On top of that, anywhere outside the data rows, a key that
  * names an expression (`expr`, `signal`, `*Expr`, a selection's `on`, `clear`, `toggle`, `translate`, `zoom`, a

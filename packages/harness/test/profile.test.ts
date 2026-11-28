@@ -173,6 +173,14 @@ describe("profile loading", () => {
     return pdir;
   }
 
+  test("an allow pattern that can never admit a call is refused at load", () => {
+    const hop = (rule: string) => `spec: mlpal/hop-v1\nname: rules\nversion: 1.0.0\ndescription: d\nextends: coding\npermissions:\n  allow:\n    - '${rule}'\n`;
+    writeProfile("hops/rules", hop('mcp__mail__send(*"to":"a"*)'));
+    expect(() => loadProfile(join(dir, "hops/rules"), opts())).toThrow(/can never admit a call/);
+    writeProfile("hops/rules", hop('mcp__mail__send({"to":"a",*)'));
+    expect(loadProfile(join(dir, "hops/rules"), opts()).permissions.allow).toContain('mcp__mail__send({"to":"a",*)');
+  });
+
   test("undefined ref loads the coding builtin", () => {
     const p = loadProfile(undefined, opts());
     expect(p.name).toBe("coding");
@@ -600,6 +608,7 @@ describe("profile loading", () => {
     ].join("\n")), opts());
     expect(p.safety?.blastRadius.maxResources).toBe(25);
     expect(p.safety?.approval.destructive).toBe("always"); // default
+    expect(p.safety?.toolClasses.consequential).toEqual([]); // default
     expect(p.locked).toContain("safety"); // auto-locked
 
     writeProfile(".yodex/hops/base-saf", [
@@ -665,6 +674,18 @@ describe("profile loading", () => {
     expect(() => load("deleg-twice", ["delegated: [mlpal, mlpal]"])).toThrow(/delegated/);
     // A child must declare it itself: a credential grant never arrives through `extends`.
     expect(load("deleg-child", [], "../deleg-ok").delegated).toBeUndefined();
+  });
+
+  test("safety.toolClasses.consequential loads beside destructive (BREAKAGES #67)", () => {
+    const p = loadProfile(writeProfile("p/saf-consequential", [
+      "spec: mlpal/hop-v1",
+      "name: saf-consequential",
+      "version: 1.0.0",
+      "extends: coding",
+      "permissions: { defaultMode: cruise }",
+      "safety: { toolClasses: { consequential: ['Bash(mlpal db create*)'], destructive: ['Bash(mlpal * delete*)'] } }",
+    ].join("\n")), opts());
+    expect(p.safety?.toolClasses).toEqual({ readOnly: [], mutative: [], consequential: ["Bash(mlpal db create*)"], destructive: ["Bash(mlpal * delete*)"] });
   });
 
   test("safety + defaultMode autopilot is a load error (review 22)", () => {

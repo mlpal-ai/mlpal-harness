@@ -10,7 +10,7 @@ import { checkFallbackText, completeFallback, fallbackInputSchema, parseFallback
 import { plainText } from "./fields.js";
 
 /**
- * 0.27.0 display protocol: the input of the engine's `Show` tool (DISPLAY-PROTOCOL-v0 §3.2) and its check. The model
+ * 0.26.8 display protocol: the input of the engine's `Show` tool (DISPLAY-PROTOCOL-v0 §3.2) and its check. The model
  * calls Show to put one typed block in front of the person; the check runs before any client sees it, and every
  * refusal is a typed code with the path and a hint the model repairs from.
  *

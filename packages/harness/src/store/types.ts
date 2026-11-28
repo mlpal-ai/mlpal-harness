@@ -51,6 +51,11 @@ export interface SessionRecord {
   model: string;
   createdAt: string;
   updatedAt: string;
+  /** When the person archived the session (ISO 8601): hidden from default listings, kept whole. Absent = not archived. */
+  archivedAt?: string;
+  /** Protocol 0.26.5: the session runs with memory off (no memory read, offered or written). Written once, at creation,
+   *  and inherited by its sub-agents; absent = memory on. */
+  memory?: "incognito";
 }
 
 export interface AgentRecord {
@@ -137,8 +142,63 @@ export interface InboxItem {
   attempts: number;
 }
 
+/** A session id a backend may turn into file names: letters, digits, `_` and `-`, 1–128 of them. Anything else
+ *  (a path separator, a dot, an empty id) is refused before any file is touched. */
+export const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isSafeSessionId(sessionId: string): boolean {
+  return SAFE_SESSION_ID.test(sessionId);
+}
+
+/** A session id that `isSafeSessionId` refuses. */
+export class UnsafeSessionIdError extends Error {
+  override name = "UnsafeSessionIdError";
+  constructor(sessionId: string) {
+    super(`not a session id: ${JSON.stringify(sessionId.slice(0, 40))}`);
+  }
+}
+
+/** A write to a deleted session (its id is marked dead): refused, nothing written, so nothing a wake, a resume or another
+ *  process runs can bring the session back. */
+export class SessionDeletedError extends Error {
+  override name = "SessionDeletedError";
+  constructor(readonly sessionId: string) {
+    super(`session ${sessionId.slice(0, 8)} was deleted`);
+  }
+}
+
+/**
+ * Archive and delete (protocol 0.26.4, capability `session_archive`). A backend that offers it sets
+ * `Store.lifecycle`; the file backend does. Every method takes a safe id only (`UnsafeSessionIdError`).
+ */
+export interface SessionLifecycle {
+  /** Set (an ISO time) or clear (null) the record's `archivedAt`. `updatedAt` is kept, so archiving does not
+   *  reorder a listing. False when there is no such session (never existed, or deleted). */
+  setArchived(sessionId: string, archivedAt: string | null): Promise<boolean>;
+  /** Delete the session for good: it is marked dead first (a listing and `getSession` never show it again, even if
+   *  its files come back), then its record, conversation, logs, mail and artifacts are removed. Idempotent. Only the
+   *  session itself: the caller deletes its sub-agents. */
+  deleteSession(sessionId: string): Promise<void>;
+  /** The ids marked dead, for a caller that removes its own per-session files (or a sync that must not restore them). */
+  deletedIds(): Promise<ReadonlySet<string>>;
+  /** This id is marked dead, by this process or any other (read from disk; a positive answer is cached). Every write
+   *  the store takes for a dead id (record, conversation, mail, logs) throws `SessionDeletedError`. */
+  isDeleted(sessionId: string): boolean;
+  /** Hold the session's live lock while a run, resume or approval goes on; call the result to let go. Nested holds in
+   *  one process count. The lock names this host and pid, so it outlives no process. */
+  holdLive(sessionId: string): () => void;
+  /** A process on this host holds the session's live lock and is alive: it runs the session now, however long its
+   *  current step takes. */
+  isLive(sessionId: string): boolean;
+  /** Remove again whatever files of a dead session exist (a restore of an older copy brought them back). Returns the
+   *  ids that had any. */
+  sweepDeleted(): Promise<string[]>;
+}
+
 export interface Store {
   readonly root: string;
+  /** Archive and delete; absent on a backend that cannot (the remote session store). */
+  readonly lifecycle?: SessionLifecycle;
   readonly conversation: ConversationStore;
   readonly logs: LogStore;
   readonly memory: MemoryStore;

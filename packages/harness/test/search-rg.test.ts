@@ -24,6 +24,9 @@ beforeAll(async () => {
   //   pattern __none__   -> exit 1 (no matches)
   //   pattern __bad__    -> stderr + exit 2 (e.g. invalid regex)
   //   pattern __many__   -> 250 lines (to exercise truncation)
+  //   pattern __stdin__  -> real rg's path rule: with a path operand, one hit as rg prints it under an explicit `.`;
+  //                         with none, rg searches stdin whenever it is readable (a pipe, a socket or a file), so the
+  //                         fake fails loudly instead of waiting on it
   //   otherwise          -> one hit, exit 0
   const script = `#!/bin/sh
 printf '%s\\n' "$*" >> "${argsFile}"
@@ -32,6 +35,10 @@ case "$*" in
   *__none__*) exit 1;;
   *__bad__*) echo "regex parse error: unbalanced" 1>&2; exit 2;;
   *__many__*) i=1; while [ $i -le 250 ]; do echo "f.ts:$i:hit"; i=$((i+1)); done; exit 0;;
+  *__stdin__*)
+    case " $* " in *" -- . "*) printf './src/a.ts:3:the hit line\\n'; exit 0;; esac
+    if [ -p /dev/stdin ] || [ -S /dev/stdin ] || [ -f /dev/stdin ]; then echo "rg searched stdin: no path given and stdin is readable" 1>&2; exit 2; fi
+    printf 'src/a.ts:3:the hit line\\n'; exit 0;;
   *) printf 'src/a.ts:3:the hit line\\n'; exit 0;;
 esac
 `;
@@ -57,6 +64,15 @@ describe("Grep via ripgrep", () => {
     expect(logged).toContain("--hidden");
     expect(logged).toContain("--max-columns 500");
     expect(logged).toContain("--regexp hit");
+  });
+
+  // Converge review, latent B: Grep gave rg no path, and execFile's stdin is a pipe, so a real rg searched stdin and
+  // never returned; Grep ended at its 20 s timeout as "the tree is too large".
+  test("names the path to search, so rg never reads stdin; paths come back as the fallback prints them", async () => {
+    const res = await grepTool.call({ pattern: "__stdin__" }, ctx);
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toBe("src/a.ts:3:the hit line");
+    expect((await readFile(argsFile, "utf8")).trim().split("\n").at(-1)).toEndWith("--regexp __stdin__ -- .");
   });
 
   test("exit 1 → 'No matches', not an error", async () => {

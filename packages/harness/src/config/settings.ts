@@ -120,8 +120,10 @@ export const settingsSchema = z.object({
     .default({}),
   /** A hook is one of: `command` (a shell command; the event JSON on stdin, a JSON result on
    *  stdout, exit 2 blocks), `url` (POST the event, read a JSON result), or `prompt` (a cheap
-   *  model judges the event against a rule in plain words). `when` filters by tool name, a
-   *  regular expression over the command or the prompt, error state, kind or agent type. */
+   *  model judges the event against a rule in plain words; when it gives no verdict, a tool call
+   *  that may change something is asked, or denied with nobody to ask, and a prompt is rejected).
+   *  `when` filters by tool name, a regular expression over the command or the prompt, error
+   *  state, kind or agent type. */
   hooks: z
     .array(
       z
