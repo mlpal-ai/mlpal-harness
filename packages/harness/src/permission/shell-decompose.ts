@@ -223,6 +223,8 @@ interface Word {
   glob?: boolean;
   /** It starts with an unquoted `~` (tilde expansion). */
   tilde?: boolean;
+  /** Its `~` is followed by an unquoted `/`: bash expands it to `$HOME` (with a bare `~`, the only such forms). */
+  tildeSlash?: boolean;
 }
 
 class Opaque extends Error {
@@ -276,9 +278,11 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
           if (OPENERS.has(word.text)) openers.push(out.length);
           else if (CLOSERS.has(word.text)) closed = openers.pop() ?? null;
         }
-        // bash expands an unquoted glob or brace word to names it finds, and a leading `~` to a home
+        // bash expands an unquoted glob or brace word to names it finds, and a leading `~` to a home. A `~` it expands
+        // to the command's own $HOME (bare, or before an unquoted `/`) is kept as written, as production's engine read
+        // it, while nothing on the line could have changed HOME; `~user`, `~+`, `~-` and the rest stay run-time values
         if (word.glob) word.wild = UNKNOWN;
-        else if (word.tilde) word.wild = UNKNOWN + word.wild.slice(1);
+        else if (word.tilde && !(word.literal && (word.text === "~" || word.tildeSlash) && !homeMayChange(words, line))) word.wild = UNKNOWN + word.wild.slice(1);
         words.push(word);
       }
     }
@@ -470,6 +474,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       continue;
     }
     const w = cur();
+    if (c === "/" && w.tilde && w.text === "~") w.tildeSlash = true;
     if (c === "~" && w.text === "") w.tilde = true;
     add(w, c);
     if ("*?[{}".includes(c)) w.glob = true;
@@ -806,6 +811,15 @@ function matchParen(s: string, open: number): number {
 }
 
 const basename = (w: string) => w.slice(w.lastIndexOf("/") + 1);
+
+/** Commands that run the rest under another user or environment, so its HOME may not be the line's. */
+const HOME_CHANGERS = new Set(["env", "sudo", "doas", "su", "runuser", "setpriv", "chroot", "pkexec", "machinectl", "systemd-run", "flatpak-spawn"]);
+
+/** Whether HOME may differ from the command's own by the time a word of this command is expanded: anything earlier on
+ *  the line changed the environment, or this command so far has an assignment or a word that runs it elsewhere. */
+function homeMayChange(before: readonly Word[], line: Line): boolean {
+  return line.envChanged || before.some((w) => !w.literal || ASSIGNMENT.test(w.text) || HOME_CHANGERS.has(basename(w.text)));
+}
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const text = (ws: Word[]) => ws.map((w) => w.text).join(" ");
 
