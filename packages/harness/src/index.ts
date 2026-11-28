@@ -80,6 +80,7 @@ export * from "./permission/judge";
 export { containmentDeny } from "./permission/containment";
 export { registerSecret, registerSecrets, registerPattern, registerPlatformPatterns, PLATFORM_SECRET_PATTERNS, redactText, redactResult, clearSecrets } from "./obs/redact";
 export * from "./plugins/packs";
+export * from "./plugins/plan";
 export * from "./tasks/tracker";
 export * from "./tasks/tools";
 export { loginToMcp } from "./mcp/login";
