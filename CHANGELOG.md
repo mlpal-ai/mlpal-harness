@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Protocol 0.28.0: media kinds, the arc mark, hop_home and tools_admin in one line (additive, 2026-11-28)
+
+`next/engine-2026-11-28` merges `feat/media-kinds`, `feat/hop-home`, `feat/tools-admin` and `fix/decompose-quoting`
+on `main` (1159864), in that order. There is one minor bump, because each branch adds to the wire and nothing is
+removed or renamed. The sections below keep each branch's own account. By capability or declaration:
+
+- **Media kinds** (`run.display.kinds` + `run.display.media`): `image`, `image_set`, `audio`, `video` (level
+  `block`) and `file` (level `file`). They are offered only to a client that names the kind and declares the media
+  types it draws, on a run whose workspace this engine can read. The new error codes are `PATH_*`, `MEDIA_*` and
+  `URL_NOT_ALLOWED` for media paths.
+- **The arc mark** (`run.display.marks`, `CHART_OPTIONAL_MARKS`): pies and donuts, offered and admitted only for a
+  client that names `arc`. A client pinned at 0.27.1, which refuses arc, is never sent one.
+- **`source.by`** takes `model`, `engine` (a tool's own block: GenerateImage) and `host` (a HOP's home script, with
+  `origin: "home"` exactly then).
+- **`hop_home`** (capability): `get_home` → `home`, then `home_update` per block, plus `hop_ref_invalid` and
+  `hop_not_installed`.
+- **`tools_admin`** (capability): the owner's MCP servers and plugins on the wire, with `ToolsAdminErrorCode`.
+- **The catalog stays `harness.v1/1`.** When `Show` arrived (0.26.8), it introduced the catalog as an additive
+  change gated by the client's own declaration (the `display` capability and `run.display.kinds`). The catalog
+  then said that later kinds (`log`, `files`) follow inside it, offered to a client only when it names them. Media
+  kinds and arc are opt-in the same way, so a client of 0.27.1 sees exactly what it saw before, and no new catalog
+  id is needed.
+- Engine-only changes (no wire change):
+  - `fix/decompose-quoting` (the shell decomposer and later-line meaning);
+  - one vendored-tree walk now shared by home trust and plugins (`vendoredTree`);
+  - protected names folded in every rule (`foldName`).
+- Consumers pin `@mlpal/harness-protocol` 0.28.0 (yodex, the web UI); `ready.engine.harnessProtocol` reports
+  0.28.0.
+
 ### engine-media: review-media round 2 fixes (needs the same version bump, 2026-11-28)
 
 - R9: the probe reads and hashes any file in 1 MiB chunks up to the kind's cap. A file over 1 MiB was refused as

@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
+  CHART_OPTIONAL_MARKS,
   CLOSE_PRINCIPAL_REFUSED,
+  DISPLAY_CATALOG,
   HARNESS_PROTOCOL_VERSION,
+  MEDIA_KINDS,
   type ClientMessage,
   type DelegatedCredential,
   type DisplayCaps,
@@ -281,12 +284,19 @@ describe("0.22.4 (SandboxRefusal: the remote sandbox at capacity)", () => {
   });
 });
 
-describe("0.27.1 (one line again: main and next/ws merged; additive)", () => {
+describe("0.28.0 (media kinds and GenerateImage's block, the arc mark by declaration, hop_home, tools_admin; additive)", () => {
   test("version", () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe("0.27.1");
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.27.1");
+    expect(HARNESS_PROTOCOL_VERSION).toBe("0.28.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.28.0");
   });
 
+  test("the new capabilities are named, and the catalog is still harness.v1/1 (every addition is opt-in by declaration)", () => {
+    const added: ServerCapability[] = ["hop_home", "tools_admin"];
+    expect([added.length, DISPLAY_CATALOG, [...MEDIA_KINDS], [...CHART_OPTIONAL_MARKS]]).toEqual([2, "harness.v1/1", ["image", "image_set", "audio", "video", "file"], ["arc"]]);
+  });
+});
+
+describe("0.27.1 (one line again: main and next/ws merged; additive)", () => {
   test("the capabilities of both lines are named", () => {
     const both: ServerCapability[] = ["live_attach", "concurrent_runs", "session_archive", "incognito", "display"];
     const init: SystemInitEvent = { type: "system", subtype: "init", sessionId: "s", agentId: "a", model: "m", cwd: "/w", ts: "t", sandbox: { platform: "none", filesystem: null, network: null, required: false, reason: "off" } };
