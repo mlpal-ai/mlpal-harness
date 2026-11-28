@@ -10,12 +10,18 @@ import type { BlockDisplay, TextDisplay } from "./display/envelope.js";
  * empty `starters` and `blocks`: the client draws the home it draws today.
  */
 
+/** The kinds a home block may declare (`ui.home.blocks[].kind`) and print. */
+export const HOME_BLOCK_KINDS = ["chart", "kpis", "grid"] as const;
+export type HomeBlockKind = (typeof HOME_BLOCK_KINDS)[number];
+
 /** The limits of the first version's `ui` section, enforced by the HOP loader. */
 export const HOME_LIMITS = {
   starters: 4,
   starterChars: 60,
   blocks: 4,
   titleChars: 120,
+  /** `ui.home.headline`, one line under the HOP's name. */
+  headlineChars: 120,
   /** `refresh` is at least this many minutes; default 15. */
   refreshMinMinutes: 5,
   refreshMaxMinutes: 24 * 60,
@@ -32,7 +38,7 @@ export const HOME_LIMITS = {
 /** `ui` as `describe_hop` shows it (`HopView.ui`): what hop.yaml declares, script paths relative to the HOP's directory. */
 export interface HopUiView {
   starters: string[];
-  home?: { blocks: Array<{ id: string; title: string; script: string; refresh: string }> };
+  home?: { headline?: string; blocks: Array<{ id: string; title: string; script: string; refresh: string; kind?: HomeBlockKind }> };
 }
 
 /**
@@ -42,11 +48,12 @@ export interface HopUiView {
  * - `output_too_large`: it printed over 256 KiB and was killed.
  * - `not_json`: stdout was not one JSON object.
  * - `invalid_block`: the object is not `{kind, spec, fallback, as_of?}`, or its block fails the Show checks.
+ * - `kind_mismatch`: the block declares a `kind` in hop.yaml and the script printed another one.
  * - `denied`: the HOP's permission rules refuse running it.
  * - `sandbox`: the sandbox took back something it wrote where a command may not write.
  * - `not_started`: it could not be started (no interpreter, the file is gone).
  */
-export type HomeRefreshError = "timeout" | "exit_nonzero" | "output_too_large" | "not_json" | "invalid_block" | "denied" | "sandbox" | "not_started";
+export type HomeRefreshError = "timeout" | "exit_nonzero" | "output_too_large" | "not_json" | "invalid_block" | "kind_mismatch" | "denied" | "sandbox" | "not_started";
 
 /**
  * One home block as the client draws it.
@@ -62,6 +69,10 @@ export type HomeRefreshError = "timeout" | "exit_nonzero" | "output_too_large" |
 export interface HomeBlock {
   id: string;
   title: string;
+  /** The kind hop.yaml declares for the block, present from the first `home` on (before any script ran), so a client
+   *  can lay the home out before it fills; absent when the author declared none. A script that prints another kind
+   *  leaves the block in its error state with `error: "kind_mismatch"`. */
+  kind?: HomeBlockKind;
   as_of: string | null;
   stale: boolean;
   display: BlockDisplay | TextDisplay | null;
@@ -81,6 +92,9 @@ export type HomeScripts = "not_trusted" | "off";
 export interface HomeView {
   hop: string;
   starters: string[];
+  /** `ui.home.headline`: one line the HOP's author wrote (plain text, at most 120 characters), shown with the HOP's
+   *  name; absent when there is none. */
+  headline?: string;
   blocks: HomeBlock[];
   scripts?: HomeScripts;
 }

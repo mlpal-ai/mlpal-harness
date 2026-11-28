@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { BLOCK_ID, HOME_LIMITS, type HopUiView } from "@mlpal/harness-protocol";
+import { BLOCK_ID, HOME_BLOCK_KINDS, HOME_LIMITS, type HomeBlockKind, type HopUiView } from "@mlpal/harness-protocol";
 import { z } from "zod";
 
 /**
@@ -30,6 +30,8 @@ const blockSchema = z
     id: z.string().regex(BLOCK_ID, "a home block id is lowercase letters, digits and hyphens, starting with a letter, at most 40"),
     title: plain(HOME_LIMITS.titleChars, "a home block title"),
     script: z.string().min(1),
+    /** The kind the script prints, declared so the home can be laid out before it runs. */
+    kind: z.enum(HOME_BLOCK_KINDS, { errorMap: () => ({ message: `kind is one of ${HOME_BLOCK_KINDS.join(", ")}` }) }).optional(),
     refresh: z
       .string()
       .refine((s) => {
@@ -49,6 +51,7 @@ export const uiSchema = z
       .default([]),
     home: z
       .object({
+        headline: plain(HOME_LIMITS.headlineChars, "a home headline").optional(),
         blocks: z
           .array(blockSchema)
           .min(1, "a home has at least one block")
@@ -84,12 +87,13 @@ export interface HopUiBlock {
   scriptPath: string;
   refresh: string;
   refreshMs: number;
+  kind?: HomeBlockKind;
 }
 
 /** The composed `ui` of a Profile. */
 export interface HopUi {
   starters: string[];
-  home?: { blocks: HopUiBlock[] };
+  home?: { headline?: string; blocks: HopUiBlock[] };
 }
 
 /** Whether `abs` is strictly inside `root`, by its text and after links (a path that does not resolve: by its text). */
@@ -148,9 +152,10 @@ export function resolveUi(value: string | UiSection, dir: string, confine: (abs:
         throw new Error(`profile ${field} references ${b.script}, which is neither a .py or .sh file nor executable`);
       }
     }
-    return { id: b.id, title: b.title, script: b.script, scriptPath, refresh: b.refresh, refreshMs: refreshMinutes(b.refresh)! * 60_000 };
+    return { id: b.id, title: b.title, script: b.script, scriptPath, refresh: b.refresh, refreshMs: refreshMinutes(b.refresh)! * 60_000, ...(b.kind ? { kind: b.kind } : {}) };
   });
-  return { starters: section.starters, ...(blocks ? { home: { blocks } } : {}) };
+  const headline = section.home?.headline;
+  return { starters: section.starters, ...(blocks ? { home: { ...(headline !== undefined ? { headline } : {}), blocks } } : {}) };
 }
 
 /** How a script is started, by extension; any other file is run itself. */
@@ -168,6 +173,8 @@ export function scriptCommand(scriptPath: string): string {
 export function describeUi(ui: HopUi): HopUiView {
   return {
     starters: [...ui.starters],
-    ...(ui.home ? { home: { blocks: ui.home.blocks.map((b) => ({ id: b.id, title: b.title, script: b.script, refresh: b.refresh })) } } : {}),
+    ...(ui.home
+      ? { home: { ...(ui.home.headline !== undefined ? { headline: ui.home.headline } : {}), blocks: ui.home.blocks.map((b) => ({ id: b.id, title: b.title, script: b.script, refresh: b.refresh, ...(b.kind ? { kind: b.kind } : {}) })) } }
+      : {}),
   };
 }

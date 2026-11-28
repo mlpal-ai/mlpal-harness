@@ -31,6 +31,11 @@
   stdout (`v: 2`) and every read runs `checkHomeOutput` on it as a fresh run does; a file that fails is removed and the
   script runs again. A descendant that leaves the process group can no longer hold a run past its bound (its pipes are
   closed 500 ms after the script exits or is killed). Error codes `hop_ref_invalid` and `hop_not_installed`.
+- Round 2 (UI critique, additive, protocol stays 0.28.0): `ui.home.headline` (optional, plain text, at most 120
+  characters, the title's rules) is sent as `home.headline`; a block may declare `kind` (`chart`, `kpis`, `grid`,
+  `HOME_BLOCK_KINDS`), sent as `HomeBlock.kind` from the first `home` on. A script printing another kind leaves the
+  block in its error state, `error: "kind_mismatch"` (last good kept, stale; a cached output of the old kind is
+  dropped); `lint --home` fails on it through `checkHomeOutput`.
 - Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
   `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
   may be `host`, with `origin: "home"` exactly then.

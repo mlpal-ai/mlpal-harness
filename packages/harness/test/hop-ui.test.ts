@@ -83,6 +83,34 @@ describe("hop.yaml ui: accepted", () => {
     expect(p.ui?.home?.blocks[0]!.scriptPath).toBe(join(hop, "ui", "home", "spend.py"));
   });
 
+  test("W3-1 round 2: a headline and each block's declared kind, loaded and carried by describe_hop", () => {
+    writeHop(`ui:
+  home:
+    headline: Your agents, sites and published HOPs on MLPal
+    blocks:
+      - { id: hops, title: Your published HOPs, script: ui/home/hops.py, kind: kpis }
+      - { id: spend, title: Spend, script: ui/home/spend.py, kind: chart }
+      - { id: agents, title: Agents, script: ui/home/agents.py, kind: grid }
+      - { id: sites, title: Sites, script: ui/home/sites.sh }
+`);
+    const p = load();
+    expect(p.ui?.home?.headline).toBe("Your agents, sites and published HOPs on MLPal");
+    expect(p.ui?.home?.blocks.map((b) => b.kind ?? null)).toEqual(["kpis", "chart", "grid", null]);
+    expect(describeProfile(p).ui?.home).toEqual({
+      headline: "Your agents, sites and published HOPs on MLPal",
+      blocks: [
+        { id: "hops", title: "Your published HOPs", script: "ui/home/hops.py", refresh: "15m", kind: "kpis" },
+        { id: "spend", title: "Spend", script: "ui/home/spend.py", refresh: "15m", kind: "chart" },
+        { id: "agents", title: "Agents", script: "ui/home/agents.py", refresh: "15m", kind: "grid" },
+        { id: "sites", title: "Sites", script: "ui/home/sites.sh", refresh: "15m" },
+      ],
+    });
+    // neither set: unchanged
+    writeHop(FOUR);
+    expect(load().ui?.home && "headline" in load().ui!.home!).toBe(false);
+    expect(load().ui?.home?.blocks.every((b) => !("kind" in b))).toBe(true);
+  });
+
   test("starters alone, no home", () => {
     writeHop("ui:\n  starters: [One, Two]\n");
     expect(load().ui).toEqual({ starters: ["One", "Two"] });
@@ -123,6 +151,10 @@ describe("hop.yaml ui: refused with a load error naming the field", () => {
     ["an id used twice", `ui:\n  home:\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n      - { id: a, title: U, script: ui/home/hops.py }\n`, /a home block id is used twice/],
     ["a bad id", block("{ id: Spend_1, title: T, script: ui/home/spend.py }"), /at ui\.home\.blocks\.0\.id: a home block id is lowercase/],
     ["a title over 120 characters", block(`{ id: a, title: "${"t".repeat(121)}", script: ui/home/spend.py }`), /a home block title is at most 120 characters/],
+    ["a headline over 120 characters", `ui:\n  home:\n    headline: "${"h".repeat(121)}"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /at ui\.home\.headline: a home headline is at most 120 characters/],
+    ["a headline with a control character", `ui:\n  home:\n    headline: "a\\u0007b"\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /a home headline has a control character/],
+    ["an empty headline", `ui:\n  home:\n    headline: " "\n    blocks:\n      - { id: a, title: T, script: ui/home/spend.py }\n`, /a home headline is empty/],
+    ["a kind no home block may be", block("{ id: a, title: T, script: ui/home/spend.py, kind: image }"), /at ui\.home\.blocks\.0\.kind: kind is one of chart, kpis, grid/],
     ["refresh under 5m", block("{ id: a, title: T, script: ui/home/spend.py, refresh: 4m }"), /refresh is <n>m or <n>h, from 5m to 24h/],
     ["refresh in seconds", block("{ id: a, title: T, script: ui/home/spend.py, refresh: 600s }"), /refresh is <n>m or <n>h/],
     ["refresh over a day", block("{ id: a, title: T, script: ui/home/spend.py, refresh: 25h }"), /from 5m to 24h/],

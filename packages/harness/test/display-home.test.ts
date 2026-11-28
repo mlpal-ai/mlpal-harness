@@ -139,6 +139,49 @@ describe("HomeResolver", () => {
     expect(r.view().blocks.every((b) => b.display?.level === "block")).toBe(true);
   });
 
+  test("round 2: the headline and each block's declared kind are in the first view, before any script ran", () => {
+    const ui: HopUi = { starters: ["Hi"], home: { headline: "Your MLPal at a glance", blocks: [{ ...block("hops"), kind: "kpis" }, block("spend")] } };
+    const view = new HomeResolver({ scripts: "run", hop: { ...HOP, ui }, run: tableRunner({ hops: () => new Promise(() => {}), spend: () => new Promise(() => {}) }), cacheDir: cache, now }).get();
+    expect(view).toEqual({
+      hop: "mlpal@0.3.0",
+      starters: ["Hi"],
+      headline: "Your MLPal at a glance",
+      blocks: [
+        { id: "hops", title: "Title of hops", kind: "kpis", as_of: null, stale: false, display: null },
+        { id: "spend", title: "Title of spend", as_of: null, stale: false, display: null },
+      ],
+    });
+    // starters and headline only, when scripts do not run
+    expect(new HomeResolver({ scripts: "not_trusted", hop: { ...HOP, ui }, run: goodRunner(), cacheDir: cache, now }).view()).toEqual({ hop: "mlpal@0.3.0", starters: ["Hi"], headline: "Your MLPal at a glance", blocks: [], scripts: "not_trusted" });
+  });
+
+  test("round 2: a script printing another kind than declared: kind_mismatch, its last good block kept, stale; a cached one dropped", async () => {
+    let next = () => ok(output("hops"));
+    const kinded = { ...block("hops"), kind: "kpis" as const };
+    const ui: HopUi = { starters: [], home: { blocks: [kinded] } };
+    const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui }, run: tableRunner({ hops: () => next() }), cacheDir: cache, now });
+    const first = updates(1);
+    r.get(first.push);
+    const good = (await first.done)[0]!;
+    expect(good.display?.level).toBe("block");
+    next = () => ok(output("agents")); // a grid
+    clock += 61_000;
+    const second = updates(1);
+    r.get(second.push);
+    expect((await second.done)[0]).toEqual({ ...good, stale: true, error: "kind_mismatch" });
+    // never resolved: nothing shown, the reason given
+    const r2 = new HomeResolver({ scripts: "run", hop: { ...HOP, ui }, run: tableRunner({ hops: () => ok(output("agents")) }), cacheDir: join(dir, "c2"), now });
+    const u2 = updates(1);
+    r2.get(u2.push);
+    expect((await u2.done)[0]).toEqual({ id: "hops", title: "Title of hops", kind: "kpis", as_of: null, stale: false, display: null, error: "kind_mismatch" });
+    // a cache written before the author declared grid: refused at load, removed
+    const log = new CapturingLogger();
+    const regrid = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [{ ...kinded, kind: "grid" }] } } }, run: goodRunner(), cacheDir: cache, now, logger: log });
+    expect(regrid.view().blocks[0]!.display).toBeNull();
+    expect(log.lines.some((l) => l.msg === "home.cache.unreadable" && l.fields?.block === "hops")).toBe(true);
+    expect(checkHomeOutput({ ...kinded }, output("agents"))).toMatchObject({ ok: false, error: "kind_mismatch", detail: "the block declares kind kpis and the script printed grid" });
+  });
+
   test("a script's own as_of is kept; without one, as_of is when it ran", async () => {
     const { as_of: _drop, ...rest } = JSON.parse(output("hops"));
     const run = tableRunner({ hops: () => ok(JSON.stringify(rest)) });
