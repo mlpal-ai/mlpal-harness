@@ -11,6 +11,10 @@
   (`mcp/secret-refs.ts`).
 - `startWebLogin` (`mcp/web-login.ts`): OAuth code + PKCE with the redirect on the client's page and a state the login
   chose; a saved dynamic registration for another redirect is not reused. `StoredOAuthProvider` is exported.
+- R51: Grep and Glob show only files that resolve inside the roots (a workspace symlink to `~/.yodex` or `~/.ssh` was
+  followed by the JS fallback and not checked on rg's output; rg now runs with `--null`). `~/.yodex/mcp-auth` and
+  `~/.yodex/person-secrets.json` join `DEFAULT_UNREADABLE`. Protocol: `auth.header.value` (stored by a serve with a
+  local store), `set_secret` / `secret_saved`, `tool_sources.secrets`, `ToolServerHeader.present`, four error codes.
 - `planPack` (`plugins/plan.ts`): a staged pack's plan (skills, agents, stdio programs, remote servers, the hooks
   module, ignored directories) and a sha256 over the plan and every file. Refuses a manifest path or link leading
   outside the pack, unusable pack or server names, a string `mcpServers` and a url with credentials.
