@@ -125,7 +125,7 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // REVIEW-3: a command that could reach the person's keys without naming them is asked in every mode, before the
     // envelope, allow rules or the mode default could run it unasked (safety.ts protectedReachAsk).
     if (req.toolName === "Bash") {
-      const reach = protectedReachAsk(String(req.input.command ?? ""));
+      const reach = protectedReachAsk(String(req.input.command ?? ""), req.cwd !== undefined ? { cwd: shellCwd(req.cwd, req.roots ?? []).cwd } : {});
       if (reach) return { behavior: "ask", reason: reach };
     }
     // The safety envelope decides after the host/user denials (it can never widen them) and before

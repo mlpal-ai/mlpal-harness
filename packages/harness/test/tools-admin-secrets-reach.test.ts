@@ -335,3 +335,64 @@ describe("REVIEW-2 RQ-6: the home's .yodex is not for commands, in any spelling;
     clearSecrets();
   });
 });
+
+describe("REVIEW-4 R4-1: paths in their normal form; a recursive read of the state directory is a sweep; hexdump -C", () => {
+  const ctx = { home: "/home/mlpaluser", cwd: "/home/mlpaluser/workspace/proj" };
+
+  test("the reviewer's lines and the five spellings ask (or are denied by name)", async () => {
+    const { protectedReachAsk, protectedReadDeny, normalWord } = await import("../src/permission/safety");
+    const asked = [
+      "grep -r value ~/.yodex",
+      "grep -r . ~/.yodex | xxd",
+      "grep -r . ~/.yodex | hexdump -C",
+      "grep -r . ~/.yodex | od -c",
+      "rg -uu key /home/mlpaluser/.mlpal",
+      "ls -R ~/.yodex/",
+      "cat //home/mlpaluser/.yodex/person-secret?.json",
+      "cat /home/./mlpaluser/.yodex/person-secret?.json",
+      "cat ../../../mlpaluser/.yodex/person-secret?.json",
+      "cat /proc/self/root/home/mlpaluser/.yodex/person-secret?.json",
+      "cat /proc/1234/root/home/mlpaluser/.yodex/person-secret?.json",
+      "hexdump -C //home/mlpaluser/.yodex/person-secret?.json",
+      "od -c /home/./mlpaluser/.yodex/person-secret?.json",
+      "cat ../.././.yodex/person-secret?.json",
+      "grep -r . /proc/self/root/home/mlpaluser",
+    ];
+    for (const command of asked) expect([command, protectedReachAsk(command, ctx) !== null || protectedReadDeny(command) !== null]).toEqual([command, true]);
+    expect(normalWord("//home/./u/../mlpaluser/.yodex", ctx)).toEqual({ path: "/home/mlpaluser/.yodex", literal: "/home/mlpaluser/.yodex", pattern: false });
+    expect(normalWord("/proc/self/root/home/mlpaluser/.yodex/p*", ctx)?.literal).toBe("/home/mlpaluser/.yodex");
+    expect(normalWord("~/.yodex", ctx)?.path).toBe("/home/mlpaluser/.yodex");
+    expect(normalWord("src/x", ctx)).toBeNull();
+  });
+
+  test("must-not-break: of the reviewer's 74 everyday commands only `find /` asks; skill scripts and subfolders of ~/.yodex do not", async () => {
+    const { protectedReachAsk, protectedReadDeny } = await import("../src/permission/safety");
+    const corpus = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "permission", "everyday-commands.json"), "utf8")) as Record<string, string[]>;
+    const all = Object.values(corpus).flat();
+    expect(all.length).toBe(74);
+    const asking = all.filter((c) => protectedReachAsk(c, ctx) !== null || protectedReadDeny(c) !== null);
+    expect(asking).toEqual(["find / -name '*.log' 2>/dev/null | head"]);
+    for (const c of ["grep -rn TODO ~/.yodex/skills", "ls -R ~/.yodex/hops/mlpal", "bash ~/.yodex/hops/mlpal/0.2.6/skills/hop-evals/scripts/run_cases.py", "du -sh ~/workspace", "cp -r ../shared ./vendor"]) {
+      expect([c, protectedReachAsk(c, ctx)]).toEqual([c, null]);
+    }
+  });
+
+  test("hexdump -C output is masked at every alignment; an unrelated dump is untouched", async () => {
+    const { clearSecrets, redactText, registerSecret } = await import("../src/obs/redact");
+    clearSecrets();
+    const v = "sk-REVIEW4-0123456789abcdefABCDEF-key-41ch";
+    registerSecret("stored key", v);
+    for (const prefix of ["", "a", "ab", "abc", "abcdefgh", '{"version":1,"secrets":{"K":{"value":"']) {
+      const file = Buffer.from(`${prefix}${v}","server":"e"}}}\n${"\0".repeat(64)}tail\n`);
+      for (const argv of [["hexdump", "-C"], ["od", "-c"], ["od", "-An", "-c"]]) {
+        const out = Bun.spawnSync(argv, { stdin: file }).stdout.toString();
+        if (!out) continue;
+        const masked = redactText(out);
+        expect([argv.join(" "), prefix.length, masked.includes("[redacted:stored key]"), masked.includes("0123456789abcdef")]).toEqual([argv.join(" "), prefix.length, true, false]);
+      }
+    }
+    const plain = Bun.spawnSync(["hexdump", "-C"], { stdin: Buffer.from("nothing secret here, only text and more text\n") }).stdout.toString();
+    if (plain) expect(redactText(plain)).toBe(plain);
+    clearSecrets();
+  });
+});
