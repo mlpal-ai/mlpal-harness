@@ -21,9 +21,12 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { Logger } from "../obs/logger";
 import type { Metrics } from "../obs/metrics";
 import { parseJsonLenient } from "../tools/json";
-import { declaredArgsOf, defineTool, sanitizeJsonSchema, type Tool, type ToolContext, type ToolResult } from "../tools/types";
+import { declaredArgsOf, defineTool, type Tool, type ToolContext, type ToolResult } from "../tools/types";
 import type { DisplayHistory } from "./history";
 import type { DisplayPolicy } from "./policy";
+// The model's schema (schema.ts). The tool's own schema accepts anything, so that every fault is answered with a
+// typed code by the check (and the fallback shown), never with the registry's generic error.
+import { SHOW_JSON_SCHEMA } from "./schema";
 
 /**
  * Show (DISPLAY-PROTOCOL-v0 §3): the engine's tool for putting one typed block in front of the person. Its input is
@@ -56,18 +59,9 @@ export interface ShowToolDeps {
   metrics: Metrics;
 }
 
-/** The model's schema: the protocol's Show input. The tool's own schema accepts anything, so that every fault is
- *  answered with a typed code by the check (and the fallback shown), never with the registry's generic error. */
-const SHOW_JSON = zodToJsonSchema(showInputSchema, { $refStrategy: "none" }) as { required?: string[] } & Record<string, unknown>;
-/** The keys Show declares, read before sanitising (which drops additionalProperties: false): a rule that reads
- *  arguments can judge a Show call, and a key outside them is undeclared (permission/engine.ts). */
-const SHOW_DECLARED_ARGS = declaredArgsOf(SHOW_JSON);
-const SHOW_JSON_SCHEMA = (() => {
-  const js = structuredClone(SHOW_JSON);
-  sanitizeJsonSchema(js);
-  js.required = [...new Set([...(js.required ?? []), "spec"])];
-  return js;
-})();
+/** The keys Show declares, read from the protocol's input before sanitising (which drops additionalProperties: false):
+ *  a rule that reads arguments can judge a Show call, and a key outside them is undeclared (permission/engine.ts). */
+const SHOW_DECLARED_ARGS = declaredArgsOf(zodToJsonSchema(showInputSchema, { $refStrategy: "none" }));
 
 const DESCRIPTION =
   "Show the person one block beside your answer: kpis for 2 to 6 headline numbers, grid for rows they will scan or sort, chart for a trend or a comparison. " +

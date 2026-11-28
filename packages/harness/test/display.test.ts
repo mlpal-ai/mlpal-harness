@@ -4,8 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ConversationEntry, DisplayCaps, DisplayEnvelope, EngineEvent, ToolResultEvent } from "@mlpal/harness-protocol";
-import { DISPLAY_LIMITS, validateBlock } from "@mlpal/harness-protocol";
+import { DISPLAY_LIMITS, gridColumnSchema, kpiTileSchema, validateBlock } from "@mlpal/harness-protocol";
+
+type Js = { type?: unknown; properties?: Record<string, Js>; items?: Js; enum?: unknown[]; required?: string[] };
 import { createShowTool, displayInstructions, foldDisplayHistory, KIND_EXAMPLES, resolveDisplay, type DisplayHistory } from "../src/display";
+import { SHOW_JSON_SCHEMA } from "../src/display/schema";
+import { CHART_GRAMMAR } from "../../protocol/src/display/chart";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import { AgentSession, type AgentConfig } from "../src/loop/agent";
 import { JsonLogger } from "../src/obs/logger";
@@ -645,6 +649,46 @@ describe("capability gating in the engine", () => {
     const web = await schema(WEB);
     expect(await schema({ ...WEB, client: "mobile", viewport: "phone", kinds: ["grid"] })).toEqual(web);
     expect((web.input_schema as { required: string[] }).required.sort()).toEqual(["block_id", "fallback", "kind", "spec"]);
+  });
+
+  test("Show's schema describes spec as an object of each kind's members, two levels deep (run 2: Haiku sent strings)", () => {
+    const spec = (SHOW_JSON_SCHEMA.properties as Record<string, Js>).spec!;
+    expect(spec.type).toBe("object");
+    expect(Object.keys(spec.properties!).sort()).toEqual(["columns", "row_key", "rows", "series_order", "tiles", "vl"]);
+    const vl = spec.properties!.vl!;
+    expect(vl.type).toBe("object");
+    for (const k of ["data", "mark", "encoding", "layer", "vconcat", "transform"]) expect(Object.keys(vl.properties!)).toContain(k);
+    expect(Object.keys(vl.properties!.encoding!.properties!)).toEqual(expect.arrayContaining(["x", "y"]));
+    expect(Object.keys(vl.properties!.encoding!.properties!.x!.properties!)).toEqual(expect.arrayContaining(["field", "type", "aggregate"]));
+    // the members are the protocol's own
+    expect(Object.keys(spec.properties!.tiles!.items!.properties!).sort()).toEqual(Object.keys(kpiTileSchema.shape).sort());
+    expect(Object.keys(spec.properties!.columns!.items!.properties!).sort()).toEqual(Object.keys(gridColumnSchema.shape).sort());
+    expect(spec.properties!.tiles!.items!.properties!.format!.enum).toEqual(kpiTileSchema.shape.format.options);
+    expect(spec.properties!.columns!.items!.properties!.type!.enum).toEqual(gridColumnSchema.shape.type.options);
+    for (const m of CHART_GRAMMAR.marks) expect((vl.properties!.mark as { description: string }).description).toContain(`"${m}"`);
+    // every Vega-Lite key the schema names is one the grammar takes
+    for (const k of Object.keys(vl.properties!)) {
+      const r = validateBlock("chart", { vl: { data: { values: [{ a: 1 }] }, mark: "point", encoding: { x: { field: "a", type: "quantitative" } }, [k]: null } });
+      expect([k, r.ok ? "" : r.errors.map((e) => e.message).join("; ")]).not.toEqual([k, expect.stringContaining(`unknown field "${k}"`)]);
+    }
+  });
+
+  test("Show's schema keeps to what Anthropic, OpenAI and Google tool schemas all accept", () => {
+    const bad: string[] = [];
+    const walk = (n: unknown, at: string, isMap = false): void => {
+      if (Array.isArray(n)) return n.forEach((x, i) => walk(x, `${at}[${i}]`));
+      if (!n || typeof n !== "object") return;
+      const o = n as Record<string, unknown>;
+      if (isMap) return Object.entries(o).forEach(([k, v]) => walk(v, `${at}.${k}`));
+      for (const k of ["$ref", "$defs", "definitions", "oneOf", "allOf", "not", "const", "additionalProperties", "patternProperties", "$schema"]) if (k in o) bad.push(`${at}: ${k}`);
+      if ("type" in o && typeof o.type !== "string") bad.push(`${at}: type ${JSON.stringify(o.type)}`);
+      if (o.type === "object" && !(o.properties && Object.keys(o.properties as object).length)) bad.push(`${at}: an object with no properties`);
+      for (const [k, v] of Object.entries(o)) walk(v, `${at}.${k}`, k === "properties");
+    };
+    walk(SHOW_JSON_SCHEMA, "$");
+    expect(bad.join("\n")).toBe("");
+    // 2,821 characters before spec was typed (run 2); a guard against growth
+    expect(JSON.stringify(SHOW_JSON_SCHEMA).length).toBeLessThan(7_000);
   });
 
   test("the host's registry is not changed by a session that adds Show", async () => {

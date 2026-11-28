@@ -106,6 +106,12 @@
 - The grammar the model reads states what review 6 found it guessing at: a fallback table is for a grid or a chart,
   every drawn mark counts toward the mark limit, and the cell and input-size limits (5,512 characters in all, up
   from 5,389).
+- Show's input schema types `spec` (run 2: Haiku sent it as a JSON string in 7 of 34 calls, every one malformed,
+  because the schema declared it unknown): one object with each kind's members named, two levels deep (chart `vl`
+  with its top-level keys, `encoding.x`/`y`, `layer` views; kpis `tiles`; grid `columns`, `rows`, `row_key`). One
+  object with per-kind optional members, not a union per kind, because Google's function declarations take no
+  oneOf; the whole schema keeps to the providers' common subset (a literal is a one-value enum, not `const`). The
+  validator stays the authority. 2,821 characters before, 6,573 after.
 - Axis labels are costed (review 8): a nominal or ordinal x or y axis charges 0.015 ms per label (its distinct values)
   in each view that draws one. 7 independent ordinal axes of 5,000 labels (0.8 s) and 5,000 labelled bands are now
   over budget.
