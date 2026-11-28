@@ -1,4 +1,4 @@
-import type { Author } from "@mlpal/harness-protocol";
+import type { Author, ToolAskDetail } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { shellCwd } from "../tools/shell-cwd";
@@ -58,6 +58,8 @@ export interface PermissionRequest {
   /** Why this call is always put to the person (`Tool.alwaysAsk`): asked in every mode but recon, after the deny
    *  rules and before anything that could admit it. */
   alwaysAsk?: string;
+  /** What the call will do, as its tool states it for the person (`Tool.askDetail`): carried to the ask. */
+  askDetail?: ToolAskDetail;
   principal: Author;
   /** The session's working folder and folders: the rm -rf guard resolves relative paths where the shell will run
    *  and refuses the session's own folders. Absent: neither is judged. */

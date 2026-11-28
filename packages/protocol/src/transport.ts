@@ -387,6 +387,34 @@ export interface WorkspaceStats {
   sessionsTotal: number;
 }
 
+/**
+ * 0.28.0: what a tool's ask will do, stated by the tool for the approval card, so a client need not read it out of
+ * the input. One variant per tool that states one; a client that does not know a `kind` shows the input as before.
+ */
+export type ToolAskDetail = ImageAskDetail;
+
+/** GenerateImage's ask: exactly what will be submitted, and why the person is asked. */
+export interface ImageAskDetail {
+  kind: "generate_image";
+  /** Images the request makes (1-4). */
+  count: number;
+  /** As submitted: "1024x1024", "landscape", "16:9", ... */
+  size: string;
+  quality: "standard" | "hd";
+  /** The model tag submitted. `"mlpal"` means the gateway's router picks the image model at render time, so the
+   *  tag is not known before then (`routed`). */
+  model: string;
+  routed: boolean;
+  /** The workspace folder the images are written to, "media/<date>". */
+  destination: string;
+  /** The reference images' workspace paths, as the call names them. */
+  references: string[];
+  /** The estimated charge in compute units (1 CU = US$10). Absent when there is none: never zero for unknown. */
+  estimateCu?: number;
+  /** Why the person is asked, whatever the mode; empty when only the mode asks. */
+  reasons: Array<"several_images" | "hd" | "over_threshold" | "no_estimate">;
+}
+
 export interface PendingApproval {
   command: string;
   reason: string;
@@ -602,6 +630,8 @@ export type ServerMessage =
       safetyReason?: string;
       /** 0.26.6: a policy check reached no verdict on this call. Answer it per action: no session rule may. */
       noVerdict?: PolicyNoVerdict;
+      /** 0.28.0: the tool's own statement of what the call will do (GenerateImage), for the card. */
+      askDetail?: ToolAskDetail;
     }
   /** yodex/2: the engine asks the person structured questions mid-run. */
   | { type: "question_request"; id: string; sessionId: string; questions: AskQuestion[] }

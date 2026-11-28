@@ -22,6 +22,8 @@ removed or renamed. The sections below keep each branch's own account. By capabi
 - **`Usage.compute_units_unconfirmed`** (optional): an estimated charge that could not be confirmed, kept apart
   from `compute_units`.
 - **`Usage.unpriced_charges`** (optional): how many such charges have no estimate at all (unknown, never zero).
+- **`permission_request.askDetail`** (optional, `ToolAskDetail`): a tool's own statement of what an ask will do, for
+  the approval card; GenerateImage's `ImageAskDetail` first.
 - **The catalog stays `harness.v1/1`.** When `Show` arrived (0.26.8), it introduced the catalog as an additive
   change gated by the client's own declaration (the `display` capability and `run.display.kinds`). The catalog
   then said that later kinds (`log`, `files`) follow inside it, offered to a client only when it names them. Media
@@ -33,6 +35,15 @@ removed or renamed. The sections below keep each branch's own account. By capabi
   - protected names folded in every rule (`foldName`).
 - Consumers pin `@mlpal/harness-protocol` 0.28.0 (yodex, the web UI); `ready.engine.harnessProtocol` reports
   0.28.0.
+
+### engine-media: the image approval card's detail (additive, 2026-11-28)
+
+- `permission_request.askDetail?: ToolAskDetail` is new. Its first variant is `ImageAskDetail`: count, size,
+  quality, the model tag submitted (`routed` when "mlpal" leaves the choice to the gateway), destination,
+  references, `estimateCu` (absent, never 0, when unknown) and `reasons` (several_images, hd, over_threshold,
+  no_estimate).
+- `Tool.askDetail(input)` states it; the engine carries it on `PermissionRequest` and `AskContext`.
+  `imageAskDetail` and `imageAskReason` share one reasoning, so the card and the ask cannot disagree.
 
 ### engine-media: review-media round 3 (needs the same version bump, 2026-11-28)
 

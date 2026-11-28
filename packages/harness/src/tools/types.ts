@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks, Usage } from "@mlpal/harness-protocol";
+import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolAskDetail, ToolResultBlocks, Usage } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -183,6 +183,9 @@ export interface Tool<I = unknown> {
    *  calls this instead of recording the interrupted result, so the tool can reconcile from its journal (never by
    *  doing the outside effect again). Absent: the interrupted result. */
   recover?(input: I, ctx: ToolContext): Promise<ToolResult>;
+  /** Per-CALL: what the call will do, stated for the person's approval card (GenerateImage: count, size, model,
+   *  destination, estimate, and why it asks), or null. Carried on the ask; it never decides anything. */
+  askDetail?(input: unknown): ToolAskDetail | null;
   /** The input keys this tool declares. A key outside it may never reach the tool, so a rule that reads arguments
    *  cannot judge that call. Absent: any key. */
   declaredArgs?: ReadonlySet<string>;
@@ -248,6 +251,7 @@ export function defineTool<I>(def: {
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
   recover?: (input: I, ctx: ToolContext) => Promise<ToolResult>;
+  askDetail?: (input: unknown) => ToolAskDetail | null;
 }): Tool<I> {
   const js = zodToJsonSchema(def.schema, { $refStrategy: "none" }) as Record<string, unknown>;
   // A schema that is no plain object (a union) says nothing about its keys here, and zod is its contract at the call.
@@ -267,6 +271,7 @@ export function defineTool<I>(def: {
     isCallGlobalMemory: def.isCallGlobalMemory,
     ...(def.alwaysAsk ? { alwaysAsk: def.alwaysAsk } : {}),
     ...(def.recover ? { recover: def.recover } : {}),
+    ...(def.askDetail ? { askDetail: def.askDetail } : {}),
     ...(declared ? { declaredArgs: declared } : {}),
     schema: def.schema,
     jsonSchema: js,
