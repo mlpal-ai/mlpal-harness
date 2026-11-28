@@ -707,6 +707,9 @@ export function planLine(command: string, cwd: string): PlanLine {
   const d = decomposeBash(command);
   const gated = GATED_TOOLS.test(command);
   if (d.opaque !== null) return { steps: [], unreadable: `the line cannot be read (${d.opaque})`, recordable: null };
+  // ANSI-C or locale quoting: the words are decoded now, but a plan is recorded, and a grant given, only for a line
+  // written plainly (before, such a word was never read as its plain spelling)
+  if (d.commands.some((c) => c.specialQuoting)) return { steps: [], unreadable: "the line uses ANSI-C or locale quoting", recordable: null };
   // What the decomposer sees run, at any depth: the authority on how many plans and applies there are.
   const seen = d.commands.flatMap((c) => (c.forms[0] ? [classifyPlanCommand(c.forms[0])] : [])).filter((pc): pc is PlanCommand => pc !== null);
   const steps: PlanStep[] = [];
@@ -871,7 +874,7 @@ function kubeRead(form: string): boolean {
  *  plugin, `kubectl proxy`, a post-renderer) holds it. */
 export function soleKubeApply(command: string, cwd: string): PlanStep | null {
   const d = decomposeBash(command);
-  if (d.opaque !== null || /(?:^|[^&])&\s*$/.test(command.trim())) return null;
+  if (d.opaque !== null || d.commands.some((c) => c.specialQuoting) || /(?:^|[^&])&\s*$/.test(command.trim())) return null;
   const line = planLine(command, cwd);
   if (line.unreadable !== null || line.steps.length !== 1) return null;
   const step = line.steps[0]!;

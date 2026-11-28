@@ -10,7 +10,7 @@
  * terminal outcome (§10.1). `deny` is a hard policy denial. `allow` proceeds inside the envelope.
  */
 import type { SafetyPolicy } from "../profile/types";
-import { bashAllowMatcher, bashDenyMatcher, globMatch, type RuleReading, toolMatches, writtenAlone } from "./engine";
+import { bashAllowMatcher, bashDenyMatcher, bashDenyOverlap, globMatch, type RuleReading, toolMatches, writtenAlone } from "./engine";
 import { splitShellCommands } from "./safety";
 import { decomposeBash } from "./shell-decompose";
 import { invokedByPath, namesKuberc, splitGlobals } from "./plan-gate";
@@ -93,8 +93,12 @@ export function classEntryTool(entry: string): string | null {
  *  as the tool's own name (an MCP server part compared canonically, `*` a wildcard in an `mcp__` entry), or a bare
  *  command glob against any form. A Bash pattern takes the entry's reading (E-11): `allow` for a readOnly entry, which
  *  admits the call (`written`: the whole line when this command is all it runs), `deny` for the classes that gate. */
-function entryMatches(entry: string, action: SafetyAction, forms: string[], reading: RuleReading, written: string | null): boolean {
-  const hits = (pattern: string) => (reading === "allow" && action.toolName === "Bash" ? bashAllowMatcher(pattern)(forms, written) : forms.some(entryMatcher(pattern, action)));
+function entryMatches(entry: string, action: SafetyAction, forms: string[], reading: RuleReading, written: string | null, more: Readings = {}): boolean {
+  const hits = (pattern: string) => {
+    if (reading === "allow" && action.toolName === "Bash") return !more.special && bashAllowMatcher(pattern)(forms, written);
+    if (forms.some(entryMatcher(pattern, action)) || (more.legacy ?? []).some(entryMatcher(pattern, action))) return true;
+    return more.wild !== undefined && action.toolName === "Bash" && bashDenyOverlap(pattern)(more.wild);
+  };
   const m = CLASS_TOOL_ENTRY.exec(entry);
   if (m) return toolMatches(m[1]!, action.toolName) && hits(m[2]!);
   if (entry.startsWith("mcp__") ? toolMatches(entry, action.toolName) : entry === action.toolName) return true;
@@ -109,6 +113,16 @@ function anyMatch(patterns: string[], action: SafetyAction, reading: RuleReading
   const allowsBash = reading === "allow" && action.toolName === "Bash";
   const written = allowsBash ? writtenAlone(decomposeBash(action.command), action.command) : null;
   return patterns.some((entry) => entryMatches(entry, action, cmdParts, reading, written));
+}
+
+/** What a decomposed command adds to its forms for the gating (deny) reading, and whether an allow reading may judge
+ *  it: see `DecomposedCommand.legacy`, `wild` and `specialQuoting`. */
+interface Readings {
+  legacy?: string[];
+  wild?: string;
+  /** ANSI-C or locale quoting, or a line that changes which code a name runs (PATH, LD_PRELOAD…): a readOnly entry
+   *  never admits it. */
+  special?: boolean;
 }
 
 /** A toolClasses pattern against a Bash command (E-11, R19): a readOnly entry admits the call, so it takes the allow
@@ -155,7 +169,7 @@ export function classifyAction(safety: SafetyPolicy, action: SafetyAction): Safe
         continue;
       }
       if (canon) forms.push(canon);
-      const cls = classifyForms(tc, action, forms, written);
+      const cls = classifyForms(tc, action, forms, written, { legacy: c.legacy, wild: c.wild, special: c.specialQuoting === true || c.codePathChanged === true });
       if (worst === null || RANK[cls] > RANK[worst]) worst = cls;
     }
     if (worst !== null) return worst;
@@ -193,8 +207,8 @@ function defaultClass(action: SafetyAction): SafetyClass {
 
 /** One simple command's class: the first list (destructive, consequential, mutative, readOnly) with an entry matching any
  *  of its forms, else the tool's default. `written` is the whole line when this command is all it runs (`writtenAlone`). */
-function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[], written: string | null): SafetyClass {
-  const hit = (patterns: string[], reading: RuleReading) => patterns.some((entry) => entryMatches(entry, action, forms, reading, written));
+function classifyForms(tc: SafetyPolicy["toolClasses"], action: SafetyAction, forms: string[], written: string | null, more: Readings = {}): SafetyClass {
+  const hit = (patterns: string[], reading: RuleReading) => patterns.some((entry) => entryMatches(entry, action, forms, reading, written, more));
   if (hit(tc.destructive, "deny")) return "destructive";
   if (hit(tc.consequential, "deny")) return "consequential";
   if (hit(tc.mutative, "deny")) return "mutative";

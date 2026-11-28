@@ -4,7 +4,7 @@ import { containmentDeny } from "./containment";
 import { shellCwd } from "../tools/shell-cwd";
 import { catastrophicDeny, contentSafetyDeny, protectedReadDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
-import { bashAsWritten, type Decomposed, decomposeBash, normalizeBashPattern, refusesAutoApproval } from "./shell-decompose";
+import { bashAsWritten, type Decomposed, type DecomposedCommand, decomposeBash, normalizeBashPattern, refusesAutoApproval, UNKNOWN } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
 import type { SafetyDisposition, SafetyReason } from "./safety-envelope";
 import { canonicalToolName } from "../tools/tool-name";
@@ -286,6 +286,25 @@ export function bashDenyMatcher(pattern: string): (form: string) => boolean {
   return (f) => globMatch(pattern, f) || globMatch(words, f);
 }
 
+/** The same pattern against a command's `wild` form: it names the command if any value of its UNKNOWN parts would
+ *  match (a deny only ever widens). Only a pattern anchored at the command (`mlpal mcp delete*`, not `*rm -rf*`) is
+ *  read this way: one that starts with `*` matches text anywhere, so any run-time part could supply it and it would
+ *  name every command that has one (`ls *.py` under `*.mlpal/credentials*`); such a pattern keeps the exact reading. */
+export function bashDenyOverlap(pattern: string): (wild: string) => boolean {
+  const words = normalizeBashPattern(pattern);
+  const anchored = (p: string | null): p is string => p !== null && !p.startsWith("*");
+  return (f) => (anchored(pattern) && globOverlap(pattern, f)) || (anchored(words) && words !== pattern && globOverlap(words, f));
+}
+
+/** Whether a deny-side Bash pattern names this command: a form as read (exactly, or as the legacy reading had it), its
+ *  redirections as written, or any value of its run-time parts (`wild`). Answers the form that matched. */
+export function bashDenyHit(pattern: string, c: DecomposedCommand): string | undefined {
+  const matches = bashDenyMatcher(pattern);
+  const hit = [...c.forms, ...(c.redirected ?? []), ...(c.legacy ?? [])].find(matches);
+  if (hit !== undefined) return hit;
+  return c.wild !== undefined && bashDenyOverlap(pattern)(c.wild) ? c.wild.replaceAll(UNKNOWN, "…") : undefined;
+}
+
 /** A Bash pattern the matcher reads differently from how it is written, for `hop lint`. `matchedAs` is what it is
  *  compared with: for a deny-side pattern its shell-word form, or null when its quoting does not balance (it then
  *  matches only as written); for an allow-side one with quoting (`identical`) the one command text it admits, or null
@@ -397,9 +416,8 @@ export function ruleMatch(rule: string, req: PermissionRequest, logger?: Logger)
   if (opaque !== null) return `undecomposable: ${opaque}`;
   for (const c of commands) if (c.bestEffort) logger?.info("bash.rule_opaque", { command: c.forms[c.forms.length - 1]!.slice(0, 200), rule });
   if (pattern === undefined) return commands[0]?.forms[0] ?? "";
-  const matches = bashDenyMatcher(pattern);
   for (const c of commands) {
-    const hit = [...c.forms, ...(c.redirected ?? [])].find(matches);
+    const hit = bashDenyHit(pattern, c);
     if (hit !== undefined) return hit;
   }
   return null;
@@ -515,6 +533,26 @@ function argumentHit(pattern: string, req: PermissionRequest): string | null {
 /** The model wrote this key, and the reason reaches a person: only a plain name is repeated. */
 function shownKey(key: string): string {
   return /^[A-Za-z0-9_.-]{1,64}$/.test(key) ? key : "(unnamed)";
+}
+
+/**
+ * Whether some string matches both `pattern` (its `*` any string) and `subject` (its UNKNOWN any string): the two
+ * wildcards' languages intersect. Every other character is literal on both sides, as in globMatch.
+ */
+export function globOverlap(pattern: string, subject: string): boolean {
+  const p = [...pattern];
+  const q = [...subject];
+  // can[i][j]: pattern from i and subject from j can still meet
+  const can: boolean[][] = Array.from({ length: p.length + 1 }, () => new Array<boolean>(q.length + 1).fill(false));
+  for (let i = p.length; i >= 0; i--) {
+    for (let j = q.length; j >= 0; j--) {
+      if (i === p.length && j === q.length) can[i]![j] = true;
+      else if (i < p.length && p[i] === "*") can[i]![j] = can[i + 1]![j]! || (j < q.length && can[i]![j + 1]!);
+      else if (j < q.length && q[j] === UNKNOWN) can[i]![j] = can[i]![j + 1]! || (i < p.length && can[i + 1]![j]!);
+      else can[i]![j] = i < p.length && j < q.length && p[i] === q[j] && can[i + 1]![j + 1]!;
+    }
+  }
+  return can[0]![0]!;
 }
 
 export function globMatch(pattern: string, value: string): boolean {
