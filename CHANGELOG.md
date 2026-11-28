@@ -27,6 +27,12 @@
   takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
 - Envelope fixtures for the UI are in `test/fixtures/display/media/`.
 
+### engine-media: ListModels lists other modalities (W2-1, 2026-11-28)
+
+- `ListModels` takes `operation`: chat (the default, unchanged), `image_generation`, `tts`, `transcription` or
+  `embedding`. A non-chat listing names each served model with its provider and pricing tier, and an image listing
+  points at GenerateImage. The chat listing says which other modalities are served.
+
 ### engine-media: audio, video and file kinds (needs the same version bump, 2026-11-28)
 
 - `audio`: MP3, WAV, Ogg, M4A or FLAC, at most 100 MiB, with an optional transcript and a model-stated

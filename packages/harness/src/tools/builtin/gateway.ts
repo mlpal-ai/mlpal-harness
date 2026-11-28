@@ -85,19 +85,40 @@ export function resolveModelRef(deps: GatewayToolDeps, ref: string): { model: st
   return { model: resolved };
 }
 
-export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?: string; provider?: string; dimension?: string }> {
+/** The gateway's model operations (mlpal-assistants-service `api/v1/admin.py`): ListModels lists one at a time. */
+const OPERATIONS = ["chat", "image_generation", "tts", "transcription", "embedding"] as const;
+
+/** One operation's served models other than chat (images, speech, transcription, embeddings). */
+function listOperation(deps: GatewayToolDeps, operation: string, provider?: string): string {
+  const rows = deps
+    .models()
+    .filter((m) => m.capabilities.operation === operation && !m.deprecated)
+    .filter((m) => !provider || m.provider === provider)
+    .sort((a, b) => a.provider.localeCompare(b.provider) || a.tag.localeCompare(b.tag));
+  const use: Record<string, string> = { image_generation: "GenerateImage makes images with them (model=…); mlpal lets the gateway pick." };
+  return [
+    `Served ${operation} models (${rows.length}): tag · provider · pricing tier`,
+    ...rows.slice(0, 80).map((m) => `- ${m.tag} · ${m.provider} · ${m.pricingTier ?? "?"}`),
+    ...(rows.length > 80 ? [`… ${rows.length - 80} more (filter by provider)`] : []),
+    ...(use[operation] ? ["", use[operation]] : []),
+  ].join("\n");
+}
+
+export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?: string; provider?: string; dimension?: string; operation?: (typeof OPERATIONS)[number] }> {
   return defineTool({
     name: "ListModels",
     hands: "pure",
     description:
-      "List the models this gateway serves to you: the tier aliases (cheap|mid|frontier|max) with cost and what each is good for, the meta-models (mlpal, mlpal-flash, mlpal-lite), each provider's flagship, benchmark leaders per quality dimension, and every served chat model with context window, capabilities (tools/vision/pdf/audio), and cost per million tokens in compute units. Use it before AskModel or Agent(model=…) when you need a specific strength (long context, vision, a provider's latest) rather than a tier alias. Filter with capability (vision|pdf|audio|tools), provider (anthropic|openai|google|bedrock), or dimension (a benchmark dimension) to keep the answer short.",
+      "List the models this gateway serves to you (operation image_generation, tts or transcription lists another modality's models): the tier aliases (cheap|mid|frontier|max) with cost and what each is good for, the meta-models (mlpal, mlpal-flash, mlpal-lite), each provider's flagship, benchmark leaders per quality dimension, and every served chat model with context window, capabilities (tools/vision/pdf/audio), and cost per million tokens in compute units. Use it before AskModel or Agent(model=…) when you need a specific strength (long context, vision, a provider's latest) rather than a tier alias. Filter with capability (vision|pdf|audio|tools), provider (anthropic|openai|google|bedrock), or dimension (a benchmark dimension) to keep the answer short.",
     readOnly: true,
     schema: z.object({
       capability: z.enum(["vision", "pdf", "audio", "tools"]).optional(),
       provider: z.string().optional(),
       dimension: z.string().optional().describe("a quality dimension from the catalog (e.g. coding, reasoning, tool_use) to rank by"),
+      operation: z.enum(OPERATIONS).optional().describe("chat (default); image_generation, tts, transcription or embedding to list the models of another modality"),
     }),
     async call(input) {
+      if (input.operation && input.operation !== "chat") return { content: listOperation(deps, input.operation, input.provider) };
       const cat = deps.catalog();
       const main = deps.mainModel();
       const lines: string[] = [];
@@ -123,6 +144,8 @@ export function createListModelsTool(deps: GatewayToolDeps): Tool<{ capability?:
         lines.push("", "(catalog unavailable — tiers unknown offline; served models below are still exact)");
       }
       lines.push("", `Meta-models: ${Object.entries(META_MODELS).map(([t, d]) => `${t} = ${d}`).join("; ")}`);
+      const others = OPERATIONS.filter((o) => o !== "chat" && deps.models().some((m) => m.capabilities.operation === o && !m.deprecated));
+      if (others.length) lines.push(`Other modalities served: ${others.map((o) => `operation ${o}`).join(", ")} (ListModels with operation lists them)`);
       const rows = deps
         .models()
         .filter((m) => m.capabilities.operation === "chat" && !m.deprecated)
