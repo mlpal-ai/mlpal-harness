@@ -110,6 +110,10 @@ function lenientInput(raw: unknown): Lenient {
   return { input: out, unparsed, strings };
 }
 
+/** The last line of every refusal and text-only outcome (run 2: two of three fallback answers still talked about "the
+ *  display rejected the spec"). */
+const ANSWER_LINE = "The person sees the text version: in your answer, do not mention the display, a rejection or a redraw.";
+
 /** The first line of a refusal whose spec arrived as a string (run 2: Haiku's strings were all malformed). */
 const SPEC_AS_OBJECT = "Send spec as a JSON object, not a string.";
 
@@ -375,7 +379,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
     const list = faultList(faults, o.omitted ?? 0);
     if (!o.block_id) {
       log.warn("display refused", { code: error.code, kind, attempt: 1, faults: faults.length + (o.omitted ?? 0), fallback_shown: false });
-      return { content: `${JSON.stringify({ error: error.code, ...withoutCode(error), attempt: 1, ...faultFields(faults, o.omitted) })}\n${list}Nothing was shown.`, isError: true };
+      return { content: `${JSON.stringify({ error: error.code, ...withoutCode(error), attempt: 1, ...faultFields(faults, o.omitted) })}\n${list}Nothing was shown.\n${ANSWER_LINE}`, isError: true };
     }
     const id = o.block_id;
     const attempt = state.fail(id, o.fallback);
@@ -384,11 +388,11 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
     log.warn("display refused", { code: error.code, block_id: id, kind, attempt, faults: faults.length + (o.omitted ?? 0), fallback_shown: o.fallback !== undefined });
     const body = JSON.stringify({ error: error.code, block_id: id, ...withoutCode(error), attempt, ...faultFields(faults, o.omitted) });
     const fix = faults.length > 1 ? "Fix them all" : "Fix this";
-    if (!o.fallback) return { content: `${body}\n${list}Nothing was shown. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`, isError: true };
+    if (!o.fallback) return { content: `${body}\n${list}Nothing was shown. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.\n${ANSWER_LINE}`, isError: true };
     const envelope = textEnvelope(id, o.fallback, "repairing", history);
     state.repairing.set(id, o.fallback);
     return result({
-      model: `${body}\n${list}The person sees your fallback meanwhile. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.`,
+      model: `${body}\n${list}The person sees your fallback meanwhile. ${fix} and call Show again with block_id "${id}"; it is the one repair this block gets this turn.\n${ANSWER_LINE}`,
       shown: `[display ${id} r${envelope.revision} · repairing]\n${o.fallback}`,
       display: [envelope],
       outcome: "refused",
@@ -405,7 +409,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
     log.warn("display refused", { code: cause.code, block_id: id, kind, attempt, fallback_shown: true, final: true });
     const sees = fallback ? "your fallback" : last ? "your last valid fallback" : `a note that ${id} could not be shown`;
     return result({
-      model: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id, cause, attempt, ...faultFields(faults, omitted) })}\n${faultList(faults, omitted ?? 0)}The repair failed, so the person sees ${sees}. Do not call Show for ${id} again this turn; say what it would have shown in your reply.`,
+      model: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id, cause, attempt, ...faultFields(faults, omitted) })}\n${faultList(faults, omitted ?? 0)}The repair failed, so the person sees ${sees}. Do not call Show for ${id} again this turn; say what it would have shown in your reply.\n${ANSWER_LINE}`,
       shown: `[display ${id} r${envelope.revision} · fallback only]\n${envelope.fallback.text}`,
       display: [envelope],
       outcome: "refused",
@@ -438,7 +442,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
       if (id && state.failuresOf(id) >= 2) {
         metrics.increment("display.validation_errors", 1, { code: "RETRY_EXHAUSTED", kind });
         log.warn("display refused", { code: "RETRY_EXHAUSTED", block_id: id, kind, attempt: state.failuresOf(id) + 1, fallback_shown: false });
-        return { content: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id })}\n${id} failed twice this turn; the person sees its fallback. Do not call Show for it again this turn.`, isError: true };
+        return { content: `${JSON.stringify({ error: "RETRY_EXHAUSTED", block_id: id })}\n${id} failed twice this turn; the person sees its fallback. Do not call Show for it again this turn.\n${ANSWER_LINE}`, isError: true };
       }
       // checkShowInput never throws (a validator bug is its VALIDATION_INTERNAL); the store read and the session
       // checks may, and become the same typed refusal, so the fallback is shown and the attempt counted.
