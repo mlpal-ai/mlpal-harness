@@ -14,10 +14,20 @@
   therefore exact. A dev/ino comparison after the open was tried and is not enough, because the stat walks the path
   again. `readMedia` returns the bytes it hashed, and GenerateImage sends those bytes, so a reference is never
   opened a second time.
-- `gatewayImages` downloads a result only from `assetOrigins`. The default is the gateway's own https origin; an
-  http (test) origin is admitted only by being named, never by pattern. URLs carrying credentials are refused, and
-  so are redirects (`redirect: "manual"`); the refusal code is `asset_origin`. `loadImagePrices` reads
-  `GET /v1/models/{tag}` pricing.
+- `gatewayImages` fetches a result only under a URL prefix in `assetPrefixes`, which the caller supplies; there is
+  no default, so with none given nothing is fetched.
+  - A prefix is `https://host/path/` with the default port; http and a port are allowed on a loopback host only.
+    `parseAssetPrefix` validates one, and a host alone is never a prefix, since path-style S3 serves every bucket
+    from one host.
+  - A result URL must match a prefix's origin exactly and sit under its path. Before matching, it is refused for
+    userinfo, a non-default port, a fragment, a dot segment (encoded too), an encoded slash or backslash, a raw
+    backslash, or a path that changes when parsed.
+  - Downloads send no credentials and never follow a 3xx. A refusal (`asset_origin`) names the host only.
+  - A `data:image/{png,jpeg,webp};base64,` result, the gateway's fallback when its storage fails, is decoded in
+    process. It is capped at `DATA_IMAGE_BYTES` (16 MiB) decoded and checked by its encoded length first; its type
+    is taken from the decoded bytes, and it is never fetched.
+  - Submit and job answers are read with a cap sized for four such images.
+  - `loadImagePrices` reads `GET /v1/models/{tag}` pricing.
 - GenerateImage:
   - It checks `media/<date>/` before the job: made one level at a time, never through a link, writable, with free
     space for n results.

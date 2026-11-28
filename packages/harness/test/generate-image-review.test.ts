@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Usage } from "@mlpal/harness-protocol";
 import { readMedia, probeMedia } from "../src/display/media";
-import { gatewayImages, ImageGatewayError, loadImagePrices, type ImageGateway, type ImageJob, type ImagePrice, type ImageRequest, type ImageResult } from "../src/gateway/images";
+import { DATA_IMAGE_BYTES, gatewayImages, ImageGatewayError, loadImagePrices, parseAssetPrefix, type ImageGateway, type ImageJob, type ImagePrice, type ImageRequest, type ImageResult } from "../src/gateway/images";
 import type { ModelInfo } from "../src/registry/models";
 import { createGenerateImageTool, estimateFromPrices, imageAskReason, type GenerateImageDeps } from "../src/tools/builtin/image";
 import type { ToolResult } from "../src/tools";
@@ -65,7 +65,7 @@ describe("R2: a result is downloaded only from the gateway's asset origin, https
     return { origin: `http://127.0.0.1:${s.port}`, hits };
   }
 
-  test("the review's inputs: localhost, a redirect to the metadata path, file://, data: and credentials in the URL are refused", async () => {
+  test("the review's inputs: localhost, a redirect to the metadata path, file:// and credentials in the URL are refused", async () => {
     const internal = serve(() => new Response(PNG));
     const redirector = serve(() => new Response(null, { status: 302, headers: { location: `${internal.origin}/latest/meta-data/iam` } }));
     const secret = join(outside, "private.png");
@@ -73,34 +73,119 @@ describe("R2: a result is downloaded only from the gateway's asset origin, https
     const opts = { maxBytes: 1 << 20, timeoutMs: 2_000 };
     // a test gateway on loopback and no origins configured: nothing is fetched (loopback is never admitted by pattern)
     const plain = gatewayImages({ baseUrl: internal.origin, authorization: () => "Bearer k" });
-    for (const url of [`${internal.origin}/direct`, `${redirector.origin}/presigned`, `file://${secret}`, `data:image/png;base64,${PNG.toString("base64")}`])
+    for (const url of [`${internal.origin}/direct`, `${redirector.origin}/presigned`, `file://${secret}`])
       await expect(plain.download(url, opts)).rejects.toMatchObject({ code: "asset_origin" });
     expect([internal.hits, redirector.hits]).toEqual([[], []]);
     // both named by configuration: the redirect is still not followed
-    const named = gatewayImages({ baseUrl: internal.origin, authorization: () => "Bearer k", assetOrigins: [internal.origin, redirector.origin] });
-    expect(Buffer.from(await named.download(`${internal.origin}/direct`, opts)).equals(PNG)).toBe(true);
-    await expect(named.download(`${redirector.origin}/presigned`, opts)).rejects.toMatchObject({ status: 302, code: "asset_origin" });
-    await expect(named.download(`http://user:pw@${internal.origin.slice(7)}/direct`, opts)).rejects.toMatchObject({ code: "asset_origin" });
-    expect(internal.hits).toEqual(["/direct"]);
+    const named = gatewayImages({ baseUrl: internal.origin, authorization: () => "Bearer k", assetPrefixes: [`${internal.origin}/direct/`, `${redirector.origin}/presigned/`] });
+    expect(Buffer.from(await named.download(`${internal.origin}/direct/a.png`, opts)).equals(PNG)).toBe(true);
+    // a 302 from an accepted URL is a failure, never followed
+    await expect(named.download(`${redirector.origin}/presigned/a.png`, opts)).rejects.toMatchObject({ status: 302, code: "asset_origin" });
+    await expect(named.download(`http://user:pw@${internal.origin.slice(7)}/direct/a.png`, opts)).rejects.toMatchObject({ code: "asset_origin" });
+    expect(internal.hits).toEqual(["/direct/a.png"]);
   });
 
-  test("by default only the gateway's own https origin; another host, plain http on it, or another port is refused", async () => {
+  // the production shape (path-style S3, the regional endpoint every bucket shares); the prefix comes from the caller
+  const BUCKET = "https://s3.example-region.amazonaws.com/example-bucket-000000000000/";
+  const REAL = `${BUCKET}generated/123/abc-def/uuid_image_0.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=c&X-Amz-Date=d&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=s`;
+
+  test("a result is fetched only under a listed URL prefix: the real shape is accepted, every look-alike refused", async () => {
     const fetched: string[] = [];
-    const fake = (async (url: string) => (fetched.push(url), new Response(PNG))) as unknown as typeof fetch;
-    const gw = gatewayImages({ baseUrl: "https://models.example/", authorization: () => "Bearer k", fetch: fake });
+    const fake = (async (url: string, init?: RequestInit) => (fetched.push(`${url} ${init?.credentials} ${init?.redirect}`), new Response(PNG))) as unknown as typeof fetch;
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "Bearer k", fetch: fake, assetPrefixes: [BUCKET] });
     const opts = { maxBytes: 1 << 20, timeoutMs: 1_000 };
-    await gw.download("https://models.example/assets/a.png", opts);
-    for (const url of ["https://example-bucket.s3.example-region.amazonaws.com/a.png", "http://models.example/a.png", "https://models.example:8443/a.png", "https://169.254.169.254/latest/meta-data/"])
-      await expect(gw.download(url, opts)).rejects.toMatchObject({ code: "asset_origin" });
-    expect(fetched).toEqual(["https://models.example/assets/a.png"]);
+    expect(Buffer.from(await gw.download(REAL, opts)).equals(PNG)).toBe(true);
+    const refused = {
+      "another bucket on the same host": "https://s3.example-region.amazonaws.com/other-bucket/generated/x.png",
+      "a prefix look-alike": "https://s3.example-region.amazonaws.com/example-bucket-000000000000-evil/x.png",
+      "the bucket's name without its slash": "https://s3.example-region.amazonaws.com/example-bucket-000000000000",
+      "the virtual-hosted form of the same bucket": "https://example-bucket-000000000000.s3.example-region.amazonaws.com/generated/x.png",
+      "dot-dot out of the prefix": `${BUCKET}../other-bucket/x.png`,
+      "encoded dot-dot": `${BUCKET}%2e%2e/other-bucket/x.png`,
+      "encoded dot-dot, upper case": `${BUCKET}%2E%2E/other-bucket/x.png`,
+      "an encoded slash": `${BUCKET}generated%2F..%2Fx.png`,
+      "an encoded backslash": `${BUCKET}generated%5cx.png`,
+      "a raw backslash": `${BUCKET}generated\\..\\x.png`,
+      "userinfo": "https://example-bucket-000000000000@s3.example-region.amazonaws.com/example-bucket-000000000000/x.png",
+      "a port": "https://s3.example-region.amazonaws.com:8443/example-bucket-000000000000/x.png",
+      "a fragment": `${BUCKET}x.png#frag`,
+      "plain http": "http://s3.example-region.amazonaws.com/example-bucket-000000000000/x.png",
+      "a host suffix look-alike": "https://s3.example-region.amazonaws.com.attacker.example/example-bucket-000000000000/x.png",
+      "a path that changes when parsed": `${BUCKET}gen erated/x.png`,
+      "file:": "file:///etc/passwd",
+    };
+    const got = Object.fromEntries(await Promise.all(Object.entries(refused).map(async ([k, url]) => [k, await gw.download(url, opts).then(() => "fetched", (e: ImageGatewayError) => e.code ?? e.message)] as const)));
+    expect(got).toEqual(Object.fromEntries(Object.keys(refused).map((k) => [k, "asset_origin"])));
+    expect(fetched).toEqual([`${REAL} omit manual`]);
+    // a refusal names the host only
+    await expect(gw.download("https://s3.example-region.amazonaws.com/other-bucket/secret.png?X-Amz-Signature=abc", opts)).rejects.toThrow(/^the image's link is on s3\.example-region\.amazonaws\.com, not under an allowed asset prefix$/);
+  });
+
+  test("no prefix given, nothing is fetched; a prefix is validated as the caller passes it", async () => {
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k" });
+    await expect(gw.download(REAL, { maxBytes: 1 << 20, timeoutMs: 1_000 })).rejects.toMatchObject({ code: "asset_origin" });
+    expect(parseAssetPrefix(` ${BUCKET} `)).toEqual({ origin: "https://s3.example-region.amazonaws.com", path: "/example-bucket-000000000000/" });
+    expect(parseAssetPrefix("http://127.0.0.1:9000/assets/")).toEqual({ origin: "http://127.0.0.1:9000", path: "/assets/" });
+    const bad = [
+      "https://s3.example-region.amazonaws.com", "https://s3.example-region.amazonaws.com/", "https://s3.example-region.amazonaws.com/bucket",
+      "http://s3.example-region.amazonaws.com/bucket/", "https://s3.example-region.amazonaws.com:8443/bucket/", "https://*.amazonaws.com/bucket/",
+      "https://u@s3.example-region.amazonaws.com/bucket/", "https://s3.example-region.amazonaws.com/bucket/?x=1", "https://s3.example-region.amazonaws.com/bucket/#f",
+      "https://s3.example-region.amazonaws.com/a/../bucket/", "https://s3.example-region.amazonaws.com/a%2fb/", "ftp://host/bucket/", "s3.example-region.amazonaws.com/bucket/",
+    ];
+    const admitted = bad.filter((v) => {
+      try {
+        parseAssetPrefix(v);
+        return true;
+      } catch (e) {
+        return !/image asset prefix/.test((e as Error).message);
+      }
+    });
+    expect(admitted).toEqual([]);
+    expect(() => gatewayImages({ baseUrl: "https://g", authorization: () => "k", assetPrefixes: ["https://s3.example-region.amazonaws.com/"] })).toThrow(/a host alone is never one/);
+  });
+
+  test("a data: result is decoded in process: PNG, JPEG or WebP only, at most 16 MiB decoded, bounded before decoding, never fetched", async () => {
+    let fetches = 0;
+    const fake = (async () => (fetches++, new Response(PNG))) as unknown as typeof fetch;
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: fake });
+    const opts = { maxBytes: 50 << 20, timeoutMs: 1_000 };
+    expect(Buffer.from(await gw.download(`data:image/png;base64,${PNG.toString("base64")}`, opts)).equals(PNG)).toBe(true);
+    const jpeg = head("jpeg 800x600, EXIF without GPS");
+    expect(Buffer.from(await gw.download(`data:image/jpeg;base64,${jpeg.toString("base64")}`, opts)).equals(jpeg)).toBe(true);
+    // 16 MiB decoded is the cap; 17 MiB of PNG is refused by its encoded length, before decoding
+    const at = Buffer.concat([PNG, Buffer.alloc(DATA_IMAGE_BYTES - PNG.length)]);
+    expect((await gw.download(`data:image/png;base64,${at.toString("base64")}`, opts)).byteLength).toBe(DATA_IMAGE_BYTES);
+    const over = Buffer.concat([PNG, Buffer.alloc(17 * 1024 * 1024 - PNG.length)]).toString("base64");
+    const t = performance.now();
+    await expect(gw.download(`data:image/png;base64,${over}`, opts)).rejects.toMatchObject({ status: 413 });
+    expect(performance.now() - t).toBeLessThan(200);
+    const refused = ["data:text/html;base64,PGgxPmhpPC9oMT4=", `data:image/svg+xml;base64,${Buffer.from("<svg/>").toString("base64")}`, `data:image/gif;base64,${head("gif 320x200").toString("base64")}`, "data:image/png,rawbytes", "data:image/png;base64,not*base64", `data:image/png;base64,${Buffer.from("<html>").toString("base64")}`];
+    for (const url of refused) expect([url.slice(0, 30), await gw.download(url, opts).then(() => "decoded", (e: ImageGatewayError) => e.code)]).toEqual([url.slice(0, 30), "asset_origin"]);
+    expect(fetches).toBe(0);
+  });
+
+  test("a submit or job answer is read with a cap (up to four inline images)", async () => {
+    const huge = (async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"data":["')); for (let i = 0; i < 100; i++) c.enqueue(new Uint8Array(1 << 20).fill(65)); c.close(); } }))) as unknown as typeof fetch;
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: huge });
+    await expect(gw.submit({ prompt: "p", model: "mlpal", n: 1, size: "1024x1024", quality: "standard" }, { idempotencyKey: "k" })).rejects.toMatchObject({ status: 413 });
+    await expect(gw.job("j")).rejects.toMatchObject({ status: 413 });
+  });
+
+  test("a data: result that is not an image, or a refused origin, is paid and not saved in the tool", async () => {
+    const html = new Scripted({ submit: () => ({ result: { data: [{ url: "data:image/png;base64,PGgxPmhpPC9oMT4=" }], model: "mlpal", cost: { compute_units: 0.02 } } }), download: () => Buffer.from("<h1>hi</h1>") });
+    expect(first(await call(html, { prompt: "x" })).error).toBe("IMAGE_NOT_SAVED");
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: (async () => new Response(PNG)) as unknown as typeof fetch, assetPrefixes: [BUCKET] });
+    const real = { submit: async () => ({ result: { data: [{ url: "https://cdn.attacker.example/x.png" }], model: "mlpal", cost: { compute_units: 0.02 } } }), job: gw.job, download: gw.download } as ImageGateway;
+    const r = await call(real, { prompt: "x" });
+    expect([first(r).error, first(r).message.includes("cdn.attacker.example, not under an allowed asset prefix")]).toEqual(["IMAGE_NOT_SAVED", true]);
   });
 
   test("the bound applies while streaming: a body over the cap with no length is stopped at the cap", async () => {
     // 8 MiB in 64 KiB chunks and no content-length (a server stream is not back-pressured, so it is finite)
     let left = 128;
     const big = serve(() => new Response(new ReadableStream({ pull(c) { if (left-- > 0) c.enqueue(new Uint8Array(65536)); else c.close(); } })));
-    const gw = gatewayImages({ baseUrl: big.origin, authorization: () => "k", assetOrigins: [big.origin] });
-    await expect(gw.download(`${big.origin}/x`, { maxBytes: 1 << 20, timeoutMs: 5_000 })).rejects.toMatchObject({ status: 413 });
+    const gw = gatewayImages({ baseUrl: big.origin, authorization: () => "k", assetPrefixes: [`${big.origin}/a/`] });
+    await expect(gw.download(`${big.origin}/a/x`, { maxBytes: 1 << 20, timeoutMs: 5_000 })).rejects.toMatchObject({ status: 413 });
   });
 });
 

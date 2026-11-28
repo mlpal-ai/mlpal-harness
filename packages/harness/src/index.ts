@@ -1,6 +1,6 @@
 export * from "./gateway/client";
 export { parseSSE } from "./gateway/sse";
-export { assetOriginsOf, downloadRefusal, gatewayImages, ImageGatewayError, loadImagePrices, type ImageGateway, type ImageGatewayConfig, type ImageJob, type ImagePrice, type ImageRequest, type ImageResult, type ImageSubmit } from "./gateway/images";
+export { DATA_IMAGE_BYTES, gatewayImages, ImageGatewayError, loadImagePrices, parseAssetPrefix, resultUrlRefusal, type AssetPrefix, type ImageGateway, type ImageGatewayConfig, type ImageJob, type ImagePrice, type ImageRequest, type ImageResult, type ImageSubmit } from "./gateway/images";
 export * from "./store/types";
 export { LocalStore } from "./store/local";
 export { SyncingMemory, withMemory } from "./store/graph-memory";

@@ -198,15 +198,15 @@ describe("the gateway's images API over HTTP", () => {
       if (url.includes("/v1/images/jobs/")) return new Response(JSON.stringify({ id: "job-1", status: "failed", error: { code: "provider_error", message: "no" } }), { status: 200 });
       return new Response(new Uint8Array(2048), { status: 200 });
     }) as unknown as typeof fetch;
-    const gw = gatewayImages({ baseUrl: "https://gw.test/", authorization: () => "Bearer k", fetch: fake });
+    const gw = gatewayImages({ baseUrl: "https://gw.test/", authorization: () => "Bearer k", fetch: fake, assetPrefixes: ["https://gw.test/assets/"] });
     const s = await gw.submit({ prompt: "p", model: "mlpal", n: 1, size: "1024x1024", quality: "standard" }, { idempotencyKey: "toolu_1" });
     expect(s).toEqual({ job: { id: "job-1", status: "queued", created_at: "t" } as never });
     const body = JSON.parse(String(calls[0]!.init!.body)) as Record<string, unknown>;
     expect([body.wait, body.idempotency_key, (calls[0]!.init!.headers as Record<string, string>).authorization]).toEqual([false, "toolu_1", "Bearer k"]);
     expect((await gw.job("job-1")).status).toBe("failed");
-    await gw.download("https://gw.test/a.png", { maxBytes: 4096, timeoutMs: 1000 });
+    await gw.download("https://gw.test/assets/a.png", { maxBytes: 4096, timeoutMs: 1000 });
     expect(calls.at(-1)!.init?.headers).toBeUndefined();
-    await expect(gw.download("https://gw.test/a.png", { maxBytes: 1000, timeoutMs: 1000 })).rejects.toThrow(/over 1000 bytes/);
+    await expect(gw.download("https://gw.test/assets/a.png", { maxBytes: 1000, timeoutMs: 1000 })).rejects.toThrow(/over 1000 bytes/);
   });
 
   test("a gateway error carries its status and code", async () => {

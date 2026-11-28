@@ -1,3 +1,5 @@
+import { sniffMedia } from "@mlpal/harness-protocol";
+
 /**
  * The gateway's images API as the engine uses it (mlpal-assistants-service `api/v1/images.py`,
  * `schemas/images.py`): `POST /v1/images/generations` with `wait: false` and an idempotency key, then
@@ -64,11 +66,11 @@ export interface ImageGateway {
 export interface ImageGatewayConfig {
   baseUrl: string;
   /**
-   * Review R2: the only origins a result is downloaded from, exactly (scheme, host and port). Default: the gateway's
-   * own origin when it is https. An http origin (a test gateway on loopback) is accepted only by being named here;
-   * nothing is accepted by pattern.
+   * Review R2: the URL prefixes a result may be downloaded from (`parseAssetPrefix`): scheme, host, port and a path
+   * ending in `/`, supplied by the caller (yodex's `images.assetPrefixes`), never by a job answer. Absent or empty:
+   * no result is fetched; a `data:` result is still decoded in process.
    */
-  assetOrigins?: readonly string[];
+  assetPrefixes?: readonly string[];
   /** The Authorization header's value for one request, read when it is made. */
   authorization: () => string;
   /** Headers every gateway request carries (the on-behalf-of header of an owner-paid run). */
@@ -124,47 +126,137 @@ export async function loadImagePrices(cfg: Pick<ImageGatewayConfig, "baseUrl" | 
   return out;
 }
 
-/** The origins `download` may fetch from (ImageGatewayConfig.assetOrigins). */
-export function assetOriginsOf(cfg: Pick<ImageGatewayConfig, "baseUrl" | "assetOrigins">): ReadonlySet<string> {
-  if (cfg.assetOrigins) return new Set(cfg.assetOrigins.map((o) => new URL(o).origin));
-  const base = new URL(cfg.baseUrl);
-  return new Set(base.protocol === "https:" ? [base.origin] : []);
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
+/** A `data:` result's decoded cap (a 3840x2160 PNG is 8 to 12 MB). */
+export const DATA_IMAGE_BYTES = 16 * 1024 * 1024;
+/** A submit or job answer's cap: four inline images at the cap, as base64, and the rest of the answer. */
+const ANSWER_BYTES = 4 * (Math.ceil(DATA_IMAGE_BYTES / 3) * 4) + 1024 * 1024;
+const DATA_TYPES = /^data:image\/(png|jpeg|webp);base64$/i;
+const DATA_DECODED = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** A configured or offered URL's own faults, on the string as sent: what parsing would silently change. */
+function rawFault(raw: string): string | null {
+  if (raw.includes("\\")) return "has a backslash";
+  if (/%2f|%5c/i.test(raw)) return "has an encoded slash or backslash";
+  if (raw.includes("#")) return "has a fragment";
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)(\/[^?#]*)?/i.exec(raw);
+  if (!m) return "is not an absolute URL";
+  if (m[1]!.includes("@")) return "carries credentials";
+  const path = m[2] ?? "/";
+  if (path.split("/").some((seg) => /^(?:\.|%2e){1,2}$/i.test(seg))) return "has a dot segment";
+  try {
+    if (new URL(raw).pathname !== path) return "has a path that changes when it is parsed";
+  } catch {
+    return "is not a URL";
+  }
+  return null;
 }
 
-/** Why `url` may not be downloaded, or null: https (or an origin configured by name), on an allowed origin, with no
- *  credentials in it. A job answer names the URL, so it is checked as untrusted input. */
-export function downloadRefusal(url: string, allowed: ReadonlySet<string>): string | null {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return "the image's link is not a URL";
-  }
-  if (u.username || u.password) return "the image's link carries credentials";
-  if (!allowed.has(u.origin)) return `the image's link is on ${u.protocol === "https:" || u.protocol === "http:" ? u.origin : `a ${u.protocol} URL`}, not the gateway's asset origin`;
+/** An asset prefix, parsed: its exact origin and its path, which ends in `/`. */
+export interface AssetPrefix {
+  origin: string;
+  path: string;
+}
+
+/**
+ * One asset prefix, validated for a host to pass at start: `https://host/one/or/more/segments/` (the default port;
+ * http, and a port, only on a loopback host), with no user, query, fragment, wildcard, dot segment or encoded slash.
+ * Throws, naming the entry, otherwise. A host alone is never a prefix: a shared endpoint (path-style S3) serves
+ * every bucket on it.
+ */
+export function parseAssetPrefix(raw: string): AssetPrefix {
+  const s = raw.trim();
+  const bad = (why: string): never => {
+    throw new Error(`image asset prefix "${s.slice(0, 200)}" ${why}`);
+  };
+  if (s.includes("*")) bad("has a wildcard");
+  if (s.includes("?")) bad("has a query");
+  const fault = rawFault(s);
+  if (fault) bad(fault);
+  const u = new URL(s);
+  const loopback = LOOPBACK.test(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback)) bad("is not https (http only on a loopback host)");
+  if (u.port && !loopback) bad("names a port (only the default https port)");
+  if (!u.pathname.endsWith("/") || u.pathname === "/") bad("is not a path prefix ending in / (a host alone is never one)");
+  return { origin: u.origin, path: u.pathname };
+}
+
+/** Why a result's URL may not be fetched, or null: strictly parsed, it is on a listed prefix's exact origin and under
+ *  its path. A job answer names the URL, so it is untrusted input; a refusal names the host only. */
+export function resultUrlRefusal(url: string, prefixes: readonly AssetPrefix[]): string | null {
+  const fault = rawFault(url);
+  const u = URL.canParse(url) ? new URL(url) : null;
+  if (!u) return "the image's link is not a URL";
+  const host = u.protocol === "https:" || u.protocol === "http:" ? u.hostname : null;
+  if (!host) return `the image's link is a ${u.protocol} URL`;
+  if (fault) return `the image's link on ${host} ${fault}`;
+  const listedLoopback = prefixes.some((p) => p.origin === u.origin && LOOPBACK.test(u.hostname));
+  if (u.port && !listedLoopback) return `the image's link on ${host} names a port`;
+  if (!prefixes.some((p) => p.origin === u.origin && u.pathname.startsWith(p.path))) return `the image's link is on ${host}, not under an allowed asset prefix`;
   return null;
+}
+
+/** A `data:image/{png,jpeg,webp};base64,` result, decoded in process and bounded before decoding by its length. */
+function decodeDataUrl(url: string, maxBytes: number): Uint8Array {
+  const cap = Math.min(maxBytes, DATA_IMAGE_BYTES);
+  const comma = url.indexOf(",");
+  if (comma < 0 || !DATA_TYPES.test(url.slice(0, comma))) throw new ImageGatewayError(0, "the image's data: link is not a PNG, JPEG or WebP in base64", "asset_origin");
+  if (url.length - comma - 1 > Math.ceil(cap / 3) * 4) throw new ImageGatewayError(413, `the image is over ${cap} bytes`);
+  const b64 = url.slice(comma + 1);
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) throw new ImageGatewayError(0, "the image's data: link is not valid base64", "asset_origin");
+  const bytes = Buffer.from(b64, "base64");
+  if (bytes.length > cap) throw new ImageGatewayError(413, `the image is over ${cap} bytes`);
+  const out = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length);
+  // the type from the bytes, not from what the link says
+  if (!DATA_DECODED.has(sniffMedia(out) ?? "")) throw new ImageGatewayError(0, "the image's data: bytes are not a PNG, JPEG or WebP", "asset_origin");
+  return out;
+}
+
+/** A gateway answer's JSON, read with a cap (an answer carries up to four inline images). */
+async function boundedJson(res: Response, max: number): Promise<unknown> {
+  const reader = res.body?.getReader();
+  if (!reader) throw new ImageGatewayError(0, "the gateway sent no body");
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      throw new ImageGatewayError(413, `the gateway's answer is over ${max} bytes`);
+    }
+    parts.push(value);
+  }
+  try {
+    return JSON.parse(Buffer.concat(parts).toString("utf8"));
+  } catch {
+    throw new ImageGatewayError(0, "the gateway's answer is not JSON");
+  }
 }
 
 export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
   const f = cfg.fetch ?? fetch;
   const base = cfg.baseUrl.replace(/\/$/, "");
-  const allowed = assetOriginsOf(cfg);
+  const prefixes = (cfg.assetPrefixes ?? []).map(parseAssetPrefix);
   const headers = () => ({ ...cfg.headers, authorization: cfg.authorization(), "content-type": "application/json" });
   return {
     async submit(req, opts) {
       const res = await f(`${base}/v1/images/generations`, { method: "POST", headers: headers(), body: JSON.stringify({ ...req, wait: false, idempotency_key: opts.idempotencyKey }), ...(opts.signal ? { signal: opts.signal } : {}) });
       if (!res.ok) throw await failure(res);
-      const body = (await res.json()) as Record<string, unknown>;
+      const body = (await boundedJson(res, ANSWER_BYTES)) as Record<string, unknown>;
       if (Array.isArray(body.data)) return { result: body as unknown as ImageResult };
       return { job: body as unknown as ImageJob };
     },
     async job(id, signal) {
       const res = await f(`${base}/v1/images/jobs/${encodeURIComponent(id)}`, { headers: headers(), ...(signal ? { signal } : {}) });
       if (!res.ok) throw await failure(res);
-      return (await res.json()) as ImageJob;
+      return (await boundedJson(res, ANSWER_BYTES)) as ImageJob;
     },
     async download(url, opts) {
-      const refused = downloadRefusal(url, allowed);
+      // the gateway's own fallback when its storage fails: the bytes are in the answer, so nothing is fetched
+      if (/^data:/i.test(url)) return decodeDataUrl(url, opts.maxBytes);
+      const refused = resultUrlRefusal(url, prefixes);
       if (refused) throw new ImageGatewayError(0, refused, "asset_origin");
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), opts.timeoutMs);
@@ -172,7 +264,8 @@ export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
       opts.signal?.addEventListener("abort", onAbort);
       try {
         // never followed: a redirect would leave the checked origin
-        const res = await f(url, { signal: ctl.signal, redirect: "manual" });
+        // the URL as parsed and checked, not the string the answer sent
+        const res = await f(new URL(url).href, { signal: ctl.signal, redirect: "manual", credentials: "omit" });
         if (res.status >= 300 && res.status < 400) throw new ImageGatewayError(res.status, `the image's link redirected (${res.status}); redirects are not followed`, "asset_origin");
         if (!res.ok) throw new ImageGatewayError(res.status, `the image's link answered ${res.status}`);
         const reader = res.body?.getReader();
