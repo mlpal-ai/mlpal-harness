@@ -282,7 +282,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
         // to the command's own $HOME (bare, or before an unquoted `/`) is kept as written, as production's engine read
         // it, while nothing on the line could have changed HOME; `~user`, `~+`, `~-` and the rest stay run-time values
         if (word.glob) word.wild = UNKNOWN;
-        else if (word.tilde && !(word.literal && (word.text === "~" || word.tildeSlash) && !homeMayChange(words, line))) word.wild = UNKNOWN + word.wild.slice(1);
+        else if (word.tilde && !(word.literal && homeTildeRest(word.text) !== null && (word.text === "~" || word.tildeSlash) && !homeMayChange(words, line))) word.wild = UNKNOWN + word.wild.slice(1);
         words.push(word);
       }
     }
@@ -811,6 +811,17 @@ function matchParen(s: string, open: number): number {
 }
 
 const basename = (w: string) => w.slice(w.lastIndexOf("/") + 1);
+
+/**
+ * The home tilde, by bash's rule on a word's text: a leading `~` whose prefix up to the first `/` is empty, which bash
+ * expands to $HOME. Returns what follows the `~` ("" or "/…"), or null for `~user`, `~+`, `~-`, `~N` and a word with no
+ * leading `~`. One definition for the engine: the decomposer applies it to an unquoted `~` before an unquoted `/`
+ * (bash's rule, since it sees the quoting); the path rules (safety.ts normalWord), which see words with their quotes
+ * removed, apply it to any leading `~`, which can only make them ask more.
+ */
+export function homeTildeRest(text: string): string | null {
+  return text === "~" || text.startsWith("~/") ? text.slice(1) : null;
+}
 
 /** Commands that run the rest under another user or environment, so its HOME may not be the line's. */
 const HOME_CHANGERS = new Set(["env", "sudo", "doas", "su", "runuser", "setpriv", "chroot", "pkexec", "machinectl", "systemd-run", "flatpak-spawn"]);
