@@ -83,6 +83,8 @@ export * from "./plugins/packs";
 export * from "./tasks/tracker";
 export * from "./tasks/tools";
 export { loginToMcp } from "./mcp/login";
+export * from "./mcp/secret-refs";
+export * from "./mcp/web-login";
 export * from "./routing/router";
 export * from "./routing/classifier";
 export * from "./routing/select";

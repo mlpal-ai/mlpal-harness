@@ -13,6 +13,7 @@ import { EgressRefusedError, egressFetch, type EgressRoute } from "../egress/pro
 import type { DeferredTools } from "../tools/deferred";
 import { canonicalMcpServer, mcpServerNameProblem } from "../tools/tool-name";
 import { StoredOAuthProvider } from "./oauth";
+import { resolveSecretRefsIn, type SecretResolver, secretRefsIn } from "./secret-refs";
 import { type ProcessHost, ProcessHostTransport } from "./process-host";
 import { host } from "../host";
 
@@ -160,6 +161,8 @@ export class McpManager {
   private maxDescriptionLength = DEFAULT_MAX_MCP_DESCRIPTION_LENGTH;
   /** The last config each server connected with, for reconnectAll. */
   private readonly configByName = new Map<string, McpServerConfig>();
+  /** Where `${MLPAL_SECRET_*}` header references are resolved at connect (tools-admin); absent: they fail the connect. */
+  private secretResolver: SecretResolver | undefined;
 
   /** Servers whose tools are working-MEMORY tools (memory v6 E5): every tool they expose is
    *  tagged `memory`, so a claim write passes recon and the safety envelope like a read while
@@ -189,6 +192,19 @@ export class McpManager {
   setMemoryServers(names: Iterable<string>): void {
     this.memoryServers.clear();
     for (const n of names) this.memoryServers.add(n);
+  }
+
+  /** Name where a header's `${MLPAL_SECRET_<NAME>}` references are resolved (secret-refs.ts). Call before connectAll. */
+  setSecretResolver(resolve: SecretResolver | undefined): void {
+    this.secretResolver = resolve;
+  }
+
+  /** An HTTP server's headers as sent: a value with a secret reference resolved (and not env-expanded), every other
+   *  value env-expanded as before. */
+  private async connectHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headers)) out[k] = secretRefsIn(v).length ? await resolveSecretRefsIn(v, this.secretResolver) : expandEnv(v);
+    return out;
   }
 
   /** Name the servers a built-in fronts: connected, callable via callTool, never registered. */
@@ -383,13 +399,7 @@ export class McpManager {
       });
       transport = http;
     } else if (isHttp(config)) {
-      const requestInit = config.headers
-        ? {
-            headers: Object.fromEntries(
-              Object.entries(config.headers).map(([k, v]) => [k, expandEnv(v)]),
-            ),
-          }
-        : undefined;
+      const requestInit = config.headers ? { headers: await this.connectHeaders(config.headers) } : undefined;
       // OAuth: a persisted token provider (non-interactive here; `yodex mcp login` seeds it).
       const authProvider =
         config.oauth && this.authDir
