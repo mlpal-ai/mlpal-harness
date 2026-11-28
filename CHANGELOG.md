@@ -27,6 +27,19 @@
   takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
 - Envelope fixtures for the UI are in `test/fixtures/display/media/`.
 
+### engine-media: audio, video and file kinds (needs the same version bump, 2026-11-28)
+
+- `audio`: MP3, WAV, Ogg, M4A or FLAC, at most 100 MiB, with an optional transcript and a model-stated
+  `duration_s`. No ffprobe in this version: a duration is never probed.
+- `video`: MP4, WebM or MOV, at most 500 MiB, with an alt text and an optional poster. The poster is an image,
+  checked as one, at most 5 MiB.
+- `file`: any regular file (SVG included), at most 500 MiB, as a `level: "file"` download card.
+- Types come from the magic number (ID3 or MPEG frame sync, RIFF/WAVE, OggS, fLaC, ftyp brands, EBML with DocType
+  webm, %PDF-, PK). Text is valid UTF-8 with no NUL.
+- Each kind is offered only for a type family the client's `formats` names. `file` is offered only to a client that
+  draws the `file` level.
+- The engine's fallback line names each file, and an audio file's transcript follows it.
+
 ### engine-media: GenerateImage, an engine tool (WAVE-2 §2, 2026-11-28)
 
 - `createGenerateImageTool(deps)` (`tools/builtin/image.ts`, `hands: "local"`; the host registers it with

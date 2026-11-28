@@ -142,6 +142,78 @@
    }
   },
   {
+   "name": "mp3 with an ID3 tag",
+   "hex": "49443304000000000000fffb90000000000000000000000000000000000000000000000000000000000000000000",
+   "mime": "audio/mpeg",
+   "info": null
+  },
+  {
+   "name": "mp3 frame sync, no tag",
+   "hex": "fffb90640000000000000000000000000000000000000000000000000000000000000000",
+   "mime": "audio/mpeg",
+   "info": null
+  },
+  {
+   "name": "wav",
+   "hex": "524946462400000057415645666d7420000000000000000000000000000000000000000000000000",
+   "mime": "audio/wav",
+   "info": null
+  },
+  {
+   "name": "ogg",
+   "hex": "4f67675300020000000000000000000000000000000000000000000000000000000000000000",
+   "mime": "audio/ogg",
+   "info": null
+  },
+  {
+   "name": "flac",
+   "hex": "664c61430000002200000000000000000000000000000000000000000000000000000000000000000000",
+   "mime": "audio/flac",
+   "info": null
+  },
+  {
+   "name": "m4a",
+   "hex": "00000018667479704d344120000000004d34412069736f6d",
+   "mime": "audio/mp4",
+   "info": null
+  },
+  {
+   "name": "mp4",
+   "hex": "000000186674797069736f6d0000020069736f6d69736f32",
+   "mime": "video/mp4",
+   "info": null
+  },
+  {
+   "name": "mov",
+   "hex": "0000001466747970717420200000020071742020",
+   "mime": "video/quicktime",
+   "info": null
+  },
+  {
+   "name": "webm",
+   "hex": "1a45dfa39f4286810142f7810142f2810442f381084282847765626d",
+   "mime": "video/webm",
+   "info": null
+  },
+  {
+   "name": "matroska that is not webm",
+   "hex": "1a45dfa39f4282886d6174726f736b61",
+   "mime": null,
+   "info": null
+  },
+  {
+   "name": "pdf",
+   "hex": "255044462d312e370a25e2e3cfd30a",
+   "mime": "application/pdf",
+   "info": null
+  },
+  {
+   "name": "zip (docx, xlsx)",
+   "hex": "504b03041400060000000000000000000000000000000000000000000000",
+   "mime": "application/zip",
+   "info": null
+  },
+  {
    "name": "truncated png (no IHDR)",
    "hex": "89504e470d0a1a0a0000",
    "mime": "image/png",

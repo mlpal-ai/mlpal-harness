@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { chartSpecSchema, gridSpecSchema, kpisSpecSchema } from "./block-schemas.js";
-import { imageSetSpecSchema, imageSpecSchema } from "./media-schemas.js";
+import { audioSpecSchema, fileSpecSchema, imageSetSpecSchema, imageSpecSchema, videoSpecSchema } from "./media-schemas.js";
 import { plainText as plain } from "./fields.js";
 import { BLOCK_ID, DISPLAY_CATALOG, DISPLAY_LIMITS, type DisplayKind } from "./catalog.js";
 
@@ -121,10 +121,14 @@ export const gridDisplaySchema = block("grid", gridSpecSchema);
 /** Media blocks (DISPLAY-PROTOCOL-v0.1-media): a file by its workspace path, never its bytes. */
 export const imageDisplaySchema = block("image", imageSpecSchema);
 export const imageSetDisplaySchema = block("image_set", imageSetSpecSchema);
+export const audioDisplaySchema = block("audio", audioSpecSchema);
+export const videoDisplaySchema = block("video", videoSpecSchema);
+/** A file as a download card (level `file`): never drawn inline. */
+export const fileDisplaySchema = z.object({ ...common, level: z.literal("file"), kind: z.literal("file"), catalog: z.literal(DISPLAY_CATALOG), spec: fileSpecSchema, status: z.literal("ok") }).strict();
 
 /** One display, discriminated by `level`, then (for `block`) by `kind`. Validate an incoming one with
  *  `displayEnvelopeSchema`; a block's spec is checked further by `validateBlock` (the allowlist zod cannot state). */
-export const displayEnvelopeSchema = z.union([textDisplaySchema, chartDisplaySchema, kpisDisplaySchema, gridDisplaySchema, imageDisplaySchema, imageSetDisplaySchema]);
+export const displayEnvelopeSchema = z.union([textDisplaySchema, chartDisplaySchema, kpisDisplaySchema, gridDisplaySchema, imageDisplaySchema, imageSetDisplaySchema, audioDisplaySchema, videoDisplaySchema, fileDisplaySchema]);
 export type TextDisplay = z.infer<typeof textDisplaySchema>;
 export type ChartDisplay = z.infer<typeof chartDisplaySchema>;
 export type KpisDisplay = z.infer<typeof kpisDisplaySchema>;
@@ -132,5 +136,8 @@ export type GridDisplay = z.infer<typeof gridDisplaySchema>;
 export type BlockDisplay = ChartDisplay | KpisDisplay | GridDisplay;
 export type ImageDisplay = z.infer<typeof imageDisplaySchema>;
 export type ImageSetDisplay = z.infer<typeof imageSetDisplaySchema>;
-export type MediaDisplay = ImageDisplay | ImageSetDisplay;
+export type AudioDisplay = z.infer<typeof audioDisplaySchema>;
+export type VideoDisplay = z.infer<typeof videoDisplaySchema>;
+export type FileDisplay = z.infer<typeof fileDisplaySchema>;
+export type MediaDisplay = ImageDisplay | ImageSetDisplay | AudioDisplay | VideoDisplay | FileDisplay;
 export type DisplayEnvelope = TextDisplay | BlockDisplay | MediaDisplay;

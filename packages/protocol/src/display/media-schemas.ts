@@ -12,6 +12,8 @@ import { plainText } from "./fields.js";
 /** The types each kind takes, by magic number (media.ts). SVG is never an image kind: it is a file. */
 export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
+export const AUDIO_MIME_TYPES = ["audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/flac"] as const;
+export const VIDEO_MIME_TYPES = ["video/mp4", "video/webm", "video/quicktime"] as const;
 
 /** A file as the engine checked it: where it is, what its bytes are, how many, and their hash. */
 export const mediaFileSchema = z
@@ -76,4 +78,35 @@ export const imageSetSpecSchema = z
   .strict();
 export type ImageSetSpec = z.infer<typeof imageSetSpecSchema>;
 
-export type MediaSpec = ImageSpec | ImageSetSpec;
+/** Seconds, as the model states it: no probe reads a duration in this version (no ffprobe), so it is unverified. */
+const duration = z.number().positive().max(86_400);
+
+export const audioSpecSchema = z
+  .object({
+    media: mediaFileSchema,
+    alt: plainText(DISPLAY_LIMITS.media.altChars).optional(),
+    duration_s: duration.optional(),
+    /** What is said, for a person who cannot hear it (at most 8,000 characters). */
+    transcript: plainText(DISPLAY_LIMITS.media.transcriptChars).optional(),
+    made_by: madeBySchema.optional(),
+  })
+  .strict();
+export type AudioSpec = z.infer<typeof audioSpecSchema>;
+
+export const videoSpecSchema = z
+  .object({
+    media: mediaFileSchema,
+    alt: plainText(DISPLAY_LIMITS.media.altChars),
+    duration_s: duration.optional(),
+    /** A still to show before it plays (no client decodes video to make one). */
+    poster: z.object({ media: mediaFileSchema, width: z.number().int().positive(), height: z.number().int().positive() }).strict().optional(),
+    made_by: madeBySchema.optional(),
+  })
+  .strict();
+export type VideoSpec = z.infer<typeof videoSpecSchema>;
+
+/** A file of any type, drawn only as a download card (level `file`); SVG and anything not drawn inline goes here. */
+export const fileSpecSchema = z.object({ media: mediaFileSchema, name: plainText(DISPLAY_LIMITS.media.nameChars) }).strict();
+export type FileSpec = z.infer<typeof fileSpecSchema>;
+
+export type MediaSpec = ImageSpec | ImageSetSpec | AudioSpec | VideoSpec | FileSpec;

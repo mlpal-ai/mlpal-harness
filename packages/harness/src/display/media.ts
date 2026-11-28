@@ -44,6 +44,17 @@ function hidden(rel: string): boolean {
 
 const posix = (p: string) => p.split(sep).join("/");
 
+/** Text a person could read: valid UTF-8 with no NUL (a file card names it text/plain). */
+function utf8Text(b: Uint8Array): boolean {
+  if (b.includes(0)) return false;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(b.length === 256 * 1024 ? b.subarray(0, b.length - 4) : b);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** One path, as above. Exported for GenerateImage's references and its written files. */
 export function probeMedia(req: MediaRequest, ctx: ToolContext): MediaProbeResult {
   const p = req.path;
@@ -86,7 +97,7 @@ export function probeMedia(req: MediaRequest, ctx: ToolContext): MediaProbeResul
     const head = Buffer.alloc(Math.min(HEAD_BYTES, st.size));
     const got = head.length ? readSync(fd, head, 0, head.length, 0) : 0;
     const first = new Uint8Array(head.buffer, head.byteOffset, got);
-    const mime = sniffMedia(first) ?? "application/octet-stream";
+    const mime = sniffMedia(first) ?? (utf8Text(first) ? "text/plain" : "application/octet-stream");
     const info = mime.startsWith("image/") && mime !== "image/svg+xml" ? imageInfo(first, mime) : null;
     const hash = createHash("sha256");
     const buf = Buffer.alloc(Math.min(CHUNK, Math.max(1, st.size)));

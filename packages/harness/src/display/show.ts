@@ -6,6 +6,7 @@ import {
   HOST_OWNED_KINDS,
   isBlockKind,
   isMediaKind,
+  mediaByteCap,
   mediaPaths,
   noteInputSchema,
   showInputSchema,
@@ -318,7 +319,8 @@ function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number
     block_id: show.block_id,
     revision,
     op: "snapshot",
-    level: "block",
+    // a file is only ever a download card
+    level: show.kind === "file" ? "file" : "block",
     kind: show.kind,
     catalog: DISPLAY_CATALOG,
     spec: show.spec,
@@ -329,7 +331,7 @@ function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number
     ...(show.placement ? { placement: show.placement } : {}),
     ...(provenance.notes.length ? { notes: provenance.notes } : {}),
     status: "ok",
-  } as BlockDisplay;
+  } as BlockDisplay | MediaDisplay;
 }
 
 /** What Show answers: `model` is what the model reads, `shown` the step's display string (the line and the fallback). */
@@ -462,7 +464,13 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
       const kindName = (input as { kind?: unknown })?.kind;
       const media =
         typeof kindName === "string" && isMediaKind(kindName) && policy.kinds.has(kindName) && deps.probe
-          ? await deps.probe.probe(mediaPaths(kindName, (input as { spec?: unknown }).spec).slice(0, DISPLAY_LIMITS.media.setImages + 1).map((path) => ({ path, maxBytes: DISPLAY_LIMITS.media.imageBytes })), ctx)
+          ? await deps.probe.probe(
+              mediaPaths(kindName, (input as { spec?: unknown }).spec)
+                .slice(0, DISPLAY_LIMITS.media.setImages + 1)
+                // a video's second path is its poster, an image
+                .map((path, i) => ({ path, maxBytes: kindName === "video" && i === 1 ? DISPLAY_LIMITS.media.posterBytes : mediaByteCap(kindName) })),
+              ctx,
+            )
           : undefined;
       const check = checkShowInput(input, { kinds: policy.kinds, ...(media ? { media } : {}), ...(policy.formats ? { formats: policy.formats } : {}) });
       let history = EMPTY_HISTORY;

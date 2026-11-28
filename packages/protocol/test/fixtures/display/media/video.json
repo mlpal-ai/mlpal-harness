@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "block_id": "demo",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "block",
+  "kind": "video",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "media": {
+      "path": "media/2026-11-28/demo.mp4",
+      "mime": "video/mp4",
+      "bytes": 4800000,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "alt": "A 21-second walk through the shortage chart",
+    "duration_s": 21,
+    "poster": {
+      "media": {
+        "path": "media/2026-11-28/demo.png",
+        "mime": "image/png",
+        "bytes": 84000,
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "fallback": {
+    "text": "A 21-second walk through the shortage chart\nVideo: demo.mp4 · MP4 · 0:21 · 4.8 MB · media/2026-11-28/demo.mp4"
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "ok"
+}

@@ -3,7 +3,7 @@ import { DISPLAY_LIMITS, type MediaKind } from "./catalog.js";
 import { report, type DisplayErrorCode } from "./errors.js";
 import { inertFallbackText } from "./fallback.js";
 import { plainText } from "./fields.js";
-import { IMAGE_MIME_TYPES, type ImageItem, type ImageSetSpec, type ImageSpec, madeBySchema, type MediaSpec } from "./media-schemas.js";
+import { AUDIO_MIME_TYPES, type AudioSpec, type FileSpec, IMAGE_MIME_TYPES, type ImageItem, type ImageSetSpec, type ImageSpec, madeBySchema, type MediaFile, type MediaSpec, VIDEO_MIME_TYPES, type VideoSpec } from "./media-schemas.js";
 import { parseShape } from "./shape.js";
 
 /**
@@ -45,6 +45,22 @@ export function sniffMedia(head: Uint8Array): string | null {
   if (startsWith(head, [0xff, 0xd8, 0xff])) return "image/jpeg";
   if (ascii(head, 0, 6) === "GIF87a" || ascii(head, 0, 6) === "GIF89a") return "image/gif";
   if (ascii(head, 0, 4) === "RIFF" && ascii(head, 8, 4) === "WEBP") return "image/webp";
+  // audio and video
+  if (ascii(head, 0, 4) === "RIFF" && ascii(head, 8, 4) === "WAVE") return "audio/wav";
+  if (ascii(head, 0, 4) === "OggS") return "audio/ogg";
+  if (ascii(head, 0, 4) === "fLaC") return "audio/flac";
+  if (ascii(head, 0, 3) === "ID3" || (head[0] === 0xff && head.length > 1 && (head[1]! & 0xe0) === 0xe0 && (head[1]! & 0x06) !== 0)) return "audio/mpeg";
+  if (ascii(head, 4, 4) === "ftyp") {
+    const brand = ascii(head, 8, 4);
+    if (brand === "M4A " || brand === "M4B ") return "audio/mp4";
+    if (brand === "qt  ") return "video/quicktime";
+    if (/^(?:isom|iso[2-9]|mp41|mp42|avc1|dash|mmp4|MSNV)$/.test(brand)) return "video/mp4";
+    return null;
+  }
+  if (startsWith(head, [0x1a, 0x45, 0xdf, 0xa3])) return ascii(head, 0, Math.min(head.length, 64)).includes("webm") ? "video/webm" : null;
+  // files a card names
+  if (ascii(head, 0, 5) === "%PDF-") return "application/pdf";
+  if (startsWith(head, [0x50, 0x4b, 0x03, 0x04])) return "application/zip";
   const text = new TextDecoder("utf-8", { fatal: false }).decode(head.subarray(0, 1024)).replace(/^﻿/, "").trimStart();
   if (/^(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]/i.test(text)) return "image/svg+xml";
   return null;
@@ -159,7 +175,7 @@ function exifHasGps(b: Uint8Array, at: number, len: number): boolean | undefined
 }
 
 /** The extension a type is written with (GenerateImage's file names). */
-export const MEDIA_EXTENSION: Readonly<Record<string, string>> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+export const MEDIA_EXTENSION: Readonly<Record<string, string>> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/flac": "flac", "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" };
 
 // ─── the model's spec ───
 
@@ -170,14 +186,29 @@ const imageSpecInput = imageInput.extend({ made_by: madeBySchema.optional() }).s
 const imageSetSpecInput = z
   .object({ images: z.array(imageInput).min(2).max(DISPLAY_LIMITS.media.setImages), chosen: z.number().int().nonnegative().optional(), made_by: madeBySchema.optional() })
   .strict();
+const durationInput = z.number().positive().max(86_400);
+const audioSpecInput = z
+  .object({ path: mediaPath, alt: plainText(DISPLAY_LIMITS.media.altChars).optional(), duration_s: durationInput.optional(), transcript: plainText(DISPLAY_LIMITS.media.transcriptChars).optional(), made_by: madeBySchema.optional() })
+  .strict();
+const videoSpecInput = z
+  .object({ path: mediaPath, alt: plainText(DISPLAY_LIMITS.media.altChars), duration_s: durationInput.optional(), poster: mediaPath.optional(), made_by: madeBySchema.optional() })
+  .strict();
+const fileSpecInput = z.object({ path: mediaPath, name: plainText(DISPLAY_LIMITS.media.nameChars).optional() }).strict();
+
+/** The size cap a kind's main file has (a video's poster is an image: posterBytes). */
+export function mediaByteCap(kind: MediaKind): number {
+  const L = DISPLAY_LIMITS.media;
+  return kind === "audio" ? L.audioBytes : kind === "video" ? L.videoBytes : kind === "file" ? L.fileBytes : L.imageBytes;
+}
 
 /** The paths a media spec names, in order (the engine probes exactly these). Lenient: what does not parse names none. */
 export function mediaPaths(kind: MediaKind, spec: unknown): string[] {
   const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
   if (!isObj(spec)) return [];
   const one = (x: unknown) => (isObj(x) && typeof x.path === "string" ? [x.path] : []);
-  if (kind === "image") return one(spec);
-  return Array.isArray(spec.images) ? spec.images.flatMap(one) : [];
+  if (kind === "image_set") return Array.isArray(spec.images) ? spec.images.flatMap(one) : [];
+  if (kind === "video" && typeof spec.poster === "string") return [...one(spec), spec.poster];
+  return one(spec);
 }
 
 /** A path the model wrote that is not a workspace path at all: a URL, a scheme, a network path. */
@@ -197,6 +228,25 @@ export function checkMediaSpec(kind: MediaKind, spec: unknown, path: Path, opts:
     const item = checkImage(s.path, s.alt, [...path], opts);
     return { ...item, ...(s.made_by ? { made_by: s.made_by } : {}) } satisfies ImageSpec;
   }
+  if (kind === "audio") {
+    const s = parseShape(audioSpecInput, spec, path);
+    const media = checkFile(s.path, [...path, "path"], opts, { types: AUDIO_MIME_TYPES, cap: DISPLAY_LIMITS.media.audioBytes, what: "an audio file is MP3, WAV, Ogg, M4A or FLAC" });
+    const out: AudioSpec = { media, ...(s.alt ? { alt: s.alt } : {}), ...(s.duration_s !== undefined ? { duration_s: s.duration_s } : {}), ...(s.transcript ? { transcript: s.transcript } : {}), ...(s.made_by ? { made_by: s.made_by } : {}) };
+    return out;
+  }
+  if (kind === "video") {
+    const s = parseShape(videoSpecInput, spec, path);
+    const media = checkFile(s.path, [...path, "path"], opts, { types: VIDEO_MIME_TYPES, cap: DISPLAY_LIMITS.media.videoBytes, what: "a video is MP4, WebM or MOV" });
+    const poster = s.poster !== undefined ? checkImage(s.poster, s.alt, [...path, "poster"], opts, DISPLAY_LIMITS.media.posterBytes, false) : undefined;
+    const out: VideoSpec = { media, alt: s.alt, ...(s.duration_s !== undefined ? { duration_s: s.duration_s } : {}), ...(poster ? { poster: { media: poster.media, width: poster.width, height: poster.height } } : {}), ...(s.made_by ? { made_by: s.made_by } : {}) };
+    return out;
+  }
+  if (kind === "file") {
+    const s = parseShape(fileSpecInput, spec, path);
+    const media = checkFile(s.path, [...path, "path"], opts, { types: null, cap: DISPLAY_LIMITS.media.fileBytes, what: "" });
+    const out: FileSpec = { media, name: s.name ?? base(media.path || s.path) };
+    return out;
+  }
   const s = parseShape(imageSetSpecInput, spec, path);
   if (s.chosen !== undefined && s.chosen >= s.images.length) report("VALIDATION_FAILED", [...path, "chosen"], `chosen is ${s.chosen}; the set has ${s.images.length} images, indexed from 0`);
   const images: ImageSetSpec["images"] = [];
@@ -206,8 +256,8 @@ export function checkMediaSpec(kind: MediaKind, spec: unknown, path: Path, opts:
 
 /** One image: the path's form, what the probe found, its type, size and sides. Every fault is reported; the item
  *  is returned only when there is none (a placeholder otherwise, which the caller never uses: the refusal wins). */
-function checkImage(p: string, alt: string, at: Array<string | number>, opts: MediaCheckOptions): ImageItem {
-  const where = [...at, "path"];
+function checkImage(p: string, alt: string, at: Array<string | number>, opts: MediaCheckOptions, cap: number = DISPLAY_LIMITS.media.imageBytes, own = true): ImageItem {
+  const where = own ? [...at, "path"] : [...at];
   const placeholder: ImageItem = { media: { path: p, mime: "", bytes: 0, sha256: "0".repeat(64) }, alt, width: 1, height: 1, animated: false };
   if (NOT_A_PATH.test(p)) {
     report("URL_NOT_ALLOWED", where, "a media source is a workspace path, never a URL", "save the file in the workspace (media/ for what you make) and give its path");
@@ -234,7 +284,7 @@ function checkImage(p: string, alt: string, at: Array<string | number>, opts: Me
   }
   if (opts.formats && !opts.formats.has(f.mime)) report("KIND_NOT_ALLOWED", where, `this client does not draw ${f.mime}`, `it draws: ${[...opts.formats].join(", ") || "none"}; convert the image, or answer in text`);
   const L = DISPLAY_LIMITS.media;
-  if (f.bytes > L.imageBytes) report("MEDIA_TOO_LARGE", where, `${f.path} is ${f.bytes} bytes; an image is at most ${L.imageBytes}`, "save a smaller or more compressed version");
+  if (f.bytes > cap) report("MEDIA_TOO_LARGE", where, `${f.path} is ${f.bytes} bytes; an image here is at most ${cap}`, "save a smaller or more compressed version");
   if (f.width === undefined || f.height === undefined) {
     report("MEDIA_UNREADABLE", where, `${f.path}'s ${f.mime} header does not parse`, "save the image again, or as PNG");
     return placeholder;
@@ -245,9 +295,51 @@ function checkImage(p: string, alt: string, at: Array<string | number>, opts: Me
   return { media: { path: f.path, mime: f.mime, bytes: f.bytes, sha256: f.sha256 }, alt, width: f.width, height: f.height, animated: f.animated ?? false, ...(f.gps !== undefined ? { gps: f.gps } : {}) };
 }
 
+/** A non-image file: the path's form, what the probe found, its type (null: any) and its size. A placeholder file
+ *  is returned when a fault was reported (the refusal wins). */
+function checkFile(p: string, where: Array<string | number>, opts: MediaCheckOptions, rule: { types: readonly string[] | null; cap: number; what: string }): MediaFile {
+  const placeholder: MediaFile = { path: p, mime: "", bytes: 0, sha256: "0".repeat(64) };
+  if (NOT_A_PATH.test(p)) {
+    report("URL_NOT_ALLOWED", where, "a media source is a workspace path, never a URL", "save the file in the workspace (media/ for what you make) and give its path");
+    return placeholder;
+  }
+  if (p.includes("\0")) {
+    report("PATH_NOT_ALLOWED", where, "the path has a NUL character");
+    return placeholder;
+  }
+  const f = opts.facts.get(p);
+  if (!f) {
+    report("MEDIA_NOT_FOUND", where, `no file was checked at ${JSON.stringify(p)}`);
+    return placeholder;
+  }
+  if ("code" in f) {
+    report(f.code, where, f.message, f.hint);
+    return placeholder;
+  }
+  if (rule.types && !rule.types.includes(f.mime)) {
+    report("MEDIA_TYPE_NOT_ALLOWED", where, `${f.path} is ${f.mime === "application/octet-stream" ? "not a type this engine knows" : f.mime}; ${rule.what} (by its bytes)`, "show it as a file instead (kind file)");
+    return placeholder;
+  }
+  if (rule.types && opts.formats && !opts.formats.has(f.mime)) report("KIND_NOT_ALLOWED", where, `this client does not play ${f.mime}`, `it plays: ${[...opts.formats].join(", ") || "none"}; convert it, or show it as a file`);
+  if (f.bytes > rule.cap) report("MEDIA_TOO_LARGE", where, `${f.path} is ${f.bytes} bytes; at most ${rule.cap} here`, "save a smaller version");
+  return { path: f.path, mime: f.mime, bytes: f.bytes, sha256: f.sha256 };
+}
+
 // ─── the fallback ───
 
-const TYPE_NAME: Readonly<Record<string, string>> = { "image/png": "PNG", "image/jpeg": "JPEG", "image/gif": "GIF", "image/webp": "WebP" };
+const TYPE_NAME: Readonly<Record<string, string>> = {
+  "image/png": "PNG", "image/jpeg": "JPEG", "image/gif": "GIF", "image/webp": "WebP", "image/svg+xml": "SVG",
+  "audio/mpeg": "MP3", "audio/wav": "WAV", "audio/ogg": "Ogg", "audio/mp4": "M4A", "audio/flac": "FLAC",
+  "video/mp4": "MP4", "video/webm": "WebM", "video/quicktime": "MOV", "application/pdf": "PDF", "application/zip": "ZIP",
+};
+/** A duration as a person reads it: 0:42, 1:02:03. */
+function clock(s: number): string {
+  const t = Math.round(s);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = String(t % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
 const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 /** Bytes as a person reads them: 312 KB, 2.1 MB. */
 export function humanBytes(n: number): string {
@@ -261,6 +353,19 @@ export function humanBytes(n: number): string {
  *  draws no media, a terminal or a mail shows, paths included. */
 export function mediaFallbackLines(kind: MediaKind, spec: MediaSpec): string[] {
   const line = (s: string) => inertFallbackText(s.replace(/\s+/g, " ").trim());
+  const type = (m: MediaFile) => TYPE_NAME[m.mime] ?? m.mime;
+  if (kind === "audio") {
+    const a = spec as AudioSpec;
+    return [line(`Audio: ${base(a.media.path)} · ${type(a.media)}${a.duration_s !== undefined ? ` · ${clock(a.duration_s)}` : ""} · ${humanBytes(a.media.bytes)} · ${a.media.path}`), ...(a.transcript ? [line(`Transcript: ${[...a.transcript].slice(0, 1_500).join("")}${[...a.transcript].length > 1_500 ? "…" : ""}`)] : [])];
+  }
+  if (kind === "video") {
+    const v = spec as VideoSpec;
+    return [line(`Video: ${base(v.media.path)} · ${type(v.media)}${v.duration_s !== undefined ? ` · ${clock(v.duration_s)}` : ""} · ${humanBytes(v.media.bytes)} · ${v.media.path}`)];
+  }
+  if (kind === "file") {
+    const f = spec as FileSpec;
+    return [line(`File: ${f.name} · ${type(f.media)} · ${humanBytes(f.media.bytes)} · ${f.media.path}`)];
+  }
   if (kind === "image") {
     const im = spec as ImageSpec;
     return [line(`Image: ${base(im.media.path)} · ${TYPE_NAME[im.media.mime] ?? im.media.mime} · ${im.width}×${im.height} · ${humanBytes(im.media.bytes)} · ${im.media.path}`)];
@@ -273,6 +378,7 @@ export function mediaFallbackLines(kind: MediaKind, spec: MediaSpec): string[] {
  *  texts and the engine's lines. */
 export function mediaFallback(kind: MediaKind, spec: MediaSpec, modelText: string | undefined): string {
   const lines = mediaFallbackLines(kind, spec);
-  const lead = modelText ?? (kind === "image" ? inertFallbackText((spec as ImageSpec).alt) : `${(spec as ImageSetSpec).images.length} images.`);
-  return [lead, ...lines].join("\n");
+  const alt = (spec as { alt?: string }).alt;
+  const lead = modelText ?? (kind === "image_set" ? `${(spec as ImageSetSpec).images.length} images.` : alt ? inertFallbackText(alt) : undefined);
+  return [...(lead ? [lead] : []), ...lines].join("\n");
 }

@@ -7,4 +7,4 @@ export { blockRows, validateBlock } from "./blocks.js";
 export { fallbackInputSchema, type FallbackInput } from "./fallback.js";
 export * from "./show.js";
 export { chartCost, type ChartCostCheck } from "./cost.js";
-export { checkMediaSpec, humanBytes, imageInfo, MEDIA_EXTENSION, mediaFallback, mediaFallbackLines, mediaPaths, sniffMedia, type MediaCheckOptions, type MediaFacts, type MediaFactsMap, type MediaProbeFault, type MediaProbeResult } from "./media.js";
+export { checkMediaSpec, mediaByteCap, humanBytes, imageInfo, MEDIA_EXTENSION, mediaFallback, mediaFallbackLines, mediaPaths, sniffMedia, type MediaCheckOptions, type MediaFacts, type MediaFactsMap, type MediaProbeFault, type MediaProbeResult } from "./media.js";

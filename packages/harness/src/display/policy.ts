@@ -1,4 +1,4 @@
-import { BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, IMAGE_MIME_TYPES, isMediaKind, MEDIA_KINDS, type BlockKind, type DisplayCaps, type DisplayKind, type MediaKind } from "@mlpal/harness-protocol";
+import { AUDIO_MIME_TYPES, BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, IMAGE_MIME_TYPES, VIDEO_MIME_TYPES, isMediaKind, MEDIA_KINDS, type BlockKind, type DisplayCaps, type DisplayKind, type MediaKind } from "@mlpal/harness-protocol";
 
 /**
  * What this engine shows a run's client (DISPLAY-PROTOCOL-v0 §4.2): the block kinds it draws. Only a client that
@@ -22,8 +22,16 @@ export function resolveDisplay(caps: DisplayCaps, opts: { media?: boolean } = {}
   const kinds = new Set<DisplayKind>(BLOCK_KINDS.filter((k) => !caps.kinds || caps.kinds.includes(k)));
   const formats = caps.media ? new Set(caps.media.formats) : null;
   if (opts.media && formats && caps.kinds) {
-    const images = IMAGE_MIME_TYPES.some((t) => formats.has(t));
-    for (const k of MEDIA_KINDS) if (caps.kinds.includes(k) && images) kinds.add(k);
+    const plays = (types: readonly string[]) => types.some((t) => formats.has(t));
+    const offered: Record<MediaKind, boolean> = {
+      image: plays(IMAGE_MIME_TYPES),
+      image_set: plays(IMAGE_MIME_TYPES),
+      audio: plays(AUDIO_MIME_TYPES),
+      video: plays(VIDEO_MIME_TYPES),
+      // a download card: the client draws the file level, whatever it plays
+      file: caps.levels.includes("file"),
+    };
+    for (const k of MEDIA_KINDS) if (caps.kinds.includes(k) && offered[k]) kinds.add(k);
   }
   if (!caps.levels.includes("block") || !caps.catalogs.includes(DISPLAY_CATALOG) || kinds.size === 0) return null;
   const media = [...kinds].some((k) => isMediaKind(k));
@@ -65,14 +73,22 @@ const ORDER: BlockKind[] = ["kpis", "grid", "chart"];
 const MEDIA_EXAMPLES: Record<MediaKind, unknown> = {
   image: { path: "media/2026-11-28/hero-1.png", alt: "what the image shows, for a person who cannot see it" },
   image_set: { images: [{ path: "media/a.png", alt: "option A" }, { path: "media/b.png", alt: "option B" }], chosen: 0 },
+  audio: { path: "media/voice-over.mp3", transcript: "what is said" },
+  video: { path: "media/demo.mp4", alt: "what the video shows", poster: "media/demo.png" },
+  file: { path: "reports/chamber-c.pdf", name: "Chamber C report.pdf" },
 };
 const MEDIA_WHEN: Record<MediaKind, string> = {
   image: "a picture in the workspace the person should see",
   image_set: "2 to 8 pictures to compare or choose from",
+  audio: "a sound or voice file to play",
+  video: "a video to play",
+  file: "any other file the person should open or download (PDF, SVG, a spreadsheet)",
 };
 const MEDIA_RULE =
-  "image, image_set: spec names a workspace file by its path (never a URL or bytes), PNG, JPEG, GIF or WebP, with an alt text of at most " +
-  `${DISPLAY_LIMITS.media.altChars} characters; an image_set takes 2 to ${DISPLAY_LIMITS.media.setImages} and an optional chosen index. fallback is optional for them: the engine adds a line per file.`;
+  "Media kinds name a workspace file by its path (never a URL or bytes); the type is read from the bytes. fallback is optional for them: the engine adds a line per file. " +
+  `image, image_set: PNG, JPEG, GIF or WebP with an alt text (at most ${DISPLAY_LIMITS.media.altChars} characters); an image_set takes 2 to ${DISPLAY_LIMITS.media.setImages} and an optional chosen index. ` +
+  "audio: MP3, WAV, Ogg, M4A or FLAC, with a transcript when it speaks; video: MP4, WebM or MOV with an alt text and a poster image; give duration_s only if you know it. " +
+  "file: anything else (SVG included), shown as a download card.";
 
 /** The system section a run gets when its client draws blocks: how to choose a kind, the smallest spec of each, the
  *  fallback's rules and the grammar of the kinds this client draws. Stable for a given declaration, so the prompt

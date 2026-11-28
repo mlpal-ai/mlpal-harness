@@ -114,11 +114,45 @@ describe("the declaration", () => {
 
 describe("the media envelope fixtures the UI builds against", () => {
   const dir = new URL("./fixtures/display/media/", import.meta.url);
-  for (const name of ["image", "image-generated", "image-set-4", "image-repairing"]) {
+  for (const name of ["image", "image-generated", "image-set-4", "image-repairing", "audio", "video", "file"]) {
     test(`${name}.json is a valid envelope`, () => expect(displayEnvelopeSchema.safeParse(JSON.parse(readFileSync(new URL(`${name}.json`, dir), "utf8"))).success).toBe(true));
   }
   test("display-caps.json parses, media and all", () => {
     const r = parseDisplayCaps(JSON.parse(readFileSync(new URL("display-caps.json", dir), "utf8")));
-    expect(r.ok && r.value.media?.formats.length).toBe(4);
+    expect(r.ok && r.value.media?.formats.length).toBe(10);
+  });
+});
+
+describe("audio, video and file blocks", () => {
+  const ALL = new Set(["image", "image_set", "audio", "video", "file"] as const);
+  const MP3: MediaFacts = { path: "media/voice.mp3", mime: "audio/mpeg", bytes: 420_000, sha256: "c".repeat(64) };
+  const MP4: MediaFacts = { path: "media/demo.mp4", mime: "video/mp4", bytes: 4_800_000, sha256: "d".repeat(64) };
+  const PDF: MediaFacts = { path: "reports/chamber-c.pdf", mime: "application/pdf", bytes: 312_000, sha256: "e".repeat(64) };
+  const SVG: MediaFacts = { path: "media/logo.svg", mime: "image/svg+xml", bytes: 900, sha256: "f".repeat(64) };
+  const go = (input: unknown, ...xs: MediaFacts[]) => checkShowInput(input, { kinds: ALL, media: new Map(xs.map((x) => [x.path, x])) });
+
+  test("audio: the file, a model-stated duration and the transcript; the engine's line and the transcript lead", () => {
+    const r = go({ block_id: "vo", kind: "audio", spec: { path: MP3.path, duration_s: 42, transcript: "Stock at Columbus runs out on 17 December." } }, MP3);
+    expect(r.ok && r.show.spec).toEqual({ media: { path: MP3.path, mime: "audio/mpeg", bytes: 420_000, sha256: "c".repeat(64) }, duration_s: 42, transcript: "Stock at Columbus runs out on 17 December." });
+    expect(r.ok && r.show.fallback).toBe("Audio: voice.mp3 · MP3 · 0:42 · 420 KB · media/voice.mp3\nTranscript: Stock at Columbus runs out on 17 December.");
+    expect(faults(go({ block_id: "vo", kind: "audio", spec: { path: MP4.path } }, MP4))).toEqual(["MEDIA_TYPE_NOT_ALLOWED spec.path"]);
+  });
+
+  test("video: an alt text, and a poster image checked as an image", () => {
+    const POSTER: MediaFacts = { path: "media/demo.png", mime: "image/png", bytes: 80_000, sha256: "b".repeat(64), width: 1280, height: 720, animated: false };
+    const r = go({ block_id: "demo", kind: "video", spec: { path: MP4.path, alt: "The shortage chart, explained", poster: POSTER.path } }, MP4, POSTER);
+    expect(r.ok && r.show.spec).toMatchObject({ media: { mime: "video/mp4" }, alt: "The shortage chart, explained", poster: { media: { path: POSTER.path }, width: 1280, height: 720 } });
+    expect(faults(go({ block_id: "demo", kind: "video", spec: { path: MP4.path, alt: "x", poster: MP3.path } }, MP4, MP3))).toEqual(["MEDIA_TYPE_NOT_ALLOWED spec.poster"]);
+    expect(faults(go({ block_id: "demo", kind: "video", spec: { path: MP4.path } }, MP4))).toEqual(["VALIDATION_FAILED spec.alt"]);
+  });
+
+  test("file: any type, SVG included, as a card named by its file unless the model names it", () => {
+    const pdf = go({ block_id: "report", kind: "file", spec: { path: PDF.path, name: "Chamber C report.pdf" } }, PDF);
+    expect(pdf.ok && pdf.show.fallback).toBe("File: Chamber C report.pdf · PDF · 312 KB · reports/chamber-c.pdf");
+    const svg = go({ block_id: "logo", kind: "file", spec: { path: SVG.path } }, SVG);
+    expect(svg.ok && svg.show.spec).toEqual({ media: { path: SVG.path, mime: "image/svg+xml", bytes: 900, sha256: "f".repeat(64) }, name: "logo.svg" });
+    const env = { v: 1, block_id: "logo", revision: 1, op: "snapshot", level: "file", kind: "file", catalog: "harness.v1/1", spec: svg.ok && svg.show.spec, fallback: { text: svg.ok && svg.show.fallback }, source: { by: "model" }, status: "ok" };
+    expect(displayEnvelopeSchema.safeParse(env).success).toBe(true);
+    expect(displayEnvelopeSchema.safeParse({ ...env, level: "block" }).success).toBe(false);
   });
 });

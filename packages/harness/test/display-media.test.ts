@@ -136,9 +136,28 @@ describe("only a client that names the kinds and declares media gets them", () =
     const media = createShowTool({ policy: resolveDisplay(MEDIA, { media: true })!, history: async () => ({ revisions: new Map(), toolUseIds: new Set() }), logger: silentLogger, metrics: new MemoryMetrics(), probe: localMediaProbe });
     expect(media.jsonSchema).toBe(SHOW_MEDIA_JSON_SCHEMA);
     const s = SHOW_MEDIA_JSON_SCHEMA as { required: string[]; properties: { kind: { enum: string[] }; spec: { properties: Record<string, unknown> } } };
-    expect(s.properties.kind.enum).toEqual(["chart", "kpis", "grid", "image", "image_set"]);
+    expect(s.properties.kind.enum).toEqual(["chart", "kpis", "grid", "image", "image_set", "audio", "video", "file"]);
     expect(s.required.sort()).toEqual(["block_id", "kind", "spec"]);
     expect(Object.keys(s.properties.spec.properties)).toEqual(expect.arrayContaining(["path", "alt", "images", "chosen"]));
     expect(JSON.stringify(SHOW_MEDIA_JSON_SCHEMA)).not.toMatch(/"(oneOf|allOf|const|\$ref)"/);
+  });
+});
+
+describe("audio, video and file through the engine", () => {
+  const ALL: DisplayCaps = { ...MEDIA, levels: ["text", "block", "file"], kinds: ["image", "image_set", "audio", "video", "file"], media: { formats: ["image/png", "audio/mpeg", "video/mp4"] } };
+  test("each kind is offered only for what the client plays, and file only to a client that draws the file level", () => {
+    expect([...resolveDisplay(ALL, { media: true })!.kinds].sort()).toEqual(["audio", "file", "image", "image_set", "video"]);
+    expect([...resolveDisplay({ ...ALL, levels: ["text", "block"], media: { formats: ["image/png"] } }, { media: true })!.kinds].sort()).toEqual(["image", "image_set"]);
+  });
+
+  test("a file card for an SVG and a video with its poster, from real files", async () => {
+    writeFileSync(join(root, "media", "logo.svg"), head("svg (never an image kind)"));
+    writeFileSync(join(root, "media", "demo.mp4"), head("mp4"));
+    const call = tool(ALL);
+    const card = await call({ block_id: "logo", kind: "file", spec: { path: "media/logo.svg" } });
+    expect(card.meta!.display![0]).toMatchObject({ level: "file", kind: "file", spec: { name: "logo.svg", media: { mime: "image/svg+xml" } } });
+    const video = await call({ block_id: "demo", kind: "video", spec: { path: "media/demo.mp4", alt: "A short demo", poster: "media/fox.png" } });
+    expect(video.meta!.display![0]).toMatchObject({ level: "block", kind: "video", spec: { media: { mime: "video/mp4" }, poster: { width: 1536, height: 1024 } } });
+    for (const e of [card, video]) expect(displayEnvelopeSchema.safeParse(e.meta!.display![0]).success).toBe(true);
   });
 });
