@@ -29,7 +29,7 @@ const any = (description: string): Js => ({ description });
 
 // sized to guide, not to restate the grammar (the system section has it): each copy of a channel costs the schema
 const channel = obj({ field: str(), type: { type: "string", enum: CHANNEL_TYPES }, aggregate: str("sum, mean, count...") });
-const mark = any('"line", "bar", "point", "area", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot", or {type, ...}');
+const mark = any('"line", "bar", "point", "area", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot", "arc" (a pie), or {type, ...}');
 const encoding = obj({ x: channel, y: channel }, "channels x, y, x2, y2, color, opacity, size, shape, strokeDash, text, tooltip, detail, order");
 const transform = arr(any("filter, aggregate, bin, timeUnit, window, fold or stack"));
 const view = obj({ mark, encoding }, "a view; it may add its own data and transform");

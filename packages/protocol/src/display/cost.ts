@@ -93,7 +93,7 @@ export const TRANSFORM_COST: Readonly<Record<string, "window" | "aggregate" | "f
 
 /** Every mark's cost: point-like marks and bars count against chartMarks; composites read every row once. */
 export const MARK_COST: Readonly<Record<string, "point" | "bar" | "path" | "composite">> = {
-  point: "point", tick: "point", rule: "point", text: "point", rect: "point", bar: "bar", line: "path", area: "path",
+  point: "point", tick: "point", rule: "point", text: "point", rect: "point", arc: "point", bar: "bar", line: "path", area: "path",
   errorband: "composite", errorbar: "composite", boxplot: "composite",
 };
 

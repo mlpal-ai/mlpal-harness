@@ -75,7 +75,7 @@ const EXPECTED: Record<string, string> = {
   "run2 finance-desk/g1-02-kstl mKbBmQFd": "ok",
   "run2 finance-desk/g1-04-october SCKntQmS": "ok",
   "run2 finance-desk/g1-06-pie dfUYegKV": "VALIDATION_FAILED spec.mark; VALIDATION_FAILED spec.encoding; VALIDATION_FAILED spec.vl",
-  "run2 finance-desk/g1-06-pie mDkoZXiy": "VALIDATION_FAILED spec.vl.encoding.theta; VALIDATION_FAILED spec.vl.mark.type",
+  "run2 finance-desk/g1-06-pie mDkoZXiy": "ok", // a pie, since arc is allowed
   "run2 finance-desk/h1-01-rec-balances ijMBWrAs": "ok",
   "run2 finance-desk/h1-02-october-headline 2Dq6sGkv": "ok",
   "run2 mlpal/m1-csv-chart yvN7qNJz": "VALIDATION_FAILED sources",

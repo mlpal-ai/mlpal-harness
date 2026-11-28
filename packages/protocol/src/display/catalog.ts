@@ -37,6 +37,8 @@ export const DISPLAY_LIMITS = {
   chartRows: 5_000,
   chartCells: 50_000,
   chartSeries: 12,
+  /** Slices a pie or donut (an `arc` view) draws. */
+  chartSlices: 12,
   chartLayers: 8,
   chartVconcat: 2,
   /** A window whose frame start is bounded: rows it runs on times frame span (an open end counts to the edge). */

@@ -134,9 +134,9 @@ const outputs = (max: number): Rule => byType({ string: output, array: arr(outpu
 
 // ─── the vocabulary ───
 
-const MARKS = ["line", "area", "bar", "point", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot"];
-const REFUSED_MARKS = new Set(["image", "geoshape", "arc", "trail"]);
-const CHANNELS = ["x", "y", "x2", "y2", "color", "opacity", "size", "shape", "strokeDash", "text", "tooltip", "detail", "order"];
+const MARKS = ["line", "area", "bar", "point", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot", "arc"];
+const REFUSED_MARKS = new Set(["image", "geoshape", "trail"]);
+const CHANNELS = ["x", "y", "x2", "y2", "theta", "color", "opacity", "size", "shape", "strokeDash", "text", "tooltip", "detail", "order"];
 const SERIES_CHANNELS = ["color", "strokeDash", "shape", "detail"] as const;
 const TYPES = enumOf("quantitative", "temporal", "ordinal", "nominal");
 const AGG_OPS = ["count", "valid", "missing", "distinct", "sum", "product", "mean", "average", "variance", "variancep", "stdev", "stdevp", "stderr", "median", "q1", "q3", "min", "max"];
@@ -317,6 +317,11 @@ const MARK_DEF = obj(
     fontWeight: byType({ string: enumOf("normal", "bold"), number: int(100, 900) }),
     text: str(200),
     cornerRadius: num(0, 100),
+    // a pie (arc): a donut's hole, its outer edge, the gap between slices; a label's distance from the centre (text)
+    innerRadius: num(0, 1_000),
+    outerRadius: num(0, 1_000),
+    padAngle: num(0, 1),
+    radius: num(0, 1_000),
     thickness: num(0, 100),
     extent: byType({ string: cutCi(enumOf("stderr", "stdev", "iqr", "min-max")), number: num(0, 10) }),
     clip: bool,
@@ -440,7 +445,11 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
     });
   }
   const shape = shapes[0]!;
-  if (shape === "mark") return void attempt(() => MARK(view.mark, [...path, "mark"], w));
+  if (shape === "mark") {
+    attempt(() => MARK(view.mark, [...path, "mark"], w));
+    if ((isObj(view.mark) ? view.mark.type : view.mark) === "arc") checkSlices(isObj(view.encoding) ? view.encoding : {}, values, [...path, "mark"]);
+    return;
+  }
   if (shape === "vconcat" && o.depth > 0) fail("VALIDATION_FAILED", [...path, "vconcat"], "vconcat is allowed at the top level only");
   const children = view[shape];
   const max = shape === "layer" ? DISPLAY_LIMITS.chartLayers : DISPLAY_LIMITS.chartVconcat;
@@ -457,8 +466,18 @@ const ROW_MARKS: ReadonlySet<string> = new Set(["point", "tick", "rule", "text",
  *  makes is not counted here: the fold's own list bounds it). A quantitative or temporal colour on a view whose own
  *  mark draws a row per item is not counted (a heatmap's colour). Applies to a layer's or vconcat's shared encoding
  *  too, where every channel counts. */
+/** At most chartSlices slices a pie (an `arc` view): the distinct values of its colour field, or its rows when it has
+ *  none (each row is then a slice). */
+function checkSlices(enc: Obj, values: unknown[], path: Path): void {
+  const color = isObj(enc.color) && typeof enc.color.field === "string" ? enc.color.field : null;
+  const slices = color === null ? values.length : new Set(values.map((r) => (isObj(r) && has(r, color) ? JSON.stringify(r[color] ?? null) : "null"))).size;
+  if (slices > DISPLAY_LIMITS.chartSlices) report("VALIDATION_FAILED", path, `${slices} slices; a pie draws at most ${DISPLAY_LIMITS.chartSlices}`, 'use bars, or keep the largest and group the rest as "Other"');
+}
+
 function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): void {
   const markType = isObj(mark) ? mark.type : mark;
+  // a pie's colour is its slices (checkSlices)
+  if (markType === "arc") return;
   const rowMark = typeof markType === "string" && ROW_MARKS.has(markType);
   for (const ch of SERIES_CHANNELS) {
     const def = enc[ch];

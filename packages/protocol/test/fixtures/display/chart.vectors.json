@@ -32,6 +32,137 @@
    }
   },
   {
+   "name": "a pie: arc with theta and colour",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "part": "Rent",
+        "v": 40
+       },
+       {
+        "part": "Staff",
+        "v": 35
+       },
+       {
+        "part": "Other",
+        "v": 25
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "part",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a donut: innerRadius, 12 slices, and its labels",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "part": "p0",
+        "v": 1
+       },
+       {
+        "part": "p1",
+        "v": 2
+       },
+       {
+        "part": "p2",
+        "v": 3
+       },
+       {
+        "part": "p3",
+        "v": 4
+       },
+       {
+        "part": "p4",
+        "v": 5
+       },
+       {
+        "part": "p5",
+        "v": 6
+       },
+       {
+        "part": "p6",
+        "v": 7
+       },
+       {
+        "part": "p7",
+        "v": 8
+       },
+       {
+        "part": "p8",
+        "v": 9
+       },
+       {
+        "part": "p9",
+        "v": 10
+       },
+       {
+        "part": "p10",
+        "v": 11
+       },
+       {
+        "part": "p11",
+        "v": 12
+       }
+      ]
+     },
+     "layer": [
+      {
+       "mark": {
+        "type": "arc",
+        "innerRadius": 50,
+        "outerRadius": 100,
+        "padAngle": 0.01
+       },
+       "encoding": {
+        "theta": {
+         "field": "v",
+         "type": "quantitative",
+         "stack": true
+        },
+        "color": {
+         "field": "part",
+         "type": "nominal"
+        }
+       }
+      },
+      {
+       "mark": {
+        "type": "text",
+        "radius": 120
+       },
+       "encoding": {
+        "theta": {
+         "field": "v",
+         "type": "quantitative",
+         "stack": true
+        },
+        "text": {
+         "field": "part",
+         "type": "nominal"
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
    "name": "stacked column through fold",
    "spec": {
     "vl": {
@@ -1134,7 +1265,7 @@
    }
   },
   {
-   "name": "an arc mark",
+   "name": "a pie of 13 slices",
    "code": "VALIDATION_FAILED",
    "path": "spec.vl.mark",
    "spec": {
@@ -1142,24 +1273,158 @@
      "data": {
       "values": [
        {
-        "week": "2026-11-30",
-        "onhand": 2140
+        "part": "p0",
+        "v": 1
        },
        {
-        "week": "2026-12-07",
-        "onhand": 1340
+        "part": "p1",
+        "v": 2
+       },
+       {
+        "part": "p2",
+        "v": 3
+       },
+       {
+        "part": "p3",
+        "v": 4
+       },
+       {
+        "part": "p4",
+        "v": 5
+       },
+       {
+        "part": "p5",
+        "v": 6
+       },
+       {
+        "part": "p6",
+        "v": 7
+       },
+       {
+        "part": "p7",
+        "v": 8
+       },
+       {
+        "part": "p8",
+        "v": 9
+       },
+       {
+        "part": "p9",
+        "v": 10
+       },
+       {
+        "part": "p10",
+        "v": 11
+       },
+       {
+        "part": "p11",
+        "v": 12
+       },
+       {
+        "part": "p12",
+        "v": 13
        }
       ]
      },
      "mark": "arc",
      "encoding": {
-      "x": {
-       "field": "week",
-       "type": "temporal"
-      },
-      "y": {
-       "field": "onhand",
+      "theta": {
+       "field": "v",
        "type": "quantitative"
+      },
+      "color": {
+       "field": "part",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a pie of 13 rows with no colour (each row a slice)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "v": 1
+       },
+       {
+        "v": 2
+       },
+       {
+        "v": 3
+       },
+       {
+        "v": 4
+       },
+       {
+        "v": 5
+       },
+       {
+        "v": 6
+       },
+       {
+        "v": 7
+       },
+       {
+        "v": 8
+       },
+       {
+        "v": 9
+       },
+       {
+        "v": 10
+       },
+       {
+        "v": 11
+       },
+       {
+        "v": 12
+       },
+       {
+        "v": 13
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a donut's innerRadius out of range",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark.innerRadius",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "part": "a",
+        "v": 1
+       }
+      ]
+     },
+     "mark": {
+      "type": "arc",
+      "innerRadius": -5
+     },
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "part",
+       "type": "nominal"
       }
      }
     }
@@ -2025,7 +2290,7 @@
   {
    "name": "a channel outside the allowlist",
    "code": "VALIDATION_FAILED",
-   "path": "spec.vl.encoding.theta",
+   "path": "spec.vl.encoding.radius",
    "spec": {
     "vl": {
      "data": {
@@ -2050,7 +2315,7 @@
        "field": "onhand",
        "type": "quantitative"
       },
-      "theta": {
+      "radius": {
        "field": "onhand"
       }
      }

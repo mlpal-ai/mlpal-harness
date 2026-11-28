@@ -40,7 +40,7 @@ const KIND_RULES: Record<BlockKind, string> = {
     `optional sub, delta {value, good: up|down}, spark [numbers], status ok|warn|bad|neutral; at most ${DISPLAY_LIMITS.kpiTiles} tiles.`,
   grid: `grid: column type text|code|num|bar|state; row_key is the column whose values are unique; at most ${DISPLAY_LIMITS.gridRows.toLocaleString("en-US")} rows.`,
   chart:
-    `chart: Vega-Lite 6 with inline data.values only (at most ${DISPLAY_LIMITS.chartRows.toLocaleString("en-US")} rows, ${DISPLAY_LIMITS.chartCells.toLocaleString("en-US")} cells, ${DISPLAY_LIMITS.chartSeries} series; the whole input at most ${DISPLAY_LIMITS.inputBytes / 1024} KiB). Marks line, area, bar, point, rule, rect, text, tick, errorband, errorbar, boxplot; ` +
+    `chart: Vega-Lite 6 with inline data.values only (at most ${DISPLAY_LIMITS.chartRows.toLocaleString("en-US")} rows, ${DISPLAY_LIMITS.chartCells.toLocaleString("en-US")} cells, ${DISPLAY_LIMITS.chartSeries} series; the whole input at most ${DISPLAY_LIMITS.inputBytes / 1024} KiB). Marks line, area, bar, point, rule, rect, text, tick, errorband, errorbar, boxplot, and arc for a pie (theta and color; innerRadius for a donut; at most ${DISPLAY_LIMITS.chartSlices} slices); ` +
     `layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (${DISPLAY_LIMITS.chartVconcat}); transforms filter (field predicates), aggregate, bin, timeUnit, window, fold, stack. ` +
     "No URL, calculate, expression, facet or concat. No ci0, ci1 or extent \"ci\": compute an interval upstream and draw its low and high fields (errorband with y and y2). " +
     'Sort by a channel ("-y") or {field, order}, never an op; a condition sets a value, never a field. series_order keeps series colours in that order. ' +

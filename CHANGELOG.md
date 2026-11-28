@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Pie and donut charts: the `arc` mark (2026-11-28)
+
+- A real run ended with "the chart could not be drawn": the grammar refused `arc`. A chart may now use `mark: "arc"`
+  with the `theta` channel and `color`, and the mark properties `innerRadius` (a donut), `outerRadius`, `padAngle`,
+  and `radius` for a label's distance.
+- A pie draws at most `DISPLAY_LIMITS.chartSlices` (12) slices: the distinct values of its colour field, or its rows
+  when it has none. More are refused, with the hint to use bars or group the rest as "Other".
+- The cost walker costs an arc as a point-like mark. Every other mark still fails closed.
+- The model's grammar line names it. Replay: run 2's pie now draws (35 of 48 first time).
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or
