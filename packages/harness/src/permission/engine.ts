@@ -2,7 +2,7 @@ import type { Author, ToolAskDetail } from "@mlpal/harness-protocol";
 import { isReadOnlyShell } from "./readonly-shell";
 import { containmentDeny } from "./containment";
 import { shellCwd } from "../tools/shell-cwd";
-import { catastrophicDeny, contentSafetyDeny, protectedReadDeny, redirectTargets } from "./safety";
+import { catastrophicDeny, contentSafetyDeny, protectedReachAsk, protectedReadDeny, redirectTargets } from "./safety";
 import type { Logger } from "../obs/logger";
 import { bashAsWritten, type Decomposed, type DecomposedCommand, decomposeBash, normalizeBashPattern, refusesAutoApproval, UNKNOWN } from "./shell-decompose";
 // Type-only: no runtime cycle even though safety-envelope imports globMatch from here.
@@ -130,6 +130,12 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
     // A paid call past its threshold is the person's to approve: no envelope allow, allow rule or mode admits it.
     // recon and a read-only run fall through to refuse it as they refuse every change.
     if (req.alwaysAsk && config.mode !== "recon" && config.readOnlyRun !== true) return { behavior: "ask", reason: req.alwaysAsk };
+    // REVIEW-3: a command that could reach the person's keys without naming them is asked in every mode, before the
+    // envelope, allow rules or the mode default could run it unasked (safety.ts protectedReachAsk).
+    if (req.toolName === "Bash") {
+      const reach = protectedReachAsk(String(req.input.command ?? ""));
+      if (reach) return { behavior: "ask", reason: reach };
+    }
     // The safety envelope decides after the host/user denials (it can never widen them) and before
     // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
     if (config.safety) {
