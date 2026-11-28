@@ -61,7 +61,18 @@ export interface GenerateImageDeps {
   /** Poll interval and the longest a render may take. Defaults 2 s and 10 min. */
   pollMs?: number;
   timeoutMs?: number;
+  /** How long after its request a call whose engine died before the gateway named its job may submit the same request
+   *  under the same idempotency key again (the gateway answers with the original job). Default RESUBMIT_WITHIN_MS. */
+  resubmitWithinMs?: number;
 }
+
+/**
+ * The engine's own bound on repeating a submit under its idempotency key: 24 hours. The gateway keeps the key's job
+ * for as long as the row exists (mlpal-assistants-service image_jobs: a unique index on (user_id, idempotency_key),
+ * no expiry, no sweeper), scoped to the user, not the API key, so a workspace's new key at wake keeps it. The engine
+ * stays well inside that, so a sweeper added there later cannot turn a replay into a second render unnoticed.
+ */
+export const RESUBMIT_WITHIN_MS = 24 * 60 * 60 * 1000;
 
 /** The threshold when the HOP sets none: 0.02 CU (US$0.20 at 1 CU = US$10), under one image of the dearer per-image
  *  models the gateway lists, so one of those is asked. */
@@ -134,11 +145,16 @@ export function estimateFromPrices(prices: ReadonlyMap<string, ImagePrice>, mode
   };
 }
 
-/** Why this call must be asked, whatever the mode, or null. Fails closed: no estimate is an ask. */
-export function imageAskReason(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): string | null {
+/** A call's estimated compute units, or null when the price is known only after the render. */
+function estimateOf(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "prices" | "models">>): { q: ImageEstimateQuery; est: number | null } {
   const q: ImageEstimateQuery = { model: input.model ?? "mlpal", n: input.n ?? 1, quality: input.quality ?? "standard", size: input.size ?? "1024x1024", references: input.references?.length ?? 0 };
   const estimate = deps.estimate ?? estimateFromPrices(deps.prices?.() ?? new Map(), deps.models?.() ?? []);
-  const est = estimate(q);
+  return { q, est: estimate(q) };
+}
+
+/** Why this call must be asked, whatever the mode, or null. Fails closed: no estimate is an ask. */
+export function imageAskReason(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): string | null {
+  const { q, est } = estimateOf(input, deps);
   const limit = deps.askOverCu ?? IMAGE_ASK_OVER_CU;
   const why = [
     q.n > 1 ? `${q.n} images` : null,
@@ -159,9 +175,10 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   const now = deps.now ?? (() => new Date());
   const pollMs = deps.pollMs ?? 2_000;
   const timeoutMs = deps.timeoutMs ?? 600_000;
+  const resubmitWithinMs = deps.resubmitWithinMs ?? RESUBMIT_WITHIN_MS;
 
-  function references(paths: string[], ctx: ToolContext): ImageReference[] | ToolResult {
-    const out: ImageReference[] = [];
+  function references(paths: string[], ctx: ToolContext): (ImageReference & { path: string; sha256: string })[] | ToolResult {
+    const out: (ImageReference & { path: string; sha256: string })[] = [];
     const faults: string[] = [];
     for (const p of paths) {
       const f = readMedia({ path: p, maxBytes: L.referenceBytes }, ctx);
@@ -173,7 +190,7 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
         faults.push(`MEDIA_TYPE_NOT_ALLOWED references: ${f.facts.path} is ${f.facts.mime}; a reference is PNG, JPEG or WebP`);
         continue;
       }
-      out.push({ base64: Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength).toString("base64"), mime_type: f.facts.mime });
+      out.push({ base64: Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength).toString("base64"), mime_type: f.facts.mime, path: f.facts.path, sha256: f.facts.sha256 });
     }
     if (faults.length) {
       const first = faults[0]!.split(" ")[0]!;
@@ -221,7 +238,7 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
   /** The render: submit with the tool-use id as the idempotency key (`onJob` records the job id durably the moment the
    *  gateway names it), then poll the job until it ends or the deadline. */
   async function render(prompt: string, input: Input, refs: ImageReference[], key: string, onJob: (id: string) => Promise<void>, signal?: AbortSignal): Promise<Rendered | ToolResult> {
-    const req = { prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs } : {}) };
+    const req = { prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs.map(({ base64, mime_type }) => ({ base64, mime_type })) } : {}) };
     let submitted;
     try {
       submitted = await deps.images.submit(req, { idempotencyKey: key, ...(signal ? { signal } : {}) });
@@ -270,6 +287,38 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     const { written, failure } = await store(result, o.stem, where, ctx.signal);
     if (failure) return notSaved(result, jobId, written, failure);
     return shown(o.prompt, result, written, o.key, ctx);
+  }
+
+  /** A request whose job the gateway never named before its engine died: the same request under the same key, inside
+   *  the window, else the charge as an unconfirmed estimate. */
+  async function resubmit(asked: Record<string, unknown>, input: Input, ctx: ToolContext): Promise<ToolResult> {
+    const at = typeof asked.at === "string" ? Date.parse(asked.at) : NaN;
+    const key = String(asked.key);
+    const prompt = typeof asked.prompt === "string" ? asked.prompt : "";
+    if (!Number.isFinite(at) || now().getTime() - at > resubmitWithinMs || !prompt) return unconfirmed(asked, ctx, "too long ago to ask the gateway again under its key");
+    const files = Array.isArray(asked.references) ? (asked.references as Array<{ path: string; sha256: string }>) : [];
+    const refs = references(files.map((f) => f.path), ctx);
+    if (!Array.isArray(refs) || refs.some((r, i) => r.sha256 !== files[i]!.sha256)) return unconfirmed(asked, ctx, "a reference image changed since, so the same request cannot be made again");
+    const again: Input = { prompt, model: String(asked.model ?? "mlpal"), n: Number(asked.n ?? 1), size: String(asked.size ?? "1024x1024"), quality: (asked.quality === "hd" ? "hd" : "standard") as Input["quality"] };
+    const where = destination(ctx, again.n ?? 1);
+    if (!("dir" in where)) return where;
+    const rendered = await render(prompt, again, refs, key, async (id) => ctx.journal?.append({ phase: "job", jobId: id }), ctx.signal);
+    if (!("result" in rendered)) {
+      // a 409: the key's job exists with another body; whether it billed cannot be told from here
+      return String(rendered.content).includes("already used for a different request") ? unconfirmed(asked, ctx, "the gateway holds another request under this key") : rendered;
+    }
+    return finish(rendered, { prompt, stem: typeof asked.stem === "string" ? asked.stem : stemOf(input.name ?? prompt), key, charge: true }, ctx);
+  }
+
+  /** A charge that may have happened and cannot be confirmed: on the session as a flagged estimate, said once. */
+  async function unconfirmed(asked: Record<string, unknown>, ctx: ToolContext, why: string): Promise<ToolResult> {
+    const est = typeof asked.estimate === "number" ? asked.estimate : null;
+    await ctx.spend?.({ input_tokens: 0, output_tokens: 0, compute_units_unconfirmed: est ?? 0 });
+    return refuse(
+      "IMAGE_UNCONFIRMED",
+      `the engine stopped while an image was being requested at ${String(asked.at ?? "an unknown time")} (key ${String(asked.key)}), and it was not asked again (${why}). It may have been charged${est !== null ? `, an estimated ${est.toFixed(3)} CU` : " (its price is known only after a render)"}; that could not be confirmed. Nothing was saved.`,
+      "tell the person this once, with the time and the estimate; making it again may pay a second time, so only on their word",
+    );
   }
 
   /** This call's journal entries (what it asked for, and its job once the gateway named it). */
@@ -376,26 +425,36 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
       const key = ctx.toolUseId ?? `generate-image-${randomBytes(8).toString("hex")}`;
       const stem = stemOf(input.name ?? prompt);
       // on record before anything can be paid for (review R5): what was asked, under which key
-      await ctx.journal?.append({ phase: "asked", key, model, n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", stem, prompt: prompt.slice(0, 500) });
+      // the exact request (its references by hash) and when, so a resumed engine can repeat it under the same key
+      await ctx.journal?.append({
+        phase: "asked",
+        key,
+        at: now().toISOString(),
+        estimate: estimateOf(input, deps).est,
+        model,
+        n: input.n ?? 1,
+        size: input.size ?? "1024x1024",
+        quality: input.quality ?? "standard",
+        stem,
+        prompt,
+        references: refs.map((r) => ({ path: r.path, sha256: r.sha256 })),
+      });
       const rendered = await render(prompt, input, refs, key, async (jobId) => ctx.journal?.append({ phase: "job", jobId }), ctx.signal);
       if (!("result" in rendered)) return rendered;
       return finish(rendered, { prompt, stem, key, charge: true }, ctx);
     },
     /**
-     * Resumed after its engine died mid-call (review R5): reconciled from the journal, never by a new submit. With its
-     * job on record, the job is polled; a finished one is charged once (the engine keeps one charge per call) and saved.
-     * With no job on record the gateway cannot be asked: it has no lookup by idempotency key, and a submit is what
-     * this must never repeat.
+     * Resumed after its engine died mid-call (review R5): reconciled from the journal. With its job on record, the job is
+     * polled; a finished one is charged once (the engine keeps one charge per call) and saved. With no job on record
+     * the key is the lookup: within RESUBMIT_WITHIN_MS of the request, the same request under the same key is submitted
+     * again, and the gateway answers with the original job if it arrived (no second charge) or makes it once if it never
+     * did. Past that, or when the request can no longer be repeated exactly (a reference changed), nothing is submitted
+     * and the charge is counted as an unconfirmed estimate.
      */
     async recover(input, ctx) {
       const { asked, jobId } = await entriesOf(ctx);
       if (!asked) return refuse("IMAGE_FAILED", "the engine stopped before the image was requested; nothing was made or paid", "make it again if the person still wants it");
-      if (!jobId)
-        return refuse(
-          "IMAGE_FAILED",
-          `the engine stopped while the image was being requested (key ${String(asked.key)}); whether the gateway took the request is not known, so it was not asked again and nothing was charged here`,
-          "tell the person the request may have been made once; making it again may pay a second time, so only on their word",
-        );
+      if (!jobId) return resubmit(asked, input, ctx);
       let job: ImageJob;
       try {
         job = await deps.images.job(jobId, ctx.signal);

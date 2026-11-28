@@ -55,6 +55,15 @@ removed or renamed. The sections below keep each branch's own account. By capabi
     for a job this session made, while the gateway still serves its links (one hour after the render; an inline
     result has no expiry). It is never asked as a cost.
 - R10: tests use placeholder buckets and hosts only.
+- The controller's ruling on a death before the job id is recorded: the idempotency key is the lookup.
+  - The journal holds the exact request: model, size, quality, count, the full prompt, the references' sha256, the
+    time and the estimate.
+  - Within `RESUBMIT_WITHIN_MS` (24 h) of the request, resume submits the same request under the same key, and the
+    gateway answers with the original job, or makes it once if it never arrived. The gateway keeps (user_id, key) with
+    no expiry, scoped to the user, so a new API key at wake is still inside the window.
+  - Past the window, after a changed reference, or on a 409, nothing is submitted. The call is `IMAGE_UNCONFIRMED`,
+    naming the time and the estimate, and the estimate is counted as `Usage.compute_units_unconfirmed` (new and
+    optional, summed by `addUsage`, outside `StatsUsage`).
 
 ### engine-media: review-media round 1 fixes (needs the same version bump, 2026-11-28)
 

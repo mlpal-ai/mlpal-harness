@@ -34,18 +34,23 @@ class ScriptedModel implements ModelClient {
 const toolUse = (input: Record<string, unknown>): ModelResult => ({ model: "test", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_img", name: "GenerateImage", input }] }, usage: { input_tokens: 10, output_tokens: 5 }, stopReason: "tool_use" });
 const done = (text: string): ModelResult => ({ model: "test", message: { role: "assistant", content: [{ type: "text", text }] }, usage: { input_tokens: 8, output_tokens: 4 }, stopReason: "end_turn" });
 
-/** The gateway's state, shared by both engines (it outlives them): its jobs and every submit it took. */
+/** The gateway's state, shared by both engines (it outlives them): its jobs and every submit it took. Idempotency as
+ *  the real one (image_jobs.submit_job): one job per (user, key), whatever API key the user calls with. */
 class Gateway {
-  submits: Array<{ key: string; n: number }> = [];
+  submits: Array<{ key: string; n: number; apiKey: string }> = [];
   jobs = new Map<string, ImageResult>();
+  byKey = new Map<string, string>();
   /** Where the first engine dies: in the submit's answer, in a poll, or in the download of image `i`. */
   constructor(public die: { at: "submit" | "poll" | "download"; image?: number } | null) {}
-  client(engine: 1 | 2): ImageGateway {
+  client(engine: 1 | 2, apiKey = "key-a"): ImageGateway {
     let downloads = 0;
     return {
       submit: async (req: ImageRequest, opts: { idempotencyKey: string }) => {
-        this.submits.push({ key: opts.idempotencyKey, n: req.n });
-        const id = `job-${this.submits.length}`;
+        this.submits.push({ key: opts.idempotencyKey, n: req.n, apiKey });
+        const known = this.byKey.get(`user-1/${opts.idempotencyKey}`);
+        if (known) return { job: { status: "queued", id: known } as ImageJob };
+        const id = `job-${this.jobs.size + 1}`;
+        this.byKey.set(`user-1/${opts.idempotencyKey}`, id);
         this.jobs.set(id, { data: Array.from({ length: req.n }, (_, i) => ({ url: `https://assets.test/${id}/${i}.png` })), model: "m", cost: { compute_units: CU } });
         if (engine === 1 && this.die?.at === "submit") return never();
         return { job: { status: "queued", id } as ImageJob };
@@ -74,10 +79,10 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const tool = (gw: ImageGateway) => createGenerateImageTool({ images: gw, models: () => [], estimate: () => 0.01, now: () => new Date(`${DAY}T10:00:00Z`), sleep: async () => {}, pollMs: 1 });
-function session(store: LocalStore, model: ModelClient, gw: ImageGateway) {
+const tool = (gw: ImageGateway, at = `${DAY}T10:00:00Z`) => createGenerateImageTool({ images: gw, models: () => [], estimate: () => 0.01, now: () => new Date(at), sleep: async () => {}, pollMs: 1 });
+function session(store: LocalStore, model: ModelClient, gw: ImageGateway, at?: string) {
   const tools = new ToolRegistry();
-  tools.register(tool(gw) as never);
+  tools.register(tool(gw, at) as never);
   return new AgentSession({ agentId: "ag", sessionId: "s1", workspace: "w", cwd, model: "test", systemPrompt: "t", tools, store, model_client: model, canUseTool: createPolicy({ mode: "autopilot" }), onAsk: async () => ({ behavior: "allow" }) });
 }
 async function drain(gen: AsyncGenerator<EngineEvent, unknown, void>): Promise<EngineEvent[]> {
@@ -89,7 +94,7 @@ async function drain(gen: AsyncGenerator<EngineEvent, unknown, void>): Promise<E
   }
 }
 /** Runs the first engine until it dies at the gateway's point, then a second resumes the session from disk. */
-async function crashAndResume(gw: Gateway, input: Record<string, unknown> = { prompt: "a red fox" }) {
+async function crashAndResume(gw: Gateway, input: Record<string, unknown> = { prompt: "a red fox" }, resume: { at?: string; apiKey?: string } = {}) {
   const dir = join(root, "store");
   const first = new LocalStore(dir);
   void drain(session(first, new ScriptedModel([toolUse(input), done("ok")]), gw.client(1)).run({ text: "make a fox" }));
@@ -97,12 +102,13 @@ async function crashAndResume(gw: Gateway, input: Record<string, unknown> = { pr
   for (let i = 0; i < 200 && !(await deadYet(first, gw)); i++) await new Promise((r) => setTimeout(r, 5));
   await first.flush?.();
   const second = new LocalStore(dir);
-  const events = await drain(session(second, new ScriptedModel([done("resumed")]), gw.client(2)).resume() as never);
+  const events = await drain(session(second, new ScriptedModel([done("resumed")]), gw.client(2, resume.apiKey), resume.at).resume() as never);
   const entries = (await new LocalStore(dir).conversation.read("s1")).map((e) => e.payload as SDKMessage & { usage?: { compute_units?: number } });
   const recorded = entries.reduce((s, e) => s + (e.type === "result" ? (e.usage?.compute_units ?? 0) : 0), 0);
+  const unconfirmed = entries.reduce((s, e) => s + (e.type === "result" ? ((e.usage as { compute_units_unconfirmed?: number } | undefined)?.compute_units_unconfirmed ?? 0) : 0), 0);
   const result = events.find((e) => e.type === "tool_result") as { content: string; isError?: boolean } | undefined;
   const spends = (await new LocalStore(dir).readEvents("s1", "tool_spend")).length;
-  return { result, recorded, spends, files: existsSync(join(cwd, "media", DAY)) ? readdirSync(join(cwd, "media", DAY)).filter((f) => !f.startsWith(".")).sort() : [] };
+  return { result, recorded, unconfirmed, spends, files: existsSync(join(cwd, "media", DAY)) ? readdirSync(join(cwd, "media", DAY)).filter((f) => !f.startsWith(".")).sort() : [] };
 }
 /** The first engine reached its death point. */
 async function deadYet(store: LocalStore, gw: Gateway): Promise<boolean> {
@@ -134,11 +140,25 @@ describe("R5: a GenerateImage call whose engine dies is reconciled on resume, by
     expect(r.files).toEqual(["a-red-fox-1-2.png", "a-red-fox-1.png", "a-red-fox-2.png"]);
   });
 
-  test("killed between submit and the job's record: not submitted again; the result says the request may have been made", async () => {
+  test("killed before the job's id is recorded, resumed inside the window: the same request under the same key, one render, one charge, saved", async () => {
     const gw = new Gateway({ at: "submit" });
-    const r = await crashAndResume(gw);
-    expect([gw.submits.length, r.spends, r.result?.isError, r.files]).toEqual([1, 0, true, []]);
-    expect(r.result?.content).toContain("not asked again");
+    const r = await crashAndResume(gw, { prompt: "a red fox" }, { at: `${DAY}T11:00:00Z` });
+    expect([gw.submits.map((x) => x.key), gw.jobs.size, r.spends, r.recorded, r.result?.isError ?? false, r.files]).toEqual([["toolu_img", "toolu_img"], 1, 1, CU, false, ["a-red-fox-1.png"]]);
+  });
+
+  test("resumed outside the window: no submit; the person is told once; the spend is an unconfirmed estimate", async () => {
+    const gw = new Gateway({ at: "submit" });
+    const r = await crashAndResume(gw, { prompt: "a red fox" }, { at: `2026-11-29T10:00:01Z` });
+    expect([gw.submits.length, r.spends, r.recorded, r.unconfirmed, r.result?.isError, r.files]).toEqual([1, 1, 0, 0.01, true, []]);
+    expect(r.result?.content).toContain("IMAGE_UNCONFIRMED");
+    expect(r.result?.content).toContain(`at ${DAY}T10:00:00.000Z`);
+    expect(r.result?.content).toContain("an estimated 0.010 CU");
+  });
+
+  test("resumed under a different API key (a workspace's key changes at wake): the gateway scopes the key to the user, so the original job, one charge", async () => {
+    const gw = new Gateway({ at: "submit" });
+    const r = await crashAndResume(gw, { prompt: "a red fox" }, { at: `${DAY}T10:30:00Z`, apiKey: "key-b" });
+    expect([gw.submits.map((x) => x.apiKey), gw.jobs.size, r.spends, r.recorded, r.files]).toEqual([["key-a", "key-b"], 1, 1, CU, ["a-red-fox-1.png"]]);
   });
 });
 
