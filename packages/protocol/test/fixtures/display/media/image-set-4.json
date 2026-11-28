@@ -1,0 +1,73 @@
+{
+  "v": 1,
+  "block_id": "hero-options",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "block",
+  "kind": "image_set",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "images": [
+      {
+        "media": {
+          "path": "media/2026-11-28/hero-1.png",
+          "mime": "image/png",
+          "bytes": 900000,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "alt": "Hero option A: the robot waves",
+        "width": 1024,
+        "height": 1024,
+        "animated": false,
+        "label": "A"
+      },
+      {
+        "media": {
+          "path": "media/2026-11-28/hero-2.png",
+          "mime": "image/png",
+          "bytes": 900001,
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "alt": "Hero option B: the robot points",
+        "width": 1024,
+        "height": 1024,
+        "animated": false,
+        "label": "B"
+      },
+      {
+        "media": {
+          "path": "media/2026-11-28/hero-3.png",
+          "mime": "image/png",
+          "bytes": 900002,
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "alt": "Hero option C: the robot sits",
+        "width": 1024,
+        "height": 1024,
+        "animated": false,
+        "label": "C"
+      },
+      {
+        "media": {
+          "path": "media/2026-11-28/hero-4.png",
+          "mime": "image/png",
+          "bytes": 900003,
+          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "alt": "Hero option D: the robot runs",
+        "width": 1024,
+        "height": 1536,
+        "animated": false,
+        "label": "D"
+      }
+    ],
+    "chosen": 1
+  },
+  "fallback": {
+    "text": "4 images.\nA: Hero option A: the robot waves · 1024×1024 · media/2026-11-28/hero-1.png\nB: Hero option B: the robot points · 1024×1024 · media/2026-11-28/hero-2.png (chosen)\nC: Hero option C: the robot sits · 1024×1024 · media/2026-11-28/hero-3.png\nD: Hero option D: the robot runs · 1024×1536 · media/2026-11-28/hero-4.png"
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "ok"
+}

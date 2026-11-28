@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### engine-media: image and image_set kinds in the protocol (needs a protocol and catalog version bump, 2026-11-28)
+
+- `MEDIA_KINDS` (`image`, `image_set`), `isMediaKind` and `DisplayKind`. `BLOCK_KINDS` is unchanged (the wave-1
+  kinds).
+- A media block carries its file by its workspace path, never bytes or a URL. `MediaFile` is `{path, mime, bytes,
+  sha256}`, its type taken from the magic number. `ImageSpec` is `{media, alt, width, height, animated, gps?,
+  made_by?}`; `ImageSetSpec` is `{images: 2-8 labelled A-H, chosen?, made_by?}`. The schemas are light
+  (`media-schemas.ts`), like the block schemas.
+- `checkShowInput` takes the engine's probe facts (`media`) and the client's `formats`, and never touches disk:
+  - every fault is joined in one refusal;
+  - the new codes are `PATH_NOT_ALLOWED`, `PATH_OUTSIDE_WORKSPACE`, `MEDIA_NOT_FOUND`, `MEDIA_NOT_REGULAR`,
+    `MEDIA_TOO_LARGE`, `MEDIA_TYPE_NOT_ALLOWED` (SVG is never an image), `MEDIA_CHANGED`, `MEDIA_UNREADABLE` and
+    `MEDIA_DIMENSIONS_TOO_LARGE`;
+  - a URL is `URL_NOT_ALLOWED`;
+  - a media kind is `KIND_NOT_ALLOWED` unless the client names it, and a type is refused unless it is in
+    `formats`.
+- A media block's fallback is optional for the model. The engine completes it with one neutralised line per file:
+  name, type, size and path.
+- `sniffMedia` and `imageInfo` read the type and the sides from a file's head without decoding it: PNG
+  (IHDR/acTL), GIF, JPEG (SOFn, EXIF GPS) and WebP (VP8/VP8L/VP8X). The shared vectors are in
+  `test/fixtures/display/media-magic.vectors.json`.
+- `DisplayCaps.media {formats, save_data?}` is optional, and an invalid one is dropped. `displaySourceSchema.by`
+  takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
+- Envelope fixtures for the UI are in `test/fixtures/display/media/`.
+
 ### Pie and donut charts: the `arc` mark (2026-11-28)
 
 - A real run ended with "the chart could not be drawn": the grammar refused `arc`. A chart may now use `mark: "arc"`

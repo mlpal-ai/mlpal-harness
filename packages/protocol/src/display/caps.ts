@@ -21,8 +21,17 @@ export const displayCapsSchema = z.object({
     .transform((ls) => [...new Set(ls.filter((l): l is DisplayLevel => LEVELS.has(l)))]),
   /** Catalog versions it draws blocks from: `["harness.v1/1"]`. */
   catalogs: z.array(z.string().min(1).max(40)).max(8),
-  /** A subset of the catalogs' kinds; absent: all of them. */
+  /** A subset of the catalogs' kinds; absent: all of them but the media kinds, which a client names to get. */
   kinds: z.array(z.string().min(1).max(40)).max(64).optional(),
+  /** The media this client draws (DISPLAY-PROTOCOL-v0.1-media §3.2): the types it decodes or plays, and whether the
+   *  person asked for reduced data. Absent: no media kind is offered, whatever `kinds` names. */
+  media: z
+    .object({
+      formats: z.array(z.string().min(1).max(100)).max(64),
+      save_data: z.boolean().optional(),
+    })
+    .optional()
+    .catch(undefined),
   a2ui: z.literal("1.0").optional().catch(undefined),
   viewport: z.enum(["phone", "tablet", "desktop", "wide"]),
   /** Only for server-drawn snapshots. */

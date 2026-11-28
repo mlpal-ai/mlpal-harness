@@ -20,6 +20,16 @@ export function isBlockKind(kind: string): kind is BlockKind {
   return (BLOCK_KINDS as readonly string[]).includes(kind);
 }
 
+/** The media kinds (DISPLAY-PROTOCOL-v0.1-media §1): offered only to a client that names them in `kinds` and
+ *  declares `media` (caps.ts), and only where the engine can read the workspace's files. */
+export const MEDIA_KINDS = ["image", "image_set"] as const;
+export type MediaKind = (typeof MEDIA_KINDS)[number];
+export function isMediaKind(kind: string): kind is MediaKind {
+  return (MEDIA_KINDS as readonly string[]).includes(kind);
+}
+/** Every kind Show takes. */
+export type DisplayKind = BlockKind | MediaKind;
+
 /** `^[a-z][a-z0-9-]{0,39}$`: chosen by the model, unique in the session; a later Show with the same id replaces it. */
 export const BLOCK_ID = /^[a-z][a-z0-9-]{0,39}$/;
 
@@ -60,4 +70,13 @@ export const DISPLAY_LIMITS = {
   sources: 20,
   /** Faults one refusal lists (the rest are counted). */
   faults: 10,
+  /** Media kinds: a file's bytes, an image's sides and pixels (from its header), images in a set, an alt text. */
+  media: {
+    imageBytes: 20 * 1024 * 1024,
+    maxSide: 16_384,
+    maxPixels: 40_000_000,
+    setImages: 8,
+    altChars: 300,
+    pathChars: 4_096,
+  },
 } as const;

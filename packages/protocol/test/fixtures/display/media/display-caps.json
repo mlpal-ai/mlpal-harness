@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "client": "web",
+  "levels": [
+    "text",
+    "block",
+    "file"
+  ],
+  "catalogs": [
+    "harness.v1/1"
+  ],
+  "kinds": [
+    "chart",
+    "kpis",
+    "grid",
+    "image",
+    "image_set"
+  ],
+  "media": {
+    "formats": [
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp"
+    ],
+    "save_data": false
+  },
+  "viewport": "desktop",
+  "theme": "light",
+  "locale": "en-US",
+  "timeZone": "UTC"
+}

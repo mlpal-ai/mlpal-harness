@@ -1,0 +1,29 @@
+{
+  "v": 1,
+  "block_id": "fox",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "block",
+  "kind": "image",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "media": {
+      "path": "media/2026-11-28/fox-1.png",
+      "mime": "image/png",
+      "bytes": 1234567,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "alt": "A red fox on fresh snow at dawn, looking left",
+    "width": 1536,
+    "height": 1024,
+    "animated": false
+  },
+  "fallback": {
+    "text": "A red fox on fresh snow at dawn, looking left\nImage: fox-1.png · PNG · 1536×1024 · 1.2 MB · media/2026-11-28/fox-1.png"
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "ok",
+  "caption": "Made from your two references"
+}

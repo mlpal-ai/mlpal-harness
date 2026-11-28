@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { chartSpecSchema, gridSpecSchema, kpisSpecSchema } from "./block-schemas.js";
+import { imageSetSpecSchema, imageSpecSchema } from "./media-schemas.js";
 import { plainText as plain } from "./fields.js";
-import { BLOCK_ID, DISPLAY_CATALOG, DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
+import { BLOCK_ID, DISPLAY_CATALOG, DISPLAY_LIMITS, type DisplayKind } from "./catalog.js";
 
 /**
  * 0.26.8 display protocol (DISPLAY-PROTOCOL-v0 §2): what an agent deliberately shows, as a render-only field on the
@@ -64,11 +65,11 @@ export const noteSchema = noteInputSchema.extend({
 });
 export type Note = z.infer<typeof noteSchema>;
 
-/** §2.3 who made the block. This engine writes model blocks only; `engine`, `mcp` and `host` sources arrive with the
- *  slices that map tool results and draw host blocks. */
+/** §2.3 who made the block: the model (Show), or the engine (a tool's own result, such as GenerateImage's image).
+ *  `mcp` and `host` sources arrive with the slices that map tool results and draw host blocks. */
 export const displaySourceSchema = z
   .object({
-    by: z.literal("model"),
+    by: z.enum(["model", "engine"]),
     /** The tool calls of this session whose results the block shows (every one checked to exist). */
     tool_use_ids: z.array(z.string()).max(DISPLAY_LIMITS.sources).optional(),
     as_of: z.string().datetime({ offset: true }).optional(),
@@ -111,19 +112,25 @@ const common = {
  *  model never retried) is final: draw it as `fallback_only`. */
 export const textDisplaySchema = z.object({ ...common, level: z.literal("text"), status: z.enum(["repairing", "fallback_only"]) }).strict();
 
-const block = <K extends BlockKind, S extends z.ZodTypeAny>(kind: K, spec: S) =>
+const block = <K extends DisplayKind, S extends z.ZodTypeAny>(kind: K, spec: S) =>
   z.object({ ...common, level: z.literal("block"), kind: z.literal(kind), catalog: z.literal(DISPLAY_CATALOG), spec, status: z.literal("ok") }).strict();
 
 export const chartDisplaySchema = block("chart", chartSpecSchema);
 export const kpisDisplaySchema = block("kpis", kpisSpecSchema);
 export const gridDisplaySchema = block("grid", gridSpecSchema);
+/** Media blocks (DISPLAY-PROTOCOL-v0.1-media): a file by its workspace path, never its bytes. */
+export const imageDisplaySchema = block("image", imageSpecSchema);
+export const imageSetDisplaySchema = block("image_set", imageSetSpecSchema);
 
 /** One display, discriminated by `level`, then (for `block`) by `kind`. Validate an incoming one with
  *  `displayEnvelopeSchema`; a block's spec is checked further by `validateBlock` (the allowlist zod cannot state). */
-export const displayEnvelopeSchema = z.union([textDisplaySchema, chartDisplaySchema, kpisDisplaySchema, gridDisplaySchema]);
+export const displayEnvelopeSchema = z.union([textDisplaySchema, chartDisplaySchema, kpisDisplaySchema, gridDisplaySchema, imageDisplaySchema, imageSetDisplaySchema]);
 export type TextDisplay = z.infer<typeof textDisplaySchema>;
 export type ChartDisplay = z.infer<typeof chartDisplaySchema>;
 export type KpisDisplay = z.infer<typeof kpisDisplaySchema>;
 export type GridDisplay = z.infer<typeof gridDisplaySchema>;
 export type BlockDisplay = ChartDisplay | KpisDisplay | GridDisplay;
-export type DisplayEnvelope = TextDisplay | BlockDisplay;
+export type ImageDisplay = z.infer<typeof imageDisplaySchema>;
+export type ImageSetDisplay = z.infer<typeof imageSetDisplaySchema>;
+export type MediaDisplay = ImageDisplay | ImageSetDisplay;
+export type DisplayEnvelope = TextDisplay | BlockDisplay | MediaDisplay;

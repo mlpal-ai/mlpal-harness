@@ -8,5 +8,6 @@ export * from "./catalog.js";
 export { arrived, asDisplayError, displayPath, type DisplayCheck, type DisplayError, type DisplayErrorCode } from "./errors.js";
 export * from "./envelope.js";
 export * from "./block-schemas.js";
+export * from "./media-schemas.js";
 export * from "./caps.js";
 export { settleDisplays } from "./settle.js";
