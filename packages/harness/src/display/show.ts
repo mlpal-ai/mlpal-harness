@@ -72,6 +72,8 @@ const NESTED = ["spec", "notes", "placement", "sources"] as const;
 interface Lenient {
   input: unknown;
   unparsed: Map<string, string>;
+  /** Every argument that arrived as a JSON string, parsed or not. */
+  strings: Set<string>;
 }
 
 function parseString(v: unknown, openers: RegExp): { ok: true; value: unknown } | { ok: false; error: string } | null {
@@ -87,10 +89,12 @@ function parseString(v: unknown, openers: RegExp): { ok: true; value: unknown } 
 
 function lenientInput(raw: unknown): Lenient {
   const unparsed = new Map<string, string>();
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { input: raw, unparsed };
+  const strings = new Set<string>();
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { input: raw, unparsed, strings };
   const out: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
   const take = (k: string, openers: RegExp) => {
     const r = parseString(out[k], openers);
+    if (r) strings.add(k);
     if (r?.ok) out[k] = r.value;
     else if (r) unparsed.set(k, r.error);
   };
@@ -99,10 +103,20 @@ function lenientInput(raw: unknown): Lenient {
   const spec = out.spec;
   if (typeof spec === "object" && spec !== null && !Array.isArray(spec)) {
     const r = parseString((spec as Record<string, unknown>).vl, /^\s*\{/);
+    if (r) strings.add("spec.vl");
     if (r?.ok) out.spec = { ...(spec as Record<string, unknown>), vl: r.value };
     else if (r) unparsed.set("spec.vl", r.error);
   }
-  return { input: out, unparsed };
+  return { input: out, unparsed, strings };
+}
+
+/** The first line of a refusal whose spec arrived as a string (run 2: Haiku's strings were all malformed). */
+const SPEC_AS_OBJECT = "Send spec as a JSON object, not a string.";
+
+function leadWith(r: ToolResult, line: string): ToolResult {
+  if (typeof r.content === "string") return { ...r, content: `${line}\n${r.content}` };
+  const [head, ...rest] = r.content;
+  return head?.type === "text" ? { ...r, content: [{ ...head, text: `${line}\n${head.text}` }, ...rest] } : { ...r, content: [{ type: "text", text: line }, ...r.content] };
 }
 
 /** A fault at an argument that arrived as an unparsable JSON string says so. */
@@ -418,7 +432,7 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
     schema: z.unknown(),
     async call(raw: unknown, ctx: ToolContext): Promise<ToolResult> {
       state.turn(ctx.runId);
-      const { input, unparsed } = lenientInput(raw);
+      const { input, unparsed, strings } = lenientInput(raw);
       const id = typeof (input as { block_id?: unknown })?.block_id === "string" ? (input as { block_id: string }).block_id : undefined;
       const kind = kindLabel((input as { kind?: unknown })?.kind);
       if (id && state.failuresOf(id) >= 2) {
@@ -443,7 +457,10 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
         const errors = (outcome.errors ?? [outcome.error]).map((e) => explainUnparsed(e, unparsed));
         outcome = { ...outcome, error: errors[0]!, errors };
       }
-      return outcome.ok ? shown(outcome.show, outcome.provenance, history) : refused(outcome, kind, history);
+      if (outcome.ok) return shown(outcome.show, outcome.provenance, history);
+      const r = refused(outcome, kind, history);
+      const atSpec = (outcome.errors ?? [outcome.error]).some((e) => e.path === "spec" || e.path?.startsWith("spec.") === true);
+      return (strings.has("spec") || strings.has("spec.vl")) && atSpec ? leadWith(r, SPEC_AS_OBJECT) : r;
     },
   });
   return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, settle };
