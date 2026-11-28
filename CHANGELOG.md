@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### engine-media: the image approval card's detail (additive, 2026-11-28)
+
+- `permission_request.askDetail?: ToolAskDetail` is new. Its first variant is `ImageAskDetail`: count, size,
+  quality, the model tag submitted (`routed` when "mlpal" leaves the choice to the gateway), destination,
+  references, `estimateCu` (absent, never 0, when unknown) and `reasons` (several_images, hd, over_threshold,
+  no_estimate).
+- `Tool.askDetail(input)` states it; the engine carries it on `PermissionRequest` and `AskContext`.
+  `imageAskDetail` and `imageAskReason` share one reasoning, so the card and the ask cannot disagree.
+
 ### engine-media: review-media round 3 (needs the same version bump, 2026-11-28)
 
 - R5b: a job's charge is recorded where the engine first learns of it, on any path, once per job.

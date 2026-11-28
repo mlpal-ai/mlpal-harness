@@ -7,6 +7,7 @@ import {
   type ContentBlock,
   type DisplayCaps,
   type DisplayEnvelope,
+  type ToolAskDetail,
   type ConversationEntry,
   emptyUsage,
   HUMAN,
@@ -330,6 +331,8 @@ export interface AskContext {
   spend?: (usage: Usage) => void;
   /** The call is always the person's (`Tool.alwaysAsk`: a paid action past its threshold), and why. */
   alwaysAsk?: string;
+  /** The tool's own statement of what the call will do (`Tool.askDetail`), for the approval card. */
+  askDetail?: ToolAskDetail;
 }
 
 /** An ask only the person may answer, one action at a time: a §10 safety edge, a call a policy hook got no verdict
@@ -2303,6 +2306,7 @@ export class AgentSession {
     const tool = await this.tools.resolve(tu.name);
     const undeclared = undeclaredArgs(tool, input);
     const alwaysAsk = tool?.alwaysAsk?.(input) ?? null;
+    const askDetail = tool?.askDetail?.(input) ?? null;
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
@@ -2312,6 +2316,7 @@ export class AgentSession {
       isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
       ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
       ...(alwaysAsk ? { alwaysAsk } : {}),
+      ...(askDetail ? { askDetail } : {}),
       principal,
       cwd: cfg.cwd,
       roots: cfg.roots ?? [cfg.cwd],
@@ -2440,6 +2445,7 @@ export class AgentSession {
         ...(spend ? { spend } : {}),
         ...(undecided ? { noVerdict: undecided.noVerdict } : {}),
         ...(req.alwaysAsk ? { alwaysAsk: req.alwaysAsk } : {}),
+        ...(req.askDetail ? { askDetail: req.askDetail } : {}),
       });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };

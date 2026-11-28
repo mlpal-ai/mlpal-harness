@@ -9,6 +9,7 @@ import {
   MEDIA_EXTENSION,
   sniffMedia,
   type DisplayEnvelope,
+  type ImageAskDetail,
 } from "@mlpal/harness-protocol";
 import { probeMedia, readMedia } from "../../display/media";
 import { ImageGatewayError, type ImageGateway, type ImageJob, type ImagePrice, type ImageReference, type ImageResult } from "../../gateway/images";
@@ -155,16 +156,50 @@ function estimateOf(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps,
   return { q, est: estimate(q) };
 }
 
-/** Why this call must be asked, whatever the mode, or null. Fails closed: no estimate is an ask. */
-export function imageAskReason(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): string | null {
+type AskReason = ImageAskDetail["reasons"][number];
+
+/** Why a call is always asked, as flags, with its estimate: what imageAskReason words and the ask detail carries. */
+function askReasons(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): { q: ImageEstimateQuery; est: number | null; limit: number; reasons: AskReason[] } {
   const { q, est } = estimateOf(input, deps);
   const limit = deps.askOverCu ?? IMAGE_ASK_OVER_CU;
-  const why = [
-    q.n > 1 ? `${q.n} images` : null,
-    q.quality === "hd" ? "hd quality" : null,
-    est === null ? `the cost of ${q.model} is known only after the render` : est > limit ? `an estimated ${est.toFixed(3)} CU (over ${limit})` : null,
-  ].filter(Boolean);
-  return why.length ? `GenerateImage: ${why.join(", ")}${est !== null ? `, estimated ${est.toFixed(3)} CU` : ""}` : null;
+  const reasons: AskReason[] = [];
+  if (q.n > 1) reasons.push("several_images");
+  if (q.quality === "hd") reasons.push("hd");
+  if (est === null) reasons.push("no_estimate");
+  else if (est > limit) reasons.push("over_threshold");
+  return { q, est, limit, reasons };
+}
+
+/** Why this call must be asked, whatever the mode, or null. Fails closed: no estimate is an ask. */
+export function imageAskReason(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models">>): string | null {
+  const { q, est, limit, reasons } = askReasons(input, deps);
+  const words: Record<AskReason, string> = {
+    several_images: `${q.n} images`,
+    hd: "hd quality",
+    no_estimate: `the cost of ${q.model} is known only after the render`,
+    over_threshold: `an estimated ${(est ?? 0).toFixed(3)} CU (over ${limit})`,
+  };
+  return reasons.length ? `GenerateImage: ${reasons.map((r) => words[r]).join(", ")}${est !== null ? `, estimated ${est.toFixed(3)} CU` : ""}` : null;
+}
+
+/** The ask's detail for the approval card: exactly what `call` submits (the same defaults), where it writes, and why
+ *  it asks. Null for a re-save by job id, which costs nothing. */
+export function imageAskDetail(input: Partial<Input>, deps: Partial<Pick<GenerateImageDeps, "estimate" | "askOverCu" | "prices" | "models" | "now">>): ImageAskDetail | null {
+  if (input.job) return null;
+  const { q, est, reasons } = askReasons(input, deps);
+  const day = (deps.now ?? (() => new Date()))().toISOString().slice(0, 10);
+  return {
+    kind: "generate_image",
+    count: q.n,
+    size: q.size,
+    quality: q.quality === "hd" ? "hd" : "standard",
+    model: q.model,
+    routed: q.model === "mlpal",
+    destination: `media/${day}`,
+    references: input.references ?? [],
+    ...(est !== null ? { estimateCu: est } : {}),
+    reasons,
+  };
 }
 
 /** A render the gateway finished: the result and the job it came from. */
@@ -419,6 +454,7 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     schema: inputSchema,
     // saving an unsaved render again costs nothing, so it is the mode's
     alwaysAsk: (input) => ((input as Partial<Input> | undefined)?.job ? null : imageAskReason((input ?? {}) as Partial<Input>, deps)),
+    askDetail: (input) => imageAskDetail((input ?? {}) as Partial<Input>, deps),
     async call(input, ctx) {
       if (input.job) return saveAgain(input.job, input, ctx);
       const prompt = input.prompt!;
