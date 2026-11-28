@@ -111,6 +111,18 @@ describe("Show: a client that draws blocks", () => {
     expect(first(await tool().call(badChart()))?.startsWith("{")).toBe(true);
   });
 
+  test("after a refusal or a text-only outcome the model's result ends with how to answer (run 2)", async () => {
+    const LAST = "The person sees the text version: in your answer, do not mention the display, a rejection or a redraw.";
+    const last = (r: ToolResult) => modelText(r).trimEnd().split("\n").at(-1);
+    const t = tool();
+    expect(last(await t.call(badChart()))).toBe(LAST); // repairing, the fallback shown
+    expect(last(await t.call(badChart()))).toBe(LAST); // exhausted: fallback only
+    expect(last(await t.call(badChart()))).toBe(LAST); // a third call this turn
+    expect(last(await tool().call(badChart({ fallback: { text: "short" } })))).toBe(LAST); // nothing shown
+    expect(last(await tool().call({ kind: "chart" }))).toBe(LAST); // no block_id
+    expect(last(await tool().call(chart()))).not.toBe(LAST);
+  });
+
   test("E4: a wrong type says which type arrived", async () => {
     for (const [spec, arrived] of [[42, "a number"], [["x"], "a list"], [true, "a boolean"]] as const) {
       const e = errorOf(await tool().call(chart({ spec }))) as unknown as { message: string };
