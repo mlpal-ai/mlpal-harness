@@ -14,6 +14,9 @@ export const usageSchema = z.object({
   /** An estimate of a charge that could not be confirmed, kept apart from `compute_units`: a GenerateImage request
    *  whose engine died before the gateway named its job, too long ago to ask again under its idempotency key. */
   compute_units_unconfirmed: z.number().optional(),
+  /** How many such unconfirmed charges have no estimate at all (a model priced only after its render): unknown, never
+   *  zero. */
+  unpriced_charges: z.number().int().nonnegative().optional(),
 });
 export type Usage = z.infer<typeof usageSchema>;
 
@@ -31,5 +34,6 @@ export function addUsage(a: Usage, b: Usage): Usage {
       (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0),
     ...(a.compute_units !== undefined || b.compute_units !== undefined ? { compute_units: (a.compute_units ?? 0) + (b.compute_units ?? 0) } : {}),
     ...(a.compute_units_unconfirmed !== undefined || b.compute_units_unconfirmed !== undefined ? { compute_units_unconfirmed: (a.compute_units_unconfirmed ?? 0) + (b.compute_units_unconfirmed ?? 0) } : {}),
+    ...(a.unpriced_charges !== undefined || b.unpriced_charges !== undefined ? { unpriced_charges: (a.unpriced_charges ?? 0) + (b.unpriced_charges ?? 0) } : {}),
   };
 }

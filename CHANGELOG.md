@@ -21,6 +21,7 @@ removed or renamed. The sections below keep each branch's own account. By capabi
 - **`tools_admin`** (capability): the owner's MCP servers and plugins on the wire, with `ToolsAdminErrorCode`.
 - **`Usage.compute_units_unconfirmed`** (optional): an estimated charge that could not be confirmed, kept apart
   from `compute_units`.
+- **`Usage.unpriced_charges`** (optional): how many such charges have no estimate at all (unknown, never zero).
 - **The catalog stays `harness.v1/1`.** When `Show` arrived (0.26.8), it introduced the catalog as an additive
   change gated by the client's own declaration (the `display` capability and `run.display.kinds`). The catalog
   then said that later kinds (`log`, `files`) follow inside it, offered to a client only when it names them. Media
@@ -32,6 +33,20 @@ removed or renamed. The sections below keep each branch's own account. By capabi
   - protected names folded in every rule (`foldName`).
 - Consumers pin `@mlpal/harness-protocol` 0.28.0 (yodex, the web UI); `ready.engine.harnessProtocol` reports
   0.28.0.
+
+### engine-media: review-media round 3 (needs the same version bump, 2026-11-28)
+
+- R5b: a job's charge is recorded where the engine first learns of it, on any path, once per job.
+  - The paths are the original call, a poll on resume and `GenerateImage {job}` after a timeout or a stop.
+  - `ToolContext.spend(usage, {once})` records at most once per key across the session's durable record.
+    GenerateImage uses `job:<id>`, so saving a job twice never doubles the charge.
+  - Only this session's jobs can be saved by id, so the charge lands in the session that made the job.
+  - `IMAGE_TIMEOUT` names `GenerateImage {job}`.
+- A resume never repeats a submit for a different payer. `GenerateImageDeps.payer` is a host-supplied, non-secret
+  fingerprint of the paying user, journalled with the request. On a mismatch the call is `IMAGE_UNCONFIRMED` and
+  nothing is submitted.
+- An unconfirmed charge with no estimate is counted as `Usage.unpriced_charges` (new and optional), never as 0, and
+  its note says the amount is unknown and that the gateway cannot confirm it later.
 
 ### engine-media: review-media round 2 fixes (needs the same version bump, 2026-11-28)
 
