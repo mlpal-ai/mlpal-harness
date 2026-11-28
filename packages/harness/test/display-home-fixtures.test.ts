@@ -42,7 +42,7 @@ async function frames(): Promise<Record<string, ClientMessage | ServerMessage>> 
     const hop = { name: "mlpal", version: "0.3.0", ui: { starters: STARTERS, home: { blocks } } };
     let table: Record<string, () => ScriptOutcome> = Object.fromEntries(blocks.map((b) => [b.id, () => ok(output(b.id))]));
     const run: HomeScriptRunner = async (s) => table[s.block]!();
-    const r = new HomeResolver({ hop, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop, run, cacheDir: cache, now });
     const home = (requestId: string, view: HomeView): ServerMessage => ({ type: "home", requestId, ...view });
     const first = home("h1", r.view());
     const updates = await resolveAll(r, 4);
@@ -57,12 +57,14 @@ async function frames(): Promise<Record<string, ClientMessage | ServerMessage>> 
     const hold = new Promise<ScriptOutcome>(() => {});
     const bad = { kind: "chart", spec: { vl: { data: { url: "https://example.com/spend.json" }, mark: "bar" } }, fallback: { text: "Gateway spend was 365 compute units over the last 7 days." } };
     const table2: Record<string, () => ScriptOutcome | Promise<ScriptOutcome>> = { spend: () => ok(JSON.stringify(bad)), agents: () => timeout, sites: () => hold, hops: () => ok(output("hops")) };
-    const r2 = new HomeResolver({ hop: { ...hop, version: "0.4.0" }, run: async (s) => table2[s.block]!(), cacheDir: cache, now });
+    const r2 = new HomeResolver({ scripts: "run", hop: { ...hop, version: "0.4.0" }, run: async (s) => table2[s.block]!(), cacheDir: cache, now });
     const seen: HomeBlock[] = [];
     r2.get((b) => seen.push(b));
     while (seen.length < 3) await Bun.sleep(1);
     const never = home("h4", r2.view());
-    const empty = home("h5", new HomeResolver({ hop: { name: "coding", version: "1.1.0" }, run, cacheDir: cache, now }).view());
+    const empty = home("h5", new HomeResolver({ scripts: "run", hop: { name: "coding", version: "1.1.0" }, run, cacheDir: cache, now }).view());
+    const untrusted = home("h6", new HomeResolver({ scripts: "not_trusted", hop, run, cacheDir: cache, now }).get());
+    const off = home("h7", new HomeResolver({ scripts: "off", hop, run, cacheDir: cache, now }).get());
     return {
       "get-home": { type: "get_home", requestId: "h1" },
       "get-home-named": { type: "get_home", requestId: "h1", hop: "mlpal@0.3.0" },
@@ -72,6 +74,8 @@ async function frames(): Promise<Record<string, ClientMessage | ServerMessage>> 
       "home-stale": stale,
       "home-never-failed-fallback": never,
       "home-empty": empty,
+      "home-not-trusted": untrusted,
+      "home-scripts-off": off,
     };
   } finally {
     rmSync(cache, { recursive: true, force: true });

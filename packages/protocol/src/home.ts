@@ -68,9 +68,19 @@ export interface HomeBlock {
   error?: HomeRefreshError;
 }
 
+/**
+ * Why a HOP's home scripts did not run, when they did not (then `blocks` is `[]`); a client may ignore it and draw the
+ * starters alone.
+ * - `not_trusted`: the HOP is not the person's or the platform's own code (installed from the catalog, or found in the
+ *   workspace's `.yodex/hops`); only a builtin, image-vendored or `--hop <dir>` HOP runs home scripts.
+ * - `off`: the serve's kill switch (`YODEX_HOME_SCRIPTS=off`).
+ */
+export type HomeScripts = "not_trusted" | "off";
+
 /** The home of one HOP. `hop` is `name@version`. */
 export interface HomeView {
   hop: string;
   starters: string[];
   blocks: HomeBlock[];
+  scripts?: HomeScripts;
 }

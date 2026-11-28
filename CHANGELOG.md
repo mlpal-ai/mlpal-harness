@@ -19,6 +19,13 @@
 - `createHomeScriptRunner` (`display/home-script.ts`) runs a script as a session's commands run: the given ExecPolicy's
   wrap and lease environment, `/bin/bash -c`, its own process group when the sandbox asks; the HOP's deny rules and the
   hard denials judge its command line first.
+- Controller ruling (same day): scripts run only for a trusted HOP (`display/home-trust.ts`): builtin, a `--hop <dir>`
+  (source `path`), or a `~/.yodex/hops` HOP whose directory, parent, scripts and the directories between are root's and
+  not group/other-writable (the workspace image's vendoring), with the engine not running as root. A catalog install
+  (the person's own files) and a workspace `.yodex/hops` HOP are not trusted. `HomeResolverOptions.scripts` is
+  required; anything but `run` answers the starters, `blocks: []` and `scripts: "not_trusted" | "off"`, and starts no
+  process. A run every caller's signal has left is killed (its process group, always its own), `close` kills all, and
+  a cancelled run is retried on the next request.
 - Protocol: capability `hop_home`; `get_home {requestId, hop?}` → `home {requestId, hop, starters, blocks}`, then
   `home_update {hop, block}`; `HomeBlock`, `HomeView`, `HopUiView`, `HOME_LIMITS` (`home.ts`); a display's `source.by`
   may be `host`, with `origin: "home"` exactly then.

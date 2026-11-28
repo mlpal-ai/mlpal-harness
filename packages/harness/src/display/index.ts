@@ -3,3 +3,4 @@ export { displayInstructions, KIND_EXAMPLES, resolveDisplay, type DisplayPolicy 
 export { foldDisplayHistory, type DisplayHistory } from "./history";
 export { checkHomeOutput, HomeResolver, type HomeOutput, type HomeResolverOptions } from "./home";
 export { createHomeScriptRunner, type HomeScript, type HomeScriptRunner, type HomeScriptRunnerOptions, type ScriptOutcome } from "./home-script";
+export { homeTrust, type HomeTrust, type HomeTrustOptions } from "./home-trust";

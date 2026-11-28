@@ -120,7 +120,7 @@ describe("checkHomeOutput: a script's output is checked as a Show", () => {
 describe("HomeResolver", () => {
   test("first get: the view at once (nothing known yet), then one update per block, each a host-drawn block envelope", async () => {
     const run = goodRunner();
-    const r = new HomeResolver({ hop: HOP, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run, cacheDir: cache, now });
     const u = updates(4);
     const view = r.get(u.push);
     expect(view).toEqual({
@@ -142,7 +142,7 @@ describe("HomeResolver", () => {
   test("a script's own as_of is kept; without one, as_of is when it ran", async () => {
     const { as_of: _drop, ...rest } = JSON.parse(output("hops"));
     const run = tableRunner({ hops: () => ok(JSON.stringify(rest)) });
-    const r = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("hops")] } } }, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("hops")] } } }, run, cacheDir: cache, now });
     const u = updates(1);
     r.get(u.push);
     expect((await u.done)[0]!.as_of).toBe(new Date(T0).toISOString());
@@ -159,7 +159,7 @@ describe("HomeResolver", () => {
     test(`a block whose script ${why} keeps its last good block and time, marked stale with the reason`, async () => {
       let next: () => ScriptOutcome = () => ok(output("agents"));
       const run = tableRunner({ agents: () => next() });
-      const r = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("agents")] } } }, run, cacheDir: cache, now });
+      const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("agents")] } } }, run, cacheDir: cache, now });
       const first = updates(1);
       r.get(first.push);
       const good = (await first.done)[0]!;
@@ -176,14 +176,14 @@ describe("HomeResolver", () => {
   test("a block that never resolved and whose block fails, but whose fallback passes, shows the fallback alone", async () => {
     const bad = { kind: "chart", spec: { vl: { data: { url: "https://example.com/data.json" }, mark: "bar" } }, fallback: { text: "Spend was 365 compute units over the last 7 days." } };
     const run = tableRunner({ spend: () => ok(JSON.stringify(bad)) });
-    const r = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend")] } } }, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend")] } } }, run, cacheDir: cache, now });
     const u = updates(1);
     r.get(u.push);
     const b = (await u.done)[0]!;
     expect(b).toMatchObject({ stale: false, error: "invalid_block", display: { level: "text", status: "fallback_only", source: { by: "host", origin: "home" }, fallback: { text: "Spend was 365 compute units over the last 7 days." } } });
     expect(displayEnvelopeSchema.safeParse(b.display).success).toBe(true);
     // nothing to show at all: display null, with the reason
-    const r2 = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend")] } } }, run: tableRunner({ spend: () => failed("timeout") }), cacheDir: join(dir, "c2"), now });
+    const r2 = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend")] } } }, run: tableRunner({ spend: () => failed("timeout") }), cacheDir: join(dir, "c2"), now });
     const u2 = updates(1);
     r2.get(u2.push);
     expect((await u2.done)[0]).toEqual({ id: "spend", title: "Title of spend", as_of: null, stale: false, display: null, error: "timeout" });
@@ -192,7 +192,7 @@ describe("HomeResolver", () => {
   test("a runner that throws is a failure of that block alone, never of get", async () => {
     const run = tableRunner({ spend: () => Promise.reject(new Error("boom")), agents: () => ok(output("agents")) });
     const log = new CapturingLogger();
-    const r = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend"), block("agents")] } } }, run, cacheDir: cache, now, logger: log });
+    const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("spend"), block("agents")] } } }, run, cacheDir: cache, now, logger: log });
     const u = updates(2);
     expect(() => r.get(u.push)).not.toThrow();
     const got = await u.done;
@@ -204,7 +204,7 @@ describe("HomeResolver", () => {
   test("two concurrent get_home share one run per block, and both hear every block", async () => {
     const gate = Promise.withResolvers<void>();
     const run = tableRunner(Object.fromEntries(["spend", "agents", "sites", "hops"].map((id) => [id, async () => (await gate.promise, ok(output(id)))])));
-    const r = new HomeResolver({ hop: HOP, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run, cacheDir: cache, now });
     const a = updates(4);
     const b = updates(4);
     r.get(a.push);
@@ -226,7 +226,7 @@ describe("HomeResolver", () => {
       live--;
       return ok(output(id));
     };
-    const r = new HomeResolver({ hop: HOP, run: tableRunner(Object.fromEntries(["spend", "agents", "sites", "hops"].map((id) => [id, slow(id)]))), cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run: tableRunner(Object.fromEntries(["spend", "agents", "sites", "hops"].map((id) => [id, slow(id)]))), cacheDir: cache, now });
     const u = updates(4);
     r.get(u.push);
     await u.done;
@@ -235,7 +235,7 @@ describe("HomeResolver", () => {
 
   test("a block attempted under 60 s ago is not run again; after 60 s it is", async () => {
     const run = goodRunner();
-    const r = new HomeResolver({ hop: HOP, run, cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run, cacheDir: cache, now });
     const u = updates(4);
     r.get(u.push);
     await u.done;
@@ -255,7 +255,7 @@ describe("HomeResolver", () => {
 
   test("a block older than its refresh is stale until a refresh lands", async () => {
     let fail = false;
-    const r = new HomeResolver({ hop: { ...HOP, ui: { starters: [], home: { blocks: [block("hops", 5)] } } }, run: tableRunner({ hops: () => (fail ? new Promise<ScriptOutcome>(() => {}) : ok(output("hops"))) }), cacheDir: cache, now });
+    const r = new HomeResolver({ scripts: "run", hop: { ...HOP, ui: { starters: [], home: { blocks: [block("hops", 5)] } } }, run: tableRunner({ hops: () => (fail ? new Promise<ScriptOutcome>(() => {}) : ok(output("hops"))) }), cacheDir: cache, now });
     const u = updates(1);
     r.get(u.push);
     await u.done;
@@ -266,7 +266,7 @@ describe("HomeResolver", () => {
   });
 
   test("the disk cache survives a restart: a new resolver shows the last good block at once, fresh within its refresh", async () => {
-    const first = new HomeResolver({ hop: HOP, run: goodRunner(), cacheDir: cache, now });
+    const first = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: cache, now });
     const u = updates(4);
     first.get(u.push);
     const good = await u.done;
@@ -274,7 +274,7 @@ describe("HomeResolver", () => {
     clock += 60_000;
     // the restarted engine's scripts all fail: the cached blocks are served, and stay, now stale with the reason
     const run = tableRunner(Object.fromEntries(["spend", "agents", "sites", "hops"].map((id) => [id, () => failed("timeout")])));
-    const second = new HomeResolver({ hop: HOP, run, cacheDir: cache, now });
+    const second = new HomeResolver({ scripts: "run", hop: HOP, run, cacheDir: cache, now });
     const view = second.view();
     expect(view.blocks.map((b) => [b.id, b.stale, b.display?.revision])).toEqual([
       ["spend", false, 1],
@@ -289,7 +289,7 @@ describe("HomeResolver", () => {
   });
 
   test("a cache file that is corrupt, of another block, or not host-drawn is skipped; another version starts empty", async () => {
-    const first = new HomeResolver({ hop: HOP, run: goodRunner(), cacheDir: cache, now });
+    const first = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: cache, now });
     const u = updates(4);
     first.get(u.push);
     await u.done;
@@ -300,16 +300,16 @@ describe("HomeResolver", () => {
     hops.display.source = { by: "model" };
     writeFileSync(at("hops"), JSON.stringify(hops));
     const log = new CapturingLogger();
-    const view = new HomeResolver({ hop: HOP, run: goodRunner(), cacheDir: cache, now, logger: log }).view();
+    const view = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: cache, now, logger: log }).view();
     expect(view.blocks.map((b) => b.display === null)).toEqual([true, true, false, true]);
     expect(log.lines.filter((l) => l.msg === "home.cache.unreadable").map((l) => l.fields?.block)).toEqual(["spend", "agents", "hops"]);
-    expect(new HomeResolver({ hop: { ...HOP, version: "0.4.0" }, run: goodRunner(), cacheDir: cache, now }).view().blocks.every((b) => b.display === null)).toBe(true);
+    expect(new HomeResolver({ scripts: "run", hop: { ...HOP, version: "0.4.0" }, run: goodRunner(), cacheDir: cache, now }).view().blocks.every((b) => b.display === null)).toBe(true);
   });
 
   test("an unwritable cache is logged and the home still resolves", async () => {
     writeFileSync(join(dir, "file"), "x");
     const log = new CapturingLogger();
-    const r = new HomeResolver({ hop: HOP, run: goodRunner(), cacheDir: join(dir, "file", "cache"), now, logger: log });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run: goodRunner(), cacheDir: join(dir, "file", "cache"), now, logger: log });
     const u = updates(4);
     r.get(u.push);
     expect((await u.done).every((b) => b.display?.level === "block")).toBe(true);
@@ -318,8 +318,8 @@ describe("HomeResolver", () => {
 
   test("a HOP without ui answers empty starters and blocks, running nothing", () => {
     const run = goodRunner();
-    expect(new HomeResolver({ hop: { name: "coding", version: "1.1.0" }, run, cacheDir: cache, now }).get()).toEqual({ hop: "coding@1.1.0", starters: [], blocks: [] });
-    expect(new HomeResolver({ hop: { name: "x", version: "1.0.0", ui: { starters: ["Hi"] } }, run, cacheDir: cache, now }).get()).toEqual({ hop: "x@1.0.0", starters: ["Hi"], blocks: [] });
+    expect(new HomeResolver({ scripts: "run", hop: { name: "coding", version: "1.1.0" }, run, cacheDir: cache, now }).get()).toEqual({ hop: "coding@1.1.0", starters: [], blocks: [] });
+    expect(new HomeResolver({ scripts: "run", hop: { name: "x", version: "1.0.0", ui: { starters: ["Hi"] } }, run, cacheDir: cache, now }).get()).toEqual({ hop: "x@1.0.0", starters: ["Hi"], blocks: [] });
     expect(run.calls.size).toBe(0);
   });
 
@@ -328,7 +328,7 @@ describe("HomeResolver", () => {
     const run = tableRunner({ spend: () => ok(`junk ${SECRET}`), agents: () => ({ ...failed("exit_nonzero"), stderrTail: SECRET, stderrBytes: SECRET.length, exitCode: 3 }), sites: () => ok(output("sites")), hops: () => ok(JSON.stringify({ kind: "kpis", spec: { tiles: [] }, fallback: { text: `${SECRET} is in the fallback, with 1 number.` } })) });
     const log = new CapturingLogger();
     const metrics = new MemoryMetrics();
-    const r = new HomeResolver({ hop: HOP, run, cacheDir: cache, now, logger: log, metrics });
+    const r = new HomeResolver({ scripts: "run", hop: HOP, run, cacheDir: cache, now, logger: log, metrics });
     const u = updates(4);
     r.get(u.push);
     await u.done;
@@ -360,10 +360,10 @@ describe("createHomeScriptRunner: real scripts, through the ExecPolicy", () => {
     mkdirSync(hop, { recursive: true });
   });
 
-  test("a script that runs past the timeout is killed, with its children", async () => {
+  test("a script that runs past the timeout is killed, with its children, whatever the sandbox asks (always its own group)", async () => {
     const marker = join(dir, "survived");
     const p = script("slow.sh", `(sleep 1; touch '${marker}') &\nsleep 30\n`);
-    const run = createHomeScriptRunner({ exec: { ...exec(PATHONLY), ownGroup: true }, cwd: dir, timeoutMs: 300 });
+    const run = createHomeScriptRunner({ exec: exec(PATHONLY), cwd: dir, timeoutMs: 300 });
     const started = Date.now();
     expect(await run({ block: "slow", scriptPath: p })).toMatchObject({ ok: false, error: "timeout" });
     expect(Date.now() - started).toBeLessThan(5_000);
@@ -427,7 +427,7 @@ describe("createHomeScriptRunner: real scripts, through the ExecPolicy", () => {
     try {
       const ui: HopUi = { starters: [], home: { blocks: ["spend", "agents", "sites", "hops"].map((id) => ({ ...block(id), scriptPath: script(`${id}.py`, `import sys\nsys.stdout.write(open(${JSON.stringify(join(OUTPUTS, `${id}.json`))}).read())\n`) })) } };
       const run = createHomeScriptRunner({ exec: exec({ ...PATHONLY, YODEX_GATEWAY_URL: `http://127.0.0.1:${gw.port}` }), cwd: dir });
-      const r = new HomeResolver({ hop: { name: "mlpal", version: "0.3.0", ui }, run, cacheDir: cache });
+      const r = new HomeResolver({ scripts: "run", hop: { name: "mlpal", version: "0.3.0", ui }, run, cacheDir: cache });
       const u = updates(4);
       r.get(u.push);
       expect((await u.done).every((b) => b.display?.level === "block" && !b.error)).toBe(true);

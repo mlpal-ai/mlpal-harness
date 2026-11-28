@@ -9,6 +9,7 @@ import {
   type DisplayError,
   type HomeBlock,
   type HomeRefreshError,
+  type HomeScripts,
   type HomeView,
   type TextDisplay,
 } from "@mlpal/harness-protocol";
@@ -29,6 +30,11 @@ import type { HomeScriptRunner } from "./home-script";
  * (a timeout, a crash, junk, too much output, a block the checks refuse) keeps the last good block, marked stale with
  * the reason; nothing a script does can fail `get` or another block.
  *
+ * Load bounds: one run of a block at a time, joined by every caller (so at most one per connection, too); a block run
+ * in the last 60 s is not run again, whoever asks (a page reloaded ten times starts nothing new); at most two scripts at
+ * once per resolver, and a serve has one, for its own HOP; a run whose every caller's signal aborted (their connections
+ * closed) is killed, and `close` kills them all.
+ *
  * The last good block of each is kept in memory per (hop@version, block id) and on disk under `cacheDir`
  * (`<hop>@<version>/<block>.json`), so a woken workspace shows something at once. Logs and counters carry the HOP, the
  * block id, the outcome and sizes: never what a script printed, on either stream.
@@ -36,6 +42,9 @@ import type { HomeScriptRunner } from "./home-script";
 
 export interface HomeResolverOptions {
   hop: { name: string; version: string; ui?: HopUi };
+  /** Whether scripts may run (home-trust.ts, the serve's kill switch). Anything but `run`: the view has the starters,
+   *  `blocks: []` and this reason, and no script is ever started. */
+  scripts: "run" | HomeScripts;
   run: HomeScriptRunner;
   /** `~/.yodex/home-cache` in a workspace. */
   cacheDir: string;
@@ -99,7 +108,8 @@ export class HomeResolver {
   private readonly hopLabel: string;
   private readonly blocks: HopUiBlock[];
   private readonly entries = new Map<string, Entry>();
-  private readonly inflight = new Map<string, Promise<HomeBlock>>();
+  private readonly inflight = new Map<string, Run>();
+  private closed = false;
   private readonly queue: Array<() => void> = [];
   private running = 0;
   private loaded = false;
@@ -116,23 +126,34 @@ export class HomeResolver {
   }
 
   /** The view now, and a refresh of every block whose last attempt is older than 60 s; `onUpdate` hears each block
-   *  this call started or joined, once, as its refresh ends. */
-  get(onUpdate?: (block: HomeBlock) => void): HomeView {
-    this.loadCache();
+   *  this call started or joined, once, as its refresh ends. `signal` is the caller's interest (its connection): a run
+   *  every interested caller has left is killed. Without one, the caller's interest never ends. */
+  get(onUpdate?: (block: HomeBlock) => void, signal?: AbortSignal): HomeView {
     const view = this.view();
+    if (this.opts.scripts !== "run" || this.closed || signal?.aborted) return view;
     for (const b of this.blocks) {
       const e = this.entries.get(b.id)!;
       const due = e.attemptedAt === null || this.now() - e.attemptedAt >= HOME_LIMITS.rerunAfterMs;
-      const p = this.inflight.get(b.id) ?? (due ? this.refresh(b) : undefined);
-      if (p && onUpdate) void p.then(onUpdate);
+      const run = this.inflight.get(b.id) ?? (due ? this.refresh(b) : undefined);
+      if (!run) continue;
+      joinRun(run, signal);
+      if (onUpdate) void run.promise.then(onUpdate);
     }
     return view;
   }
 
   /** The cached view, running nothing. */
   view(): HomeView {
+    const starters = [...(this.opts.hop.ui?.starters ?? [])];
+    if (this.opts.scripts !== "run") return { hop: this.hopLabel, starters, blocks: [], scripts: this.opts.scripts };
     this.loadCache();
-    return { hop: this.hopLabel, starters: [...(this.opts.hop.ui?.starters ?? [])], blocks: this.blocks.map((b) => this.item(b)) };
+    return { hop: this.hopLabel, starters, blocks: this.blocks.map((b) => this.item(b)) };
+  }
+
+  /** Kill every running script and start no more (the serve is stopping). */
+  close(): void {
+    this.closed = true;
+    for (const run of this.inflight.values()) run.controller.abort();
   }
 
   private item(b: HopUiBlock): HomeBlock {
@@ -148,19 +169,24 @@ export class HomeResolver {
     };
   }
 
-  private refresh(b: HopUiBlock): Promise<HomeBlock> {
+  private refresh(b: HopUiBlock): Run {
     const e = this.entries.get(b.id)!;
+    const before = e.attemptedAt;
     e.attemptedAt = this.now();
-    const p = this.slot(() => this.resolve(b))
+    const run: Run = { controller: new AbortController(), interest: 0, forever: false, cleanups: [], promise: undefined as unknown as Promise<HomeBlock> };
+    run.promise = this.slot(() => this.resolve(b, run.controller.signal, before))
       .catch((err: unknown) => {
         // resolve never throws by design; if it ever does, the block keeps what it had and says it could not refresh
         this.log.error("home.block.internal", { hop: this.hopLabel, block: b.id, error: (err as Error)?.name ?? typeof err });
         this.fail(b, "not_started");
       })
       .then(() => this.item(b))
-      .finally(() => this.inflight.delete(b.id));
-    this.inflight.set(b.id, p);
-    return p;
+      .finally(() => {
+        this.inflight.delete(b.id);
+        for (const c of run.cleanups) c();
+      });
+    this.inflight.set(b.id, run);
+    return run;
   }
 
   /** At most HOME_LIMITS.concurrency scripts at once; the rest wait their turn in order. */
@@ -175,10 +201,17 @@ export class HomeResolver {
     }
   }
 
-  private async resolve(b: HopUiBlock): Promise<void> {
-    const ran = await this.opts.run({ block: b.id, scriptPath: b.scriptPath });
+  private async resolve(b: HopUiBlock, signal: AbortSignal, attemptedBefore: number | null): Promise<void> {
+    const ran = await this.opts.run({ block: b.id, scriptPath: b.scriptPath, signal });
     this.metrics.histogram("home.script_ms", ran.ms, { hop: this.opts.hop.name });
     if (!ran.ok) {
+      if (ran.error === "cancelled") {
+        // no one waits for it: nothing is learnt about the block, so the next request runs it again
+        this.entries.get(b.id)!.attemptedAt = attemptedBefore;
+        this.metrics.increment("home.refresh", 1, { outcome: "cancelled" });
+        this.log.info("home.block.cancelled", { hop: this.hopLabel, block: b.id, ms: ran.ms });
+        return;
+      }
       this.log.warn("home.block.refresh_failed", { hop: this.hopLabel, block: b.id, error: ran.error, ms: ran.ms, stderr_bytes: ran.stderrBytes, ...(ran.exitCode !== undefined ? { exit_code: ran.exitCode } : {}) });
       return this.fail(b, ran.error);
     }
@@ -263,6 +296,31 @@ export class HomeResolver {
       this.log.warn("home.cache.write_failed", { hop: this.hopLabel, block: id, error: (e as NodeJS.ErrnoException).code ?? "write" });
     }
   }
+}
+
+/** One refresh of a block, shared by every caller that started or joined it. */
+interface Run {
+  promise: Promise<HomeBlock>;
+  controller: AbortController;
+  /** Callers with a signal not yet aborted. */
+  interest: number;
+  /** A caller without a signal joined: the run is never cancelled for lack of interest. */
+  forever: boolean;
+  cleanups: Array<() => void>;
+}
+
+function joinRun(run: Run, signal: AbortSignal | undefined): void {
+  if (!signal) {
+    run.forever = true;
+    return;
+  }
+  run.interest++;
+  const leave = () => {
+    run.interest--;
+    if (run.interest === 0 && !run.forever) run.controller.abort();
+  };
+  signal.addEventListener("abort", leave, { once: true });
+  run.cleanups.push(() => signal.removeEventListener("abort", leave));
 }
 
 function parseCache(text: string, id: string): CacheFile | null {
