@@ -55,6 +55,9 @@ export interface PermissionRequest {
   /** Input keys the tool's schema does not declare (`undeclaredArgs`): the tool may never see them, so a rule that reads
    *  arguments cannot judge this call. */
   undeclaredArgs?: string[];
+  /** Why this call is always put to the person (`Tool.alwaysAsk`): asked in every mode but recon, after the deny
+   *  rules and before anything that could admit it. */
+  alwaysAsk?: string;
   principal: Author;
   /** The session's working folder and folders: the rm -rf guard resolves relative paths where the shell will run
    *  and refuses the session's own folders. Absent: neither is judged. */
@@ -122,6 +125,9 @@ export function createPolicy(config: PermissionConfig): CanUseTool {
       unchecked ??= uncheckedWriteRule(rule, req);
     }
     const unlessUnchecked = (d: Decision): Decision => (unchecked !== null && d.behavior === "allow" ? { behavior: "ask", reason: unchecked } : d);
+    // A paid call past its threshold is the person's to approve: no envelope allow, allow rule or mode admits it.
+    // recon and a read-only run fall through to refuse it as they refuse every change.
+    if (req.alwaysAsk && config.mode !== "recon" && config.readOnlyRun !== true) return { behavior: "ask", reason: req.alwaysAsk };
     // The safety envelope decides after the host/user denials (it can never widen them) and before
     // allow rules + the mode default (an in-envelope allow is autonomous, so it bypasses them).
     if (config.safety) {

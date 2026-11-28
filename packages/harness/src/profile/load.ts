@@ -435,7 +435,7 @@ export const profileYamlSchema = z
           .strict(),
       )
       .default({}),
-    budgets: z.object({ maxTurns: z.number().int().positive().optional() }).strict().default({}),
+    budgets: z.object({ maxTurns: z.number().int().positive().optional(), imageAskOverCu: z.number().nonnegative().max(100).optional() }).strict().default({}),
     telemetry: z.object({ taskType: z.string().optional() }).strict().default({}),
     evals: z.array(evalSuiteSchema).default([]),
     tuning: tuningSchema.optional(),
@@ -975,7 +975,10 @@ export function composeProfile(
       deny: [...parent.permissions.deny, ...(y.permissions.deny ?? [])],
     },
     tools: composeTools(y.tools.include ?? parent.tools.include, modules),
-    budgets: { maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns },
+    budgets: {
+      maxTurns: y.budgets.maxTurns ?? parent.budgets.maxTurns,
+      ...((y.budgets.imageAskOverCu ?? parent.budgets.imageAskOverCu) !== undefined ? { imageAskOverCu: y.budgets.imageAskOverCu ?? parent.budgets.imageAskOverCu } : {}),
+    },
     telemetry: { taskType: y.telemetry.taskType ?? parent.telemetry.taskType },
     evals,
     ...(tuning ? { tuning } : {}),

@@ -27,6 +27,27 @@
   takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
 - Envelope fixtures for the UI are in `test/fixtures/display/media/`.
 
+### engine-media: GenerateImage, an engine tool (WAVE-2 §2, 2026-11-28)
+
+- `createGenerateImageTool(deps)` (`tools/builtin/image.ts`, `hands: "local"`; the host registers it with
+  `images: client.images()`). It takes a prompt, up to four reference images by workspace path (PNG, JPEG or WebP
+  by magic number, at most 5 MiB each, checked as a media Show's files are), `n` 1 to 4, `size`, `quality`
+  (standard or hd), `model` (an `image_generation` model) and `name`.
+- It runs on the gateway's images API with the engine's own credential: no command sees it. It submits with
+  `wait: false` and the tool-use id as the idempotency key, so a retried call never pays twice, then polls every
+  2 s for up to 10 minutes.
+- Each result is downloaded (at most 50 MiB, 60 s, its type by magic number) to
+  `media/<YYYY-MM-DD>/<stem>-<n>.<ext>`, by a temp file and a `link`, so nothing is ever overwritten.
+- The step carries an engine-written `image` or `image_set` block (`source.by: "engine"`, `made_by` with the model,
+  prompt and cost). It reaches only a client that draws the kind; any other client gets the text.
+- The compute units go into the turn's usage, and so the session's (`ToolResult.meta.usage`).
+- Typed errors: `IMAGE_NOT_PERMITTED` (403), `IMAGE_BUDGET` (402 or 429), `IMAGE_REFUSED` (a provider's refusal,
+  in its words), `IMAGE_TIMEOUT`, `IMAGE_FAILED`, and the media codes for references.
+- `Tool.alwaysAsk` and `PermissionRequest.alwaysAsk`: a call past its threshold is asked in every mode but recon,
+  after the deny rules and before any allow. GenerateImage asks for more than one image, hd, or an estimate over
+  the HOP's new `budgets.imageAskOverCu` (default 0.05).
+- `gatewayImages` and `GatewayClient.images()` hold the HTTP. Downloads send no credential.
+
 ### engine-media: Show draws image and image_set from workspace files (2026-11-28)
 
 - `display/media.ts` probes each path a media Show names, from one descriptor:

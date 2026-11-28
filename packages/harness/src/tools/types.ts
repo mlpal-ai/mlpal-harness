@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
+import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks, Usage } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -109,6 +109,9 @@ export interface ToolResult {
     /** The step's display string when it is not what the model reads: Show's model reads a short line, while a client
      *  that draws no display shows the line and the fallback. Absent = the display string is derived from `content`. */
     displayText?: string;
+    /** What the call spent on the gateway beyond the turn's own model calls (GenerateImage's compute units): added to
+     *  the turn's usage, and so to the session's. */
+    usage?: Usage;
   };
 }
 
@@ -160,6 +163,10 @@ export interface Tool<I = unknown> {
   /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
    *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
   isCallGlobalMemory?: (input: unknown) => boolean;
+  /** Per-CALL: why this call is always put to the person (a paid action past its threshold: GenerateImage's several
+   *  images, hd, or an estimate over the HOP's budget), or null. No mode, allow rule or envelope allow admits it
+   *  unasked; recon still refuses it. */
+  alwaysAsk?: (input: unknown) => string | null;
   /** The input keys this tool declares. A key outside it may never reach the tool, so a rule that reads arguments
    *  cannot judge that call. Absent: any key. */
   declaredArgs?: ReadonlySet<string>;
@@ -221,6 +228,7 @@ export function defineTool<I>(def: {
   memory?: boolean;
   isCallReadOnly?: (input: unknown) => boolean;
   isCallGlobalMemory?: (input: unknown) => boolean;
+  alwaysAsk?: (input: unknown) => string | null;
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
 }): Tool<I> {
@@ -240,6 +248,7 @@ export function defineTool<I>(def: {
     memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
     isCallGlobalMemory: def.isCallGlobalMemory,
+    ...(def.alwaysAsk ? { alwaysAsk: def.alwaysAsk } : {}),
     ...(declared ? { declaredArgs: declared } : {}),
     schema: def.schema,
     jsonSchema: js,

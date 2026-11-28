@@ -695,6 +695,8 @@ export class AgentSession {
   private readonly systemPrompt: string;
   /** The session's Show, when its client draws blocks: at a run's end it settles blocks left repairing (E3). */
   private showTool: ShowTool | null = null;
+  /** What this run's client draws, or null (no display: a tool's envelopes are dropped). */
+  private readonly displayPolicy: DisplayPolicy | null;
 
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
@@ -702,6 +704,7 @@ export class AgentSession {
     // a media kind needs the workspace's files on this machine (local hands); a host without them never offers one
     const localFiles = (cfg.tools.handsRestriction ?? ["local"]).includes("local");
     const policy = cfg.display ? resolveDisplay(cfg.display, { media: localFiles }) : null;
+    this.displayPolicy = policy;
     this.tools = policy ? this.withShow(policy) : cfg.tools;
     this.systemPrompt = policy ? `${cfg.systemPrompt}\n\n${displayInstructions(policy)}` : cfg.systemPrompt;
     // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
@@ -713,6 +716,15 @@ export class AgentSession {
     } catch {
       this.toolSchemaTokens = 1200;
     }
+  }
+
+  /** The envelopes a tool's result may carry to this run's client: only what it declared it draws (a GenerateImage
+   *  image to a client without the image kind is dropped; its text still reaches the step). */
+  private drawable(display: DisplayEnvelope[] | undefined): DisplayEnvelope[] | undefined {
+    const policy = this.displayPolicy;
+    if (!display || !policy) return undefined;
+    const kept = display.filter((e) => e.level === "text" || policy.kinds.has(e.kind));
+    return kept.length ? kept : undefined;
   }
 
   /** The display protocol's Show tool on a view of the host's registry. Its history is the session's record as it
@@ -2199,6 +2211,7 @@ export class AgentSession {
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
     const tool = await this.tools.resolve(tu.name);
     const undeclared = undeclaredArgs(tool, input);
+    const alwaysAsk = tool?.alwaysAsk?.(input) ?? null;
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
@@ -2207,6 +2220,7 @@ export class AgentSession {
       isMemory: tool?.memory ?? false,
       isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
       ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
+      ...(alwaysAsk ? { alwaysAsk } : {}),
       principal,
       cwd: cfg.cwd,
       roots: cfg.roots ?? [cfg.cwd],
@@ -2253,8 +2267,10 @@ export class AgentSession {
       diff = res.meta?.diff;
       refusal = res.meta?.refusal;
       sandboxRefusal = res.meta?.sandboxRefusal;
-      display = res.meta?.display;
+      display = this.drawable(res.meta?.display);
       displayText = res.meta?.displayText;
+      // a tool's own gateway spend (GenerateImage) is the turn's, and so the session's
+      if (res.meta?.usage) this.askSpend?.(res.meta.usage);
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
       this.observed(
