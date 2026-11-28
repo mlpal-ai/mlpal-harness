@@ -313,7 +313,9 @@ function homeOfEntry(line: string | undefined, uid: number): PasswdHome {
 
 /**
  * The invoking uid's home from the password database, read with no environment input: under Bun `os.userInfo()`
- * answers from `$HOME` and `$USER`, so it cannot see past a throwaway home (E-16 review). darwin: `/usr/bin/id -P <uid>`
+ * answers from `$HOME` and `$USER`, so it cannot see past a throwaway home (E-16 review; still so on Bun 1.3.14, where
+ * Node's reads the passwd entry), which is why this runs a command. resolveSandboxSpec defers it until a confined
+ * command first needs the denials, so a run whose commands never run locally never execs for it. darwin: `/usr/bin/id -P <uid>`
  * (Directory Services); Linux: `getent passwd <uid>` (NSS), else `/etc/passwd`. Every command runs by absolute path
  * with an empty environment and a 2 s limit. Never throws.
  */
@@ -352,14 +354,21 @@ function cachedPasswdHome(): PasswdHome {
  *  none). A failed lookup fails closed to `$HOME` alone and is logged `sandbox.real_home_unknown`, never thrown. */
 function otherHome(opts: { realHome?: string | null; passwd?: () => PasswdHome; logger?: Pick<Logger, "warn"> }): string | undefined {
   if (opts.realHome === null) return undefined;
-  if (opts.realHome !== undefined) {
-    if (!isAbsolute(opts.realHome)) throw new TypeError(`realHome must be an absolute path, got ${JSON.stringify(opts.realHome)}`);
-    return opts.realHome;
-  }
+  if (opts.realHome !== undefined) return opts.realHome;
   const r = (opts.passwd ?? cachedPasswdHome)();
   if ("home" in r) return r.home;
   opts.logger?.warn("sandbox.real_home_unknown", { reason: r.error });
   return undefined;
+}
+
+/** A value computed on first use, then kept. */
+function once<T>(f: () => T): () => T {
+  let done = false;
+  let v: T;
+  return () => {
+    if (!done) [v, done] = [f(), true];
+    return v;
+  };
 }
 
 /** Resolve a HOP's (or the host default) sandbox policy against this run's workspace.
@@ -382,15 +391,21 @@ export function resolveSandboxSpec(
     hostNetwork?: HostNetwork;
   },
 ): SandboxSpec {
+  if (opts.realHome != null && !isAbsolute(opts.realHome)) throw new TypeError(`realHome must be an absolute path, got ${JSON.stringify(opts.realHome)}`);
   const home = opts.home ?? homedir();
   const ex = (p: string) => expandHome(p, home);
-  const real = otherHome(opts);
-  const homes = uniq([home, ...(real ? [real] : [])]);
-  const denied = (p: string) => (homeRelative(p) ? homes.map((h) => expandHome(p, h)) : [ex(p)]);
+  // The real home is looked up (a command: lookupPasswdHome) only when the `~` denials are first read, which is when a
+  // confined command is wrapped: configuring a sandbox, or a run whose commands go elsewhere, execs nothing for it
+  // (the hosted invariant, yodex pod-paths-spy).
+  const homes = once(() => {
+    const real = otherHome(opts);
+    return uniq([home, ...(real ? [real] : [])]);
+  });
+  const denied = (p: string) => (homeRelative(p) ? homes().map((h) => expandHome(p, h)) : [ex(p)]);
   const fs = policy?.filesystem ?? {};
   const mode: FilesystemMode = fs.mode ?? "workspace";
   const allowRead = new Set((fs.allowRead ?? []).map(ex));
-  const unreadable = [...DEFAULT_UNREADABLE.flatMap(denied).filter((p) => !allowRead.has(p)), ...(fs.denyRead ?? []).flatMap(denied)];
+  const unreadable = once(() => uniq([...DEFAULT_UNREADABLE.flatMap(denied).filter((p) => !allowRead.has(p)), ...(fs.denyRead ?? []).flatMap(denied)]));
   const writable =
     mode === "readOnly"
       ? uniq([...SCRATCH_DIRS, ...(opts.scratch ?? []).map(ex)])
@@ -403,14 +418,15 @@ export function resolveSandboxSpec(
         ]);
   // R22: under each root as given and as the OS resolves it (macOS's /var is /private/var; seatbelt sees the latter)
   const rootPaths = mode === "readOnly" ? [] : uniq(opts.roots.map(ex).flatMap((r) => [r, realOrSelf(r)]));
+  const protectedPaths = once(() => uniq([...rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))), ...(mode === "readOnly" ? [] : PROTECTED_IN_HOME.flatMap(denied))]));
   return {
-    filesystem: {
-      mode,
-      writable,
-      unreadable: uniq(unreadable),
-      protected: uniq([...rootPaths.flatMap((r) => PROTECTED_IN_ROOT.map((q) => join(r, q))), ...(mode === "readOnly" ? [] : PROTECTED_IN_HOME.flatMap(denied))]),
-      gitDirs: rootPaths.map((r) => join(r, ".git")),
-    },
+    filesystem: Object.defineProperties(
+      { mode, writable, gitDirs: rootPaths.map((r) => join(r, ".git")) },
+      {
+        unreadable: { get: unreadable, enumerable: true },
+        protected: { get: protectedPaths, enumerable: true },
+      },
+    ) as SandboxSpec["filesystem"],
     network: {
       mode: policy?.network?.mode ?? "all",
       allow: policy?.network?.allow ?? [],

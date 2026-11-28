@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
+
+- `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or
+  `getent passwd`). It now defers the lookup until the spec's `~`-relative denials (`filesystem.unreadable`,
+  `filesystem.protected`) are first read, which is when a confined command is wrapped.
+  - A host that configures a sandbox but runs its commands elsewhere (hosted, with remote hands) execs nothing for
+    it. So does an engine with none.
+  - A non-absolute `realHome` is still refused at once.
+- The lookup still runs a command: under Bun (1.3.14) `os.userInfo()` answers from `$HOME`, so it cannot see past a
+  throwaway home, which is the case E-16 exists for. Node reads the passwd entry; Bun does not.
+
 ### One engine line again: main and next/ws merged; protocol 0.27.1 (additive, 2026-11-28)
 
 - `main` now holds both lines, with both histories kept:
