@@ -1,4 +1,4 @@
-import { BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, type BlockKind, type DisplayCaps } from "@mlpal/harness-protocol";
+import { BLOCK_KINDS, DISPLAY_CATALOG, DISPLAY_LIMITS, IMAGE_MIME_TYPES, isMediaKind, MEDIA_KINDS, type BlockKind, type DisplayCaps, type DisplayKind, type MediaKind } from "@mlpal/harness-protocol";
 
 /**
  * What this engine shows a run's client (DISPLAY-PROTOCOL-v0 §4.2): the block kinds it draws. Only a client that
@@ -11,13 +11,23 @@ export interface DisplayPolicy {
   client: DisplayCaps["client"];
   viewport: DisplayCaps["viewport"];
   /** The kinds Show may emit; never empty. */
-  kinds: ReadonlySet<BlockKind>;
+  kinds: ReadonlySet<DisplayKind>;
+  /** With a media kind: the media types the client draws (`run.display.media.formats`). */
+  formats?: ReadonlySet<string>;
 }
 
-export function resolveDisplay(caps: DisplayCaps): DisplayPolicy | null {
-  const kinds = new Set(BLOCK_KINDS.filter((k) => !caps.kinds || caps.kinds.includes(k)));
+/** `media`: the engine can read this run's workspace files (local hands), so a media kind can be checked. A media kind
+ *  is offered only then, and only to a client that names it in `kinds` and declares `media` with a type it takes. */
+export function resolveDisplay(caps: DisplayCaps, opts: { media?: boolean } = {}): DisplayPolicy | null {
+  const kinds = new Set<DisplayKind>(BLOCK_KINDS.filter((k) => !caps.kinds || caps.kinds.includes(k)));
+  const formats = caps.media ? new Set(caps.media.formats) : null;
+  if (opts.media && formats && caps.kinds) {
+    const images = IMAGE_MIME_TYPES.some((t) => formats.has(t));
+    for (const k of MEDIA_KINDS) if (caps.kinds.includes(k) && images) kinds.add(k);
+  }
   if (!caps.levels.includes("block") || !caps.catalogs.includes(DISPLAY_CATALOG) || kinds.size === 0) return null;
-  return { client: caps.client, viewport: caps.viewport, kinds };
+  const media = [...kinds].some((k) => isMediaKind(k));
+  return { client: caps.client, viewport: caps.viewport, kinds, ...(media && formats ? { formats } : {}) };
 }
 
 /** The smallest valid spec of each kind, shown to the model (a test holds each to validateBlock). */
@@ -51,21 +61,37 @@ const KIND_RULES: Record<BlockKind, string> = {
 /** Kinds in the order the model should consider them. */
 const ORDER: BlockKind[] = ["kpis", "grid", "chart"];
 
+/** The media kinds' lines, for a client that draws them: a file by its workspace path (DISPLAY-PROTOCOL-v0.1-media). */
+const MEDIA_EXAMPLES: Record<MediaKind, unknown> = {
+  image: { path: "media/2026-11-28/hero-1.png", alt: "what the image shows, for a person who cannot see it" },
+  image_set: { images: [{ path: "media/a.png", alt: "option A" }, { path: "media/b.png", alt: "option B" }], chosen: 0 },
+};
+const MEDIA_WHEN: Record<MediaKind, string> = {
+  image: "a picture in the workspace the person should see",
+  image_set: "2 to 8 pictures to compare or choose from",
+};
+const MEDIA_RULE =
+  "image, image_set: spec names a workspace file by its path (never a URL or bytes), PNG, JPEG, GIF or WebP, with an alt text of at most " +
+  `${DISPLAY_LIMITS.media.altChars} characters; an image_set takes 2 to ${DISPLAY_LIMITS.media.setImages} and an optional chosen index. fallback is optional for them: the engine adds a line per file.`;
+
 /** The system section a run gets when its client draws blocks: how to choose a kind, the smallest spec of each, the
  *  fallback's rules and the grammar of the kinds this client draws. Stable for a given declaration, so the prompt
  *  cache holds across its runs (the phone hint makes it differ by viewport). */
 export function displayInstructions(p: DisplayPolicy): string {
   const kinds = ORDER.filter((k) => p.kinds.has(k));
+  const media = MEDIA_KINDS.filter((k) => p.kinds.has(k));
   return [
     "# Showing results",
     "",
     "This person's client draws blocks. Write the answer's sentence first; then call Show when a block makes it clearer, and do not repeat the block's table in prose.",
     "Pick the kind, smallest spec shown:",
     ...kinds.map((k) => `- ${k}: ${KIND_WHEN[k]}. ${JSON.stringify(KIND_EXAMPLES[k])}`),
+    ...media.map((k) => `- ${k}: ${MEDIA_WHEN[k]}. ${JSON.stringify(MEDIA_EXAMPLES[k])}`),
     "",
     `Every Show: block_id, kind, spec, and fallback.text: the conclusion and the key numbers in ${DISPLAY_LIMITS.fallbackMinChars} to ${DISPLAY_LIMITS.fallbackMaxChars.toLocaleString("en-US")} characters of markdown, ` +
       `never "see the chart" (fallback.table {"from": "rows"} adds a grid's or chart's rows). Name sources in words: which tool or data, as of when.`,
     ...kinds.map((k) => KIND_RULES[k]),
+    ...(media.length ? [MEDIA_RULE] : []),
     "A refusal lists every fault with a path and a hint: fix them all and call Show again with the same block_id, once.",
     ...(p.viewport === "phone" ? ["This person is on a phone: prefer one series, at most four grid columns and short labels."] : []),
   ].join("\n");

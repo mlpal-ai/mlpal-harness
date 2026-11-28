@@ -12,6 +12,7 @@ import {
   HUMAN,
   SYSTEM,
   type EngineEvent,
+  isMediaKind,
   isPersisted,
   type Message,
   type ResultEvent,
@@ -45,7 +46,7 @@ import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
-import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
+import { createShowTool, displayInstructions, foldDisplayHistory, localMediaProbe, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
 import type { ExecPolicy, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
 import { EventTooLargeError } from "../store/errors";
@@ -698,7 +699,9 @@ export class AgentSession {
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
     this.maxTurns = cfg.maxTurns ?? 50;
-    const policy = cfg.display ? resolveDisplay(cfg.display) : null;
+    // a media kind needs the workspace's files on this machine (local hands); a host without them never offers one
+    const localFiles = (cfg.tools.handsRestriction ?? ["local"]).includes("local");
+    const policy = cfg.display ? resolveDisplay(cfg.display, { media: localFiles }) : null;
     this.tools = policy ? this.withShow(policy) : cfg.tools;
     this.systemPrompt = policy ? `${cfg.systemPrompt}\n\n${displayInstructions(policy)}` : cfg.systemPrompt;
     // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
@@ -723,6 +726,7 @@ export class AgentSession {
       history: async (toolUseId) => foldDisplayHistory(effectiveEntries(await this.store.conversation.read(cfg.sessionId)), toolUseId),
       logger: log,
       metrics: cfg.metrics ?? noopMetrics,
+      ...([...policy.kinds].some((k) => isMediaKind(k)) ? { probe: localMediaProbe } : {}),
     });
     this.showTool = show;
     return cfg.tools.withTools([show]);

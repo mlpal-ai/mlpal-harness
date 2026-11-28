@@ -27,6 +27,21 @@
   takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
 - Envelope fixtures for the UI are in `test/fixtures/display/media/`.
 
+### engine-media: Show draws image and image_set from workspace files (2026-11-28)
+
+- `display/media.ts` probes each path a media Show names, from one descriptor:
+  - the run's roots after symlinks, and under the workspace root (`PATH_OUTSIDE_WORKSPACE`);
+  - no `.git` at any depth and no `.mlpal*` at the root, on the given and the real path (`PATH_NOT_ALLOWED`);
+  - O_NOFOLLOW and a regular file (`MEDIA_NOT_FOUND`, `MEDIA_NOT_REGULAR`);
+  - the size from fstat before any read (`MEDIA_TOO_LARGE`);
+  - the type from the magic number, and the sides from the header;
+  - sha256, with the size and mtime checked again (`MEDIA_CHANGED`).
+  The protocol's check judges the facts.
+- A media kind is offered only where the engine has the workspace's files: a registry that admits `local` hands.
+  The client must also name the kind and declare `media` with an image type.
+- A media client's Show schema names the kinds and their spec members, with the fallback optional. Every other
+  client keeps the schema byte for byte.
+
 ### Pie and donut charts: the `arc` mark (2026-11-28)
 
 - A real run ended with "the chart could not be drawn": the grammar refused `arc`. A chart may now use `mark: "arc"`
