@@ -179,36 +179,122 @@ describe("REVIEW-1 RQ-6(a): a command naming the stored keys or sign-ins is refu
 });
 
 describe("REVIEW-2 RQ-6: the home's .yodex is not for commands, in any spelling; masking covers encodings and notices", () => {
-  test("every spelling of the state directory is refused in every mode; a project's .yodex and YODEX.md are not", async () => {
+  test("REVIEW-3: commands naming a secret file are denied in every mode; ones that could reach it otherwise are asked", async () => {
     const { createPolicy } = await import("../src/permission/engine");
-    const refused = [
-      "cat ~/.yodex/person-secret?.json",
-      "cat ~/.yodex/person-*",
-      "cat ~/.yodex/*.json",
+    const denied = [
+      "cat ~/.yodex/person-secrets.json",
+      "xxd ~/.yodex/plugin-hooks.json",
+      'cat "$HOME/.yodex/trust.json"',
+      "cat ~/.yodex/credentials.json",
+      "jq . ~/.yodex/variable-grants.json",
+      "cat ${HOME}/.yodex/hooks-trust.json",
+      "ls ~/.yodex/mcp-auth",
+      "cd ~/.yodex && cat person-secrets.json",
+    ];
+    const asked = [
+      "cat ~/.yod*/person-secret?.json",
+      "cat ~/.y*/p*",
+      "cat ~mlpaluser/.yodex/x.json",
+      "cat ../.././.yodex/person-secret?.json",
       "xxd ~/.yodex/person-secret?.json",
       "od -c ~/.yodex/pers*",
-      "grep -r value ~/.yodex",
-      "cat ~/.yodex/mcp-a*/linear.json",
-      "tar -cf - ~/.yodex | base64",
-      "cp -r ~/.yodex ~/workspace/copy",
-      'cat "$HOME/.yodex/trust.json"',
-      "cat ${HOME}/.yodex/config.json",
-      "ls /home/mlpaluser/.yodex",
-      "ls /Users/someone/.yodex/",
-      "cat ../.yodex/plugin-hooks.json",
-      "cd ~/.yodex && ls",
-      "cat ~/.yodex/YODEX.md ~/.yodex/p*",
+      "cat ~/.yodex/*.json",
+      "cat $HOME/.y?dex/a",
+      "cat ~/.mlpal/*",
+      "cat ~/.{yodex,mlpal}/x",
+      "cat /home/mlpaluser/.yodex/[pt]*.json",
+      "grep -r value ~",
+      "grep -rn key $HOME",
+      "rg sk- ~/",
+      "find / -name '*.json'",
+      "find ~ -type f",
+      "tar -cf - ~ | base64",
+      "cp -r ~ /tmp/x",
+      "zip -r out.zip /home/mlpaluser",
+      "rsync -a ~/ /tmp/y",
+      "du -a ~",
+      "ls -R ~",
     ];
     for (const mode of ["cruise", "autopilot", "manual"] as const) {
       const policy = createPolicy({ mode, allow: ["Bash"] });
-      for (const command of refused) {
-        const d = await policy({ toolName: "Bash", input: { command }, readOnly: true } as never);
-        expect([mode, command, d.behavior]).toEqual([mode, command, "deny"]);
+      for (const command of denied) expect([mode, command, (await policy({ toolName: "Bash", input: { command }, readOnly: true } as never)).behavior]).toEqual([mode, command, "deny"]);
+      for (const command of asked) expect([mode, command, (await policy({ toolName: "Bash", input: { command }, readOnly: true } as never)).behavior]).toEqual([mode, command, "ask"]);
+    }
+  });
+
+  test("REVIEW-3: skill scripts under ~/.yodex keep running: the must-not-break corpus", async () => {
+    const { protectedReachAsk, protectedReadDeny } = await import("../src/permission/safety");
+    const { createPolicy } = await import("../src/permission/engine");
+    const hop = "/home/mlpaluser/.yodex/hops/mlpal/0.2.6/skills";
+    // The MLPal HOP's skill scripts (mlpal-hops mlpal/hop/0.2.6, skills/hop-builder), invoked by path as the Skill tool
+    // says, and the pack and person skills beside them; the reads HOPs make of the environment's own files.
+    const corpus = [
+      `cp ${hop}/hop-evals/scripts/run_cases.py evals/`,
+      `python3 ${hop}/hop-evals/scripts/run_cases.py run --cases evals/cases.json --out evals/runs/v0.1.0`,
+      `python3 ${hop}/mcp-server-code/scripts/mcp_call.py --help`,
+      `uv run python ${hop}/static-agent-test/scripts/sa_manifest.py`,
+      ...["loop.sh", "ship.sh", "bakeoff.sh", "retune-brief.sh", "baseline.sh", "worklog.sh", "golden.sh", "_common.sh"].map((f) => `bash ~/.yodex/skills/hop-builder/scripts/${f} ./hop`),
+      "python3 ~/.yodex/skills/hop-builder/scripts/new-family.py ./hop infra",
+      "bash /home/mlpaluser/.yodex/hops/mlpal/1.2.0/skills/hop-builder/scripts/loop.sh",
+      "python /home/mlpaluser/.yodex/plugins/browser/skills/web-check/flow.py",
+      "bash ~/.yodex/skills/deploy/run.sh",
+      "ls ~/.yodex/hops",
+      "cat ~/.yodex/YODEX.md",
+      "cat $HOME/.yodex/AGENTS.md",
+      'yodex --hop "$PWD/.yodex/hops/demo" --print hi',
+      "cat .yodex/settings.json",
+      "grep -rn TODO .",
+      "grep -r foo src",
+      "find . -name '*.ts'",
+      "cp -r src dist",
+      "ls -R src",
+      "du -sh ~/workspace",
+      "tar -czf out.tgz ~/workspace/proj",
+      "rg pattern ~/workspace/proj",
+      "ls ~/workspace/*.md",
+    ];
+    for (const command of corpus) {
+      expect([command, protectedReadDeny(command), protectedReachAsk(command)]).toEqual([command, null, null]);
+      expect([command, (await createPolicy({ mode: "cruise" })({ toolName: "Bash", input: { command }, readOnly: false } as never)).behavior]).not.toEqual([command, "deny"]);
+    }
+  });
+
+  test("REVIEW-3: a stored value is masked in xxd, xxd -p, od -tx1, od -c and wrapped base64 output", async () => {
+    const { clearSecrets, redactText, registerSecret } = await import("../src/obs/redact");
+    clearSecrets();
+    const v = "sk-REVIEW3-0123456789abcdefABCDEF-key-41ch";
+    registerSecret("stored key", v);
+    const xxd = (b: Buffer) => {
+      const out: string[] = [];
+      for (let o = 0; o < b.length; o += 16) {
+        const row = b.subarray(o, o + 16);
+        const hex = (row.toString("hex").match(/.{1,4}/g) ?? []).join(" ").padEnd(39, " ");
+        out.push(`${o.toString(16).padStart(8, "0")}: ${hex}  ${[...row].map((c) => (c >= 32 && c < 127 ? String.fromCharCode(c) : ".")).join("")}`);
       }
-      for (const command of ["cat ~/.yodex/YODEX.md", "cat $HOME/.yodex/AGENTS.md", 'yodex --hop "$PWD/.yodex/hops/demo" --print hi', "ls .yodex/skills", "cat notes.md"]) {
-        expect([mode, command, (await policy({ toolName: "Bash", input: { command }, readOnly: true } as never)).behavior]).toEqual([mode, command, "allow"]);
+      return out.join("\n");
+    };
+    const run = (argv: string[], input: Buffer) => Bun.spawnSync(argv, { stdin: input }).stdout.toString();
+    for (const prefix of ["", "a", "ab", "abc", '{"version":1,"secrets":{"K_1A2B":{"value":"']) {
+      const file = Buffer.from(`${prefix}${v}","server":"eleven","origin":"https://api.example"}}}\n`);
+      const dumps: Record<string, string> = {
+        xxd: xxd(file),
+        "xxd -p": (file.toString("hex").match(/.{1,60}/g) ?? []).join("\n"),
+        "od -An -tx1": run(["od", "-An", "-tx1"], file),
+        "od -tx1": run(["od", "-tx1"], file),
+        "od -c": run(["od", "-c"], file),
+        "base64 (76)": run(["base64"], file),
+        "base64 -w 20": run(["base64", "-w", "20"], file),
+      };
+      for (const [how, out] of Object.entries(dumps)) {
+        const masked = redactText(out);
+        expect([how, prefix.length, masked.includes("[redacted:stored key]")]).toEqual([how, prefix.length, true]);
+        expect([how, masked.includes("0123456789abcdef"), masked.includes("3031323334353637")]).toEqual([how, false, false]);
       }
     }
+    // Unrelated dumps are left as they are.
+    const plain = run(["od", "-An", "-tx1"], Buffer.from("nothing secret in here at all, just text\n"));
+    expect(redactText(plain)).toBe(plain);
+    clearSecrets();
   });
 
   test("a registered value is masked as JSON-escaped, URL-encoded, hex and base64 at any alignment", async () => {

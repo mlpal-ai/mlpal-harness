@@ -14,7 +14,8 @@ import type { ToolResult } from "../tools/types";
  */
 
 const MIN_LEN = 8;
-const secrets = new Map<string, string>(); // value → label
+const secrets = new Map<string, string>(); // value (and each encoded form) → label
+const originals = new Map<string, string>(); // the value as registered → label (for dump decoding)
 const patterns = new Map<string, RegExp>(); // label → pattern (global)
 
 /** The platform's secret shapes (C8 §8). A reveal handle (`rvl_…`, C4) is deliberately not one: the UI needs it, and
@@ -32,14 +33,16 @@ export const PLATFORM_SECRET_PATTERNS: ReadonlyArray<{ label: string; pattern: R
 
 export function registerSecret(label: string, value: string | undefined | null): void {
   if (!value || value.length < MIN_LEN) return;
+  originals.set(value, label);
   for (const form of encodedForms(value)) if (form.length >= MIN_LEN && !secrets.has(form)) secrets.set(form, label);
 }
 
 /**
  * REVIEW-2 RQ-6(b): the forms a read of a secret commonly takes besides the value itself: JSON-escaped (as a JSON
- * file holds it), URL-encoded, hex (as `xxd -p` and `od` print it, lower and upper), and base64 (standard and URL-safe)
+ * file holds it), URL-encoded, contiguous hex (lower and upper), and base64 (standard and URL-safe)
  * at each of the three alignments a value can have inside a larger encoded file: for a value that does not start the
- * file, the characters that mix it with its neighbours are dropped and the rest is still unique to it. A determined
+ * file, the characters that mix it with its neighbours are dropped and the rest is still unique to it. Dumps that
+ * break a value across lines or groups (xxd, xxd -p, od, wrapped base64) are decoded by maskDumps. A determined
  * transform (reversed, split, spaced) is not covered: masking is a backstop, not the boundary.
  */
 export function encodedForms(value: string): string[] {
@@ -75,6 +78,7 @@ export function registerPlatformPatterns(): void {
 /** Test seam. */
 export function clearSecrets(): void {
   secrets.clear();
+  originals.clear();
   patterns.clear();
 }
 
@@ -88,7 +92,51 @@ export function redactText(text: string): string {
     if (out.includes(value)) out = out.split(value).join(`[redacted:${label}]`);
   }
   for (const [label, pattern] of patterns) out = out.replace(pattern, `[redacted:${label}]`);
-  return out;
+  return originals.size > 0 && out.includes("\n") ? maskDumps(out) : out;
+}
+
+/**
+ * REVIEW-3: dumps that spread a value over groups, columns and lines, where no contiguous form exists: `xxd` (offset,
+ * grouped hex, an ASCII column), `xxd -p` and other wrapped hex, `od -tx1` / `od -An -tx1` (spaced bytes, with or
+ * without offsets), `od -c` (one character per field) and base64 wrapped at any width. A run of consecutive lines of
+ * one shape is decoded; when the decoded bytes hold a registered value, every line of the run is replaced by one
+ * `[redacted:<label>]`. Nothing else in the text changes.
+ */
+const DUMP_SHAPES: Array<{ line: RegExp; decode: (lines: string[]) => string }> = [
+  // xxd: "00000010: 6b2d 6162 ...  k-ab..."
+  { line: /^[0-9a-f]{6,16}: (?:[0-9a-f]{2,4} ?)+ +.*$/i, decode: (ls) => hexBytes(ls.map((l) => l.replace(/^[0-9a-f]+: /i, "").split(/ {2,}/)[0]!)) },
+  // od -tx1 / od -An -tx1 (and -tx2/-tx4 groups): optional octal or hex offset, then hex groups
+  { line: /^(?:[0-7]{6,}|[0-9a-f]{6,})?(?: +[0-9a-f]{2,8})+ *$/i, decode: (ls) => hexBytes(ls.map((l) => l.replace(/^[0-7]{6,} /, "").replace(/^[0-9a-f]{6,} (?=[0-9a-f]{2} )/i, ""))) },
+  // od -c: an octal offset, then one field per byte
+  { line: /^[0-7]{7}(?: {1,3}(?:\\[0-7]{1,3}|\\.|\S))+ *$/, decode: (ls) => ls.map((l) => l.slice(7).trim().split(/ {1,3}/).map((t) => (t === "\\n" ? "\n" : t === "\\t" ? "\t" : t === "\\0" ? "\0" : t.length === 1 ? t : "")).join("")).join("") },
+  // xxd -p and other plain wrapped hex
+  { line: /^[0-9a-f]{16,}$/i, decode: (ls) => hexBytes(ls) },
+  // base64 wrapped at any width (the last line may be short)
+  { line: /^[A-Za-z0-9+/_-]{16,}={0,2}$/, decode: (ls) => Buffer.from(ls.join("").replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1") },
+];
+
+function hexBytes(parts: string[]): string {
+  const hex = parts.join("").replace(/[^0-9a-f]/gi, "");
+  return Buffer.from(hex.length % 2 ? hex.slice(0, -1) : hex, "hex").toString("latin1");
+}
+
+function maskDumps(text: string): string {
+  const lines = text.split("\n");
+  for (const shape of DUMP_SHAPES) {
+    for (let i = 0; i < lines.length; ) {
+      if (!shape.line.test(lines[i]!)) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < lines.length && shape.line.test(lines[j]!)) j++;
+      const decoded = shape.decode(lines.slice(i, j));
+      const hit = [...originals].find(([v]) => decoded.includes(Buffer.from(v, "utf8").toString("latin1")) || decoded.includes(JSON.stringify(v).slice(1, -1)));
+      if (hit) lines.splice(i, j - i, `[redacted:${hit[1]}]`), (j = i + 1);
+      i = j;
+    }
+  }
+  return lines.join("\n");
 }
 
 export function redactBlocks(blocks: ToolResultBlocks): ToolResultBlocks {
