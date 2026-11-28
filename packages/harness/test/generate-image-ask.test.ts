@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { checkDownload, presignedUrl } from "./image-gateway-fixture";
 import type { EngineEvent, ImageAskDetail } from "@mlpal/harness-protocol";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import type { ImageGateway, ImageRequest } from "../src/gateway/images";
@@ -29,11 +30,11 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 function gateway() {
   const submits: ImageRequest[] = [];
   const gw: ImageGateway = {
-    submit: async (req) => (submits.push(req), { result: { data: Array.from({ length: req.n }, (_, i) => ({ url: `https://a.test/${i}.png` })), model: req.model, cost: { compute_units: 0.08 } } }),
+    submit: async (req) => (submits.push(req), { result: { data: Array.from({ length: req.n }, (_, i) => ({ url: presignedUrl("job-ask", i) })), model: req.model, cost: { compute_units: 0.08 } } }),
     job: async () => {
       throw new Error("no job");
     },
-    download: async () => PNG,
+    download: async (url) => (checkDownload(url), PNG),
   };
   return { gw, submits };
 }

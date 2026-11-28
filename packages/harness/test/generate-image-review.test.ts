@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Usage } from "@mlpal/harness-protocol";
 import { readMedia, probeMedia } from "../src/display/media";
+import { ASSET_PREFIX, checkDownload, presignedUrl } from "./image-gateway-fixture";
 import { DATA_IMAGE_BYTES, gatewayImages, ImageGatewayError, loadImagePrices, parseAssetPrefix, type ImageGateway, type ImageJob, type ImagePrice, type ImageRequest, type ImageResult } from "../src/gateway/images";
 import type { ModelInfo } from "../src/registry/models";
 import { createGenerateImageTool, estimateFromPrices, imageAskReason, type GenerateImageDeps } from "../src/tools/builtin/image";
@@ -18,7 +19,7 @@ const PNG = head("png 1536x1024");
 const DAY = "2026-11-28";
 const now = () => new Date(`${DAY}T10:00:00Z`);
 const model = (tag: string): ModelInfo => ({ tag, displayName: tag, provider: "p", capabilities: { operation: "image_generation", streaming: false, tools: false, vision: false, pdf: false, audio: false }, contextLength: null, maxOutputTokens: null, deprecated: false, effortLevels: [] });
-const result = (n = 1, cu = 0.19): ImageResult => ({ data: Array.from({ length: n }, (_, i) => ({ url: `https://assets.test/img-${i}.png` })), model: "mlpal", cost: { compute_units: cu } });
+const result = (n = 1, cu = 0.19): ImageResult => ({ data: Array.from({ length: n }, (_, i) => ({ url: presignedUrl("img", i) })), model: "mlpal", cost: { compute_units: cu } });
 
 class Scripted implements ImageGateway {
   submits: ImageRequest[] = [];
@@ -33,6 +34,7 @@ class Scripted implements ImageGateway {
     return this.s.job!(this.polls++);
   }
   async download(url: string) {
+    checkDownload(url);
     return this.s.download ? this.s.download(url, this.downloads++) : PNG;
   }
 }
@@ -54,6 +56,43 @@ function call(gw: ImageGateway, input: Record<string, unknown>, extra: Partial<G
   return t.call(input as never, { cwd: root, roots: [root], toolUseId: "toolu_r", spend: async (u) => void spent.push(u), ...(signal ? { signal } : {}) });
 }
 const first = (r: ToolResult) => JSON.parse(String(r.content).split("\n")[0]!) as { error: string; message: string; hint?: string };
+
+describe("pre-flight B2: a real presigned URL's query is opaque", () => {
+  test("path-style, under the prefix, with the SigV4 query (encoded slashes in X-Amz-Credential): accepted, fetched byte for byte", async () => {
+    const url = presignedUrl("imgjob_0000", 0);
+    expect(url).toContain("X-Amz-Credential=AKIAEXAMPLEEXAMPLE00%2F20261128%2Fexample-region%2Fs3%2Faws4_request");
+    const fetched: string[] = [];
+    const fake = (async (u: string) => (fetched.push(u), new Response(PNG))) as unknown as typeof fetch;
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: fake, assetPrefixes: [ASSET_PREFIX] });
+    expect(Buffer.from(await gw.download(url, { maxBytes: 1 << 20, timeoutMs: 1_000 })).equals(PNG)).toBe(true);
+    expect(fetched).toEqual([url]);
+    // a query character the URL parser would re-encode is still sent as it came (the signature covers it)
+    const odd = `${url}&x-id=GetObject&note='a'`;
+    await gw.download(odd, { maxBytes: 1 << 20, timeoutMs: 1_000 });
+    expect(fetched.at(-1)).toBe(odd);
+  });
+
+  test("in the path, an encoded slash or backslash and dot segments are still refused, and so is the rest", async () => {
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: (async () => new Response(PNG)) as unknown as typeof fetch, assetPrefixes: [ASSET_PREFIX] });
+    const q = presignedUrl("j", 0).slice(presignedUrl("j", 0).indexOf("?"));
+    const refused = [
+      `https://s3.example-region.amazonaws.com/other-bucket/generated/x.png${q}`,
+      `https://s3.example-region.amazonaws.com/example-bucket-000000000000-evil/x.png${q}`,
+      `${ASSET_PREFIX}../other-bucket/x.png${q}`,
+      `${ASSET_PREFIX}generated%2F..%2Fx.png${q}`,
+      `${ASSET_PREFIX}generated%5cx.png${q}`,
+      `https://u@s3.example-region.amazonaws.com/example-bucket-000000000000/x.png${q}`,
+      `https://s3.example-region.amazonaws.com:8443/example-bucket-000000000000/x.png${q}`,
+      `${presignedUrl("j", 0)}#frag`,
+    ];
+    for (const url of refused) expect([url.slice(0, 90), await gw.download(url, { maxBytes: 1 << 20, timeoutMs: 1_000 }).then(() => "fetched", (e: ImageGatewayError) => e.code)]).toEqual([url.slice(0, 90), "asset_origin"]);
+  });
+
+  test("a 302 from an accepted presigned URL is refused", async () => {
+    const gw = gatewayImages({ baseUrl: "https://models.example", authorization: () => "k", fetch: (async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example/x" } })) as unknown as typeof fetch, assetPrefixes: [ASSET_PREFIX] });
+    await expect(gw.download(presignedUrl("j", 0), { maxBytes: 1 << 20, timeoutMs: 1_000 })).rejects.toMatchObject({ status: 302, code: "asset_origin" });
+  });
+});
 
 describe("R2: a result is downloaded only from the gateway's asset origin, https, never through a redirect", () => {
   const servers: Array<{ stop: () => void }> = [];

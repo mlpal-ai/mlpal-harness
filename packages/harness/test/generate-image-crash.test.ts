@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { checkDownload, presignedUrl } from "./image-gateway-fixture";
 import type { EngineEvent, SDKMessage } from "@mlpal/harness-protocol";
 import { GatewayError, type ModelClient, type ModelRequest, type ModelResult } from "../src/gateway/client";
 import type { ImageGateway, ImageJob, ImageRequest, ImageResult } from "../src/gateway/images";
@@ -51,7 +52,7 @@ class Gateway {
         if (known) return { job: { status: "queued", id: known } as ImageJob };
         const id = `job-${this.jobs.size + 1}`;
         this.byKey.set(`user-1/${opts.idempotencyKey}`, id);
-        this.jobs.set(id, { data: Array.from({ length: req.n }, (_, i) => ({ url: `https://assets.test/${id}/${i}.png` })), model: "m", cost: { compute_units: CU } });
+        this.jobs.set(id, { data: Array.from({ length: req.n }, (_, i) => ({ url: presignedUrl(id, i) })), model: "m", cost: { compute_units: CU } });
         if (engine === 1 && this.die?.at === "submit") return never();
         return { job: { status: "queued", id } as ImageJob };
       },
@@ -61,7 +62,8 @@ class Gateway {
         if (!result) throw new Error("404 no such job");
         return { status: "succeeded", id, result } as ImageJob;
       },
-      download: async () => {
+      download: async (url: string) => {
+        checkDownload(url);
         const i = downloads++;
         if (engine === 1 && this.die?.at === "download" && i === (this.die.image ?? 0)) return never();
         return PNG;
@@ -189,12 +191,12 @@ describe("R5, round 3: the payer, and an unconfirmed charge with no estimate", (
 /** A gateway whose job runs past the caller's deadline, then finishes (and bills) once `finish()` is called. */
 function lateGateway() {
   let finished = false;
-  const result: ImageResult = { data: [{ url: "https://assets.test/late/0.png" }], model: "m", cost: { compute_units: CU } };
+  const result: ImageResult = { data: [{ url: presignedUrl("job-late", 0) }], model: "m", cost: { compute_units: CU } };
   const submits: string[] = [];
   const gw: ImageGateway = {
     submit: async (_req, opts) => (submits.push(opts.idempotencyKey), { job: { status: "queued", id: "job-late" } as ImageJob }),
     job: async (id) => (finished ? ({ status: "succeeded", id, result } as ImageJob) : ({ status: "running", id } as ImageJob)),
-    download: async () => PNG,
+    download: async (url) => (checkDownload(url), PNG),
   };
   return { gw, submits, finish: () => void (finished = true) };
 }

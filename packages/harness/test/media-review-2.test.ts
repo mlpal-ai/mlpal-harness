@@ -3,6 +3,7 @@ import { constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { checkDownload, presignedUrl } from "./image-gateway-fixture";
 import { DISPLAY_LIMITS, type DisplayCaps } from "@mlpal/harness-protocol";
 import { createShowTool, localMediaProbe, probeMedia, resolveDisplay } from "../src/display";
 import { silentLogger } from "../src/obs/logger";
@@ -55,17 +56,36 @@ describe("R9: a file over the read window is read and hashed in chunks, up to th
 
   test("through GenerateImage: a 3 MiB result is shown as an image block; one over the image cap is saved and named, not drawn", async () => {
     const gateway = (size: number): ImageGateway => ({
-      submit: async (req: ImageRequest) => ({ result: { data: Array.from({ length: req.n }, (_, i) => ({ url: `https://assets.test/${i}.png` })), model: "m", cost: { compute_units: 0.01 } } }),
+      submit: async (req: ImageRequest) => ({ result: { data: Array.from({ length: req.n }, (_, i) => ({ url: presignedUrl("job-big", i) })), model: "m", cost: { compute_units: 0.01 } } }),
       job: async () => {
         throw new Error("no job");
       },
-      download: async () => png(size),
+      download: async (url: string) => (checkDownload(url), png(size)),
     });
     const tool = (size: number) => createGenerateImageTool({ images: gateway(size), models: () => [], estimate: () => 0.01, now: () => new Date("2026-11-28T10:00:00Z") });
     const shown = await tool(3 * 1024 * 1024).call({ prompt: "a fox" } as never, { ...ctx(), toolUseId: "toolu_big" });
     expect([shown.isError ?? false, (shown.meta?.display?.[0] as { kind?: string })?.kind, text(shown).includes("not shown")]).toEqual([false, "image", false]);
     const over = await tool(CAP + 1).call({ prompt: "a fox" } as never, { ...ctx(), toolUseId: "toolu_over" });
     expect([over.meta?.display, text(over)]).toEqual([undefined, expect.stringContaining("not shown as a block: MEDIA_TOO_LARGE")]);
+  });
+});
+
+describe("pre-flight B2: a relative media path resolves where a person expects it", () => {
+  test("the session's folder first, then the workspace root; a miss names both places", () => {
+    mkdirSync(join(root, "uploads"), { recursive: true });
+    writeFileSync(join(root, "uploads", "ref.png"), png(100));
+    const inProject = { cwd: join(root, "uploads"), roots: [root] };
+    // the attachment note's path, workspace-relative, from a session whose folder is the "uploads" project
+    const r = probeMedia({ path: "uploads/ref.png", maxBytes: CAP }, inProject);
+    expect("code" in r ? r.code : r.path).toBe("uploads/ref.png");
+    // and from the folder itself
+    const near = probeMedia({ path: "ref.png", maxBytes: CAP }, inProject);
+    expect("code" in near ? near.code : near.path).toBe("uploads/ref.png");
+    const miss = probeMedia({ path: "nope/ref.png", maxBytes: CAP }, inProject);
+    expect("code" in miss ? miss.message : "found").toBe("no file at uploads/nope/ref.png (from the session's folder uploads) or at nope/ref.png (from the workspace root)");
+    // the fallback stays inside the roots: a climb out is refused as before
+    const out = probeMedia({ path: "../../etc/passwd", maxBytes: CAP }, inProject);
+    expect("code" in out ? out.code : "found").toBe("PATH_OUTSIDE_WORKSPACE");
   });
 });
 

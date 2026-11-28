@@ -136,10 +136,14 @@ const DATA_DECODED = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 /** A configured or offered URL's own faults, on the string as sent: what parsing would silently change. */
 function rawFault(raw: string): string | null {
-  if (raw.includes("\\")) return "has a backslash";
-  if (/%2f|%5c/i.test(raw)) return "has an encoded slash or backslash";
   if (raw.includes("#")) return "has a fragment";
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)(\/[^?#]*)?/i.exec(raw);
+  // the scheme, authority and path are checked; the query is opaque (a presigned URL's X-Amz-Credential carries %2F,
+  // and its signature covers the query as sent), so it is never decoded, normalised or judged here
+  const q = raw.indexOf("?");
+  const head = q < 0 ? raw : raw.slice(0, q);
+  if (head.includes("\\")) return "has a backslash";
+  if (/%2f|%5c/i.test(head)) return "has an encoded slash or backslash";
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)(\/[^?#]*)?/i.exec(head);
   if (!m) return "is not an absolute URL";
   if (m[1]!.includes("@")) return "carries credentials";
   const path = m[2] ?? "/";
@@ -150,6 +154,14 @@ function rawFault(raw: string): string | null {
     return "is not a URL";
   }
   return null;
+}
+
+/** What is fetched for a checked result URL: its parsed origin and path, then its query exactly as the answer sent it
+ *  (a parser may re-encode a query character, and a presigned signature covers the bytes). */
+function fetchTarget(url: string): string {
+  const u = new URL(url);
+  const q = url.indexOf("?");
+  return `${u.origin}${u.pathname}${q < 0 ? "" : url.slice(q)}`;
 }
 
 /** An asset prefix, parsed: its exact origin and its path, which ends in `/`. */
@@ -276,8 +288,8 @@ export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
       opts.signal?.addEventListener("abort", onAbort);
       try {
         // never followed: a redirect would leave the checked origin
-        // the URL as parsed and checked, not the string the answer sent
-        const res = await f(new URL(url).href, { signal: ctl.signal, redirect: "manual", credentials: "omit" });
+        // the origin as parsed, the path as checked (it equals its parsed form), and the query byte for byte
+        const res = await f(fetchTarget(url), { signal: ctl.signal, redirect: "manual", credentials: "omit" });
         if (res.status >= 300 && res.status < 400) throw new ImageGatewayError(res.status, `the image's link redirected (${res.status}); redirects are not followed`, "asset_origin");
         if (!res.ok) throw new ImageGatewayError(res.status, `the image's link answered ${res.status}`);
         const reader = res.body?.getReader();
