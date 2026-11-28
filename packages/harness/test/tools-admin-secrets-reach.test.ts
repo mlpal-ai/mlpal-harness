@@ -362,7 +362,8 @@ describe("REVIEW-4 R4-1: paths in their normal form; a recursive read of the sta
     expect(normalWord("//home/./u/../mlpaluser/.yodex", ctx)).toEqual({ path: "/home/mlpaluser/.yodex", literal: "/home/mlpaluser/.yodex", pattern: false });
     expect(normalWord("/proc/self/root/home/mlpaluser/.yodex/p*", ctx)?.literal).toBe("/home/mlpaluser/.yodex");
     expect(normalWord("~/.yodex", ctx)?.path).toBe("/home/mlpaluser/.yodex");
-    expect(normalWord("src/x", ctx)).toBeNull();
+    expect(normalWord("src/x", ctx)?.path).toBe("/home/mlpaluser/workspace/proj/src/x");
+    expect(normalWord("-r", ctx)).toBeNull();
   });
 
   test("must-not-break: of the reviewer's 74 everyday commands only `find /` asks; skill scripts and subfolders of ~/.yodex do not", async () => {
@@ -393,6 +394,94 @@ describe("REVIEW-4 R4-1: paths in their normal form; a recursive read of the sta
     }
     const plain = Bun.spawnSync(["hexdump", "-C"], { stdin: Buffer.from("nothing secret here, only text and more text\n") }).stdout.toString();
     if (plain) expect(redactText(plain)).toBe(plain);
+    clearSecrets();
+  });
+});
+
+describe("REVIEW-5: relative words and $PWD against the folder; operands on the state directory; many-file readers", () => {
+  const ctx = { home: "/home/mlpaluser", cwd: "/home/mlpaluser/workspace" };
+
+  test("R5-1/R5-2/R5-3: the reviewer's lines ask", async () => {
+    const { protectedReachAsk } = await import("../src/permission/safety");
+    for (const command of [
+      "cat src/../../.yodex/person-secret?.json",
+      "cat sub/x/../../../.yodex/p*",
+      "grep -d recurse value ~/.yodex",
+      "grep --directories=recurse value ~/.yodex",
+      "git grep --no-index value ~/.yodex",
+      "ag value ~/.yodex",
+      "ack value ~/.yodex",
+      "fd . ~/.yodex -x cat",
+      "tree ~/.yodex",
+      "grep -d recurse . ~/.yodex | od",
+      "ag secret ~",
+      "tree /",
+      "git grep --no-index key /home/mlpaluser",
+      "cat $PWD/../.yodex/person-secret?.json",
+      "cat ${PWD}/../.yodex/person-secret?.json",
+      "cd ~ && cat .yodex/person-secret?.json",
+      "cd .. && grep -r value .yodex",
+      "cd ~/.yodex && cat p*",
+      "ls ~/.yodex",
+      "cp ~/.mlpal /tmp/x -r",
+    ]) {
+      expect([command, protectedReachAsk(command, ctx) !== null]).toEqual([command, true]);
+    }
+    // The folder unknown: a word that climbs toward a state directory asks; one that does not, does not.
+    expect(protectedReachAsk("cat ../../.yodex/p*", { home: ctx.home })).not.toBeNull();
+    expect(protectedReachAsk("cat $PWD/../.yodex/person-secret?.json", { home: ctx.home })).not.toBeNull();
+    expect(protectedReachAsk("cat ../README.md", { home: ctx.home })).toBeNull();
+    // After a cd whose target is not literal, the folder is unknown.
+    expect(protectedReachAsk("cd $X && cat ../.yodex/p*", ctx)).not.toBeNull();
+  });
+
+  test("must-not-break: everyday commands, skills, the workspace's own sweeps, ls ~, YODEX.md", async () => {
+    const { protectedReachAsk, protectedReadDeny } = await import("../src/permission/safety");
+    const corpus = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "permission", "everyday-commands.json"), "utf8")) as Record<string, string[]>;
+    const all = Object.values(corpus).flat();
+    const proj = { home: ctx.home, cwd: "/home/mlpaluser/workspace/proj" };
+    expect(all.filter((c) => protectedReachAsk(c, proj) !== null)).toEqual(["find / -name '*.log' 2>/dev/null | head"]);
+    expect(all.filter((c) => protectedReadDeny(c) !== null)).toEqual([]);
+    for (const c of [
+      "grep -r foo .",
+      "find . -name '*.ts'",
+      "du -sh .",
+      "ls ~",
+      "cd ~",
+      "ls -la ~/.config",
+      "cat ~/.yodex/YODEX.md",
+      "cat ~/.yodex/AGENTS.md",
+      "ls ~/.yodex/hops",
+      "ls -la ~/.yodex/plugins",
+      "grep -r foo ~/.yodex/skills",
+      "find ~/.yodex/hops -name SKILL.md",
+      "cat ~/.yodex/hops/mlpal/0.2.6/hop.yaml",
+      "python3 ~/.yodex/hops/mlpal/0.2.6/skills/hop-evals/scripts/run_cases.py run --cases evals/cases.json",
+      "bash ~/.yodex/skills/hop-builder/scripts/loop.sh ./hop",
+      'yodex --hop "$PWD/.yodex/hops/demo" --print hi',
+      "cat ./node_modules/.bin/../pkg/package.json",
+      "cat ../README.md",
+      "grep -rn TODO ../other-project",
+      "du -sh ~/workspace/*",
+      "cd src && grep -r foo .",
+    ]) {
+      expect([c, protectedReachAsk(c, proj), protectedReadDeny(c)]).toEqual([c, null, null]);
+    }
+  });
+
+  test("od -c and od -An -c are masked with spaces in the store's layout", async () => {
+    const { clearSecrets, redactText, registerSecret } = await import("../src/obs/redact");
+    clearSecrets();
+    const v = "sk-REVIEW5-0123456789abcdefABCDEF-key-41ch";
+    registerSecret("stored key", v);
+    for (const indent of ["", " ", "  ", "   ", "    ", "     "]) {
+      const file = Buffer.from(`{\n${indent}"secrets": {\n${indent}  "K": {\n${indent}    "value": "${v}",\n${indent}    "server": "e"\n  }\n}\n`);
+      for (const argv of [["od", "-c"], ["od", "-An", "-c"]]) {
+        const out = Bun.spawnSync(argv, { stdin: file }).stdout.toString();
+        if (!out) continue;
+        expect([argv.join(" "), indent.length, redactText(out).includes("[redacted:stored key]")]).toEqual([argv.join(" "), indent.length, true]);
+      }
+    }
     clearSecrets();
   });
 });

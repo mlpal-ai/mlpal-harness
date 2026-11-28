@@ -110,15 +110,25 @@ const DUMP_SHAPES: Array<{ line: RegExp; decode: (lines: string[]) => string }> 
   { line: /^[0-9a-f]{6,16}: (?:[0-9a-f]{2,4} ?)+ +.*$/i, decode: (ls) => hexBytes(ls.map((l) => l.replace(/^[0-9a-f]+: /i, "").split(/ {2,}/)[0]!)) },
   // od -tx1 / od -An -tx1 (and -tx2/-tx4 groups): optional octal or hex offset, then hex groups
   { line: /^(?:[0-7]{6,}|[0-9a-f]{6,})?(?: +[0-9a-f]{2,8})+ *$/i, decode: (ls) => hexBytes(ls.map((l) => l.replace(/^[0-7]{6,} /, "").replace(/^[0-9a-f]{6,} (?=[0-9a-f]{2} )/i, ""))) },
-  // od -c: an octal offset, then one field per byte
-  { line: /^[0-7]{7}(?: {1,3}(?:\\[0-7]{1,3}|\\.|\S))+ *$/, decode: (ls) => ls.map((l) => l.slice(7).trim().split(/ {1,3}/).map((t) => (t === "\\n" ? "\n" : t === "\\t" ? "\t" : t === "\\0" ? "\0" : t.length === 1 ? t : "")).join("")).join("") },
+  // od -c: an octal offset, then 4-character fields, one per byte (a space byte is a blank field)
+  { line: /^[0-7]{7}(?:(?: {1,3}(?:\\[0-7]{1,3}|\\.|[0-7]{3}|\S))| {4})+ *$/, decode: (ls) => ls.map((l) => odChars(l.slice(7))).join("") },
   // od -An -c: the same fields without an offset
-  { line: /^(?: {1,3}(?:\\[0-7]{1,3}|\\.|\S)){4,16} *$/, decode: (ls) => ls.map((l) => l.trim().split(/ {1,3}/).map((t) => (t === "\\n" ? "\n" : t === "\\t" ? "\t" : t === "\\0" ? "\0" : t.length === 1 ? t : "")).join("")).join("") },
+  { line: /^(?:(?: {1,3}(?:\\[0-7]{1,3}|\\.|[0-7]{3}|\S))| {4}){4,16} *$/, decode: (ls) => ls.map((l) => odChars(l)).join("") },
   // xxd -p and other plain wrapped hex
   { line: /^[0-9a-f]{16,}$/i, decode: (ls) => hexBytes(ls) },
   // base64 wrapped at any width (the last line may be short)
   { line: /^[A-Za-z0-9+/_-]{16,}={0,2}$/, decode: (ls) => Buffer.from(ls.join("").replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1") },
 ];
+
+/** od -c's fixed 4-character fields: a character, an escape (\\n, \\0), a 3-digit octal byte, or blank (a space). */
+function odChars(fields: string): string {
+  let out = "";
+  for (let k = 0; k + 4 <= fields.length + 3 && k < fields.length; k += 4) {
+    const t = fields.slice(k, k + 4).trimStart();
+    out += t === "" ? " " : t === "\\n" ? "\n" : t === "\\t" ? "\t" : t === "\\0" ? "\0" : t === "\\r" ? "\r" : /^[0-7]{3}$/.test(t) ? String.fromCharCode(Number.parseInt(t, 8)) : t.length === 1 ? t : "";
+  }
+  return out;
+}
 
 const FILLER = /^(?:\*|[0-9a-f]{6,8}|[0-7]{7})$/i;
 

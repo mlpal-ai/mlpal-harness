@@ -8,6 +8,7 @@
  * than an LLM-classifier boundary: allow is earned; deny here is absolute.
  */
 
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix } from "node:path";
 import { decomposeBash } from "./shell-decompose";
@@ -286,21 +287,6 @@ export function protectedReadDeny(command: string): string | null {
 
 const PATTERN_CHARS = /[*?[\]{}$]/;
 const STATE_NAMES = [".yodex", ".mlpal"];
-/** Commands that read a whole tree they are pointed at, and the flag that makes them recursive when they need one. */
-const SWEEPS: Record<string, RegExp | null> = {
-  find: null,
-  rg: null,
-  tar: null,
-  rsync: null,
-  du: null,
-  zip: /^-[a-zA-Z]*r/,
-  grep: /^(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--dereference-recursive)$/,
-  egrep: /^(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$/,
-  cp: /^(-[a-zA-Z]*[rRa][a-zA-Z]*|--recursive|--archive)$/,
-  ls: /^-[a-zA-Z]*R[a-zA-Z]*$/,
-  scp: /^-[a-zA-Z]*r/,
-};
-
 /** Whether a path segment, possibly a pattern, could name ".yodex" or ".mlpal" (a leading * or ? never matches a dot
  *  name, as in bash and zsh by default). */
 function couldName(segment: string): boolean {
@@ -324,13 +310,15 @@ function couldName(segment: string): boolean {
 export interface ReachContext {
   /** The person's home (default os.homedir()). */
   home?: string;
-  /** The folder the command runs in, for a relative path (`../..`); absent: a relative path is the project's. */
+  /** The folder the command runs in; absent or unknown: see protectedReachAsk. */
   cwd?: string;
 }
 
+type Ctx = { home: string; cwd?: string };
+
 /** A home directory, by its normal form: the person's own, any /home/<u> or /Users/<u>, or /root. */
 const isHome = (p: string, home: string): boolean => p === home || /^\/(?:home|Users)\/[^/]+$/.test(p) || p === "/root";
-/** The path is the home's .yodex or .mlpal, or inside one. Group 1: the state directory. */
+/** The state directory (the home's .yodex or .mlpal) that holds the path, or null. */
 const inState = (p: string, home: string): string | null => {
   for (const name of STATE_NAMES) {
     if (p === `${home}/${name}` || p.startsWith(`${home}/${name}/`)) return `${home}/${name}`;
@@ -338,21 +326,44 @@ const inState = (p: string, home: string): string | null => {
   const m = /^(\/(?:home|Users)\/[^/]+\/\.(?:yodex|mlpal)|\/root\/\.(?:yodex|mlpal))(?:\/|$)/.exec(p);
   return m ? m[1]! : null;
 };
-/** The path is a state directory or one of its ancestors: what a recursive reader pointed there reaches. */
-const holdsState = (p: string, home: string): boolean => p === "/" || p === "/home" || p === "/Users" || isHome(p, home) || inState(p, home) === p;
+/** A directory above a state directory: what a many-file reader pointed there reaches. */
+const aboveState = (p: string, home: string): boolean => p === "/" || p === "/home" || p === "/Users" || isHome(p, home);
+/** The trees under ~/.yodex that HOPs, packs and the person's skills run from: readable as any folder is. */
+const OPEN_TREES = ["hops", "plugins", "skills"];
+
+/** REVIEW-5 R5-2(a): a path inside a state directory that is the directory itself or a directory in it other than the
+ *  skills, HOPs and plugins trees (a file there, ~/.yodex/YODEX.md, is not). */
+function stateDirectory(p: string, home: string): boolean {
+  const root = inState(p, home);
+  if (!root) return false;
+  if (p === root) return true;
+  const first = p.slice(root.length + 1).split("/")[0]!;
+  if (root.endsWith("/.yodex") && OPEN_TREES.includes(first)) return false;
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 /**
- * REVIEW-4: a path word in its normal form, resolved lexically as the shell and the kernel would find it: `~`, `$HOME`
- * and `${HOME…}` expanded, `~user` as /home/<user>, `/proc/self|<pid>/root/…` as `/…`, `/proc/…/cwd/…` and a leading
- * `.`/`..` against the command's folder, `//`, `/./` and `..` collapsed. `literal` is the longest prefix with no glob,
- * brace or run-time value; `pattern` says whether the rest has one. Null for a word that is not a path into the
- * filesystem from a known place (a plain relative path, a flag, a URL).
+ * REVIEW-4/5: a path word in its normal form, resolved lexically as the shell and the kernel would find it: `~`,
+ * `$HOME`/`${HOME…}` and (with a known folder) `$PWD`/`${PWD}` expanded, `~user` as /home/<user>,
+ * `/proc/self|<pid>/root/…` as `/…`, `/proc/…/cwd/…` and every relative word against the command's folder, `//`, `/./`
+ * and `..` collapsed. `literal` is the longest prefix with no glob, brace or run-time value; `pattern` says whether the
+ * rest has one. Null for a word that is not a path from a known place (a flag, a URL, a relative word or `$PWD` with
+ * the folder unknown).
  */
-export function normalWord(word: string, ctx: Required<Pick<ReachContext, "home">> & ReachContext): { path: string; literal: string; pattern: boolean } | null {
+export function normalWord(word: string, ctx: Ctx): { path: string; literal: string; pattern: boolean } | null {
+  if (word === "" || word.startsWith("-") || word.includes("://")) return null;
   let w = word;
   const tilde = /^~([A-Za-z0-9_.-]*)(?=\/|$)/.exec(w);
   if (tilde) w = (tilde[1] ? `/home/${tilde[1]}` : ctx.home) + w.slice(tilde[0].length);
   else if (/^(?:\$HOME|\$\{HOME[^}]*\})(?=\/|$)/.test(w)) w = w.replace(/^(?:\$HOME|\$\{HOME[^}]*\})/, ctx.home);
+  else if (/^(?:\$PWD|\$\{PWD\})(?=\/|$)/.test(w)) {
+    if (!ctx.cwd) return null;
+    w = w.replace(/^(?:\$PWD|\$\{PWD\})/, ctx.cwd);
+  }
   const proc = /^\/proc\/(?:self|thread-self|\d+)\/(root|cwd)(?=\/|$)/.exec(w);
   if (proc) {
     if (proc[1] === "root") w = `/${w.slice(proc[0].length)}`;
@@ -360,49 +371,89 @@ export function normalWord(word: string, ctx: Required<Pick<ReachContext, "home"
     else return null;
   }
   if (!w.startsWith("/")) {
-    if (!ctx.cwd || !/^\.\.?(?:\/|$)/.test(w)) return null;
+    if (!ctx.cwd || w.startsWith("$")) return null;
     w = `${ctx.cwd}/${w}`;
   }
   const at = w.search(PATTERN_CHARS);
-  if (at < 0) return { path: posix.normalize(w).replace(/(.)\/$/, "$1"), literal: posix.normalize(w).replace(/(.)\/$/, "$1"), pattern: false };
+  const tidy = (p: string) => posix.normalize(p).replace(/(.)\/$/, "$1");
+  if (at < 0) return { path: tidy(w), literal: tidy(w), pattern: false };
   const cut = w.lastIndexOf("/", at);
-  const literal = posix.normalize(w.slice(0, cut + 1) || "/").replace(/(.)\/$/, "$1");
+  const literal = tidy(w.slice(0, cut + 1) || "/");
   return { path: `${literal === "/" ? "" : literal}/${w.slice(cut + 1)}`, literal, pattern: true };
 }
 
 /** Why a word could reach the home's .yodex or .mlpal without naming a file there, or null. */
-function reachWithoutNaming(word: string, ctx: Required<Pick<ReachContext, "home">> & ReachContext): string | null {
+function reachWithoutNaming(word: string, ctx: Ctx): string | null {
   if (/^~[A-Za-z0-9_.-]+(?:\/|$)/.test(word)) return `${word.slice(0, 40)} names a home by its user`;
   const n = normalWord(word, ctx);
-  if (!n && !ctx.cwd && /^\.\.\//.test(word) && PATTERN_CHARS.test(word) && (/yodex|mlpal/.test(word) || word.split("/").some((s) => couldName(s)))) {
-    return `${word.slice(0, 60)} climbs out of the folder towards a home's .yodex or .mlpal`;
+  if (!n) {
+    // The folder is unknown (or held in $PWD): a word that climbs (a `..` segment) toward a state directory asks.
+    const segs = word.split("/");
+    if (segs.includes("..") && (/yodex|mlpal/.test(word) || segs.some((s) => couldName(s)) || PATTERN_CHARS.test(word))) return `${word.slice(0, 60)} climbs from an unknown folder toward a home's .yodex or .mlpal`;
+    return null;
   }
-  if (!n || !n.pattern) return null;
+  if (!n.pattern) return null;
   // A pattern inside a state directory, or one whose literal part is a home (or above) and whose next segment could
   // name one, reaches files there no rule can name.
   if (inState(n.literal, ctx.home)) return `${word.slice(0, 60)} is a pattern inside ${inState(n.literal, ctx.home)}`;
-  if (holdsState(n.literal, ctx.home)) {
+  if (aboveState(n.literal, ctx.home)) {
     const rest = n.path.slice(n.literal === "/" ? 1 : n.literal.length + 1);
     const [first = "", ...more] = rest.split("/");
-    const named = isHome(n.literal, ctx.home) ? couldName(first) : /yodex|mlpal/.test(rest) || (n.literal === "/home" || n.literal === "/Users" ? more.some((s) => couldName(s)) : false);
+    const named = isHome(n.literal, ctx.home) ? couldName(first) : /yodex|mlpal/.test(rest) || more.some((s) => couldName(s));
     if (named) return `${word.slice(0, 60)} is a pattern that can reach a home's .yodex or .mlpal`;
   }
   return null;
 }
 
+/** REVIEW-5 R5-2(b): the tools that read many files from a folder they are given, and when (args) they do. */
+function readsMany(tool: string, args: string[]): boolean {
+  switch (tool) {
+    case "find":
+    case "rg":
+    case "tar":
+    case "rsync":
+    case "du":
+    case "ag":
+    case "ack":
+    case "fd":
+    case "fdfind":
+    case "tree":
+    case "ugrep":
+    case "ug":
+      return true;
+    case "grep":
+    case "egrep":
+    case "fgrep":
+      return args.some((w) => /^-[a-zA-Z]*[rR]/.test(w) || /^-[a-zA-Z]*d/.test(w) || /^--(?:recursive|dereference-recursive|directories)/.test(w));
+    case "git":
+      return args.includes("grep") && args.includes("--no-index");
+    case "cp":
+    case "scp":
+      return args.some((w) => /^-[a-zA-Z]*[rRa]/.test(w) || w === "--recursive" || w === "--archive");
+    case "zip":
+      return args.some((w) => /^-[a-zA-Z]*r/.test(w));
+    case "ls":
+      return args.some((w) => /^-[a-zA-Z]*R/.test(w) || w === "--recursive");
+    default:
+      return false;
+  }
+}
+
 /**
- * REVIEW-3/4: a command that could reach the secret files without naming them is asked, in every mode, never run
- * unasked. Every path word is first put in its normal form (normalWord: `//`, `/./`, `..`, `~`, `$HOME`, `~user`,
- * `/proc/self/root`). Asked: a glob, brace or variable whose literal part is inside the home's .yodex or .mlpal, or a
- * home (or above) whose next segment could name one (~/.yod*, ~/.yodex/*, $HOME/.y?dex, /home/x/.yodex/p*); a home named
- * by its user (~user); and a recursive reader (find, grep -r, rg, tar, cp -r, zip -r, rsync, du, ls -R) pointed at a
- * state directory or any of its ancestors (/, /home, a home, ~/.yodex itself). Words come from the engine's decomposer
- * (quotes removed, each simple command apart); a line it cannot decompose is judged on its raw words. An exact path
- * under ~/.yodex (a skill script, YODEX.md) and a recursive read of one of its subfolders (~/.yodex/skills) are not
- * asked.
+ * REVIEW-3/4/5: a command that could reach the secret files without naming them is asked, in every mode, never run
+ * unasked. Words come from the engine's decomposer (quotes removed, each simple command apart), in line order; a
+ * literal `cd`/`pushd` moves the folder the later words resolve against (one whose target is not literal makes it
+ * unknown). Every word is put in its normal form (normalWord). Asked:
+ * - a glob, brace or run-time value whose literal part is inside the home's .yodex or .mlpal, or a home (or /, /home)
+ *   whose next segment could name one; a home named by its user (~user); a word that climbs (`..`) from an unknown
+ *   folder toward one;
+ * - any command, whatever the tool, with an operand that is a state directory itself or a directory inside one other
+ *   than ~/.yodex/hops, plugins and skills (R5-2a);
+ * - a tool that reads many files (readsMany) with an operand above a state directory: a home, /home or / (R5-2b).
+ * `ls ~`, `cd ~`, an exact file under ~/.yodex (YODEX.md, a skill script) and the open trees are not asked.
  */
 export function protectedReachAsk(command: string, context: ReachContext = {}): string | null {
-  const ctx = { home: context.home ?? homedir(), ...(context.cwd ? { cwd: context.cwd } : {}) };
+  const ctx: Ctx = { home: context.home ?? homedir(), ...(context.cwd ? { cwd: context.cwd } : {}) };
   let lines: string[][];
   try {
     const d = decomposeBash(command);
@@ -413,15 +464,26 @@ export function protectedReachAsk(command: string, context: ReachContext = {}): 
   for (const raw of lines) {
     const words = raw.map((w) => w.replace(/^['"]+|['"]+$/g, ""));
     const [name = "", ...args] = words;
+    const tool = name.split("/").pop()!;
     for (const w of words) {
       const why = reachWithoutNaming(w, ctx);
       if (why) return `this command could reach the person's keys without naming them: ${why}`;
     }
-    const tool = name.split("/").pop()!;
-    const recursive = Object.hasOwn(SWEEPS, tool) ? SWEEPS[tool] : undefined;
-    if (recursive === undefined || (recursive !== null && !args.some((w) => recursive.test(w)))) continue;
-    const target = args.map((w) => normalWord(w, ctx)).find((n) => n !== null && !n.pattern && holdsState(n.path, ctx.home));
-    if (target) return `${tool} over ${target.path} reaches the person's keys: name the folder you mean`;
+    const operands = args.map((w) => normalWord(w, ctx)).filter((n): n is NonNullable<typeof n> => n !== null && !n.pattern);
+    const inside = operands.find((n) => stateDirectory(n.path, ctx.home));
+    if (inside) return `${tool} on ${inside.path} reaches the person's keys: name the file you mean`;
+    const above = operands.find((n) => aboveState(n.path, ctx.home));
+    if (above && readsMany(tool, args)) return `${tool} over ${above.path} reaches the person's keys: name the folder you mean`;
+    // The folder the next command of the line runs in.
+    if (tool === "cd" || tool === "pushd") {
+      const target = args.filter((w) => !w.startsWith("-"));
+      if (target.length === 0) ctx.cwd = ctx.home;
+      else {
+        const n = normalWord(target[0]!, ctx);
+        if (n && !n.pattern) ctx.cwd = n.path;
+        else delete ctx.cwd;
+      }
+    }
   }
   return null;
 }
