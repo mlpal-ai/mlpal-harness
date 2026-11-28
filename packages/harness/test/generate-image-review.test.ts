@@ -51,7 +51,7 @@ afterEach(() => {
 });
 function call(gw: ImageGateway, input: Record<string, unknown>, extra: Partial<GenerateImageDeps> = {}, signal?: AbortSignal): Promise<ToolResult> {
   const t = createGenerateImageTool({ images: gw, models: () => [], estimate: () => 0.01, now, sleep: async () => {}, ...extra });
-  return t.call(input as never, { cwd: root, roots: [root], toolUseId: "toolu_r", spend: (u) => spent.push(u), ...(signal ? { signal } : {}) });
+  return t.call(input as never, { cwd: root, roots: [root], toolUseId: "toolu_r", spend: async (u) => void spent.push(u), ...(signal ? { signal } : {}) });
 }
 const first = (r: ToolResult) => JSON.parse(String(r.content).split("\n")[0]!) as { error: string; message: string; hint?: string };
 

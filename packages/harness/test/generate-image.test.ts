@@ -63,7 +63,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 function tool(gw: ImageGateway, extra: Partial<GenerateImageDeps> = {}) {
   const t = createGenerateImageTool({ images: gw, models: () => [IMAGE_MODEL], now, sleep: async () => {}, ...extra });
-  return (input: Record<string, unknown>, toolUseId = "toolu_01") => t.call(input as never, { cwd: root, roots: [root], toolUseId, spend: (u) => spent.push(u) });
+  return (input: Record<string, unknown>, toolUseId = "toolu_01") => t.call(input as never, { cwd: root, roots: [root], toolUseId, spend: async (u) => void spent.push(u) });
 }
 const text = (r: ToolResult) => (typeof r.content === "string" ? r.content : "");
 const code = (r: ToolResult) => (JSON.parse(text(r).split("\n")[0]!) as { error: string }).error;

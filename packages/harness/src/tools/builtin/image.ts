@@ -9,10 +9,9 @@ import {
   MEDIA_EXTENSION,
   sniffMedia,
   type DisplayEnvelope,
-  type Usage,
 } from "@mlpal/harness-protocol";
 import { probeMedia, readMedia } from "../../display/media";
-import { ImageGatewayError, type ImageGateway, type ImagePrice, type ImageReference, type ImageResult } from "../../gateway/images";
+import { ImageGatewayError, type ImageGateway, type ImageJob, type ImagePrice, type ImageReference, type ImageResult } from "../../gateway/images";
 import type { ModelInfo } from "../../registry/models";
 import { contextRoots, defineTool, err, type Tool, type ToolContext, type ToolResult } from "../types";
 
@@ -82,7 +81,8 @@ const SIZE = /^(?:square|landscape|portrait|wide|tall|auto|\d{1,2}:\d{1,2}|\d{2,
 
 const inputSchema = z
   .object({
-    prompt: z.string().min(1).max(L.prompt).describe("what to make, in words; for an edit, what to change and what to keep"),
+    prompt: z.string().min(1).max(L.prompt).optional().describe("what to make, in words; for an edit, what to change and what to keep (required unless job is given)"),
+    job: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional().describe("only after IMAGE_NOT_SAVED: that error's job id, to save the same images again without a new render or charge"),
     references: z.array(z.string().min(1).max(4_096)).max(L.references).optional().describe("up to 4 workspace images to work from (what the person attached is under uploads/)"),
     n: z.number().int().min(1).max(4).optional().describe("how many images; 1 unless the person asked for options"),
     size: z.string().regex(SIZE).optional().describe('default "1024x1024"; or square, landscape, portrait, a ratio such as 16:9'),
@@ -90,7 +90,8 @@ const inputSchema = z
     model: z.string().min(1).max(120).optional().describe('default "mlpal" (the gateway picks); ListModels with operation image_generation names the others'),
     name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/).optional().describe("the file's stem; default from the prompt"),
   })
-  .strict();
+  .strict()
+  .refine((v) => v.job !== undefined || v.prompt !== undefined, { message: "prompt is required (or job, to save an unsaved render)", path: ["prompt"] });
 type Input = z.infer<typeof inputSchema>;
 
 /** A typed refusal: its first line is what the model reads and repairs from. */
@@ -217,9 +218,10 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     return { dir, dirRel };
   }
 
-  /** The render: submit with the tool-use id as the idempotency key, then poll the job until it ends or the deadline. */
-  async function render(input: Input, refs: ImageReference[], key: string, signal?: AbortSignal): Promise<Rendered | ToolResult> {
-    const req = { prompt: input.prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs } : {}) };
+  /** The render: submit with the tool-use id as the idempotency key (`onJob` records the job id durably the moment the
+   *  gateway names it), then poll the job until it ends or the deadline. */
+  async function render(prompt: string, input: Input, refs: ImageReference[], key: string, onJob: (id: string) => Promise<void>, signal?: AbortSignal): Promise<Rendered | ToolResult> {
+    const req = { prompt, model: input.model ?? "mlpal", n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", ...(refs.length ? { reference_images: refs } : {}) };
     let submitted;
     try {
       submitted = await deps.images.submit(req, { idempotencyKey: key, ...(signal ? { signal } : {}) });
@@ -227,7 +229,13 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
       return submitRefusal(e);
     }
     if ("result" in submitted) return { result: submitted.result, jobId: key };
-    let job = submitted.job;
+    await onJob(submitted.job.id);
+    return poll(submitted.job, signal);
+  }
+
+  /** A job polled until it ends or the deadline; never a submit. */
+  async function poll(first: ImageJob, signal?: AbortSignal): Promise<Rendered | ToolResult> {
+    let job = first;
     const pending = (why: string) =>
       refuse("IMAGE_TIMEOUT", `${why}; job ${job.id} may still finish and bill`, `tell the person the job id (${job.id}); do not make it again, which would pay a second time`);
     const deadline = now().getTime() + timeoutMs;
@@ -250,6 +258,44 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     if (e.code === "provider_error") return refuse("IMAGE_REFUSED", `the image provider refused: ${e.message.slice(0, 300)}`, "say so in plain words and suggest a change to the prompt; do not retry the same prompt");
     if (e.code === "worker_lost") return refuse("IMAGE_FAILED", "the render was lost on the gateway; nothing was billed", "try again once");
     return refuse("IMAGE_FAILED", `the gateway could not make it: ${e.message.slice(0, 300)}`);
+  }
+
+  /** A finished render: its charge on record (at most once per call), then its files saved and shown. */
+  async function finish(rendered: Rendered, o: { prompt: string; stem: string; key: string; charge: boolean }, ctx: ToolContext): Promise<ToolResult> {
+    const { result, jobId } = rendered;
+    if (o.charge) await ctx.spend?.({ input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: result.cost.compute_units });
+    if (!result.data.length) return notSaved(result, jobId, [], "the gateway returned no image");
+    const where = destination(ctx, result.data.length);
+    if (!("dir" in where)) return notSaved(result, jobId, [], "media/<date> could not be used");
+    const { written, failure } = await store(result, o.stem, where, ctx.signal);
+    if (failure) return notSaved(result, jobId, written, failure);
+    return shown(o.prompt, result, written, o.key, ctx);
+  }
+
+  /** This call's journal entries (what it asked for, and its job once the gateway named it). */
+  async function entriesOf(ctx: ToolContext): Promise<{ asked?: Record<string, unknown>; jobId?: string }> {
+    const mine = ((await ctx.journal?.read()) ?? []).filter((e) => e.toolUseId === ctx.toolUseId);
+    const asked = mine.find((e) => e.data.phase === "asked")?.data;
+    const jobId = mine.find((e) => e.data.phase === "job" && typeof e.data.jobId === "string")?.data.jobId as string | undefined;
+    return { ...(asked ? { asked } : {}), ...(jobId ? { jobId } : {}) };
+  }
+
+  /** A job this session created, saved again: the gateway keeps the job, and nothing is submitted or charged. */
+  async function saveAgain(jobId: string, input: Input, ctx: ToolContext): Promise<ToolResult> {
+    const journal = (await ctx.journal?.read()) ?? [];
+    const own = journal.find((e) => e.data.phase === "job" && e.data.jobId === jobId);
+    if (!own) return refuse("IMAGE_FAILED", `job ${jobId} is not one this session made`, "give the job id from this session's IMAGE_NOT_SAVED");
+    const asked = journal.find((e) => e.toolUseId === own.toolUseId && e.data.phase === "asked")?.data ?? {};
+    let job: ImageJob;
+    try {
+      job = await deps.images.job(jobId, ctx.signal);
+    } catch (e) {
+      return refuse("IMAGE_FAILED", `job ${jobId} could not be read from the gateway: ${(e as Error).message.slice(0, 200)}`);
+    }
+    const rendered = await poll(job, ctx.signal);
+    if (!("result" in rendered)) return rendered;
+    const prompt = typeof asked.prompt === "string" ? asked.prompt : "an image made earlier in this session";
+    return finish(rendered, { prompt, stem: stemOf(input.name ?? (typeof asked.stem === "string" ? asked.stem : prompt)), key: ctx.toolUseId ?? jobId, charge: false }, ctx);
   }
 
   /** Download each result and write it into `dir`, never over an existing file. Stops at the first failure and says
@@ -313,8 +359,11 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
     readOnly: false,
     edits: true,
     schema: inputSchema,
-    alwaysAsk: (input) => imageAskReason((input ?? {}) as Partial<Input>, deps),
+    // saving an unsaved render again costs nothing, so it is the mode's
+    alwaysAsk: (input) => ((input as Partial<Input> | undefined)?.job ? null : imageAskReason((input ?? {}) as Partial<Input>, deps)),
     async call(input, ctx) {
+      if (input.job) return saveAgain(input.job, input, ctx);
+      const prompt = input.prompt!;
       const model = input.model ?? "mlpal";
       if (model !== "mlpal" && !deps.models().some((m) => m.tag === model && m.capabilities.operation === "image_generation")) {
         const names = deps.models().filter((m) => m.capabilities.operation === "image_generation").map((m) => m.tag);
@@ -325,16 +374,38 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool<Input> {
       const where = destination(ctx, input.n ?? 1);
       if (!("dir" in where)) return where;
       const key = ctx.toolUseId ?? `generate-image-${randomBytes(8).toString("hex")}`;
-      const rendered = await render(input, refs, key, ctx.signal);
+      const stem = stemOf(input.name ?? prompt);
+      // on record before anything can be paid for (review R5): what was asked, under which key
+      await ctx.journal?.append({ phase: "asked", key, model, n: input.n ?? 1, size: input.size ?? "1024x1024", quality: input.quality ?? "standard", stem, prompt: prompt.slice(0, 500) });
+      const rendered = await render(prompt, input, refs, key, async (jobId) => ctx.journal?.append({ phase: "job", jobId }), ctx.signal);
       if (!("result" in rendered)) return rendered;
-      const { result, jobId } = rendered;
-      // paid: on the turn now, whatever happens to the files
-      const usage: Usage = { input_tokens: result.cost.input_tokens ?? 0, output_tokens: result.cost.output_tokens ?? 0, compute_units: result.cost.compute_units };
-      ctx.spend?.(usage);
-      if (!result.data.length) return notSaved(result, jobId, [], "the gateway returned no image");
-      const { written, failure } = await store(result, stemOf(input.name ?? input.prompt), where, ctx.signal);
-      if (failure) return notSaved(result, jobId, written, failure);
-      return shown(input, result, written, key, ctx);
+      return finish(rendered, { prompt, stem, key, charge: true }, ctx);
+    },
+    /**
+     * Resumed after its engine died mid-call (review R5): reconciled from the journal, never by a new submit. With its
+     * job on record, the job is polled; a finished one is charged once (the engine keeps one charge per call) and saved.
+     * With no job on record the gateway cannot be asked: it has no lookup by idempotency key, and a submit is what
+     * this must never repeat.
+     */
+    async recover(input, ctx) {
+      const { asked, jobId } = await entriesOf(ctx);
+      if (!asked) return refuse("IMAGE_FAILED", "the engine stopped before the image was requested; nothing was made or paid", "make it again if the person still wants it");
+      if (!jobId)
+        return refuse(
+          "IMAGE_FAILED",
+          `the engine stopped while the image was being requested (key ${String(asked.key)}); whether the gateway took the request is not known, so it was not asked again and nothing was charged here`,
+          "tell the person the request may have been made once; making it again may pay a second time, so only on their word",
+        );
+      let job: ImageJob;
+      try {
+        job = await deps.images.job(jobId, ctx.signal);
+      } catch (e) {
+        return refuse("IMAGE_TIMEOUT", `job ${jobId} could not be read after the restart: ${(e as Error).message.slice(0, 200)}; it may still finish and bill`, `tell the person the job id (${jobId}); GenerateImage {job: "${jobId}"} saves it once it is done`);
+      }
+      const rendered = await poll(job, ctx.signal);
+      if (!("result" in rendered)) return rendered;
+      const prompt = typeof asked.prompt === "string" ? asked.prompt : input.prompt ?? "an image";
+      return finish(rendered, { prompt, stem: typeof asked.stem === "string" ? asked.stem : stemOf(prompt), key: ctx.toolUseId ?? jobId, charge: true }, ctx);
     },
   });
 }
@@ -346,22 +417,22 @@ function notSaved(result: ImageResult, jobId: string, written: string[], failure
   return refuse(
     "IMAGE_NOT_SAVED",
     `the render was paid (${cu} CU, job ${jobId}) but ${result.data.length > 1 ? "not every image was" : "the image was not"} saved: ${failure}${saved}`,
-    "tell the person what failed, the job id and where any saved image is; making it again pays a second time, so only on their word",
+    `GenerateImage {job: "${jobId}"} saves the same images again with no new render or charge, while the gateway still serves them: it keeps the job, but its image links expire one hour after the render (an inline result does not). After that, making it again pays a second time, so only on the person's word`,
   );
 }
 
 /** The step: what the model reads, and the engine-written image or image_set block. */
-function shown(input: Input, result: ImageResult, paths: string[], key: string, ctx: ToolContext): ToolResult {
+function shown(prompt: string, result: ImageResult, paths: string[], key: string, ctx: ToolContext): ToolResult {
   const cu = result.cost.compute_units;
   const model = result.routing?.selected_model ?? result.cost.model_name ?? result.model;
   const revised = result.data[0]?.revised_prompt ?? undefined;
-  const alt = (revised ?? input.prompt).replace(/\s+/g, " ").slice(0, 300);
-  const made_by = { kind: "generated" as const, model: model.slice(0, 120), prompt: input.prompt, ...(revised ? { revised_prompt: revised.slice(0, 4_000) } : {}), compute_units: cu };
+  const alt = (revised ?? prompt).replace(/\s+/g, " ").slice(0, 300);
+  const made_by = { kind: "generated" as const, model: model.slice(0, 120), prompt, ...(revised ? { revised_prompt: revised.slice(0, 4_000) } : {}), compute_units: cu };
   const media = new Map(paths.map((p) => [p, probeMedia({ path: p, maxBytes: L.resultBytes }, ctx)]));
   const blockId = `image-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
   const kind = paths.length === 1 ? "image" : "image_set";
   const spec = kind === "image" ? { path: paths[0], alt, made_by } : { images: paths.map((p) => ({ path: p, alt })), made_by };
-  const lead = `Made with ${model} from the prompt: ${input.prompt.replace(/\s+/g, " ").slice(0, 500)}${revised ? `\nAs the model read it: ${revised.replace(/\s+/g, " ").slice(0, 500)}` : ""}\nCost: ${cu} CU.`;
+  const lead = `Made with ${model} from the prompt: ${prompt.replace(/\s+/g, " ").slice(0, 500)}${revised ? `\nAs the model read it: ${revised.replace(/\s+/g, " ").slice(0, 500)}` : ""}\nCost: ${cu} CU.`;
   const check = checkShowInput({ block_id: blockId, kind, spec, fallback: { text: lead } }, { kinds: new Set([kind]), media });
   const sizes = paths.map((p) => {
     const f = media.get(p)!;

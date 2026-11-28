@@ -47,7 +47,7 @@ import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
 import { createShowTool, displayInstructions, foldDisplayHistory, localMediaProbe, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
-import type { ExecPolicy, ToolResult } from "../tools/types";
+import type { ExecPolicy, Tool, ToolContext, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
 import { EventTooLargeError } from "../store/errors";
 import { diffStat } from "../usage/stats";
@@ -2004,6 +2004,72 @@ export class AgentSession {
     await this.store.appendEvent(this.cfg.sessionId, "tool_started", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, entry: at.entry, index: at.index, ts: now() });
   }
 
+  /**
+   * A call's durable records (review R5): `spend`, its gateway charge, as a `tool_spend` event the moment it is
+   * reported, at most once per call, and the turn's (a resumed engine adds those of the turn it continues); `journal`,
+   * the tool's own notes (`tool_journal`), so a call whose engine died can be reconciled without repeating its effect.
+   */
+  private callRecords(tu: ToolUseBlock): Pick<ToolContext, "spend" | "journal"> {
+    const append = this.store.appendEvent?.bind(this.store);
+    const read = this.store.readEvents?.bind(this.store);
+    const sessionId = this.cfg.sessionId;
+    // the turn's at once (a tool that does not await it still counts), at most once per call; durable when it resolves
+    const spend = (usage: Usage): Promise<void> => {
+      if (this.spentCalls.has(tu.id)) return Promise.resolve();
+      this.spentCalls.add(tu.id);
+      this.askSpend?.(usage);
+      return append ? append(sessionId, "tool_spend", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, usage, ts: now() }).then(() => undefined) : Promise.resolve();
+    };
+    if (!append || !read) return { spend };
+    return {
+      spend,
+      journal: {
+        append: async (data) => {
+          await append(sessionId, "tool_journal", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, data, ts: now() });
+        },
+        read: async () =>
+          (await read(sessionId, "tool_journal"))
+            .filter((e) => e.name === tu.name && typeof e.toolUseId === "string")
+            .map((e) => ({ toolUseId: e.toolUseId as string, data: (e.data ?? {}) as Record<string, unknown> })),
+      },
+    };
+  }
+
+  /** The charges of `entries`' tool calls already on record (`tool_spend`), for a resumed turn's usage. */
+  private async recordedSpend(entries: ConversationEntry[]): Promise<Usage> {
+    const ids = new Set<string>();
+    for (const e of entries) if (e.payload.type === "assistant") for (const b of e.payload.message.content as ContentBlock[]) if (b.type === "tool_use") ids.add(b.id);
+    const events = (await this.store.readEvents?.(this.cfg.sessionId, "tool_spend")) ?? [];
+    return events.filter((e) => typeof e.toolUseId === "string" && ids.has(e.toolUseId)).reduce<Usage>((u, e) => addUsage(u, e.usage as unknown as Usage), emptyUsage());
+  }
+
+  /** A started call's reconciliation on resume (`Tool.recover`), as its result. */
+  private async recoverTool(tu: ToolUseBlock, tool: Tool, log: Logger): Promise<ToolResultEvent> {
+    const { cfg } = this;
+    // a charge the dead engine recorded is already the turn's (resumeTurn): it is never recorded or counted again
+    for (const e of (await this.store.readEvents?.(cfg.sessionId, "tool_spend")) ?? []) if (typeof e.toolUseId === "string") this.spentCalls.add(e.toolUseId);
+    let res: ToolResult;
+    try {
+      res = await tool.recover!(tu.input, {
+        cwd: cfg.cwd,
+        roots: cfg.roots ?? [cfg.cwd],
+        ...(cfg.signal ? { signal: cfg.signal } : {}),
+        sessionId: cfg.sessionId,
+        ...(this.currentRun ? { runId: this.currentRun } : {}),
+        exec: cfg.exec,
+        toolUseId: tu.id,
+        ...this.callRecords(tu),
+      });
+    } catch (e) {
+      log.warn("resume: a tool's recovery failed", { tool: tu.name, toolUseId: tu.id, error: (e as Error).message });
+      return { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: `${INTERRUPTED_TOOL_RESULT}\n(its recovery failed: ${(e as Error).message.slice(0, 200)})`, isError: true, ts: now() };
+    }
+    const display = this.drawable(res.meta?.display);
+    const raw = res.content;
+    const content = res.meta?.displayText ?? (typeof raw === "string" ? raw : summarizeBlocks(raw));
+    return { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content, ...(typeof raw === "string" ? {} : { blocks: raw }), ...(display ? { display } : {}), isError: res.isError ?? false, ts: now() };
+  }
+
   /** Persists a tool result. One too large for the session store becomes an error result the model
    *  can act on, persisted in its place; any other failure propagates. */
   private async appendToolResult(trEvt: ToolResultEvent, parent: string | null): Promise<{ event: ToolResultEvent; uuid: string }> {
@@ -2044,7 +2110,11 @@ export class AgentSession {
     // The turn's model calls so far, so the resumed run's result counts the whole turn; past a park, only those
     // after it (the park's result counted the rest).
     const spent = held && turnEntries[0] === held.turn[0] ? all.slice(held.resultAt + 1) : turnEntries;
-    const usage = spent.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage());
+    // the turn's model calls, and the gateway charges its tools recorded before the engine died (review R5)
+    const usage = addUsage(
+      spent.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage()),
+      await this.recordedSpend(spent),
+    );
     yield* this.continueTurn(turnEntries, usage);
     return { resumed: true };
   }
@@ -2129,7 +2199,11 @@ export class AgentSession {
     const started = await this.startedCalls();
     for (const { tu, at } of pending) {
       let result: ToolResultEvent;
-      if (started(at)) {
+      const recoverable = started(at) ? await this.tools.resolve(tu.name) : undefined;
+      if (started(at) && recoverable?.recover) {
+        log.warn("resume: a started tool reconciles from its journal", { tool: tu.name, toolUseId: tu.id });
+        result = await this.recoverTool(tu, recoverable, log);
+      } else if (started(at)) {
         log.warn("resume: a started tool is not run again", { tool: tu.name, toolUseId: tu.id });
         result = { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: INTERRUPTED_TOOL_RESULT, isError: true, ts: now() };
       } else if (o.duplicated) {
@@ -2262,8 +2336,7 @@ export class AgentSession {
           exec: cfg.exec,
           toolUseId: tu.id,
           emit: (e) => this.emitSide(e),
-          // a tool's own gateway spend (GenerateImage) is the turn's, and so the session's
-          spend: (u) => this.askSpend?.(u),
+          ...this.callRecords(tu),
         }),
         cfg.signal,
       );
@@ -2427,6 +2500,8 @@ export class AgentSession {
   private currentRun: string | null = null;
   /** The running turn's usage sink for an ask's answerer (E-12); null between turns. */
   private askSpend: ((usage: Usage) => void) | null = null;
+  /** The tool calls whose gateway charge this engine has recorded (`ToolContext.spend`): once per call. */
+  private readonly spentCalls = new Set<string>();
   /** C1 §7.4: the reason of the abuse marker this run's model ended a reply with; reported on its result. */
   private abuseReason: string | null = null;
   private currentPrompt: string | null = null;

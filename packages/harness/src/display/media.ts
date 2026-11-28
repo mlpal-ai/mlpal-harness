@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { DISPLAY_LIMITS, imageInfo, sniffMedia, type DisplayErrorCode, type MediaFacts, type MediaFactsMap, type MediaProbeFault, type MediaProbeResult } from "@mlpal/harness-protocol";
+import { foldName } from "../permission/names";
 import { contextRoots, resolveInRoots, type ToolContext } from "../tools/types";
 
 /**
@@ -46,7 +47,8 @@ const fault = (code: DisplayErrorCode, message: string, hint?: string): MediaPro
 
 /** Whether a workspace-relative POSIX path is hidden from the person's file view (the daemon's rule). */
 function hidden(rel: string): boolean {
-  const parts = rel.split("/");
+  // compared as a case-insensitive, normalising file system would resolve it (`.GIT`, `.Mlpal-state`)
+  const parts = foldName(rel).split("/");
   return parts.includes(".git") || (parts[0] ?? "").startsWith(".mlpal");
 }
 
@@ -93,7 +95,7 @@ function inspect(req: MediaRequest, ctx: ToolContext, keep: boolean): MediaRead 
   }
   let fd: number;
   try {
-    fd = openSync(expected, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | NOFOLLOW_ANY);
+    fd = openSync(expected, constants.O_RDONLY | constants.O_NONBLOCK | (NOFOLLOW_ANY || constants.O_NOFOLLOW));
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") return fault("MEDIA_NOT_FOUND", `no file at ${path}`, "check the path: list the folder, or save the file first");
@@ -120,12 +122,13 @@ function inspect(req: MediaRequest, ctx: ToolContext, keep: boolean): MediaRead 
       total += n;
       if (total > req.maxBytes || total > st.size) return fault("MEDIA_CHANGED", `${path} grew while it was checked`, "show it again once it is written");
     }
-    const bytes = new Uint8Array(buf.buffer, buf.byteOffset, total);
+    // the window is reused when the bytes are not kept: only a kept buffer holds the whole file (review R9)
+    const bytes = keep ? new Uint8Array(buf.buffer, buf.byteOffset, total) : new Uint8Array(0);
     if (keep) hash.update(bytes);
     const after = fstatSync(fd);
     if (total !== st.size || after.size !== st.size || after.mtimeMs !== st.mtimeMs) return fault("MEDIA_CHANGED", `${path} changed while it was checked`, "show it again once it is written");
     const facts: MediaFacts = { path, mime, bytes: st.size, sha256: hash.digest("hex"), ...(info ? { width: info.width, height: info.height, animated: info.animated, ...(info.gps !== undefined ? { gps: info.gps } : {}) } : {}) };
-    return { facts, bytes: keep ? bytes : new Uint8Array(0) };
+    return { facts, bytes };
   } catch {
     return fault("MEDIA_UNREADABLE", `${path} could not be read`);
   } finally {
@@ -133,7 +136,8 @@ function inspect(req: MediaRequest, ctx: ToolContext, keep: boolean): MediaRead 
   }
 }
 
-/** macOS's O_NOFOLLOW_ANY (sys/fcntl.h, macOS 11+): the open fails with ELOOP on a link anywhere on the path. */
+/** macOS's O_NOFOLLOW_ANY (sys/fcntl.h, macOS 11+): the open fails with ELOOP on a link anywhere on the path. It
+ *  replaces O_NOFOLLOW there: the two together are EINVAL (review R8). */
 const NOFOLLOW_ANY = process.platform === "darwin" ? 0x20000000 : 0;
 
 /**

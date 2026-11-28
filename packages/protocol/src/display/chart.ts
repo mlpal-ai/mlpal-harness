@@ -500,27 +500,39 @@ function writtenBy(ts: unknown): string[] {
   return out;
 }
 
-/** The fields that split a pie into slices: its colour's and its detail's (one channel or a list). */
-function sliceFields(enc: Obj): string[] {
-  const of = (d: unknown): string[] => (isObj(d) && typeof d.field === "string" ? [d.field] : Array.isArray(d) ? d.flatMap(of) : []);
-  return [...of(enc.color), ...of(enc.detail)];
-}
+/** The channels an arc's count is modelled for. Any other channel on an arc (x, y, size, shape, strokeDash, text) is
+ *  refused: its effect on how many arcs Vega-Lite draws is not computed here. */
+const ARC_CHANNELS: ReadonlySet<string> = new Set(["theta", "color", "opacity", "tooltip", "detail", "order"]);
 
 /**
- * At most chartSlices slices a pie (an `arc` view), with no inference. Its rows after the transforms (every one
- * keeps or lowers the count but a fold, whose factor is counted) bound its slices. The distinct values of its colour
- * and detail fields are counted instead only when each is a field of the inline rows that no transform in scope
- * writes: a field a window, aggregate, bin, timeUnit, stack or fold makes cannot be counted from the data, so the rows
- * bound it (review R7).
+ * At most chartSlices arcs a pie (an `arc` view) draws, counted with no inference (review R7, round 2), the way
+ * Vega-Lite builds them:
+ * - no channel aggregates: one arc per row after the transforms (every transform keeps or lowers the count but a
+ *   fold, whose factor is counted);
+ * - some channel aggregates: one arc per distinct combination of every unaggregated field channel (theta, colour,
+ *   detail, tooltip, order, opacity alike). The combinations are counted on the inline rows only when every such
+ *   field is a field of them that no transform in scope writes; otherwise the rows bound the count.
  */
 function checkSlices(enc: Obj, values: unknown[], factor: number, written: ReadonlySet<string>, path: Path): void {
-  const fields = sliceFields(enc);
+  const defs: Array<{ channel: string; def: Obj }> = [];
+  for (const [channel, d] of Object.entries(enc)) {
+    for (const def of Array.isArray(d) ? d : [d]) {
+      if (!isObj(def)) continue;
+      if (!ARC_CHANNELS.has(channel)) {
+        report("VALIDATION_FAILED", path, `a pie takes ${[...ARC_CHANNELS].join(", ")}; ${channel} is not counted on one`, channel === "text" ? "put labels in a text layer" : "draw it with bars");
+        return;
+      }
+      defs.push({ channel, def });
+    }
+  }
   const rows = values.length * factor;
-  const countable = fields.length > 0 && fields.every((f) => !written.has(f) && values.some((r) => isObj(r) && has(r, f)));
-  const slices = countable ? new Set(values.map((r) => JSON.stringify(fields.map((f) => (isObj(r) && has(r, f) ? (r[f] ?? null) : null))))).size : rows;
-  if (slices <= DISPLAY_LIMITS.chartSlices) return;
-  const why = countable || fields.length === 0 ? `${slices} slices` : `up to ${rows} slices (${fields.join(", ")} is not a field of the data, so each row may be a slice)`;
-  report("VALIDATION_FAILED", path, `${why}; a pie draws at most ${DISPLAY_LIMITS.chartSlices}`, 'use bars, or keep the largest and group the rest as "Other" in the data');
+  const aggregated = defs.some(({ def }) => typeof def.aggregate === "string" || isObj(def.aggregate));
+  const group = [...new Set(defs.filter(({ def }) => typeof def.field === "string" && def.aggregate === undefined).map(({ def }) => def.field as string))];
+  const countable = aggregated && group.every((f) => !written.has(f) && values.some((r) => isObj(r) && has(r, f)));
+  const arcs = !aggregated ? rows : group.length === 0 ? 1 : countable ? new Set(values.map((r) => JSON.stringify(group.map((f) => (isObj(r) && has(r, f) ? (r[f] ?? null) : null))))).size : rows;
+  if (arcs <= DISPLAY_LIMITS.chartSlices) return;
+  const why = !aggregated ? `${arcs} slices (with nothing aggregated, each row is a slice)` : countable ? `${arcs} slices (one per ${group.join(" × ")})` : `up to ${rows} slices (${group.join(", ")} cannot be counted from the data, so each row may be a slice)`;
+  report("VALIDATION_FAILED", path, `${why}; a pie draws at most ${DISPLAY_LIMITS.chartSlices}`, 'aggregate theta (sum) by one field of at most 12 values, or keep the largest and group the rest as "Other" in the data');
 }
 
 function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): void {

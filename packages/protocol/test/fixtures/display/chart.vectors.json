@@ -1579,6 +1579,347 @@
    }
   },
   {
+   "name": "a pie with theta unaggregated over 13 rows draws 13 arcs whatever its colour (review R7 round 2)",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "c": "c0",
+        "v": 1
+       },
+       {
+        "c": "c1",
+        "v": 2
+       },
+       {
+        "c": "c2",
+        "v": 3
+       },
+       {
+        "c": "c0",
+        "v": 4
+       },
+       {
+        "c": "c1",
+        "v": 5
+       },
+       {
+        "c": "c2",
+        "v": 6
+       },
+       {
+        "c": "c0",
+        "v": 7
+       },
+       {
+        "c": "c1",
+        "v": 8
+       },
+       {
+        "c": "c2",
+        "v": 9
+       },
+       {
+        "c": "c0",
+        "v": 10
+       },
+       {
+        "c": "c1",
+        "v": 11
+       },
+       {
+        "c": "c2",
+        "v": 12
+       },
+       {
+        "c": "c0",
+        "v": 13
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "c",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a pie whose colour aggregates groups by its unaggregated theta",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "c": "c0",
+        "v": 1
+       },
+       {
+        "c": "c1",
+        "v": 2
+       },
+       {
+        "c": "c2",
+        "v": 3
+       },
+       {
+        "c": "c0",
+        "v": 4
+       },
+       {
+        "c": "c1",
+        "v": 5
+       },
+       {
+        "c": "c2",
+        "v": 6
+       },
+       {
+        "c": "c0",
+        "v": 7
+       },
+       {
+        "c": "c1",
+        "v": 8
+       },
+       {
+        "c": "c2",
+        "v": 9
+       },
+       {
+        "c": "c0",
+        "v": 10
+       },
+       {
+        "c": "c1",
+        "v": 11
+       },
+       {
+        "c": "c2",
+        "v": 12
+       },
+       {
+        "c": "c0",
+        "v": 13
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "c",
+       "aggregate": "count",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a pie whose tooltip field splits 3 colours into 13 arcs",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "c": "c0",
+        "i": 0,
+        "v": 1
+       },
+       {
+        "c": "c1",
+        "i": 1,
+        "v": 2
+       },
+       {
+        "c": "c2",
+        "i": 2,
+        "v": 3
+       },
+       {
+        "c": "c0",
+        "i": 3,
+        "v": 4
+       },
+       {
+        "c": "c1",
+        "i": 4,
+        "v": 5
+       },
+       {
+        "c": "c2",
+        "i": 5,
+        "v": 6
+       },
+       {
+        "c": "c0",
+        "i": 6,
+        "v": 7
+       },
+       {
+        "c": "c1",
+        "i": 7,
+        "v": 8
+       },
+       {
+        "c": "c2",
+        "i": 8,
+        "v": 9
+       },
+       {
+        "c": "c0",
+        "i": 9,
+        "v": 10
+       },
+       {
+        "c": "c1",
+        "i": 10,
+        "v": 11
+       },
+       {
+        "c": "c2",
+        "i": 11,
+        "v": 12
+       },
+       {
+        "c": "c0",
+        "i": 12,
+        "v": 13
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative",
+       "aggregate": "sum"
+      },
+      "color": {
+       "field": "c",
+       "type": "nominal"
+      },
+      "tooltip": {
+       "field": "i",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "a pie whose order field splits 3 colours into 13 arcs",
+   "code": "VALIDATION_FAILED",
+   "path": "spec.vl.mark",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "c": "c0",
+        "i": 0,
+        "v": 1
+       },
+       {
+        "c": "c1",
+        "i": 1,
+        "v": 2
+       },
+       {
+        "c": "c2",
+        "i": 2,
+        "v": 3
+       },
+       {
+        "c": "c0",
+        "i": 3,
+        "v": 4
+       },
+       {
+        "c": "c1",
+        "i": 4,
+        "v": 5
+       },
+       {
+        "c": "c2",
+        "i": 5,
+        "v": 6
+       },
+       {
+        "c": "c0",
+        "i": 6,
+        "v": 7
+       },
+       {
+        "c": "c1",
+        "i": 7,
+        "v": 8
+       },
+       {
+        "c": "c2",
+        "i": 8,
+        "v": 9
+       },
+       {
+        "c": "c0",
+        "i": 9,
+        "v": 10
+       },
+       {
+        "c": "c1",
+        "i": 10,
+        "v": 11
+       },
+       {
+        "c": "c2",
+        "i": 11,
+        "v": 12
+       },
+       {
+        "c": "c0",
+        "i": 12,
+        "v": 13
+       }
+      ]
+     },
+     "mark": "arc",
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative",
+       "aggregate": "sum"
+      },
+      "color": {
+       "field": "c",
+       "type": "nominal"
+      },
+      "order": {
+       "field": "i",
+       "type": "quantitative"
+      }
+     }
+    }
+   }
+  },
+  {
    "name": "a donut's innerRadius out of range",
    "code": "VALIDATION_FAILED",
    "path": "spec.vl.mark.innerRadius",

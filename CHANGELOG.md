@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### engine-media: review-media round 2 fixes (needs the same version bump, 2026-11-28)
+
+- R9: the probe reads and hashes any file in 1 MiB chunks up to the kind's cap. A file over 1 MiB was refused as
+  unreadable, so a typical generated image never appeared as a block.
+- R8: on macOS the probe opens with O_NOFOLLOW_ANY instead of O_NOFOLLOW (the two together are EINVAL there). The
+  hidden-path rule (`.git`, `.mlpal*`) and the protected-write rules (`contentSafetyDeny`: `.git/`, `.ssh/`, …) now
+  match on `foldName(path)`: HFS+ ignorable code points removed, NFC, lower case. A name that resolves to a
+  protected one on a case-insensitive or normalising file system is protected on every platform.
+- R7: a pie's count is what Vega-Lite draws. With nothing aggregated, there is one arc per row. With an aggregate,
+  there is one arc per distinct combination of every unaggregated field channel: theta, colour, detail, tooltip,
+  order and opacity. That combination is counted on the inline rows only when no transform writes those fields;
+  otherwise the rows bound it. Any other channel on an arc is refused. Four new invalid vectors.
+- R5:
+  - `ToolContext.spend` is now async and durable: a `tool_spend` event, at most once per tool call. A resumed turn
+    adds the charges its calls recorded before the engine died.
+  - `ToolContext.journal` writes `tool_journal` events. GenerateImage journals what it asked for before submit,
+    and the job id as soon as the gateway names it.
+  - `Tool.recover` lets a started call reconcile on resume instead of getting the interrupted result. GenerateImage
+    polls its journalled job by id, never submitting again, and charges and saves once. With no job id on record
+    it says the request may have been made and does not ask again.
+  - `IMAGE_NOT_SAVED` names the job. `GenerateImage {job}` saves the same images again with no render or charge,
+    for a job this session made, while the gateway still serves its links (one hour after the render; an inline
+    result has no expiry). It is never asked as a cost.
+- R10: tests use placeholder buckets and hosts only.
+
 ### engine-media: review-media round 1 fixes (needs the same version bump, 2026-11-28)
 
 - "Always ask" is a property of the call. `defaultForMode` asks for a call that carries `alwaysAsk`, in every

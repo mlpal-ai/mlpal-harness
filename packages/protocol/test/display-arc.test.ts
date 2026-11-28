@@ -13,8 +13,8 @@ const WINDOW = { transform: [{ window: [{ op: "row_number", as: "w" }] }] };
 
 describe("R7: a pie's slices are counted on a field of the data, or bounded by its rows", () => {
   test("the review's input: a colour a window writes, over 200 and 5,000 rows, is refused", () => {
-    expect(refusal(pie({ color: { field: "w", type: "nominal" } }, WINDOW))).toMatch(/up to 200 slices \(w is not a field of the data/);
-    expect(refusal({ vl: { data: { values: rows(5000) }, ...WINDOW, mark: { type: "arc", innerRadius: 30 }, encoding: { theta: { field: "a", type: "quantitative" }, color: { field: "w", type: "nominal" } } } })).toMatch(/up to 5000 slices .*a pie draws at most 12/);
+    expect(refusal(pie({ color: { field: "w", type: "nominal" } }, WINDOW))).toMatch(/up to 200 slices \(w cannot be counted from the data/);
+    expect(refusal({ vl: { data: { values: rows(5000) }, ...WINDOW, mark: { type: "arc", innerRadius: 30 }, encoding: { theta: { field: "a", type: "quantitative" }, color: { field: "w", type: "nominal" } } } })).toMatch(/5000 slices .*a pie draws at most 12/);
   });
 
   test("every candidate that would draw more than 12 slices is refused", () => {
@@ -33,6 +33,25 @@ describe("R7: a pie's slices are counted on a field of the data, or bounded by i
     };
     const passed = Object.entries(over).filter(([, spec]) => refusal(spec) === null).map(([name]) => name);
     expect(passed).toEqual([]);
+  });
+
+  test("round 2: what Vega-Lite draws is counted, every channel alike (unaggregated theta, tooltip, order, an aggregated colour)", () => {
+    const bypass: Record<string, unknown> = {
+      "theta unaggregated, colour on 3 values: one arc per row": { vl: { data: { values: rows(200) }, mark: "arc", encoding: { theta: { field: "a", type: "quantitative" }, color: { field: "three", type: "nominal" } } } },
+      "colour aggregated, theta unaggregated: theta is the grouping": { vl: { data: { values: rows(200) }, mark: "arc", encoding: { theta: { field: "a", type: "quantitative" }, color: { field: "three", aggregate: "count", type: "quantitative" } } } },
+      "a tooltip field groups": pie({ color: { field: "three", type: "nominal" }, tooltip: { field: "i", type: "quantitative" } }),
+      "a tooltip list groups": pie({ color: { field: "three", type: "nominal" }, tooltip: [{ field: "three", type: "nominal" }, { field: "cat", type: "nominal" }] }),
+      "an order field groups": pie({ color: { field: "three", type: "nominal" }, order: { field: "i", type: "quantitative" } }),
+      "an opacity field groups": pie({ color: { field: "three", type: "nominal" }, opacity: { field: "i", type: "quantitative" } }),
+      "x on an arc is not counted, so refused": pie({ color: { field: "three", type: "nominal" }, x: { field: "i", type: "quantitative" } }, {}, 10),
+      "text on an arc is refused (labels go in a text layer)": pie({ color: { field: "three", type: "nominal" }, text: { field: "three", type: "nominal" } }, {}, 10),
+    };
+    const passed = Object.entries(bypass).filter(([, spec]) => refusal(spec) === null).map(([name]) => name);
+    expect(passed).toEqual([]);
+    // the controls: an aggregated theta by three values draws 3; a tooltip on the grouped field adds nothing
+    expect(refusal(pie({ color: { field: "three", type: "nominal" } }))).toBeNull();
+    expect(refusal(pie({ color: { field: "three", type: "nominal" }, tooltip: [{ field: "three", type: "nominal" }, { field: "a", aggregate: "sum", type: "quantitative" }] }))).toBeNull();
+    expect(refusal({ vl: { data: { values: rows(12) }, mark: "arc", encoding: { theta: { field: "a", type: "quantitative" }, color: { field: "cat", type: "nominal" } } } })).toBeNull();
   });
 
   test("a pie the data bounds within 12 is drawn", () => {

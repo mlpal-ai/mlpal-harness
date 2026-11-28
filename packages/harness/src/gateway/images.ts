@@ -212,8 +212,16 @@ function decodeDataUrl(url: string, maxBytes: number): Uint8Array {
   return out;
 }
 
+/** A controller that also aborts when `signal` does: a bounded read ends its own request. */
+function linked(signal?: AbortSignal): AbortController {
+  const ctl = new AbortController();
+  if (signal?.aborted) ctl.abort();
+  else signal?.addEventListener("abort", () => ctl.abort(), { once: true });
+  return ctl;
+}
+
 /** A gateway answer's JSON, read with a cap (an answer carries up to four inline images). */
-async function boundedJson(res: Response, max: number): Promise<unknown> {
+async function boundedJson(res: Response, max: number, abort: () => void): Promise<unknown> {
   const reader = res.body?.getReader();
   if (!reader) throw new ImageGatewayError(0, "the gateway sent no body");
   const parts: Uint8Array[] = [];
@@ -223,7 +231,9 @@ async function boundedJson(res: Response, max: number): Promise<unknown> {
     if (done) break;
     total += value.byteLength;
     if (total > max) {
-      await reader.cancel();
+      // the request itself is ended, not only this reader: nothing more is received
+      abort();
+      await reader.cancel().catch(() => {});
       throw new ImageGatewayError(413, `the gateway's answer is over ${max} bytes`);
     }
     parts.push(value);
@@ -242,16 +252,18 @@ export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
   const headers = () => ({ ...cfg.headers, authorization: cfg.authorization(), "content-type": "application/json" });
   return {
     async submit(req, opts) {
-      const res = await f(`${base}/v1/images/generations`, { method: "POST", headers: headers(), body: JSON.stringify({ ...req, wait: false, idempotency_key: opts.idempotencyKey }), ...(opts.signal ? { signal: opts.signal } : {}) });
+      const ctl = linked(opts.signal);
+      const res = await f(`${base}/v1/images/generations`, { method: "POST", headers: headers(), body: JSON.stringify({ ...req, wait: false, idempotency_key: opts.idempotencyKey }), signal: ctl.signal });
       if (!res.ok) throw await failure(res);
-      const body = (await boundedJson(res, ANSWER_BYTES)) as Record<string, unknown>;
+      const body = (await boundedJson(res, ANSWER_BYTES, () => ctl.abort())) as Record<string, unknown>;
       if (Array.isArray(body.data)) return { result: body as unknown as ImageResult };
       return { job: body as unknown as ImageJob };
     },
     async job(id, signal) {
-      const res = await f(`${base}/v1/images/jobs/${encodeURIComponent(id)}`, { headers: headers(), ...(signal ? { signal } : {}) });
+      const ctl = linked(signal);
+      const res = await f(`${base}/v1/images/jobs/${encodeURIComponent(id)}`, { headers: headers(), signal: ctl.signal });
       if (!res.ok) throw await failure(res);
-      return (await boundedJson(res, ANSWER_BYTES)) as ImageJob;
+      return (await boundedJson(res, ANSWER_BYTES, () => ctl.abort())) as ImageJob;
     },
     async download(url, opts) {
       // the gateway's own fallback when its storage fails: the bytes are in the answer, so nothing is fetched
@@ -277,7 +289,8 @@ export function gatewayImages(cfg: ImageGatewayConfig): ImageGateway {
           if (done) break;
           total += value.byteLength;
           if (total > opts.maxBytes) {
-            await reader.cancel();
+            ctl.abort();
+            await reader.cancel().catch(() => {});
             throw new ImageGatewayError(413, `the image is over ${opts.maxBytes} bytes`);
           }
           parts.push(value);

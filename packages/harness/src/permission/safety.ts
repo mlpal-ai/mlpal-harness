@@ -8,6 +8,7 @@
  * than an LLM-classifier boundary: allow is earned; deny here is absolute.
  */
 
+import { foldName } from "./names";
 import { posix } from "node:path";
 
 /**
@@ -250,7 +251,8 @@ const PROTECTED_WRITE = [
 
 /** Returns a deny reason if writing this path is unsafe, else null. */
 export function contentSafetyDeny(path: string): string | null {
-  const p = path.replace(/\\/g, "/");
+  // matched as a case-insensitive, normalising file system resolves the name: `.GIT/config` is `.git/config` on APFS
+  const p = foldName(path.replace(/\\/g, "/"));
   for (const rule of PROTECTED_WRITE) {
     if (rule.test.test(p)) return `blocked: write to ${rule.reason} is not allowed`;
   }
