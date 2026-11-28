@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### tools-admin (T-1, T-3): tool sources on the wire, secret references, web sign-in, plugin plans (2026-11-28)
+
+- Protocol (additive; needs a version bump at merge): capability `tools_admin` and its messages in
+  `protocol/src/tools-admin.ts`, joined to `ClientMessage`, `ServerMessage` and `ErrorCode`.
+- `McpManager.setSecretResolver`: a header value carrying `${MLPAL_SECRET_<NAME>}` is resolved through the host's
+  resolver at connect and never env-expanded; an unresolvable one fails that server's connect naming the secret only
+  (`mcp/secret-refs.ts`).
+- `startWebLogin` (`mcp/web-login.ts`): OAuth code + PKCE with the redirect on the client's page and a state the login
+  chose; a saved dynamic registration for another redirect is not reused. `StoredOAuthProvider` is exported.
+- `planPack` (`plugins/plan.ts`): a staged pack's plan (skills, agents, stdio programs, remote servers, the hooks
+  module, ignored directories) and a sha256 over the plan and every file. Refuses a manifest path or link leading
+  outside the pack, unusable pack or server names, a string `mcpServers` and a url with credentials.
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or
