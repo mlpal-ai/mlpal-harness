@@ -60,12 +60,13 @@ export interface HomeResolverOptions {
 /** What one script's output came to: a block (or, failing that, its fallback alone) or the reason it is neither. */
 export type HomeOutput =
   | { ok: true; kind: BlockDisplay["kind"]; spec: BlockDisplay["spec"]; fallback: string; as_of?: string; notices?: string[] }
-  | { ok: false; error: "not_json" | "invalid_block"; detail: string; faults?: DisplayError[]; fallback?: string };
+  | { ok: false; error: "not_json" | "invalid_block" | "kind_mismatch"; detail: string; faults?: DisplayError[]; fallback?: string };
 
 const OUTPUT_KEYS = new Set(["kind", "spec", "fallback", "as_of"]);
 
-/** Check one script's stdout as the block `block` (pure): what `get` and `yodex hop lint --home` both run. */
-export function checkHomeOutput(block: Pick<HopUiBlock, "id" | "title">, stdout: string): HomeOutput {
+/** Check one script's stdout as the block `block` (pure): what `get`, a cache read and `yodex hop lint --home` all run.
+ *  A block that declares its kind must print that kind (`kind_mismatch`). */
+export function checkHomeOutput(block: Pick<HopUiBlock, "id" | "title" | "kind">, stdout: string): HomeOutput {
   let raw: unknown;
   try {
     raw = JSON.parse(stdout);
@@ -83,6 +84,7 @@ export function checkHomeOutput(block: Pick<HopUiBlock, "id" | "title">, stdout:
   }
   const s = check.show;
   if (!isBlockKind(s.kind)) return { ok: false, error: "invalid_block", detail: `KIND_NOT_ALLOWED: a home block is ${BLOCK_KINDS.join(", ")}` };
+  if (block.kind && s.kind !== block.kind) return { ok: false, error: "kind_mismatch", detail: `the block declares kind ${block.kind} and the script printed ${s.kind}` };
   return { ok: true, kind: s.kind, spec: s.spec as BlockDisplay["spec"], fallback: s.fallback, ...(s.as_of ? { as_of: s.as_of } : {}), ...(s.notices ? { notices: s.notices } : {}) };
 }
 
@@ -153,9 +155,11 @@ export class HomeResolver {
   /** The cached view, running nothing. */
   view(): HomeView {
     const starters = [...(this.opts.hop.ui?.starters ?? [])];
-    if (this.opts.scripts !== "run") return { hop: this.hopLabel, starters, blocks: [], scripts: this.opts.scripts };
+    const headline = this.opts.hop.ui?.home?.headline;
+    const head = { hop: this.hopLabel, starters, ...(headline !== undefined ? { headline } : {}) };
+    if (this.opts.scripts !== "run") return { ...head, blocks: [], scripts: this.opts.scripts };
     this.loadCache();
-    return { hop: this.hopLabel, starters, blocks: this.blocks.map((b) => this.item(b)) };
+    return { ...head, blocks: this.blocks.map((b) => this.item(b)) };
   }
 
   /** Kill every running script and start no more (the serve is stopping). */
@@ -170,6 +174,7 @@ export class HomeResolver {
     return {
       id: b.id,
       title: b.title,
+      ...(b.kind ? { kind: b.kind } : {}),
       as_of: e.display ? e.as_of : null,
       stale: e.display !== null && (!e.current || old),
       display: e.display,

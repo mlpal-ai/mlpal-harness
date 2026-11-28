@@ -63,6 +63,15 @@ async function frames(): Promise<Record<string, ClientMessage | ServerMessage>> 
     while (seen.length < 3) await Bun.sleep(1);
     const never = home("h4", r2.view());
     const empty = home("h5", new HomeResolver({ scripts: "run", hop: { name: "coding", version: "1.1.0" }, run, cacheDir: cache, now }).view());
+    // round 2: what the author declares (headline, kinds) is in the view before any script ran; a script that prints
+    // another kind than its block declares
+    const declaredUi = { starters: STARTERS, home: { headline: "Your agents, sites and published HOPs on MLPal, as their scripts last read them.", blocks: blocks.map((b) => ({ ...b, kind: ({ spend: "chart", agents: "grid", sites: "grid", hops: "kpis" } as const)[b.id as "spend"] })) } };
+    const declared = home("h8", new HomeResolver({ scripts: "run", hop: { ...hop, version: "0.5.0", ui: declaredUi }, run: async () => hold, cacheDir: cache, now }).get());
+    const mismatched = { ...declaredUi, home: { ...declaredUi.home, blocks: declaredUi.home.blocks.map((b) => (b.id === "hops" ? { ...b, kind: "grid" as const } : b)) } };
+    table = Object.fromEntries(blocks.map((b) => [b.id, () => ok(output(b.id))]));
+    const r3 = new HomeResolver({ scripts: "run", hop: { ...hop, version: "0.6.0", ui: mismatched }, run, cacheDir: cache, now });
+    await resolveAll(r3, 4);
+    const mismatch = home("h9", r3.view());
     const untrusted = home("h6", new HomeResolver({ scripts: "not_trusted", hop, run, cacheDir: cache, now }).get());
     const off = home("h7", new HomeResolver({ scripts: "off", hop, run, cacheDir: cache, now }).get());
     return {
@@ -74,6 +83,8 @@ async function frames(): Promise<Record<string, ClientMessage | ServerMessage>> 
       "home-stale": stale,
       "home-never-failed-fallback": never,
       "home-empty": empty,
+      "home-declared": declared,
+      "home-kind-mismatch": mismatch,
       "home-not-trusted": untrusted,
       "home-scripts-off": off,
     };
