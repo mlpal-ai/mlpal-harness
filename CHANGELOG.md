@@ -22,6 +22,7 @@ removed or renamed. The sections below keep each branch's own account. By capabi
   - `HomeBlock.kind`: chart, kpis or grid, sent before any script finishes. A script printing another kind is
     `kind_mismatch`.
 - **`tools_admin`** (capability): the owner's MCP servers and plugins on the wire, with `ToolsAdminErrorCode`.
+  Optional `ToolServerVariable.grantedBy: "platform"` marks a variable the image's own pack is granted.
 - **`Usage.compute_units_unconfirmed`** (optional): an estimated charge that could not be confirmed, kept apart
   from `compute_units`.
 - **`Usage.unpriced_charges`** (optional): how many such charges have no estimate at all (unknown, never zero).

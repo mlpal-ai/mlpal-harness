@@ -485,3 +485,71 @@ describe("REVIEW-5: relative words and $PWD against the folder; operands on the 
     clearSecrets();
   });
 });
+
+describe("REVIEW-6: redirect files, directory options and ~+ / ~- are operands", () => {
+  const ctx = { home: "/home/mlpaluser", cwd: "/home/mlpaluser/workspace/proj" };
+
+  test("the reviewer's three lines and variants ask", async () => {
+    const { protectedReachAsk } = await import("../src/permission/safety");
+    for (const command of [
+      "cat < ~/.yodex/person-secret?.json",
+      "cat <~/.yodex/person-secret?.json",
+      "jq . 0< ~/.yodex/p*",
+      "hexdump -C < ~/.y*/person-secret?.json",
+      "cat <> ~/.yodex/p*",
+      "echo x > ~/.yodex/*.json",
+      "echo x 2>~/.yodex/p*",
+      "env -C ~/.yodex cat person-secret?.json",
+      "env --chdir=/home/mlpaluser/.yodex cat p*",
+      "git -C ~/.yodex grep --no-index value",
+      "make -C ~/.yodex",
+      "tar -C ~/.yodex -cf - .",
+      "sudo -D ~/.yodex cat x",
+      "npm --prefix ~/.mlpal ls",
+      "env -C ~ grep -r value .yodex",
+      "cat ~+/../../.yodex/person-secret?.json",
+      "cat ~-/.yodex/person-secret?.json",
+      "cat ~-/../p*",
+      "cat $OLDPWD/.yodex/p*",
+    ]) {
+      expect([command, protectedReachAsk(command, ctx) !== null]).toEqual([command, true]);
+    }
+    expect(protectedReachAsk("cat ~+/../.yodex/p*", { home: ctx.home })).not.toBeNull();
+  });
+
+  test("must-not-break: the 74 everyday commands, the skills, workspace searches, ordinary redirects, -C in the workspace", async () => {
+    const { protectedReachAsk, protectedReadDeny, expandLeading } = await import("../src/permission/safety");
+    const corpus = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "permission", "everyday-commands.json"), "utf8")) as Record<string, string[]>;
+    const all = Object.values(corpus).flat();
+    expect(all.filter((c) => protectedReachAsk(c, ctx) !== null)).toEqual(["find / -name '*.log' 2>/dev/null | head"]);
+    expect(all.filter((c) => protectedReadDeny(c) !== null)).toEqual([]);
+    for (const c of [
+      "bun test > out.txt 2>&1",
+      "node build.js >> build.log",
+      "jq .name < input.json",
+      "cat < ~/.yodex/YODEX.md",
+      "python3 run.py 2>/dev/null",
+      "sort < data.csv > sorted.csv",
+      "git -C . status",
+      "git -C ../other log --oneline",
+      "make -C build",
+      "tar -C dist -czf out.tgz .",
+      "npm --prefix web run build",
+      "env -C src ls",
+      "grep -r foo .",
+      "find . -name '*.ts'",
+      "ls ~",
+      "cat ~+/README.md",
+      "ls ~+",
+      "cd ~- && ls",
+      "bash ~/.yodex/skills/hop-builder/scripts/loop.sh ./hop > loop.log",
+      "python3 ~/.yodex/hops/mlpal/0.2.6/skills/hop-evals/scripts/run_cases.py grade --cases evals/cases.json",
+    ]) {
+      expect([c, protectedReachAsk(c, ctx), protectedReadDeny(c)]).toEqual([c, null, null]);
+    }
+    expect(expandLeading("~+/x", ctx)).toEqual({ word: "/home/mlpaluser/workspace/proj/x" });
+    expect(expandLeading("~-/x", ctx)).toEqual({ runtime: true });
+    expect(expandLeading("~/x", ctx)).toEqual({ word: "/home/mlpaluser/x" });
+    expect(expandLeading("${PWD}/x", ctx)).toEqual({ word: "/home/mlpaluser/workspace/proj/x" });
+  });
+});

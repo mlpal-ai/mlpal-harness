@@ -370,19 +370,35 @@ function stateDirectory(p: string, home: string): boolean {
  * rest has one. Null for a word that is not a path from a known place (a flag, a URL, a relative word or `$PWD` with
  * the folder unknown).
  */
-export function normalWord(word: string, ctx: Ctx): { path: string; literal: string; pattern: boolean } | null {
-  if (word === "" || word.startsWith("-") || word.includes("://")) return null;
-  let w = word;
-  // the home tilde as the decomposer defines it (homeTildeRest); `~user` as that user's home
-  const home = homeTildeRest(w);
-  const user = home === null ? /^~([A-Za-z0-9_.-]+)(?=\/|$)/.exec(w) : null;
-  if (home !== null) w = ctx.home + home;
-  else if (user) w = `/home/${user[1]}` + w.slice(user[0].length);
-  else if (/^(?:\$HOME|\$\{HOME[^}]*\})(?=\/|$)/.test(w)) w = w.replace(/^(?:\$HOME|\$\{HOME[^}]*\})/, ctx.home);
-  else if (/^(?:\$PWD|\$\{PWD\})(?=\/|$)/.test(w)) {
-    if (!ctx.cwd) return null;
-    w = w.replace(/^(?:\$PWD|\$\{PWD\})/, ctx.cwd);
+/**
+ * REVIEW-6 R6-1: the shell's leading tilde and folder variables, one helper for every reader of a word: `~` and
+ * `$HOME`/`${HOME…}` are the home; `~user` is /home/<user>; `~+` and `$PWD`/`${PWD}` are the command's folder (null
+ * when it is unknown); `~-`, `$OLDPWD`/`${OLDPWD}` are known only at run time (null, `runtime`). A word with none of
+ * these comes back as it is. (The decomposer marks a word that starts with an unquoted `~`; this is what it expands to.)
+ */
+export function expandLeading(word: string, ctx: { home: string; cwd?: string }): { word: string } | { runtime: true } | null {
+  // the home tilde is the decomposer's own definition (homeTildeRest), so the two never disagree about `~` and `~/…`
+  const home = homeTildeRest(word);
+  if (home !== null) return { word: ctx.home + home };
+  const t = /^~(?:([+-])|([A-Za-z0-9_][A-Za-z0-9_.-]*))?(?=\/|$)/.exec(word);
+  if (t) {
+    if (t[1] === "+") return ctx.cwd ? { word: ctx.cwd + word.slice(2) } : null;
+    if (t[1] === "-") return { runtime: true };
+    return { word: (t[2] ? `/home/${t[2]}` : ctx.home) + word.slice(t[0].length) };
   }
+  const v = /^(?:\$(HOME|PWD|OLDPWD)|\$\{(HOME|PWD|OLDPWD)(?:[:\-+=?][^}]*)?\})(?=\/|$)/.exec(word);
+  if (!v) return { word };
+  const name = v[1] ?? v[2];
+  if (name === "HOME") return { word: ctx.home + word.slice(v[0].length) };
+  if (name === "PWD") return ctx.cwd ? { word: ctx.cwd + word.slice(v[0].length) } : null;
+  return { runtime: true };
+}
+
+export function normalWord(word: string, ctx: Ctx): { path: string; literal: string; pattern: boolean } | null {
+  if (word === "" || word.startsWith("-") || word.includes("://") || word.startsWith("&")) return null;
+  const lead = expandLeading(word, ctx);
+  if (lead === null || "runtime" in lead) return null;
+  let w = lead.word;
   const proc = /^\/proc\/(?:self|thread-self|\d+)\/(root|cwd)(?=\/|$)/.exec(w);
   if (proc) {
     if (proc[1] === "root") w = `/${w.slice(proc[0].length)}`;
@@ -403,12 +419,16 @@ export function normalWord(word: string, ctx: Ctx): { path: string; literal: str
 
 /** Why a word could reach the home's .yodex or .mlpal without naming a file there, or null. */
 function reachWithoutNaming(word: string, ctx: Ctx): string | null {
-  if (/^~[A-Za-z0-9_.-]+(?:\/|$)/.test(word)) return `${word.slice(0, 40)} names a home by its user`;
+  if (/^~[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/|$)/.test(word)) return `${word.slice(0, 40)} names a home by its user`;
   const n = normalWord(word, ctx);
   if (!n) {
-    // The folder is unknown (or held in $PWD): a word that climbs (a `..` segment) toward a state directory asks.
     const segs = word.split("/");
-    if (segs.includes("..") && (/yodex|mlpal/.test(word) || segs.some((s) => couldName(s)) || PATTERN_CHARS.test(word))) return `${word.slice(0, 60)} climbs from an unknown folder toward a home's .yodex or .mlpal`;
+    const reachable = /yodex|mlpal/.test(word) || segs.some((s) => couldName(s));
+    // ~- and $OLDPWD are known only at run time: the rest of the word decides.
+    const lead = expandLeading(word, ctx);
+    if (lead && "runtime" in lead && (reachable || segs.includes("..") || PATTERN_CHARS.test(word.slice(2)))) return `${word.slice(0, 60)} starts at a folder known only at run time`;
+    // The folder is unknown (or held in $PWD): a word that climbs (a `..` segment) toward a state directory asks.
+    if (segs.includes("..") && (reachable || PATTERN_CHARS.test(word))) return `${word.slice(0, 60)} climbs from an unknown folder toward a home's .yodex or .mlpal`;
     return null;
   }
   if (!n.pattern) return null;
@@ -471,28 +491,99 @@ function readsMany(tool: string, args: string[]): boolean {
  * - a tool that reads many files (readsMany) with an operand above a state directory: a home, /home or / (R5-2b).
  * `ls ~`, `cd ~`, an exact file under ~/.yodex (YODEX.md, a skill script) and the open trees are not asked.
  */
+/** REVIEW-6 R6-2: a redirection operator glued to its file (`<f`, `2>f`, `&>f`, `<>f`, `>|f`), split off. */
+const REDIRECT = /^(?:\d*(?:<<<|<>|<<-?|<&|>&|>>|>\||<|>)|&>>|&>)/;
+
+/** REVIEW-6 R6-3: the options that name the folder a tool works in, by tool. */
+const DIR_OPTIONS: Record<string, { short?: string; long?: string[] }> = {
+  env: { short: "-C", long: ["--chdir"] },
+  git: { short: "-C" },
+  make: { short: "-C", long: ["--directory"] },
+  gmake: { short: "-C", long: ["--directory"] },
+  tar: { short: "-C", long: ["--directory"] },
+  npm: { long: ["--prefix"] },
+  pnpm: { short: "-C", long: ["--dir"] },
+  yarn: { long: ["--cwd"] },
+  sudo: { short: "-D", long: ["--chdir"] },
+};
+
+/** The folder a tool's own option moves it to (R6-3), as written, or null. */
+function dirOption(tool: string, args: readonly string[]): string | null {
+  const o = Object.hasOwn(DIR_OPTIONS, tool) ? DIR_OPTIONS[tool]! : null;
+  if (!o) return null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (o.short && a === o.short && args[i + 1] !== undefined) return args[i + 1]!;
+    if (o.short && a.startsWith(o.short) && a.length > o.short.length && !a.startsWith("--")) return a.slice(o.short.length);
+    for (const l of o.long ?? []) {
+      if (a === l && args[i + 1] !== undefined) return args[i + 1]!;
+      if (a.startsWith(`${l}=`)) return a.slice(l.length + 1);
+    }
+  }
+  return null;
+}
+
+/** The rules for one simple command's words in a folder: why it asks, or null. */
+function judgeCommand(words: string[], ctx: Ctx): string | null {
+  const [name = "", ...args] = words;
+  const tool = name.split("/").pop()!;
+  for (const w of words) {
+    const why = reachWithoutNaming(w, ctx);
+    if (why) return `this command could reach the person's keys without naming them: ${why}`;
+  }
+  const operands = args.map((w) => normalWord(w, ctx)).filter((n): n is NonNullable<typeof n> => n !== null && !n.pattern);
+  const inside = operands.find((n) => stateDirectory(n.path, ctx.home));
+  if (inside) return `${tool} on ${inside.path} reaches the person's keys: name the file you mean`;
+  const above = operands.find((n) => aboveState(n.path, ctx.home));
+  if (above && readsMany(tool, args)) return `${tool} over ${above.path} reaches the person's keys: name the folder you mean`;
+  return null;
+}
+
+/** A command's words with each redirection's file as a word of its own (R6-2): `cat < f`, `cat <f`, `2>f`. */
+function withRedirectTargets(raw: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const t of raw) {
+    const m = REDIRECT.exec(t);
+    if (!m) out.push(t);
+    else if (t.length > m[0].length) out.push(t.slice(m[0].length));
+  }
+  return out.filter((w) => w !== "");
+}
+
 export function protectedReachAsk(command: string, context: ReachContext = {}): string | null {
   const ctx: Ctx = { home: context.home ?? homedir(), ...(context.cwd ? { cwd: context.cwd } : {}) };
   let lines: string[][];
   try {
     const d = decomposeBash(command);
-    lines = d.opaque !== null ? [command.split(/\s+/)] : d.commands.map((c) => (c.forms[0] ?? "").split(" "));
+    // `redirected` is the command's form with its redirections appended as written: their files are operands too.
+    lines = d.opaque !== null ? [command.split(/\s+/)] : d.commands.map((c) => (c.redirected?.[0] ?? c.forms[0] ?? "").split(" "));
   } catch {
     lines = [command.split(/\s+/)];
   }
+  // R6-3: a tool's directory option is an operand, and that command's folder. The decomposer strips git's global
+  // options from its forms, so the options are read from the line's raw simple commands.
+  for (const sub of splitShellCommands(command)) {
+    const raw = sub.split(/\s+/).map((w) => w.replace(/^['"]+|['"]+$/g, ""));
+    const at = raw.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    const tool = (raw[at] ?? "").split("/").pop()!;
+    const dir = dirOption(tool, raw.slice(at + 1));
+    if (dir === null) continue;
+    const n = normalWord(dir, ctx);
+    if (n === null || n.pattern) {
+      const why = reachWithoutNaming(dir, ctx);
+      if (why) return `this command could reach the person's keys without naming them: ${why}`;
+      continue;
+    }
+    if (stateDirectory(n.path, ctx.home)) return `${tool} working in ${n.path} reaches the person's keys`;
+    const inDir = judgeCommand(withRedirectTargets(raw.slice(at)), { home: ctx.home, cwd: n.path });
+    if (inDir) return inDir;
+  }
   for (const raw of lines) {
-    const words = raw.map((w) => w.replace(/^['"]+|['"]+$/g, ""));
+    const words = withRedirectTargets(raw.map((w) => w.replace(/^['"]+|['"]+$/g, "")));
     const [name = "", ...args] = words;
     const tool = name.split("/").pop()!;
-    for (const w of words) {
-      const why = reachWithoutNaming(w, ctx);
-      if (why) return `this command could reach the person's keys without naming them: ${why}`;
-    }
-    const operands = args.map((w) => normalWord(w, ctx)).filter((n): n is NonNullable<typeof n> => n !== null && !n.pattern);
-    const inside = operands.find((n) => stateDirectory(n.path, ctx.home));
-    if (inside) return `${tool} on ${inside.path} reaches the person's keys: name the file you mean`;
-    const above = operands.find((n) => aboveState(n.path, ctx.home));
-    if (above && readsMany(tool, args)) return `${tool} over ${above.path} reaches the person's keys: name the folder you mean`;
+    const why = judgeCommand(words, ctx);
+    if (why) return why;
     // The folder the next command of the line runs in.
     if (tool === "cd" || tool === "pushd") {
       const target = args.filter((w) => !w.startsWith("-"));
