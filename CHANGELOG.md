@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### The shell decomposer reads words as bash passes them (2026-11-28)
+
+- Permission classes, deny rules and approval entries now see the words bash will actually run:
+  - `$'…'` is decoded: the simple escapes, `\nnn`, `\xHH` and `\cX`, and a NUL ends the string. An escape that
+    bash versions read differently (`\u`, `\U`, `\c` before a non-letter, a byte past ASCII) is a run-time part.
+  - `$"…"` is read as double quotes.
+  - Inside double quotes a backslash escapes only `$`, backtick, `"`, `\` and a newline.
+  - Adjacent pieces and line continuations form one word.
+  A differential test against `/bin/bash` (400 seeded lines) holds this.
+- A part bash knows only at run time is kept as written, and is any value to a deny-side pattern anchored at the
+  command (`globOverlap`). Such parts are expansions, substitutions, arithmetic, unquoted glob or brace words, and a
+  leading `~`. So `mlpal mcp $V srv` meets `mlpal mcp delete*`. A pattern that starts with `*` keeps the exact
+  reading, since a run-time part could supply any text.
+- The reading before this one stays a deny-side form (`legacy`), so no deny, approval or gating entry fires less.
+- A line with ANSI-C or locale quoting is never auto-approved (`refusesAutoApproval`), records no plan and gets no
+  kube grant.
+- As the command name, quoting or an expansion is still opaque.
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or

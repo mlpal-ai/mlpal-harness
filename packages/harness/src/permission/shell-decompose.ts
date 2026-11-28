@@ -16,7 +16,12 @@
  *   than `/dev/null`, `/dev/std{in,out,err}` or `/dev/fd/N` (`writes`): such a line is never auto-approved;
  * - best-effort (checked as the command named, contents not inspected; `bestEffort`): a shell running a script file
  *   (`bash script.sh`), a command run by a relative path (`./x.sh`);
- * - opaque (`opaque` names the form; a rule on Bash fails closed): an expansion as the command name, `eval`, `source`/
+ * - words as bash passes them: quotes and backslashes removed as bash removes them (inside double quotes a backslash
+ *   escapes only `$`, backtick, `"`, `\` and a newline), `$'…'` decoded (`ansiC`'s escapes; one bash versions read
+ *   differently is a run-time part), `$"…"` as double quotes, line continuations joined. A part bash knows only when
+ *   it runs (an expansion, a substitution, arithmetic, an unquoted glob or brace word, a leading `~`) is kept as
+ *   written and is UNKNOWN in the command's `wild` form, which a deny or a gating class reads as "any value";
+ * - opaque (`opaque` names the form; a rule on Bash fails closed): an expansion or quoting as the command name, `eval`, `source`/
  *   `.`, `exec`, `sudo`/`doas`/`su`, a shell with a non-literal script or reading stdin, a here-doc into a shell, a
  *   function definition, `select`/`coproc`, an option a prefix does not take, `env -S`, unbalanced quotes or
  *   parentheses, depth > 3;
@@ -59,7 +64,22 @@ export interface DecomposedCommand {
    *  matches these too, an allow rule only `forms`. An entry with no `forms` runs no command (`> f`, `command -v git
    *  > /dev/null`): it is recorded for its redirections. */
   redirected?: string[];
+  /** Its forms as the matcher read them before quoting was decoded exactly (`$'x'` as `$x`, `"a\b"` as `ab`), when
+   *  that differs: a deny or an approval matches these too, so the exact reading never fires fewer of them. */
+  legacy?: string[];
+  /** Its form with every part whose value bash knows only when it runs (a parameter expansion, a substitution,
+   *  arithmetic, a glob or brace word, a leading `~`, an escape bash versions read differently) as `UNKNOWN`: a deny or
+   *  an approval, and a gating class, anchored at the command names it if ANY value could make it match
+   *  (`bashDenyOverlap`), so `mlpal mcp $(echo delete) srv` meets `mlpal mcp delete*`. Present only when the command
+   *  has such a part. */
+  wild?: string;
+  /** A word of it was written in ANSI-C (`$'…'`) or locale (`$"…"`) quoting. Its forms hold the decoded words, as bash
+   *  runs them, for the deny side; the line is never auto-approved (`refusesAutoApproval`). */
+  specialQuoting?: boolean;
 }
+
+/** In a `wild` form: any string, of any length, spaces included. */
+export const UNKNOWN = "\uFFFF";
 
 export interface Decomposed {
   commands: DecomposedCommand[];
@@ -77,7 +97,7 @@ export interface Decomposed {
  * the two cannot drift (D-27 round 5, D-37 round 6).
  */
 export function refusesAutoApproval(d: Decomposed): boolean {
-  return d.opaque !== null || d.writes.length > 0 || d.commands.some((c) => c.envInjected === true);
+  return d.opaque !== null || d.writes.length > 0 || d.commands.some((c) => c.envInjected === true || c.specialQuoting === true);
 }
 
 /** Files a redirection may write without touching the estate. */
@@ -111,7 +131,25 @@ interface Line {
   envChanged: boolean;
   /** The redirections that write a file (`Decomposed.writes`). */
   writes: Redirection[];
+  /** For tests (`shellWords`): every simple command's words as written, before anything is stripped. */
+  words?: string[][];
 }
+
+const newWord = (): Word => ({ text: "", legacy: "", wild: "", expanded: false, literal: true });
+/** Append the same characters to every reading of the word. */
+const add = (w: Word, s: string) => {
+  w.text += s;
+  w.legacy += s;
+  w.wild += s;
+};
+/** Append a part bash knows only at run time: kept as written, UNKNOWN in the wild reading. */
+const addUnknown = (w: Word, written: string) => {
+  w.text += written;
+  w.legacy += written;
+  if (!w.wild.endsWith(UNKNOWN)) w.wild += UNKNOWN;
+  w.expanded = true;
+  w.literal = false;
+};
 /** Words that open a group or compound whose redirections apply to every command in it, and the words that close one. */
 const OPENERS = new Set(["{", "if", "while", "until", "for"]);
 const CLOSERS = new Set(["}", "fi", "done"]);
@@ -153,8 +191,14 @@ const SHELL_LONG_WITH_VALUE = new Set(["--rcfile", "--init-file"]);
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env", "--list-cmds"]);
 
 interface Word {
-  /** The word as the command receives it: quotes removed, substitutions kept as written. */
+  /** The word as the command receives it: quotes removed (ANSI-C escapes decoded), substitutions kept as written. */
   text: string;
+  /** The word as the matcher read it before quoting was decoded exactly (see `DecomposedCommand.legacy`). */
+  legacy: string;
+  /** `text` with each part whose value is known only at run time as UNKNOWN (see `DecomposedCommand.wild`). */
+  wild: string;
+  /** Written in ANSI-C or locale quoting somewhere. */
+  special?: boolean;
   /** Parameter expansion or substitution somewhere in it (unquoted or double-quoted). */
   expanded: boolean;
   /** Entirely literal: its text is exactly what runs. */
@@ -215,6 +259,9 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
           if (OPENERS.has(word.text)) openers.push(out.length);
           else if (CLOSERS.has(word.text)) closed = openers.pop() ?? null;
         }
+        // bash expands an unquoted glob or brace word to names it finds, and a leading `~` to a home
+        if (word.glob) word.wild = UNKNOWN;
+        else if (word.tilde) word.wild = UNKNOWN + word.wild.slice(1);
         words.push(word);
       }
     }
@@ -229,10 +276,11 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
     cases.pop();
     closed = openers.pop() ?? null;
   };
-  const cur = (): Word => (word ??= { text: "", expanded: false, literal: true });
+  const cur = (): Word => (word ??= newWord());
   const endCommand = () => {
     endWord();
     if (skipNext) throw new Opaque("a redirection with no target");
+    if (words.length) line.words?.push(words.map((w) => (w.wild.includes(UNKNOWN) ? UNKNOWN : w.text)));
     const from = out.length;
     simple(words, depth, out, line, heredoc);
     if (redirections.length) {
@@ -334,7 +382,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
       if ((c === "<" || c === ">") && next === "(") {
         const end = close(i + 1);
         inner(command.slice(i + 2, end));
-        cur().text += "/dev/fd/0";
+        add(cur(), "/dev/fd/0");
         i = end;
         continue;
       }
@@ -392,7 +440,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
         i++;
         continue;
       }
-      if (next !== undefined) cur().text += next;
+      if (next !== undefined) add(cur(), next);
       i++;
       continue;
     }
@@ -406,7 +454,7 @@ function decompose(command: string, depth: number, out: DecomposedCommand[], lin
     }
     const w = cur();
     if (c === "~" && w.text === "") w.tilde = true;
-    w.text += c;
+    add(w, c);
     if ("*?[{}".includes(c)) w.glob = true;
   }
   endCommand();
@@ -420,17 +468,26 @@ function quoted(s: string, i: number, w: Word, inner: (cmd: string) => void, clo
   if (s[i] === "'") {
     const end = s.indexOf("'", i + 1);
     if (end < 0) throw new Opaque("unbalanced quotes");
-    w.text += s.slice(i + 1, end);
+    add(w, s.slice(i + 1, end));
     return end;
   }
   let j = i + 1;
   for (; j < s.length && s[j] !== '"'; j++) {
     const d = s[j]!;
     if (d === "\\" && j + 1 < s.length) {
-      w.text += s[j + 1];
+      // bash: inside double quotes a backslash escapes only `$`, backtick, `"`, `\` and a newline (both then vanish);
+      // before anything else it stays. The legacy reading dropped it before every character.
+      const e = s[j + 1]!;
+      if ("$`\"\\".includes(e)) add(w, e);
+      else if (e === "\n") w.legacy += e;
+      else {
+        w.text += `\\${e}`;
+        w.wild += `\\${e}`;
+        w.legacy += e;
+      }
       j++;
     } else if (d === "$" || d === "`") j = expansion(s, j, w, inner, close, line);
-    else w.text += d;
+    else add(w, d);
   }
   if (j >= s.length) throw new Opaque("unbalanced quotes");
   return j;
@@ -457,7 +514,7 @@ export function normalizeBashPattern(pattern: string): string | null {
     for (let i = 0; i < pattern.length; i++) {
       const c = pattern[i]!;
       if (c === " " || c === "\t" || c === "\n") {
-        if (w) words.push(w.text);
+        if (w) words.push(w.legacy);
         w = null;
         continue;
       }
@@ -465,19 +522,20 @@ export function normalizeBashPattern(pattern: string): string | null {
         i++;
         continue;
       }
-      w ??= { text: "", expanded: false, literal: true };
+      w ??= newWord();
       if (c === "\\") {
-        if (i + 1 < pattern.length) w.text += pattern[i + 1];
+        if (i + 1 < pattern.length) add(w, pattern[i + 1]!);
         i++;
       } else if (c === "'" || c === '"') i = quoted(pattern, i, w, ignore, close, unused);
       else if (c === "$" || c === "`") i = expansion(pattern, i, w, ignore, close, unused);
-      else w.text += c;
+      else add(w, c);
     }
   } catch (e) {
     if (e instanceof Opaque) return null;
     throw e;
   }
-  if (w) words.push(w.text);
+  // the legacy reading: a pattern is read exactly as it was before command words were decoded exactly
+  if (w) words.push(w.legacy);
   // single-spaced and trimmed, as a command's forms are (a quoted run of whitespace included)
   return words.join(" ").replace(/\s+/g, " ").trim();
 }
@@ -523,34 +581,31 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
     const end = s.indexOf("`", i + 1);
     if (end < 0) throw new Opaque("unbalanced backticks");
     inner(s.slice(i + 1, end));
-    w.text += s.slice(i, end + 1);
-    w.expanded = true;
-    w.literal = false;
+    addUnknown(w, s.slice(i, end + 1));
     return end;
   }
   const next = s[i + 1];
-  if (next === "'" || next === '"') {
-    // ANSI-C (`$'…'`) or locale (`$"…"`) quoting: what it yields is not what is written
-    w.text += "$";
+  if (next === "'") return ansiC(s, i, w);
+  if (next === '"') {
+    // locale quoting: bash translates the string through a message catalog, which no host here has, so it is the
+    // double-quoted string itself. The word stays non-literal: as a command name it is still refused.
+    w.legacy += "$";
+    w.special = true;
     w.expanded = true;
     w.literal = false;
-    return i;
+    return quoted(s, i + 1, w, inner, close, line);
   }
   if (next === "(" && s[i + 2] === "(") {
     // arithmetic: no command runs itself, but substitutions inside it do (kept as written, so a refusal shows it)
     const end = close(i + 1);
     arithmetic(s.slice(i + 3, end - 1), inner, line, true);
-    w.text += s.slice(i, end + 1);
-    w.expanded = true;
-    w.literal = false;
+    addUnknown(w, s.slice(i, end + 1));
     return end;
   }
   if (next === "(") {
     const end = close(i + 1);
     inner(s.slice(i + 2, end));
-    w.text += s.slice(i, end + 1);
-    w.expanded = true;
-    w.literal = false;
+    addUnknown(w, s.slice(i, end + 1));
     return end;
   }
   if (next === "{") {
@@ -558,20 +613,77 @@ function expansion(s: string, i: number, w: Word, inner: (cmd: string) => void, 
     const end = matchBrace(s, i + 1);
     if (end < 0) throw new Opaque("an unterminated ${…}");
     parameter(s.slice(i + 2, end), inner, line, true);
-    w.text += s.slice(i, end + 1);
-    w.expanded = true;
-    w.literal = false;
+    addUnknown(w, s.slice(i, end + 1));
     return end;
   }
   const m = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9?$!#*@-])/.exec(s.slice(i));
   if (!m) {
-    w.text += "$";
+    add(w, "$");
     return i;
   }
-  w.text += m[0];
+  addUnknown(w, m[0]);
+  return i + m[0].length - 1;
+}
+
+/** Simple escapes of ANSI-C quoting, as bash 3.2 and 5 both read them. */
+const ANSI_SIMPLE: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", '"': '"', "?": "?" };
+
+/**
+ * ANSI-C quoting at `i` (`$'…'`), decoded to what bash passes: the simple escapes, `\nnn` (one to three octal digits),
+ * `\xHH` (one or two hex digits), `\cX` for a letter X, and any other backslash kept with its character; a NUL ends
+ * the string. Bash versions differ on `\u`, `\U` and `\c` before a non-letter, and a byte past ASCII depends on the
+ * locale: such a string is kept as written and its value is UNKNOWN. A `\'` inside it makes the line opaque (the
+ * reading before this one split it there, so opaque is never less strict than that was). Answers the closing quote.
+ */
+function ansiC(s: string, i: number, w: Word): number {
+  let j = i + 2;
+  let out = "";
+  let exact = true;
+  let ended = false;
+  for (; j < s.length && s[j] !== "'"; j++) {
+    if (s[j] !== "\\") {
+      if (!ended) out += s[j];
+      continue;
+    }
+    const e = s[j + 1];
+    if (e === undefined) break;
+    if (e === "'") throw new Opaque("an escaped quote in ANSI-C quoting");
+    j++;
+    let ch: string;
+    if (Object.hasOwn(ANSI_SIMPLE, e)) ch = ANSI_SIMPLE[e]!;
+    else if (/[0-7]/.test(e)) {
+      const m = /^[0-7]{1,3}/.exec(s.slice(j))![0];
+      j += m.length - 1;
+      ch = String.fromCharCode(parseInt(m, 8) & 0xff);
+    } else if (e === "x" && /[0-9A-Fa-f]/.test(s[j + 1] ?? "")) {
+      const m = /^[0-9A-Fa-f]{1,2}/.exec(s.slice(j + 1))![0];
+      j += m.length;
+      ch = String.fromCharCode(parseInt(m, 16));
+    } else if (e === "c" && /[A-Za-z]/.test(s[j + 1] ?? "")) {
+      ch = String.fromCharCode(s[j + 1]!.charCodeAt(0) & 0x1f);
+      j++;
+    } else if (e === "u" || e === "U" || e === "c") {
+      exact = false;
+      ch = "";
+    } else ch = `\\${e}`;
+    if (ch.charCodeAt(0) > 0x7f) exact = false;
+    if (ch === "\0") ended = true;
+    if (!ended) out += ch;
+  }
+  if (j >= s.length) throw new Opaque("unbalanced quotes");
+  const raw = s.slice(i + 2, j);
+  w.legacy += `$${raw}`;
+  if (exact) {
+    w.text += out;
+    w.wild += out;
+  } else {
+    w.text += s.slice(i, j + 1);
+    if (!w.wild.endsWith(UNKNOWN)) w.wild += UNKNOWN;
+  }
+  w.special = true;
   w.expanded = true;
   w.literal = false;
-  return i + m[0].length - 1;
+  return j;
 }
 
 /** A `$((…))` body: its substitutions decomposed, an assignment in it recorded. */
@@ -708,9 +820,16 @@ function afterPrefix(name: string, spec: PrefixSpec, words: Word[]): Word[] | nu
   return words.slice(i + (spec.positional ?? 0));
 }
 
+/** One simple command (`commandOf`), each command it yields marked when a word of it used ANSI-C or locale quoting. */
+function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Line, heredoc: boolean): void {
+  const from = out.length;
+  commandOf(input, depth, out, line, heredoc);
+  if (input.some((w) => w.special)) for (const c of out.slice(from)) c.specialQuoting = true;
+}
+
 /** One simple command: syntax, assignments and prefixes stripped, a shell's literal script decomposed, the rest
  *  recorded for the rules. */
-function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Line, heredoc: boolean): void {
+function commandOf(input: Word[], depth: number, out: DecomposedCommand[], line: Line, heredoc: boolean): void {
   let words = input;
   for (;;) {
     const head = words[0];
@@ -770,12 +889,43 @@ function simple(input: Word[], depth: number, out: DecomposedCommand[], line: Li
   }
   const written = words.slice(1).map((w) => w.text);
   const args = name === "git" ? withoutGitGlobalOptions(written) : written;
-  const form = [name, ...args].join(" ").replace(/\s+/g, " ").trim();
-  const asWritten = [head.text, ...args].join(" ").replace(/\s+/g, " ").trim();
+  const kept = words.slice(1 + written.length - args.length);
+  const single = (ws: string[]) => ws.join(" ").replace(/\s+/g, " ").trim();
+  const form = single([name, ...args]);
+  const asWritten = single([head.text, ...args]);
   const relative = head.text.includes("/") && !head.text.startsWith("/");
   // a stripped git global option is matched by a deny, but changes what the allowed form would run
   const gitOptions = args.length < written.length;
-  out.push({ forms: asWritten === form ? [form] : [form, asWritten], ...(relative ? { bestEffort: true } : {}), ...(gitOptions ? { envInjected: true } : {}) });
+  const forms = asWritten === form ? [form] : [form, asWritten];
+  const legacy = single([name, ...kept.map((w) => w.legacy)]);
+  out.push({
+    forms,
+    ...(forms.includes(legacy) ? {} : { legacy: [legacy] }),
+    ...(kept.some((w) => w.wild.includes(UNKNOWN)) ? { wild: wildForm(name, kept) } : {}),
+    ...(relative ? { bestEffort: true } : {}),
+    ...(gitOptions ? { envInjected: true } : {}),
+  });
+}
+
+/** A command's `wild` form: a word that is wholly UNKNOWN joins its neighbour with no space of its own, so it may
+ *  stand for no word, one or several (an unquoted expansion splits or vanishes). */
+function wildForm(name: string, words: Word[]): string {
+  let f = name;
+  for (const w of words) f += w.wild === UNKNOWN ? UNKNOWN : ` ${w.wild.replace(/\s+/g, " ")}`;
+  return f.replace(/ +/g, " ").trim();
+}
+
+/** For tests: the words of each simple command a line runs, as bash will pass them, a word whose value is known
+ *  only at run time as UNKNOWN; null when the line is opaque. */
+export function shellWords(command: string): string[][] | null {
+  const words: string[][] = [];
+  try {
+    decompose(command, 0, [], { envChanged: false, writes: [], words });
+    return words;
+  } catch (e) {
+    if (e instanceof Opaque) return null;
+    throw e;
+  }
 }
 
 /** git's global options before its subcommand: `git -C . push` is `git push`. */
