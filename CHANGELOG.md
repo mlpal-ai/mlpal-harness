@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### A literal ~/ is the command's own home again (2026-11-28)
+
+- In an otherwise literal word, a leading `~` that bash expands to `$HOME` (a bare `~`, or `~` before an unquoted
+  `/`) is read as written, as production's engine read it, so `cp ~/.yodex/…/run_cases.py evals/` no longer asks.
+- This holds only while nothing could change HOME first: no environment change earlier on the line, and no
+  assignment or env-changing wrapper (`env`, `sudo`, `su`, `doas`, …) earlier in the command. `~user`, `~+`, `~-`,
+  a quoted slash after `~`, and a tilde in a glob or with an expansion stay run-time values. A quoted tilde stays
+  literal.
+- Checked by generation against bash 3.2.57 and 5.2.21: every word is now as strict as production's engine or
+  stricter. Two words differ from bash on both engines alike: an assignment-like argument (`X=~/x`) is still read
+  as written, as the ruling keeps.
+- The 0.2.8 table: 0 opened, unchanged.
+
 ### What a line defines for a later one, and escapes the decomposer does not decode (2026-11-28)
 
 - In `$'…'`, an escape outside the decoded table makes the line opaque: `\x{HH}`, `\u`, `\U`, `\c` before a
