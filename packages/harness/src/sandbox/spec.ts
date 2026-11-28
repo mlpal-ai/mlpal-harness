@@ -96,6 +96,9 @@ export const DEFAULT_UNREADABLE = [
   "~/.npmrc",
   "~/.pypirc",
   "~/.yodex/credentials.json",
+  // tools-admin (R51): the person's MCP sign-ins and the header secrets the Tools screen stores.
+  "~/.yodex/mcp-auth",
+  "~/.yodex/person-secrets.json",
   "~/.ssh/id_rsa",
   "~/.ssh/id_ed25519",
   "~/.ssh/id_ecdsa",

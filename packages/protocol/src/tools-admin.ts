@@ -7,10 +7,12 @@
  * Every change is written to the person's config files and applies to sessions started after it; `reload_tools`
  * reconnects this serve's servers from the files now ("Restart this session's tools").
  *
- * Credentials never cross the wire as values. A header is added as a reference to a secret the person stored with
- * MLPal secrets (`secretRef`), written into the config as `${MLPAL_SECRET_<secretRef>}` and resolved by the engine at
- * connect. An add message carrying a literal header value is refused `tool_literal_secret`; the value is never echoed
- * or logged. Listings carry header names only.
+ * Credentials are written into the config only as references, `${MLPAL_SECRET_<NAME>}`, resolved by the engine at
+ * connect (its environment, then the serve's local secret store, then MLPal secrets when configured). A header is
+ * added either as a reference to a secret that exists (`secretRef`), or, where `tool_sources.secrets` is "local", with
+ * its value in the same `add_mcp_server`: the serve stores the value under a generated name and writes the reference,
+ * or does neither. A value sent any other way is refused `tool_literal_secret`; a value is never echoed, logged or
+ * listed. Listings carry header names and whether the secret is present.
  */
 
 /** Where a server or plugin came from, as the Tools screen groups them. */
@@ -50,8 +52,16 @@ export type ToolServerStatus =
 export interface ToolServerHeader {
   name: string;
   secretRef?: string;
+  /** With `secretRef`: the secret is in this engine's environment or the local store (absent: not known here, e.g.
+   *  held by MLPal secrets only). */
+  present?: boolean;
   literal?: true;
 }
+
+/** Where a header's secret can be kept by this serve: "local" (the serve's own store, `~/.yodex/person-secrets.json`,
+ *  0600: an add may carry a value), "mlpal" (MLPal secrets only: send `secretRef`), "none" (references only). A client
+ *  hides "Key" unless it is "local". */
+export type ToolSecretsMode = "local" | "mlpal" | "none";
 
 export type ToolServerAuth =
   | { kind: "none" }
@@ -136,9 +146,17 @@ export interface ToolHeaderRef {
   scheme?: "bearer";
 }
 
+/** A header added with its value, where `tool_sources.secrets` is "local": the value (1–8192 characters, no line
+ *  break) is stored under a generated name and the config gets only its reference. */
+export interface ToolHeaderValue {
+  name: string;
+  value: string;
+  scheme?: "bearer";
+}
+
 export type ToolServerAuthInput =
   | { kind: "none" }
-  | { kind: "header"; header: ToolHeaderRef }
+  | { kind: "header"; header: ToolHeaderRef | ToolHeaderValue }
   | { kind: "oauth"; scope?: string; clientId?: string };
 
 export type ToolsAdminClientMessage =
@@ -158,6 +176,9 @@ export type ToolsAdminClientMessage =
    *  receives `code` and `state` and sends them back in `mcp_login_complete`. */
   | { type: "mcp_login"; requestId: string; name: string; redirectUri: string }
   | { type: "mcp_login_complete"; requestId: string; loginId: string; state: string; code?: string; error?: string }
+  /** Replace the value of a secret in the local store (`name` = a header's `secretRef`); answered `secret_saved`.
+   *  Applies at the server's next connect (`reload_tools`). */
+  | { type: "set_secret"; requestId: string; name: string; value: string }
   /** Reconnect this serve's servers from the config files now; answered with `tool_sources`. */
   | { type: "reload_tools"; requestId: string }
   /** Fetch a plugin (an https git URL or GitHub `owner/repo`) into staging and answer its plan. Nothing is installed. */
@@ -172,8 +193,10 @@ export type ToolsAdminClientMessage =
 
 export type ToolsAdminServerMessage =
   /** `reloadNeeded`: the files differ from what this serve loaded (`reload_tools`). */
-  | { type: "tool_sources"; requestId: string; servers: ToolServerSource[]; plugins: PluginSource[]; reloadNeeded: boolean }
-  | { type: "mcp_server_saved"; requestId: string; server: ToolServerSource }
+  | { type: "tool_sources"; requestId: string; servers: ToolServerSource[]; plugins: PluginSource[]; reloadNeeded: boolean; secrets: ToolSecretsMode }
+  /** `secretStored`: the add stored a header value under this name (the header's `secretRef` in `server.auth`). */
+  | { type: "mcp_server_saved"; requestId: string; server: ToolServerSource; secretStored?: string }
+  | { type: "secret_saved"; requestId: string; name: string }
   | { type: "mcp_server_removed"; requestId: string; name: string; scope: ToolWriteScope }
   /** Open `url` in a new tab; the authorization server redirects to the `redirectUri` given. */
   | { type: "mcp_login_url"; requestId: string; name: string; loginId: string; url: string }
@@ -203,6 +226,13 @@ export type ToolsAdminErrorCode =
   /** A header value was sent instead of a reference. The value is not echoed or logged. */
   | "tool_literal_secret"
   | "tool_secret_ref_invalid"
+  /** A header value over 8192 characters (or empty, or with a line break). */
+  | "tool_secret_too_large"
+  /** The local store holds its maximum number of secrets. */
+  | "tool_secrets_full"
+  | "tool_secret_not_found"
+  /** A value was sent where this serve has no local store (`tool_sources.secrets` is not "local"). */
+  | "tool_secrets_unavailable"
   | "tool_server_not_found"
   | "tool_not_theirs"
   /** A config file that exists does not parse: nothing is written over it. */
@@ -232,6 +262,7 @@ export const TOOLS_ADMIN_CLIENT_TYPES = [
   "approve_mcp_server",
   "mcp_login",
   "mcp_login_complete",
+  "set_secret",
   "reload_tools",
   "add_plugin",
   "approve_plugin",

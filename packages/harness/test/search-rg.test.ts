@@ -34,12 +34,13 @@ case "$*" in
   *--files*) printf 'src/b.ts\\nsrc/a.ts\\n'; exit 0;;
   *__none__*) exit 1;;
   *__bad__*) echo "regex parse error: unbalanced" 1>&2; exit 2;;
-  *__many__*) i=1; while [ $i -le 250 ]; do echo "f.ts:$i:hit"; i=$((i+1)); done; exit 0;;
+  *__many__*) i=1; while [ $i -le 250 ]; do printf 'f.ts\\000%s:hit\\n' $i; i=$((i+1)); done; exit 0;;
+  *__outside__*) printf 'src/a.ts\\0003:inside\\nout-link/key\\0001:SECRET-OUTSIDE\\n'; exit 0;;
   *__stdin__*)
-    case " $* " in *" -- . "*) printf './src/a.ts:3:the hit line\\n'; exit 0;; esac
+    case " $* " in *" -- . "*) printf './src/a.ts\\0003:the hit line\\n'; exit 0;; esac
     if [ -p /dev/stdin ] || [ -S /dev/stdin ] || [ -f /dev/stdin ]; then echo "rg searched stdin: no path given and stdin is readable" 1>&2; exit 2; fi
-    printf 'src/a.ts:3:the hit line\\n'; exit 0;;
-  *) printf 'src/a.ts:3:the hit line\\n'; exit 0;;
+    printf 'src/a.ts\\0003:the hit line\\n'; exit 0;;
+  *) printf 'src/a.ts\\0003:the hit line\\n'; exit 0;;
 esac
 `;
   const rgPath = join(bin, "rg");
@@ -64,6 +65,18 @@ describe("Grep via ripgrep", () => {
     expect(logged).toContain("--hidden");
     expect(logged).toContain("--max-columns 500");
     expect(logged).toContain("--regexp hit");
+    expect(logged).toContain("--null");
+  });
+
+  // R51: a hit in a file that resolves outside the roots (a workspace link to ~/.yodex) is never shown.
+  test("drops a hit whose file resolves outside the roots", async () => {
+    const { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } = await import("node:fs");
+    const outside = mkdtempSync(join(tmpdir(), "yodex-rgout-"));
+    writeFileSync(join(outside, "key"), "SECRET-OUTSIDE");
+    mkdirSync(join(root, "src"), { recursive: true });
+    symlinkSync(outside, join(root, "out-link"));
+    const res = await grepTool.call({ pattern: "__outside__" }, ctx);
+    expect(res.content).toBe("src/a.ts:3:inside");
   });
 
   // Converge review, latent B: Grep gave rg no path, and execFile's stdin is a pipe, so a real rg searched stdin and
