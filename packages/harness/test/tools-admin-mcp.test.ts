@@ -52,6 +52,9 @@ describe("secret references (tools-admin T-1)", () => {
     expect(connected).toBe(1);
     expect(srv.seen[0]!["xi-api-key"]).toBe("s3cr${TOOLS_ADMIN_TEST_VAR}et");
     expect(srv.seen[0]!["x-env"]).toBe("from-env");
+    // R51: the value went into that server's request only; nothing put it in the engine's environment, which every
+    // command, hook, sub-agent and stdio server's environment is built from.
+    expect(JSON.stringify(process.env)).not.toContain("s3cr");
   });
 
   test("an unresolvable reference fails that server's connect with the secret's name, nothing sent", async () => {

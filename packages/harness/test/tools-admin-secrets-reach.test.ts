@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { DEFAULT_UNREADABLE, resolveSandboxSpec } from "../src/sandbox";
+import { createSandbox, DEFAULT_UNREADABLE, resolveSandboxSpec } from "../src/sandbox";
 import { editTool, readTool, writeTool } from "../src/tools/builtin/files";
 import { globTool, grepTool, listTool } from "../src/tools/builtin/search";
 import { runTool, ToolRegistry } from "../src/tools/registry";
@@ -20,7 +20,8 @@ let home: string;
 let work: string;
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "r51-"));
+  // A home path with no link in it, as a real home is (macOS's tmpdir is under the /var -> /private/var link).
+  base = realpathSync(mkdtempSync(join(tmpdir(), "r51-")));
   home = join(base, "home");
   work = join(home, "workspace");
   mkdirSync(join(home, ".yodex", "mcp-auth"), { recursive: true });
@@ -102,5 +103,32 @@ describe("R51: a sandboxed command cannot read them", () => {
     const spec = resolveSandboxSpec(undefined, { roots: [work], home, realHome: home, tmpDir: join(base, "tmp") } as never);
     expect(spec.filesystem.unreadable).toContain(join(home, ".yodex", "person-secrets.json"));
     expect(spec.filesystem.unreadable).toContain(join(home, ".yodex", "mcp-auth"));
+  });
+});
+
+describe.skipIf(process.platform !== "darwin")("R51: under the real sandbox (seatbelt) a command reads neither", () => {
+  test("cat, grep -r and a copy through links all fail; an ordinary file still reads", () => {
+    const sandbox = createSandbox(resolveSandboxSpec(undefined, { roots: [work], home, realHome: home }));
+    const run = (command: string) => {
+      const p = Bun.spawnSync(sandbox.wrap(["/bin/bash", "-c", command]), { cwd: work, env: { PATH: "/usr/bin:/bin", HOME: home } });
+      return `${p.stdout.toString()}${p.stderr.toString()}`;
+    };
+    try {
+      for (const command of [
+        `cat ${join(home, ".yodex", "person-secrets.json")}`,
+        "cat ~/.yodex/person-secrets.json",
+        "cat ../.yodex/person-secrets.json",
+        "cat secrets-link.json",
+        "cat yodex-link/person-secrets.json",
+        "cat auth-link/linear.json ~/.yodex/mcp-auth/linear.json",
+        "grep -r R51 . ~/.yodex 2>&1",
+        "cp secrets-link.json copy.json && cat copy.json",
+      ]) {
+        expect(run(command)).not.toContain(MARK);
+      }
+      expect(run("cat notes.md")).toContain("ordinary file");
+    } finally {
+      sandbox.close();
+    }
   });
 });
