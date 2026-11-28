@@ -31,7 +31,7 @@ describe("the light wire module never reaches the heavy validation modules", () 
   test("from wire.ts, chart.ts, cost.ts and blocks.ts are unreachable", () => {
     const light = reachable("wire");
     for (const heavy of ["chart", "cost", "blocks", "show", "fallback", "validate"]) expect([heavy, light.has(heavy)]).toEqual([heavy, false]);
-    expect([...light].sort()).toEqual(["block-schemas", "caps", "catalog", "envelope", "errors", "fields", "settle", "shape", "wire"]);
+    expect([...light].sort()).toEqual(["block-schemas", "caps", "catalog", "envelope", "errors", "fields", "media-schemas", "settle", "shape", "wire"]);
   });
 
   test("validate.ts reaches them, and the package exports it as ./validate", () => {

@@ -19,7 +19,8 @@ const RUNS: Array<{ label: string; fixture: Fixture }> = [
   { label: "", fixture: load("workbox-v1-shows.json") },
   { label: "run2 ", fixture: load("workbox-v1-run2-shows.json") },
 ];
-const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], viewport: "desktop", theme: "dark", locale: "en-US", timeZone: "UTC" };
+// the web UI from this release names arc (run.display.marks)
+const WEB: DisplayCaps = { v: 1, client: "web", levels: ["text", "block"], catalogs: ["harness.v1/1"], marks: ["arc"], viewport: "desktop", theme: "dark", locale: "en-US", timeZone: "UTC" };
 
 /** Outcome per Show call, keyed by "[run2 ]<where> <last 8 of the tool_use id>": "ok", or the faults in order. */
 const EXPECTED: Record<string, string> = {
@@ -75,7 +76,7 @@ const EXPECTED: Record<string, string> = {
   "run2 finance-desk/g1-02-kstl mKbBmQFd": "ok",
   "run2 finance-desk/g1-04-october SCKntQmS": "ok",
   "run2 finance-desk/g1-06-pie dfUYegKV": "VALIDATION_FAILED spec.mark; VALIDATION_FAILED spec.encoding; VALIDATION_FAILED spec.vl",
-  "run2 finance-desk/g1-06-pie mDkoZXiy": "VALIDATION_FAILED spec.vl.encoding.theta; VALIDATION_FAILED spec.vl.mark.type",
+  "run2 finance-desk/g1-06-pie mDkoZXiy": "ok", // a pie, since arc is allowed
   "run2 finance-desk/h1-01-rec-balances ijMBWrAs": "ok",
   "run2 finance-desk/h1-02-october-headline 2Dq6sGkv": "ok",
   "run2 mlpal/m1-csv-chart yvN7qNJz": "VALIDATION_FAILED sources",

@@ -5,10 +5,14 @@ import {
   DISPLAY_LIMITS,
   HOST_OWNED_KINDS,
   isBlockKind,
+  isMediaKind,
+  mediaByteCap,
+  mediaPaths,
   noteInputSchema,
   showInputSchema,
   type BlockDisplay,
   type DisplayEnvelope,
+  type MediaDisplay,
   type DisplayError,
   type DisplaySource,
   type Note,
@@ -26,7 +30,8 @@ import type { DisplayHistory } from "./history";
 import type { DisplayPolicy } from "./policy";
 // The model's schema (schema.ts). The tool's own schema accepts anything, so that every fault is answered with a
 // typed code by the check (and the fallback shown), never with the registry's generic error.
-import { SHOW_JSON_SCHEMA } from "./schema";
+import { SHOW_JSON_SCHEMA, SHOW_MEDIA_JSON_SCHEMA } from "./schema";
+import type { MediaProbe } from "./media";
 
 /**
  * Show (DISPLAY-PROTOCOL-v0 §3): the engine's tool for putting one typed block in front of the person. Its input is
@@ -57,6 +62,9 @@ export interface ShowToolDeps {
   history: (toolUseId?: string) => Promise<DisplayHistory>;
   logger: Logger;
   metrics: Metrics;
+  /** Reads the workspace files a media Show names (display/media.ts). Absent: a media Show finds no file, so the agent
+   *  passes it exactly when the policy offers a media kind. */
+  probe?: MediaProbe;
 }
 
 /** The keys Show declares, read from the protocol's input before sanitising (which drops additionalProperties: false):
@@ -305,13 +313,14 @@ function checkSession(check: ShowCheck, history: DisplayHistory, state: ShowStat
   return check as Extract<ShowCheck, { ok: false }>;
 }
 
-function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number): BlockDisplay {
+function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number): BlockDisplay | MediaDisplay {
   return {
     v: 1,
     block_id: show.block_id,
     revision,
     op: "snapshot",
-    level: "block",
+    // a file is only ever a download card
+    level: show.kind === "file" ? "file" : "block",
     kind: show.kind,
     catalog: DISPLAY_CATALOG,
     spec: show.spec,
@@ -322,7 +331,7 @@ function blockEnvelope(show: ValidShow, provenance: Provenance, revision: number
     ...(show.placement ? { placement: show.placement } : {}),
     ...(provenance.notes.length ? { notes: provenance.notes } : {}),
     status: "ok",
-  } as BlockDisplay;
+  } as BlockDisplay | MediaDisplay;
 }
 
 /** What Show answers: `model` is what the model reads, `shown` the step's display string (the line and the fallback). */
@@ -450,7 +459,20 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
       }
       // checkShowInput never throws (a validator bug is its VALIDATION_INTERNAL); the store read and the session
       // checks may, and become the same typed refusal, so the fallback is shown and the attempt counted.
-      const check = checkShowInput(input, { kinds: policy.kinds });
+      // a media spec's files are probed first (the protocol's check never touches disk); at most as many as a set takes,
+      // whatever the input lists (the check refuses a longer list)
+      const kindName = (input as { kind?: unknown })?.kind;
+      const media =
+        typeof kindName === "string" && isMediaKind(kindName) && policy.kinds.has(kindName) && deps.probe
+          ? await deps.probe.probe(
+              mediaPaths(kindName, (input as { spec?: unknown }).spec)
+                .slice(0, DISPLAY_LIMITS.media.setImages + 1)
+                // a video's second path is its poster, an image
+                .map((path, i) => ({ path, maxBytes: kindName === "video" && i === 1 ? DISPLAY_LIMITS.media.posterBytes : mediaByteCap(kindName) })),
+              ctx,
+            )
+          : undefined;
+      const check = checkShowInput(input, { kinds: policy.kinds, marks: policy.marks, ...(media ? { media } : {}), ...(policy.formats ? { formats: policy.formats } : {}) });
       let history = EMPTY_HISTORY;
       let outcome: Outcome;
       try {
@@ -471,7 +493,8 @@ export function createShowTool(deps: ShowToolDeps): ShowTool {
       return (strings.has("spec") || strings.has("spec.vl")) && atSpec ? leadWith(r, SPEC_AS_OBJECT) : r;
     },
   });
-  return { ...tool, jsonSchema: SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}), settle };
+  const media = [...policy.kinds].some((k) => isMediaKind(k));
+  return { ...tool, jsonSchema: media ? SHOW_MEDIA_JSON_SCHEMA : SHOW_JSON_SCHEMA, ...(SHOW_DECLARED_ARGS ? { declaredArgs: SHOW_DECLARED_ARGS } : {}), settle };
 }
 
 /** A metric label from the model's kind: a catalog or host kind as it is, anything else one bucket (low cardinality,

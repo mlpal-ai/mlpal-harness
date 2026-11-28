@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "block_id": "fox",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "text",
+  "fallback": {
+    "text": "The fox image is in media/fox.png."
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "repairing"
+}

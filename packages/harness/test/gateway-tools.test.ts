@@ -22,6 +22,9 @@ const MODELS: ModelInfo[] = [
   chat("gpt-5.6-luna", "openai", {}, { vision: false, pdf: false }),
   chat("old-model", "openai", { deprecated: true }),
   { ...chat("text-embed", "openai"), capabilities: { operation: "embedding", streaming: true, tools: false, vision: false, pdf: false, audio: false } },
+  { ...chat("gpt-image-2", "openai", { contextLength: null, maxOutputTokens: null }), capabilities: { operation: "image_generation", streaming: false, tools: false, vision: false, pdf: false, audio: false } },
+  { ...chat("old-image", "openai", { deprecated: true }), capabilities: { operation: "image_generation", streaming: false, tools: false, vision: false, pdf: false, audio: false } },
+  { ...chat("voice-1", "elevenlabs"), capabilities: { operation: "tts", streaming: true, tools: false, vision: false, pdf: false, audio: true } },
 ];
 const tier = (model: string, rel_cost: number) => ({ model, provider: "x", rel_cost, good_for: `${model} things`, caps: ["tools"], served_alternate: false, alternates: [] });
 const CATALOG: Catalog = {
@@ -74,6 +77,22 @@ describe("resolveModelRef", () => {
 });
 
 describe("ListModels", () => {
+  test("operation lists the models of another modality, and only those; the default stays chat (W2-1)", async () => {
+    const tool = createListModelsTool(deps(new FakeClient(() => new Error("x"))));
+    const images = String((await tool.call({ operation: "image_generation" }, ctx)).content);
+    expect(images).toContain("Served image_generation models (1): tag · provider");
+    expect(images).toContain("- gpt-image-2 · openai");
+    expect(images).toContain("GenerateImage");
+    expect(images).not.toContain("old-image");
+    expect(images).not.toContain("claude-opus-5 · anthropic");
+    const tts = String((await tool.call({ operation: "tts" }, ctx)).content);
+    expect(tts).toContain("- voice-1 · elevenlabs");
+    expect(String((await tool.call({ operation: "transcription" }, ctx)).content)).toContain("Served transcription models (0)");
+    const chatOnly = String((await tool.call({}, ctx)).content);
+    expect(chatOnly).not.toContain("gpt-image-2");
+    expect(chatOnly).toContain("operation image_generation");
+  });
+
   test("names the running model, tiers with cost, flagships, benchmark leaders, meta-models, and served chat models with cost", async () => {
     const tool = createListModelsTool(deps(new FakeClient(() => new Error("x"))));
     const out = String((await tool.call({}, ctx)).content);

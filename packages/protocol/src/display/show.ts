@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { checkBlockSpec } from "./blocks.js";
 import type { BlockSpec } from "./block-schemas.js";
+import { checkMediaSpec, mediaFallback, type MediaFactsMap } from "./media.js";
+import type { MediaSpec } from "./media-schemas.js";
 import { parseShape } from "./shape.js";
 import { checkBounds } from "./bounds.js";
-import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, type BlockKind } from "./catalog.js";
+import { BLOCK_ID, BLOCK_KINDS, DISPLAY_LIMITS, HOST_OWNED_KINDS, isBlockKind, isMediaKind, MEDIA_KINDS, type DisplayKind } from "./catalog.js";
 import { placementSchema, noteInputSchema, type NoteInput, type Placement } from "./envelope.js";
 import { asDisplayError, attempt, collectFaults, fail, report, type DisplayError } from "./errors.js";
 import { checkFallbackText, completeFallback, fallbackInputSchema, parseFallbackShape } from "./fallback.js";
@@ -48,8 +50,8 @@ export const showInputSchema = z
 /** A Show input that passed every check: its spec as drawn, its fallback complete. */
 export interface ValidShow {
   block_id: string;
-  kind: BlockKind;
-  spec: BlockSpec;
+  kind: DisplayKind;
+  spec: BlockSpec | MediaSpec;
   /** The model's text with the requested table appended. */
   fallback: string;
   title?: string;
@@ -73,7 +75,15 @@ export type ShowCheck =
 
 export interface ShowCheckOptions {
   /** The kinds this run's client draws; a catalog kind outside them is `KIND_NOT_ALLOWED`. Default: every kind. */
-  kinds?: ReadonlySet<BlockKind>;
+  kinds?: ReadonlySet<DisplayKind>;
+  /** What the engine found at each path a media spec names (it probes them before the check; this never touches
+   *  disk). Absent: every media path is MEDIA_NOT_FOUND. */
+  media?: MediaFactsMap;
+  /** The media types this client draws (`run.display.media.formats`). */
+  formats?: ReadonlySet<string>;
+  /** The optional chart marks this client draws (`run.display.marks`: arc); one outside them is KIND_NOT_ALLOWED. Default:
+   *  every mark. */
+  marks?: ReadonlySet<string>;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -92,8 +102,13 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     blockId = raw.block_id;
     // The fallback's check reads fixed fields only, so it is safe before the bounds; checking it first lets the
     // fallback be shown whatever is wrong with the rest.
-    const shape = attempt(() => parseFallbackShape(raw.fallback, ["fallback"]));
-    const fb = shape ? attempt(() => checkFallbackText(shape, raw.kind, ["fallback"])) : undefined;
+    // A media block's fallback is the engine's (its lines name each file), so the model's text is optional and short
+    // text is fine; a table is for rows, which media have none of.
+    const media = typeof raw.kind === "string" && isMediaKind(raw.kind);
+    const given = !media || (raw.fallback !== undefined && raw.fallback !== null);
+    const shape = given ? attempt(() => parseFallbackShape(raw.fallback, ["fallback"])) : undefined;
+    if (media && shape?.table) report("VALIDATION_FAILED", ["fallback", "table"], "a media block has no rows to tabulate", "describe what it shows in the text");
+    const fb = shape ? attempt(() => checkFallbackText(shape, raw.kind, ["fallback"], { minChars: !media })) : undefined;
     fallback = fb?.text;
     // Fatal: nothing below may walk an unbounded input.
     checkBounds(raw, []);
@@ -103,15 +118,17 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
     if (kind && !Object.hasOwn(raw, "spec")) report("VALIDATION_FAILED", ["spec"], `a ${kind} block needs its spec`);
     const { kind: _k, spec: _s, fallback: _f, ...others } = raw;
     const input = attempt(() => parseShape(otherFieldsSchema, others, []));
-    const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"])) : undefined;
+    if (kind && isMediaKind(kind)) {
+      const spec = Object.hasOwn(raw, "spec") ? attempt(() => checkMediaSpec(kind, raw.spec, ["spec"], { facts: opts.media ?? new Map(), ...(opts.formats ? { formats: opts.formats } : {}) })) : undefined;
+      if ((given && !fb) || !input || !spec) return undefined;
+      return withOptional(input, { block_id: input.block_id, kind, spec, fallback: mediaFallback(kind, spec, fb?.text) });
+    }
+    const spec = kind && Object.hasOwn(raw, "spec") ? attempt(() => checkBlockSpec(kind, raw.spec, ["spec"], opts.marks ? { marks: opts.marks } : {})) : undefined;
     // the table is checked against the rows even when the text itself was refused, so both faults come together
     const tabled = fb ?? shape;
     const complete = tabled && kind && spec ? attempt(() => completeFallback(tabled, kind, spec, ["fallback"])) : undefined;
     if (!fb || !input || !kind || !spec || complete === undefined) return undefined;
-    const { block_id, title, caption, sources, as_of, placement, notes } = input;
-    const optional = { title, caption, sources, as_of, placement, notes };
-    for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];
-    return { block_id, kind, spec, fallback: complete, ...optional };
+    return withOptional(input, { block_id: input.block_id, kind, spec, fallback: complete });
   });
   if (r.errors.length === 0 && r.value) return { ok: true, show: r.notices.length ? { ...r.value, notices: r.notices } : r.value };
   // A refusal, or (typed VALIDATION_INTERNAL) anything else the checks threw: never an exception for the caller.
@@ -119,10 +136,21 @@ export function checkShowInput(raw: unknown, opts: ShowCheckOptions = {}): ShowC
   return { ok: false, error: errors[0]!, errors, ...(r.omitted ? { omitted: r.omitted } : {}), ...(blockId ? { block_id: blockId } : {}), ...(fallback ? { fallback } : {}) };
 }
 
-function checkKind(kind: unknown, opts: ShowCheckOptions): BlockKind {
-  if (typeof kind !== "string") fail("VALIDATION_FAILED", ["kind"], "kind names the block kind", `kinds: ${BLOCK_KINDS.join(", ")}`);
+/** The optional fields the input carried, beside the required ones. */
+function withOptional(input: z.infer<typeof otherFieldsSchema>, required: Pick<ValidShow, "block_id" | "kind" | "spec" | "fallback">): ValidShow {
+  const { title, caption, sources, as_of, placement, notes } = input;
+  const optional = { title, caption, sources, as_of, placement, notes };
+  for (const k of Object.keys(optional) as Array<keyof typeof optional>) if (optional[k] === undefined) delete optional[k];
+  return { ...required, ...optional };
+}
+
+function checkKind(kind: unknown, opts: ShowCheckOptions): DisplayKind {
+  const known = [...BLOCK_KINDS, ...MEDIA_KINDS].join(", ");
+  if (typeof kind !== "string") fail("VALIDATION_FAILED", ["kind"], "kind names the block kind", `kinds: ${known}`);
   if (HOST_OWNED_KINDS.has(kind)) fail("HOST_OWNED_KIND", ["kind"], `${kind} blocks are drawn by the host, never by Show`, kind === "approval" ? "call the tool that needs approval; the host asks the person" : undefined);
-  if (!isBlockKind(kind)) fail("KIND_UNKNOWN", ["kind"], `"${kind}" is not a kind of this catalog`, `kinds: ${BLOCK_KINDS.join(", ")}`);
-  if (opts.kinds && !opts.kinds.has(kind)) fail("KIND_NOT_ALLOWED", ["kind"], `this client does not draw ${kind} blocks`, `it draws: ${[...opts.kinds].join(", ") || "none"}`);
+  if (!isBlockKind(kind) && !isMediaKind(kind)) fail("KIND_UNKNOWN", ["kind"], `"${kind}" is not a kind of this catalog`, `kinds: ${known}`);
+  // a media kind is drawn only by a client that names it (absent `kinds` means the wave-1 kinds)
+  const allowed = opts.kinds ? opts.kinds.has(kind) : isBlockKind(kind);
+  if (!allowed) fail("KIND_NOT_ALLOWED", ["kind"], `this client does not draw ${kind} blocks`, `it draws: ${[...(opts.kinds ?? BLOCK_KINDS)].join(", ") || "none"}`);
   return kind;
 }

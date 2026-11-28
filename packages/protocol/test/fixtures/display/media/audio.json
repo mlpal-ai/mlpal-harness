@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "block_id": "voice-over",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "block",
+  "kind": "audio",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "media": {
+      "path": "media/2026-11-28/voice-over.mp3",
+      "mime": "audio/mpeg",
+      "bytes": 672000,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "duration_s": 42,
+    "transcript": "Ridgeline 2P at Columbus runs out on 17 December, four days before PO 4471 lands."
+  },
+  "fallback": {
+    "text": "Audio: voice-over.mp3 · MP3 · 0:42 · 672 KB · media/2026-11-28/voice-over.mp3\nTranscript: Ridgeline 2P at Columbus runs out on 17 December, four days before PO 4471 lands."
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "ok"
+}

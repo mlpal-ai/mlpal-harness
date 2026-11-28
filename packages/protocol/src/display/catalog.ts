@@ -20,6 +20,19 @@ export function isBlockKind(kind: string): kind is BlockKind {
   return (BLOCK_KINDS as readonly string[]).includes(kind);
 }
 
+/** The media kinds (DISPLAY-PROTOCOL-v0.1-media §1): offered only to a client that names them in `kinds` and
+ *  declares `media` (caps.ts), and only where the engine can read the workspace's files. */
+/** Chart marks a client draws only by naming them in `run.display.marks` (a UI pinned before them refuses them). */
+export const CHART_OPTIONAL_MARKS = ["arc"] as const;
+export type ChartOptionalMark = (typeof CHART_OPTIONAL_MARKS)[number];
+export const MEDIA_KINDS = ["image", "image_set", "audio", "video", "file"] as const;
+export type MediaKind = (typeof MEDIA_KINDS)[number];
+export function isMediaKind(kind: string): kind is MediaKind {
+  return (MEDIA_KINDS as readonly string[]).includes(kind);
+}
+/** Every kind Show takes. */
+export type DisplayKind = BlockKind | MediaKind;
+
 /** `^[a-z][a-z0-9-]{0,39}$`: chosen by the model, unique in the session; a later Show with the same id replaces it. */
 export const BLOCK_ID = /^[a-z][a-z0-9-]{0,39}$/;
 
@@ -37,6 +50,8 @@ export const DISPLAY_LIMITS = {
   chartRows: 5_000,
   chartCells: 50_000,
   chartSeries: 12,
+  /** Slices a pie or donut (an `arc` view) draws. */
+  chartSlices: 12,
   chartLayers: 8,
   chartVconcat: 2,
   /** A window whose frame start is bounded: rows it runs on times frame span (an open end counts to the edge). */
@@ -58,4 +73,19 @@ export const DISPLAY_LIMITS = {
   sources: 20,
   /** Faults one refusal lists (the rest are counted). */
   faults: 10,
+  /** Media kinds: a file's bytes, an image's sides and pixels (from its header), images in a set, an alt text. */
+  media: {
+    imageBytes: 20 * 1024 * 1024,
+    audioBytes: 100 * 1024 * 1024,
+    videoBytes: 500 * 1024 * 1024,
+    fileBytes: 500 * 1024 * 1024,
+    posterBytes: 5 * 1024 * 1024,
+    transcriptChars: 8_000,
+    nameChars: 200,
+    maxSide: 16_384,
+    maxPixels: 40_000_000,
+    setImages: 8,
+    altChars: 300,
+    pathChars: 4_096,
+  },
 } as const;

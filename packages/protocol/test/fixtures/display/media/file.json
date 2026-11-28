@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "block_id": "report",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "file",
+  "kind": "file",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "media": {
+      "path": "reports/chamber-c.pdf",
+      "mime": "application/pdf",
+      "bytes": 312000,
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "name": "Chamber C report.pdf"
+  },
+  "fallback": {
+    "text": "The chamber C report for last night's shift.\nFile: Chamber C report.pdf · PDF · 312 KB · reports/chamber-c.pdf"
+  },
+  "source": {
+    "by": "model"
+  },
+  "status": "ok"
+}

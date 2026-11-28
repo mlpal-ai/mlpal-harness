@@ -2,6 +2,164 @@
 
 ## Unreleased
 
+### engine-media: review-media round 2 fixes (needs the same version bump, 2026-11-28)
+
+- R9: the probe reads and hashes any file in 1 MiB chunks up to the kind's cap. A file over 1 MiB was refused as
+  unreadable, so a typical generated image never appeared as a block.
+- R8: on macOS the probe opens with O_NOFOLLOW_ANY instead of O_NOFOLLOW (the two together are EINVAL there). The
+  hidden-path rule (`.git`, `.mlpal*`) and the protected-write rules (`contentSafetyDeny`: `.git/`, `.ssh/`, …) now
+  match on `foldName(path)`: HFS+ ignorable code points removed, NFC, lower case. A name that resolves to a
+  protected one on a case-insensitive or normalising file system is protected on every platform.
+- R7: a pie's count is what Vega-Lite draws. With nothing aggregated, there is one arc per row. With an aggregate,
+  there is one arc per distinct combination of every unaggregated field channel: theta, colour, detail, tooltip,
+  order and opacity. That combination is counted on the inline rows only when no transform writes those fields;
+  otherwise the rows bound it. Any other channel on an arc is refused. Four new invalid vectors.
+- R5:
+  - `ToolContext.spend` is now async and durable: a `tool_spend` event, at most once per tool call. A resumed turn
+    adds the charges its calls recorded before the engine died.
+  - `ToolContext.journal` writes `tool_journal` events. GenerateImage journals what it asked for before submit,
+    and the job id as soon as the gateway names it.
+  - `Tool.recover` lets a started call reconcile on resume instead of getting the interrupted result. GenerateImage
+    polls its journalled job by id, never submitting again, and charges and saves once. With no job id on record
+    it says the request may have been made and does not ask again.
+  - `IMAGE_NOT_SAVED` names the job. `GenerateImage {job}` saves the same images again with no render or charge,
+    for a job this session made, while the gateway still serves its links (one hour after the render; an inline
+    result has no expiry). It is never asked as a cost.
+- R10: tests use placeholder buckets and hosts only.
+
+### engine-media: review-media round 1 fixes (needs the same version bump, 2026-11-28)
+
+- "Always ask" is a property of the call. `defaultForMode` asks for a call that carries `alwaysAsk`, in every
+  mode but recon (which denies it), because a host re-runs it with the live mode. `AskContext.alwaysAsk` makes the
+  ask `personOnlyAsk`, so no judge, session grant or Shift+Tab answers it. A `PermissionRequest` hook may refuse
+  such a call but never approve it, and a headless run parks it as it parks a safety edge.
+- Media probe: the file is opened once, as the workspace's real path joined with the relative path (O_NONBLOCK).
+  The kernel confirms no link is on that path: macOS opens with O_NOFOLLOW_ANY, and Linux compares
+  /proc/self/fd/N with the path. Any other platform admits no media file. The lexical jail and hidden checks are
+  therefore exact. A dev/ino comparison after the open was tried and is not enough, because the stat walks the path
+  again. `readMedia` returns the bytes it hashed, and GenerateImage sends those bytes, so a reference is never
+  opened a second time.
+- `gatewayImages` fetches a result only under a URL prefix in `assetPrefixes`, which the caller supplies; there is
+  no default, so with none given nothing is fetched.
+  - A prefix is `https://host/path/` with the default port; http and a port are allowed on a loopback host only.
+    `parseAssetPrefix` validates one, and a host alone is never a prefix, since path-style S3 serves every bucket
+    from one host.
+  - A result URL must match a prefix's origin exactly and sit under its path. Before matching, it is refused for
+    userinfo, a non-default port, a fragment, a dot segment (encoded too), an encoded slash or backslash, a raw
+    backslash, or a path that changes when parsed.
+  - Downloads send no credentials and never follow a 3xx. A refusal (`asset_origin`) names the host only.
+  - A `data:image/{png,jpeg,webp};base64,` result, the gateway's fallback when its storage fails, is decoded in
+    process. It is capped at `DATA_IMAGE_BYTES` (16 MiB) decoded and checked by its encoded length first; its type
+    is taken from the decoded bytes, and it is never fetched.
+  - Submit and job answers are read with a cap sized for four such images.
+  - `loadImagePrices` reads `GET /v1/models/{tag}` pricing.
+- GenerateImage:
+  - It checks `media/<date>/` before the job: made one level at a time, never through a link, writable, with free
+    space for n results.
+  - It records the charge through the new `ToolContext.spend` the moment the gateway reports it. This replaces
+    `ToolResult.meta.usage`.
+  - A paid result it cannot save is `IMAGE_NOT_SAVED`, which names the job id, the cost and what was saved.
+  - A poll error backs off until the deadline, and a timeout or a stop names the job, which may still bill.
+- The budget ask fails closed: no estimate is an ask. `estimateFromPrices` prices `per_image` models at n × rate.
+  A token-priced model, and `mlpal` whenever any model it routes to is token-priced, has no estimate. The default
+  threshold is `IMAGE_ASK_OVER_CU` = 0.02 CU; `askOverCu` takes `budgets.imageAskOverCu`.
+- Pie slices are bounded with no inference. The colour and detail fields are counted only when they are fields
+  of the inline rows that no in-scope transform writes; otherwise the rows after transforms bound the slices.
+  Layer-shared encodings count. Two new invalid vectors.
+- The arc mark is gated by `run.display.marks` (`CHART_OPTIONAL_MARKS`). A client that does not name `arc` is
+  not offered it in the system section, and Show refuses one as `KIND_NOT_ALLOWED`. `ChartCheckOptions.marks` and
+  `ShowCheckOptions.marks` default to every mark. The Show tool's schema no longer names arc.
+
+### engine-media: image and image_set kinds in the protocol (needs a protocol and catalog version bump, 2026-11-28)
+
+- `MEDIA_KINDS` (`image`, `image_set`), `isMediaKind` and `DisplayKind`. `BLOCK_KINDS` is unchanged (the wave-1
+  kinds).
+- A media block carries its file by its workspace path, never bytes or a URL. `MediaFile` is `{path, mime, bytes,
+  sha256}`, its type taken from the magic number. `ImageSpec` is `{media, alt, width, height, animated, gps?,
+  made_by?}`; `ImageSetSpec` is `{images: 2-8 labelled A-H, chosen?, made_by?}`. The schemas are light
+  (`media-schemas.ts`), like the block schemas.
+- `checkShowInput` takes the engine's probe facts (`media`) and the client's `formats`, and never touches disk:
+  - every fault is joined in one refusal;
+  - the new codes are `PATH_NOT_ALLOWED`, `PATH_OUTSIDE_WORKSPACE`, `MEDIA_NOT_FOUND`, `MEDIA_NOT_REGULAR`,
+    `MEDIA_TOO_LARGE`, `MEDIA_TYPE_NOT_ALLOWED` (SVG is never an image), `MEDIA_CHANGED`, `MEDIA_UNREADABLE` and
+    `MEDIA_DIMENSIONS_TOO_LARGE`;
+  - a URL is `URL_NOT_ALLOWED`;
+  - a media kind is `KIND_NOT_ALLOWED` unless the client names it, and a type is refused unless it is in
+    `formats`.
+- A media block's fallback is optional for the model. The engine completes it with one neutralised line per file:
+  name, type, size and path.
+- `sniffMedia` and `imageInfo` read the type and the sides from a file's head without decoding it: PNG
+  (IHDR/acTL), GIF, JPEG (SOFn, EXIF GPS) and WebP (VP8/VP8L/VP8X). The shared vectors are in
+  `test/fixtures/display/media-magic.vectors.json`.
+- `DisplayCaps.media {formats, save_data?}` is optional, and an invalid one is dropped. `displaySourceSchema.by`
+  takes `engine` as well. `DISPLAY_LIMITS.media` holds the caps.
+- Envelope fixtures for the UI are in `test/fixtures/display/media/`.
+
+### engine-media: ListModels lists other modalities (W2-1, 2026-11-28)
+
+- `ListModels` takes `operation`: chat (the default, unchanged), `image_generation`, `tts`, `transcription` or
+  `embedding`. A non-chat listing names each served model with its provider and pricing tier, and an image listing
+  points at GenerateImage. The chat listing says which other modalities are served.
+
+### engine-media: audio, video and file kinds (needs the same version bump, 2026-11-28)
+
+- `audio`: MP3, WAV, Ogg, M4A or FLAC, at most 100 MiB, with an optional transcript and a model-stated
+  `duration_s`. No ffprobe in this version: a duration is never probed.
+- `video`: MP4, WebM or MOV, at most 500 MiB, with an alt text and an optional poster. The poster is an image,
+  checked as one, at most 5 MiB.
+- `file`: any regular file (SVG included), at most 500 MiB, as a `level: "file"` download card.
+- Types come from the magic number (ID3 or MPEG frame sync, RIFF/WAVE, OggS, fLaC, ftyp brands, EBML with DocType
+  webm, %PDF-, PK). Text is valid UTF-8 with no NUL.
+- Each kind is offered only for a type family the client's `formats` names. `file` is offered only to a client that
+  draws the `file` level.
+- The engine's fallback line names each file, and an audio file's transcript follows it.
+
+### engine-media: GenerateImage, an engine tool (WAVE-2 §2, 2026-11-28)
+
+- `createGenerateImageTool(deps)` (`tools/builtin/image.ts`, `hands: "local"`; the host registers it with
+  `images: client.images()`). It takes a prompt, up to four reference images by workspace path (PNG, JPEG or WebP
+  by magic number, at most 5 MiB each, checked as a media Show's files are), `n` 1 to 4, `size`, `quality`
+  (standard or hd), `model` (an `image_generation` model) and `name`.
+- It runs on the gateway's images API with the engine's own credential: no command sees it. It submits with
+  `wait: false` and the tool-use id as the idempotency key, so a retried call never pays twice, then polls every
+  2 s for up to 10 minutes.
+- Each result is downloaded (at most 50 MiB, 60 s, its type by magic number) to
+  `media/<YYYY-MM-DD>/<stem>-<n>.<ext>`, by a temp file and a `link`, so nothing is ever overwritten.
+- The step carries an engine-written `image` or `image_set` block (`source.by: "engine"`, `made_by` with the model,
+  prompt and cost). It reaches only a client that draws the kind; any other client gets the text.
+- The compute units go into the turn's usage, and so the session's (`ToolResult.meta.usage`).
+- Typed errors: `IMAGE_NOT_PERMITTED` (403), `IMAGE_BUDGET` (402 or 429), `IMAGE_REFUSED` (a provider's refusal,
+  in its words), `IMAGE_TIMEOUT`, `IMAGE_FAILED`, and the media codes for references.
+- `Tool.alwaysAsk` and `PermissionRequest.alwaysAsk`: a call past its threshold is asked in every mode but recon,
+  after the deny rules and before any allow. GenerateImage asks for more than one image, hd, or an estimate over
+  the HOP's new `budgets.imageAskOverCu` (default 0.05).
+- `gatewayImages` and `GatewayClient.images()` hold the HTTP. Downloads send no credential.
+
+### engine-media: Show draws image and image_set from workspace files (2026-11-28)
+
+- `display/media.ts` probes each path a media Show names, from one descriptor:
+  - the run's roots after symlinks, and under the workspace root (`PATH_OUTSIDE_WORKSPACE`);
+  - no `.git` at any depth and no `.mlpal*` at the root, on the given and the real path (`PATH_NOT_ALLOWED`);
+  - O_NOFOLLOW and a regular file (`MEDIA_NOT_FOUND`, `MEDIA_NOT_REGULAR`);
+  - the size from fstat before any read (`MEDIA_TOO_LARGE`);
+  - the type from the magic number, and the sides from the header;
+  - sha256, with the size and mtime checked again (`MEDIA_CHANGED`).
+  The protocol's check judges the facts.
+- A media kind is offered only where the engine has the workspace's files: a registry that admits `local` hands.
+  The client must also name the kind and declare `media` with an image type.
+- A media client's Show schema names the kinds and their spec members, with the fallback optional. Every other
+  client keeps the schema byte for byte.
+
+### Pie and donut charts: the `arc` mark (2026-11-28)
+
+- A real run ended with "the chart could not be drawn": the grammar refused `arc`. A chart may now use `mark: "arc"`
+  with the `theta` channel and `color`, and the mark properties `innerRadius` (a donut), `outerRadius`, `padAngle`,
+  and `radius` for a label's distance.
+- A pie draws at most `DISPLAY_LIMITS.chartSlices` (12) slices: the distinct values of its colour field, or its rows
+  when it has none. More are refused, with the hint to use bars or group the rest as "Other".
+- The cost walker costs an arc as a point-like mark. Every other mark still fails closed.
+- The model's grammar line names it. Replay: run 2's pie now draws (35 of 48 first time).
+
 ### No password lookup unless a local sandbox confines a command (yodex pod-paths-spy, 2026-11-28)
 
 - `resolveSandboxSpec` used to look up the real home at once (E-16; `lookupPasswdHome` runs `/usr/bin/id -P` or

@@ -1,4 +1,4 @@
-import { DISPLAY_LIMITS } from "./catalog.js";
+import { CHART_OPTIONAL_MARKS, DISPLAY_LIMITS } from "./catalog.js";
 import { isReservedName } from "./bounds.js";
 import { chartCost } from "./cost.js";
 import { arrived, attempt, collectedNow, fail, failAt, notice, report } from "./errors.js";
@@ -31,6 +31,8 @@ interface Walk {
   cells: number;
   /** A data block failed its check, so the fields and rows it would have made are unknown. */
   dataFaulted?: boolean;
+  /** The optional marks this client draws (ChartCheckOptions.marks); absent: every mark. */
+  marks?: ReadonlySet<string>;
 }
 
 type Rule = (v: unknown, path: Path, w: Walk) => void;
@@ -134,9 +136,10 @@ const outputs = (max: number): Rule => byType({ string: output, array: arr(outpu
 
 // ─── the vocabulary ───
 
-const MARKS = ["line", "area", "bar", "point", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot"];
-const REFUSED_MARKS = new Set(["image", "geoshape", "arc", "trail"]);
-const CHANNELS = ["x", "y", "x2", "y2", "color", "opacity", "size", "shape", "strokeDash", "text", "tooltip", "detail", "order"];
+const MARKS = ["line", "area", "bar", "point", "rule", "rect", "text", "tick", "errorband", "errorbar", "boxplot", "arc"];
+const OPTIONAL_MARKS: ReadonlySet<string> = new Set(CHART_OPTIONAL_MARKS);
+const REFUSED_MARKS = new Set(["image", "geoshape", "trail"]);
+const CHANNELS = ["x", "y", "x2", "y2", "theta", "color", "opacity", "size", "shape", "strokeDash", "text", "tooltip", "detail", "order"];
 const SERIES_CHANNELS = ["color", "strokeDash", "shape", "detail"] as const;
 const TYPES = enumOf("quantitative", "temporal", "ordinal", "nominal");
 const AGG_OPS = ["count", "valid", "missing", "distinct", "sum", "product", "mean", "average", "variance", "variancep", "stdev", "stdevp", "stderr", "median", "q1", "q3", "min", "max"];
@@ -317,6 +320,11 @@ const MARK_DEF = obj(
     fontWeight: byType({ string: enumOf("normal", "bold"), number: int(100, 900) }),
     text: str(200),
     cornerRadius: num(0, 100),
+    // a pie (arc): a donut's hole, its outer edge, the gap between slices; a label's distance from the centre (text)
+    innerRadius: num(0, 1_000),
+    outerRadius: num(0, 1_000),
+    padAngle: num(0, 1),
+    radius: num(0, 1_000),
     thickness: num(0, 100),
     extent: byType({ string: cutCi(enumOf("stderr", "stdev", "iqr", "min-max")), number: num(0, 10) }),
     clip: bool,
@@ -328,6 +336,7 @@ const MARK: Rule = (v, p, w) => {
   const type = isObj(v) ? v.type : v;
   const at = isObj(v) ? [...p, "type"] : p;
   if (typeof type === "string" && REFUSED_MARKS.has(type)) fail("VALIDATION_FAILED", at, `mark "${type}" is not allowed`, `marks: ${MARKS.join(", ")}`);
+  if (typeof type === "string" && w.marks && OPTIONAL_MARKS.has(type) && !w.marks.has(type)) fail("KIND_NOT_ALLOWED", at, `this client does not draw ${type} marks`, "use bar: one bar per category, sorted");
   if (typeof v === "string") return enumOf(...MARKS)(v, p, w);
   MARK_DEF(v, p, w);
 };
@@ -415,7 +424,17 @@ const VIEW_FIELDS: Record<string, Rule> = {
 const VIEW_KEYS = new Set(["data", "mark", "encoding", "layer", "vconcat", "transform", "params", ...Object.keys(VIEW_FIELDS)]);
 const COMPOSE_REFUSED = new Set(["facet", "repeat", "hconcat", "concat", "spec"]);
 
-function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; values: unknown[]; factor: number }): void {
+interface ViewScope {
+  depth: number;
+  values: unknown[];
+  factor: number;
+  /** The fields a transform in scope writes (its own and its parents'): a pie's slices are never counted on one. */
+  written: ReadonlySet<string>;
+  /** The encoding a view inherits from its parents (a layer's shared channels). */
+  encoding: Obj;
+}
+
+function checkView(view: unknown, path: Path, w: Walk, o: ViewScope): void {
   if (!isObj(view)) fail("VALIDATION_FAILED", path, `a view is an object; ${arrived(view)} arrived`);
   for (const k of Object.keys(view)) {
     if (COMPOSE_REFUSED.has(k)) report("VALIDATION_FAILED", [...path, k], `${k} is not allowed`, `compose with layer (at most ${DISPLAY_LIMITS.chartLayers}) or a top-level vconcat (at most ${DISPLAY_LIMITS.chartVconcat})`);
@@ -432,6 +451,8 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
   }
   const factor = o.factor * ((has(view, "transform") ? attempt(() => checkTransforms(view.transform, [...path, "transform"], w)) : 1) ?? 1);
   if (has(view, "params")) attempt(() => arr(PARAM, 8)(view.params, [...path, "params"], w));
+  const written = has(view, "transform") ? new Set([...o.written, ...writtenBy(view.transform)]) : o.written;
+  const encoding = isObj(view.encoding) ? { ...o.encoding, ...view.encoding } : o.encoding;
   if (values.length * factor > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", path, `${values.length * factor} rows after fold; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing, or show fewer series");
   if (has(view, "encoding")) {
     attempt(() => {
@@ -440,13 +461,17 @@ function checkView(view: unknown, path: Path, w: Walk, o: { depth: number; value
     });
   }
   const shape = shapes[0]!;
-  if (shape === "mark") return void attempt(() => MARK(view.mark, [...path, "mark"], w));
+  if (shape === "mark") {
+    attempt(() => MARK(view.mark, [...path, "mark"], w));
+    if ((isObj(view.mark) ? view.mark.type : view.mark) === "arc") checkSlices(encoding, values, factor, written, [...path, "mark"]);
+    return;
+  }
   if (shape === "vconcat" && o.depth > 0) fail("VALIDATION_FAILED", [...path, "vconcat"], "vconcat is allowed at the top level only");
   const children = view[shape];
   const max = shape === "layer" ? DISPLAY_LIMITS.chartLayers : DISPLAY_LIMITS.chartVconcat;
   if (!Array.isArray(children) || children.length === 0 || children.length > max) fail("VALIDATION_FAILED", [...path, shape], `${shape} takes 1 to ${max} views`);
   if (o.depth >= 3) fail("VALIDATION_FAILED", [...path, shape], "views nest at most three deep");
-  children.forEach((c, i) => attempt(() => checkView(c, [...path, shape, i], w, { depth: o.depth + 1, values, factor })));
+  children.forEach((c, i) => attempt(() => checkView(c, [...path, shape, i], w, { depth: o.depth + 1, values, factor, written, encoding })));
 }
 
 /** Marks that draw one item per row whatever their encoding: a continuous colour on them is a scale, not series. A
@@ -457,8 +482,63 @@ const ROW_MARKS: ReadonlySet<string> = new Set(["point", "tick", "rule", "text",
  *  makes is not counted here: the fold's own list bounds it). A quantitative or temporal colour on a view whose own
  *  mark draws a row per item is not counted (a heatmap's colour). Applies to a layer's or vconcat's shared encoding
  *  too, where every channel counts. */
+/** The fields `ts` writes: every `as`, a bin's `<as>_end`, and a fold's default key and value. */
+function writtenBy(ts: unknown): string[] {
+  if (!Array.isArray(ts)) return [];
+  const names = (as: unknown): string[] => (typeof as === "string" ? [as] : Array.isArray(as) ? as.filter((x): x is string => typeof x === "string") : []);
+  const out: string[] = [];
+  for (const t of ts) {
+    if (!isObj(t)) continue;
+    for (const k of ["aggregate", "window"]) if (Array.isArray(t[k])) for (const a of t[k] as unknown[]) if (isObj(a)) out.push(...names(a.as));
+    if (has(t, "bin")) {
+      const n = names(t.as);
+      out.push(...n, ...(n.length === 1 ? [`${n[0]}_end`] : []));
+    }
+    if (has(t, "timeUnit") || has(t, "stack")) out.push(...names(t.as));
+    if (has(t, "fold")) out.push(...(has(t, "as") ? names(t.as) : ["key", "value"]));
+  }
+  return out;
+}
+
+/** The channels an arc's count is modelled for. Any other channel on an arc (x, y, size, shape, strokeDash, text) is
+ *  refused: its effect on how many arcs Vega-Lite draws is not computed here. */
+const ARC_CHANNELS: ReadonlySet<string> = new Set(["theta", "color", "opacity", "tooltip", "detail", "order"]);
+
+/**
+ * At most chartSlices arcs a pie (an `arc` view) draws, counted with no inference (review R7, round 2), the way
+ * Vega-Lite builds them:
+ * - no channel aggregates: one arc per row after the transforms (every transform keeps or lowers the count but a
+ *   fold, whose factor is counted);
+ * - some channel aggregates: one arc per distinct combination of every unaggregated field channel (theta, colour,
+ *   detail, tooltip, order, opacity alike). The combinations are counted on the inline rows only when every such
+ *   field is a field of them that no transform in scope writes; otherwise the rows bound the count.
+ */
+function checkSlices(enc: Obj, values: unknown[], factor: number, written: ReadonlySet<string>, path: Path): void {
+  const defs: Array<{ channel: string; def: Obj }> = [];
+  for (const [channel, d] of Object.entries(enc)) {
+    for (const def of Array.isArray(d) ? d : [d]) {
+      if (!isObj(def)) continue;
+      if (!ARC_CHANNELS.has(channel)) {
+        report("VALIDATION_FAILED", path, `a pie takes ${[...ARC_CHANNELS].join(", ")}; ${channel} is not counted on one`, channel === "text" ? "put labels in a text layer" : "draw it with bars");
+        return;
+      }
+      defs.push({ channel, def });
+    }
+  }
+  const rows = values.length * factor;
+  const aggregated = defs.some(({ def }) => typeof def.aggregate === "string" || isObj(def.aggregate));
+  const group = [...new Set(defs.filter(({ def }) => typeof def.field === "string" && def.aggregate === undefined).map(({ def }) => def.field as string))];
+  const countable = aggregated && group.every((f) => !written.has(f) && values.some((r) => isObj(r) && has(r, f)));
+  const arcs = !aggregated ? rows : group.length === 0 ? 1 : countable ? new Set(values.map((r) => JSON.stringify(group.map((f) => (isObj(r) && has(r, f) ? (r[f] ?? null) : null))))).size : rows;
+  if (arcs <= DISPLAY_LIMITS.chartSlices) return;
+  const why = !aggregated ? `${arcs} slices (with nothing aggregated, each row is a slice)` : countable ? `${arcs} slices (one per ${group.join(" × ")})` : `up to ${rows} slices (${group.join(", ")} cannot be counted from the data, so each row may be a slice)`;
+  report("VALIDATION_FAILED", path, `${why}; a pie draws at most ${DISPLAY_LIMITS.chartSlices}`, 'aggregate theta (sum) by one field of at most 12 values, or keep the largest and group the rest as "Other" in the data');
+}
+
 function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): void {
   const markType = isObj(mark) ? mark.type : mark;
+  // a pie's colour is its slices (checkSlices)
+  if (markType === "arc") return;
   const rowMark = typeof markType === "string" && ROW_MARKS.has(markType);
   for (const ch of SERIES_CHANNELS) {
     const def = enc[ch];
@@ -477,7 +557,14 @@ function checkSeries(enc: Obj, values: unknown[], path: Path, mark: unknown): vo
 /** Vega-Lite's own top-level keys: a chart spec that has one of them and no vl is the vl, written one level up. */
 const VL_TOP_KEYS = ["mark", "encoding", "layer", "data", "transform"];
 
-export function checkChartSpec(raw: unknown, path: Path): ChartSpec {
+/** What a chart check takes from the run. */
+export interface ChartCheckOptions {
+  /** The optional marks (CHART_OPTIONAL_MARKS) this run's client draws; one outside them is KIND_NOT_ALLOWED. Absent: every
+   *  mark (an envelope's own check, on the client that drew it). */
+  marks?: ReadonlySet<string>;
+}
+
+export function checkChartSpec(raw: unknown, path: Path, opts: ChartCheckOptions = {}): ChartSpec {
   if (!isObj(raw)) fail("VALIDATION_FAILED", path, `a chart spec is { vl, series_order? }; ${arrived(raw)} arrived`);
   let spec = raw;
   if (!has(raw, "vl") && VL_TOP_KEYS.some((k) => has(raw, k))) {
@@ -492,8 +579,8 @@ export function checkChartSpec(raw: unknown, path: Path): ChartSpec {
   const at = [...path, "vl"];
   scan(vl, at, false);
   const before = collectedNow();
-  const w: Walk = { fields: new Set(), uses: [], totalRows: 0, cells: 0 };
-  checkView(vl, at, w, { depth: 0, values: [], factor: 1 });
+  const w: Walk = { fields: new Set(), uses: [], totalRows: 0, cells: 0, ...(opts.marks ? { marks: opts.marks } : {}) };
+  checkView(vl, at, w, { depth: 0, values: [], factor: 1, written: new Set(), encoding: {} });
   if (w.totalRows === 0 && !w.dataFaulted) report("VALIDATION_FAILED", at, "a chart needs inline data", "data: { values: [ {...}, ... ] } at the top level or on a layer");
   if (w.totalRows > DISPLAY_LIMITS.chartRows) report("ROWS_OVER_LIMIT", at, `${w.totalRows} inline rows; a chart draws at most ${DISPLAY_LIMITS.chartRows}`, "aggregate before showing");
   if (w.cells > DISPLAY_LIMITS.chartCells) report("ROWS_OVER_LIMIT", at, `${w.cells} cells; a chart draws at most ${DISPLAY_LIMITS.chartCells}`, "drop fields the chart does not encode");

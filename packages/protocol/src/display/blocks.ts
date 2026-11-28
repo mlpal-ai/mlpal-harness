@@ -1,7 +1,7 @@
 import { gridSpecSchema, kpisSpecSchema, type BlockSpec, type ChartSpec, type GridCell, type GridColumn, type GridSpec, type KpisSpec } from "./block-schemas.js";
 import { DISPLAY_LIMITS, type BlockKind } from "./catalog.js";
 import { checkBounds, isReservedName } from "./bounds.js";
-import { checkChartSpec } from "./chart.js";
+import { checkChartSpec, type ChartCheckOptions } from "./chart.js";
 import { checked, fail, notice, report, type DisplayCheck } from "./errors.js";
 import { CONTROL } from "./fields.js";
 import { parseShape } from "./shape.js";
@@ -110,10 +110,10 @@ function checkGrid(spec: unknown, path: Path): GridSpec {
 }
 
 /** Throwing form, for a caller already inside `checked`; `path` prefixes every error's path. */
-export function checkBlockSpec(kind: BlockKind, spec: unknown, path: Path): BlockSpec {
+export function checkBlockSpec(kind: BlockKind, spec: unknown, path: Path, opts: ChartCheckOptions = {}): BlockSpec {
   switch (kind) {
     case "chart":
-      return checkChartSpec(spec, path);
+      return checkChartSpec(spec, path, opts);
     case "kpis":
       return checkKpis(spec, path);
     case "grid":

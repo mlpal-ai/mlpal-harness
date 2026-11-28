@@ -44,7 +44,27 @@ export type DisplayErrorCode =
   | "RETRY_EXHAUSTED"
   /** The check itself failed on this input (a bug in the validator, never the model's fault). Typed so that no input
    *  can surface as an untyped error: the fallback is shown and the repair counted like any refusal. */
-  | "VALIDATION_INTERNAL";
+  | "VALIDATION_INTERNAL"
+  // media kinds (DISPLAY-PROTOCOL-v0.1-media §1.6), each named by the check that raises it
+  /** A media path that is malformed (NUL, too long), hidden (`.git` at any depth, `.mlpal*` at the root) or not a
+   *  path at all. */
+  | "PATH_NOT_ALLOWED"
+  /** A media path outside the workspace, after symlinks are resolved. */
+  | "PATH_OUTSIDE_WORKSPACE"
+  /** No file at the path. */
+  | "MEDIA_NOT_FOUND"
+  /** The path is a directory, a link, a device or another non-regular file. */
+  | "MEDIA_NOT_REGULAR"
+  /** Over the kind's size cap (DISPLAY_LIMITS.media). */
+  | "MEDIA_TOO_LARGE"
+  /** The bytes (by magic number, never the extension) are not a type the kind takes. */
+  | "MEDIA_TYPE_NOT_ALLOWED"
+  /** The file changed while it was checked. */
+  | "MEDIA_CHANGED"
+  /** A type the kind takes, but its header does not parse. */
+  | "MEDIA_UNREADABLE"
+  /** An image side over 16,384 pixels, or over 40 megapixels, read from the header before any decode. */
+  | "MEDIA_DIMENSIONS_TOO_LARGE";
 
 export interface DisplayError {
   code: DisplayErrorCode;

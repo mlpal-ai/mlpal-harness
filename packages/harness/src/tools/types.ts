@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks } from "@mlpal/harness-protocol";
+import type { DisplayEnvelope, ModelRefusal, SandboxRefusal, SubagentEvent, SubagentStreamEvent, ToolResultBlocks, Usage } from "@mlpal/harness-protocol";
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { host } from "../host";
@@ -28,6 +28,20 @@ export interface ToolContext {
   /** Raise an event on the calling session's stream while this call runs (a sub-agent's
    *  lifecycle, a child's forwarded events). Absent when the host has no stream to carry it. */
   emit?: (e: SubagentEvent | SubagentStreamEvent) => void;
+  /** Record what the call spends on the gateway beyond the turn's own model calls (GenerateImage's compute units), the
+   *  moment the gateway reports the charge. It is durable once the promise resolves (a resumed engine counts it), at
+   *  most once per tool call, and the turn's, so the session's, whatever the call does after. */
+  spend?: (usage: Usage) => Promise<void>;
+  /** This call's durable journal: what a tool with an outside effect must find again if its engine dies mid-call. */
+  journal?: ToolJournal;
+}
+
+/** A tool's durable notes about its own calls (the session's `tool_journal` events). */
+export interface ToolJournal {
+  /** Resolves once the entry is durable where the backend can resume. */
+  append(data: Record<string, unknown>): Promise<void>;
+  /** Every entry this session's calls of this tool wrote, oldest first. */
+  read(): Promise<Array<{ toolUseId: string; data: Record<string, unknown> }>>;
 }
 
 /** What a command-running tool consults before it spawns. Implemented by the sandbox. */
@@ -160,6 +174,14 @@ export interface Tool<I = unknown> {
   /** Per-CALL: this memory write reaches every later session, not just the workspace it was made in. Recon and
    *  read-only runs refuse such a call (permission/engine.ts) though they admit the tool's other memory writes. */
   isCallGlobalMemory?: (input: unknown) => boolean;
+  /** Per-CALL: why this call is always put to the person (a paid action past its threshold: GenerateImage's several
+   *  images, hd, or an estimate over the HOP's budget), or null. No mode, allow rule or envelope allow admits it
+   *  unasked; recon still refuses it. */
+  alwaysAsk?: (input: unknown) => string | null;
+  /** A call whose run began but whose engine died before its result (its `tool_started` marker): the resumed engine
+   *  calls this instead of recording the interrupted result, so the tool can reconcile from its journal (never by
+   *  doing the outside effect again). Absent: the interrupted result. */
+  recover?(input: I, ctx: ToolContext): Promise<ToolResult>;
   /** The input keys this tool declares. A key outside it may never reach the tool, so a rule that reads arguments
    *  cannot judge that call. Absent: any key. */
   declaredArgs?: ReadonlySet<string>;
@@ -221,8 +243,10 @@ export function defineTool<I>(def: {
   memory?: boolean;
   isCallReadOnly?: (input: unknown) => boolean;
   isCallGlobalMemory?: (input: unknown) => boolean;
+  alwaysAsk?: (input: unknown) => string | null;
   schema: z.ZodType<I>;
   call: (input: I, ctx: ToolContext) => Promise<ToolResult>;
+  recover?: (input: I, ctx: ToolContext) => Promise<ToolResult>;
 }): Tool<I> {
   const js = zodToJsonSchema(def.schema, { $refStrategy: "none" }) as Record<string, unknown>;
   // A schema that is no plain object (a union) says nothing about its keys here, and zod is its contract at the call.
@@ -240,6 +264,8 @@ export function defineTool<I>(def: {
     memory: def.memory,
     isCallReadOnly: def.isCallReadOnly,
     isCallGlobalMemory: def.isCallGlobalMemory,
+    ...(def.alwaysAsk ? { alwaysAsk: def.alwaysAsk } : {}),
+    ...(def.recover ? { recover: def.recover } : {}),
     ...(declared ? { declaredArgs: declared } : {}),
     schema: def.schema,
     jsonSchema: js,

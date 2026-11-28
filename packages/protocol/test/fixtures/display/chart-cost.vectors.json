@@ -23975,6 +23975,79 @@
  ],
  "accepted": [
   {
+   "name": "a pie of 12 slices",
+   "spec": {
+    "vl": {
+     "data": {
+      "values": [
+       {
+        "part": "p0",
+        "v": 1
+       },
+       {
+        "part": "p1",
+        "v": 2
+       },
+       {
+        "part": "p2",
+        "v": 3
+       },
+       {
+        "part": "p3",
+        "v": 4
+       },
+       {
+        "part": "p4",
+        "v": 5
+       },
+       {
+        "part": "p5",
+        "v": 6
+       },
+       {
+        "part": "p6",
+        "v": 7
+       },
+       {
+        "part": "p7",
+        "v": 8
+       },
+       {
+        "part": "p8",
+        "v": 9
+       },
+       {
+        "part": "p9",
+        "v": 10
+       },
+       {
+        "part": "p10",
+        "v": 11
+       },
+       {
+        "part": "p11",
+        "v": 12
+       }
+      ]
+     },
+     "mark": {
+      "type": "arc",
+      "innerRadius": 40
+     },
+     "encoding": {
+      "theta": {
+       "field": "v",
+       "type": "quantitative"
+      },
+      "color": {
+       "field": "part",
+       "type": "nominal"
+      }
+     }
+    }
+   }
+  },
+  {
    "name": "two measures folded over 2,500 rows, a line per measure (the fold's key has 2 values)",
    "spec": {
     "vl": {

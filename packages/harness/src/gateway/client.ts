@@ -1,3 +1,4 @@
+import { gatewayImages, type ImageGateway } from "./images";
 import type {
   BudgetSubject,
   ContentBlock,
@@ -190,6 +191,8 @@ export interface ModelClient {
   stream(req: ModelRequest): AsyncGenerator<StreamDelta | ModelSwitch, ModelResult, void>;
   /** Report a delegation outcome; fire-and-forget, must never throw or block the caller. */
   postFeedback?(fb: Feedback): void;
+  /** The gateway's images API on this client's credential (GenerateImage), when it has one. */
+  images?(): ImageGateway;
 }
 
 /** X-MLPal-Compute-Units → number, or undefined when missing/unparseable. Headers.get is
@@ -796,6 +799,10 @@ export class GatewayClient implements ModelClient {
         if (timer) clearTimeout(timer);
       },
     };
+  }
+
+  images(): ImageGateway {
+    return gatewayImages({ baseUrl: this.baseUrl, authorization: () => `Bearer ${this.bearer()}`, headers: this.onBehalf });
   }
 
   /** The bearer for one request: the key now, or the session token file's content now. */

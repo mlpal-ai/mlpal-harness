@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "client": "web",
+  "levels": [
+    "text",
+    "block",
+    "file"
+  ],
+  "catalogs": [
+    "harness.v1/1"
+  ],
+  "kinds": [
+    "chart",
+    "kpis",
+    "grid",
+    "image",
+    "image_set",
+    "audio",
+    "video",
+    "file"
+  ],
+  "media": {
+    "formats": [
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp",
+      "audio/mpeg",
+      "audio/wav",
+      "audio/ogg",
+      "audio/mp4",
+      "video/mp4",
+      "video/webm"
+    ],
+    "save_data": false
+  },
+  "viewport": "desktop",
+  "theme": "light",
+  "locale": "en-US",
+  "timeZone": "UTC"
+}

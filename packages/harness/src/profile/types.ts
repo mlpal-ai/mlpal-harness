@@ -351,6 +351,8 @@ export interface Profile {
   };
   budgets: {
     maxTurns: number;
+    /** GenerateImage: an estimate above this many compute units is always asked (default 0.05). */
+    imageAskOverCu?: number;
   };
   telemetry: {
     taskType: string;

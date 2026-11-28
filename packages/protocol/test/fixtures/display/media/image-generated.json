@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "block_id": "img-toolu-01",
+  "revision": 1,
+  "op": "snapshot",
+  "level": "block",
+  "kind": "image",
+  "catalog": "harness.v1/1",
+  "spec": {
+    "media": {
+      "path": "media/2026-11-28/hero-1.webp",
+      "mime": "image/webp",
+      "bytes": 412000,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "alt": "A lighthouse on a cliff at dusk, painted in watercolour",
+    "width": 1024,
+    "height": 1024,
+    "animated": false,
+    "made_by": {
+      "kind": "generated",
+      "model": "gpt-image-1",
+      "prompt": "a lighthouse on a cliff at dusk, watercolour",
+      "compute_units": 0.04
+    }
+  },
+  "fallback": {
+    "text": "A lighthouse on a cliff at dusk, painted in watercolour\nImage: hero-1.webp · WebP · 1024×1024 · 412 KB · media/2026-11-28/hero-1.webp"
+  },
+  "source": {
+    "by": "engine",
+    "tool_use_ids": [
+      "toolu_01"
+    ]
+  },
+  "status": "ok"
+}

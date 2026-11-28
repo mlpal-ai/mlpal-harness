@@ -99,13 +99,14 @@ export function parseFallbackShape(raw: unknown, path: Path): FallbackInput {
 }
 
 /** The fallback text's rules, on a well-formed fallback; the text comes back trimmed and neutralised. */
-export function checkFallbackText(input: FallbackInput, kind: unknown, path: Path): FallbackInput {
+/** `minChars: false` for a media block, whose fallback the engine completes with a line per file. */
+export function checkFallbackText(input: FallbackInput, kind: unknown, path: Path, opts: { minChars?: boolean } = {}): FallbackInput {
   const text = input.text.trim();
   const at = [...path, "text"];
   if (!text) fail("FALLBACK_MISSING", at, "the fallback text is empty", "state the conclusion and the key numbers");
   const chars = [...text].length;
   if (chars > DISPLAY_LIMITS.fallbackMaxChars) fail("FALLBACK_TOO_LONG", at, `${chars} characters; a fallback is at most ${DISPLAY_LIMITS.fallbackMaxChars}`, "keep the conclusion and key numbers; ask for a table with fallback.table instead of writing one");
-  if (chars < DISPLAY_LIMITS.fallbackMinChars) fail("FALLBACK_UNINFORMATIVE", at, `${chars} characters; a fallback is at least ${DISPLAY_LIMITS.fallbackMinChars}`, "a person who cannot see the block reads only this: state the conclusion and the key numbers");
+  if (opts.minChars !== false && chars < DISPLAY_LIMITS.fallbackMinChars) fail("FALLBACK_UNINFORMATIVE", at, `${chars} characters; a fallback is at least ${DISPLAY_LIMITS.fallbackMinChars}`, "a person who cannot see the block reads only this: state the conclusion and the key numbers");
   if (REFERENCE_ONLY.test(text)) fail("FALLBACK_UNINFORMATIVE", at, "the fallback only points at the block", "say what the block shows, not where to look");
   if (typeof kind === "string" && isBlockKind(kind) && !/\d/.test(text)) fail("FALLBACK_UNINFORMATIVE", at, `a ${kind} fallback states at least one number`, "give the key numbers the block shows");
   if (HTML.test(text)) fail("VALIDATION_FAILED", at, "the fallback is plain markdown: no HTML, no autolinks", 'write "less than" for a bare <, and links as [text](https://...)');

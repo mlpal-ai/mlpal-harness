@@ -1,4 +1,4 @@
-import { gridColumnSchema, kpiTileSchema, showInputSchema } from "@mlpal/harness-protocol";
+import { gridColumnSchema, kpiTileSchema, MEDIA_KINDS, showInputSchema } from "@mlpal/harness-protocol";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { sanitizeJsonSchema } from "../tools/types";
 
@@ -100,5 +100,31 @@ export const SHOW_JSON_SCHEMA: Js = (() => {
   constToEnum(js);
   js.properties.spec = SPEC;
   js.required = [...new Set([...(js.required ?? []), "spec"])];
+  return js;
+})();
+
+/** The schema for a client that draws media kinds: the same, with the media kinds named, their spec members, and
+ *  `fallback` optional (the engine writes a media block's lines). A client without media keeps SHOW_JSON_SCHEMA. */
+export const SHOW_MEDIA_JSON_SCHEMA: Js = (() => {
+  const js = structuredClone(SHOW_JSON_SCHEMA) as Js & { required: string[]; properties: Record<string, Js & { enum?: string[]; properties?: Record<string, Js>; description?: string }> };
+  const kind = js.properties.kind!;
+  kind.enum = [...(kind.enum ?? []), ...MEDIA_KINDS];
+  kind.description = `${kind.description ?? ""}; image: a picture in the workspace; image_set: 2 to 8 pictures to compare; audio, video: to play; file: a download card for anything else`;
+  const spec = js.properties.spec!;
+  const image = obj({ path: str("a workspace path (media/… for what you make, uploads/… for what the person attached); never a URL"), alt: str("what the image shows, for a person who cannot see it") }, undefined, ["path", "alt"]);
+  spec.properties = {
+    ...spec.properties,
+    path: str("image: the workspace path of a PNG, JPEG, GIF or WebP; never a URL"),
+    alt: str("image: what it shows, for a person who cannot see it"),
+    images: arr(image, "image_set: 2 to 8 images"),
+    chosen: { type: "integer", description: "image_set: the index of the one chosen" },
+    transcript: str("audio: what is said"),
+    duration_s: { type: "number", description: "audio, video: seconds, only if you know it" },
+    poster: str("video: the workspace path of a still image to show before it plays"),
+    name: str("file: the name the person sees (default: the file's name)"),
+  };
+  spec.description = `${spec.description}; image {path, alt}; image_set {images, chosen?}; audio {path, transcript?, duration_s?}; video {path, alt, poster?, duration_s?}; file {path, name?}`;
+  js.required = js.required.filter((k) => k !== "fallback");
+  js.properties.fallback!.description = `${js.properties.fallback!.description ?? ""}. Optional for the media kinds: the engine writes a line per file`;
   return js;
 })();

@@ -12,6 +12,7 @@ import {
   HUMAN,
   SYSTEM,
   type EngineEvent,
+  isMediaKind,
   isPersisted,
   type Message,
   type ResultEvent,
@@ -45,8 +46,8 @@ import type { SafetyReason } from "../permission/safety-envelope";
 import type { Effort } from "../gateway/client";
 import type { InboxConsume, Store } from "../store/types";
 import { runTool, type ToolRegistry } from "../tools/registry";
-import { createShowTool, displayInstructions, foldDisplayHistory, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
-import type { ExecPolicy, ToolResult } from "../tools/types";
+import { createShowTool, displayInstructions, foldDisplayHistory, localMediaProbe, resolveDisplay, SHOW_TOOL, type DisplayPolicy, type ShowTool } from "../display";
+import type { ExecPolicy, Tool, ToolContext, ToolResult } from "../tools/types";
 import { effectiveEntries, loadMessages } from "./messages";
 import { EventTooLargeError } from "../store/errors";
 import { diffStat } from "../usage/stats";
@@ -327,12 +328,15 @@ export interface AskContext {
   stamp?: RunStamp;
   /** E-12: an answerer's model spend, added to the asking turn's usage (its result and run.completed). */
   spend?: (usage: Usage) => void;
+  /** The call is always the person's (`Tool.alwaysAsk`: a paid action past its threshold), and why. */
+  alwaysAsk?: string;
 }
 
-/** An ask only the person may answer, one action at a time: a §10 safety edge, or a call a policy hook got no verdict
- *  on. No judge, session grant, project rule or live-mode raise stands in for the person's answer. */
+/** An ask only the person may answer, one action at a time: a §10 safety edge, a call a policy hook got no verdict
+ *  on, or a call that is always the person's (a paid action past its threshold). No judge, session grant, project rule
+ *  or live-mode raise stands in for the person's answer. */
 export function personOnlyAsk(ask: AskContext | undefined): boolean {
-  return Boolean(ask?.safetyReason || ask?.noVerdict);
+  return Boolean(ask?.safetyReason || ask?.noVerdict || ask?.alwaysAsk);
 }
 
 /** A PreToolUse policy hook's no verdict on the call: the mark the ask carries and the words the person reads. */
@@ -694,11 +698,16 @@ export class AgentSession {
   private readonly systemPrompt: string;
   /** The session's Show, when its client draws blocks: at a run's end it settles blocks left repairing (E3). */
   private showTool: ShowTool | null = null;
+  /** What this run's client draws, or null (no display: a tool's envelopes are dropped). */
+  private readonly displayPolicy: DisplayPolicy | null;
 
   constructor(private readonly cfg: AgentConfig) {
     this.maxTokens = cfg.maxTokens ?? 8192;
     this.maxTurns = cfg.maxTurns ?? 50;
-    const policy = cfg.display ? resolveDisplay(cfg.display) : null;
+    // a media kind needs the workspace's files on this machine (local hands); a host without them never offers one
+    const localFiles = (cfg.tools.handsRestriction ?? ["local"]).includes("local");
+    const policy = cfg.display ? resolveDisplay(cfg.display, { media: localFiles }) : null;
+    this.displayPolicy = policy;
     this.tools = policy ? this.withShow(policy) : cfg.tools;
     this.systemPrompt = policy ? `${cfg.systemPrompt}\n\n${displayInstructions(policy)}` : cfg.systemPrompt;
     // Estimate the tool-schema block once: the JSON the gateway sends as `tools`, which the
@@ -712,6 +721,15 @@ export class AgentSession {
     }
   }
 
+  /** The envelopes a tool's result may carry to this run's client: only what it declared it draws (a GenerateImage
+   *  image to a client without the image kind is dropped; its text still reaches the step). */
+  private drawable(display: DisplayEnvelope[] | undefined): DisplayEnvelope[] | undefined {
+    const policy = this.displayPolicy;
+    if (!display || !policy) return undefined;
+    const kept = display.filter((e) => e.level === "text" || policy.kinds.has(e.kind));
+    return kept.length ? kept : undefined;
+  }
+
   /** The display protocol's Show tool on a view of the host's registry. Its history is the session's record as it
    *  stands at each call, after rewinds. */
   private withShow(policy: DisplayPolicy): ToolRegistry {
@@ -723,6 +741,7 @@ export class AgentSession {
       history: async (toolUseId) => foldDisplayHistory(effectiveEntries(await this.store.conversation.read(cfg.sessionId)), toolUseId),
       logger: log,
       metrics: cfg.metrics ?? noopMetrics,
+      ...([...policy.kinds].some((k) => isMediaKind(k)) ? { probe: localMediaProbe } : {}),
     });
     this.showTool = show;
     return cfg.tools.withTools([show]);
@@ -1985,6 +2004,72 @@ export class AgentSession {
     await this.store.appendEvent(this.cfg.sessionId, "tool_started", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, entry: at.entry, index: at.index, ts: now() });
   }
 
+  /**
+   * A call's durable records (review R5): `spend`, its gateway charge, as a `tool_spend` event the moment it is
+   * reported, at most once per call, and the turn's (a resumed engine adds those of the turn it continues); `journal`,
+   * the tool's own notes (`tool_journal`), so a call whose engine died can be reconciled without repeating its effect.
+   */
+  private callRecords(tu: ToolUseBlock): Pick<ToolContext, "spend" | "journal"> {
+    const append = this.store.appendEvent?.bind(this.store);
+    const read = this.store.readEvents?.bind(this.store);
+    const sessionId = this.cfg.sessionId;
+    // the turn's at once (a tool that does not await it still counts), at most once per call; durable when it resolves
+    const spend = (usage: Usage): Promise<void> => {
+      if (this.spentCalls.has(tu.id)) return Promise.resolve();
+      this.spentCalls.add(tu.id);
+      this.askSpend?.(usage);
+      return append ? append(sessionId, "tool_spend", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, usage, ts: now() }).then(() => undefined) : Promise.resolve();
+    };
+    if (!append || !read) return { spend };
+    return {
+      spend,
+      journal: {
+        append: async (data) => {
+          await append(sessionId, "tool_journal", { ...this.stampFields(), toolUseId: tu.id, name: tu.name, data, ts: now() });
+        },
+        read: async () =>
+          (await read(sessionId, "tool_journal"))
+            .filter((e) => e.name === tu.name && typeof e.toolUseId === "string")
+            .map((e) => ({ toolUseId: e.toolUseId as string, data: (e.data ?? {}) as Record<string, unknown> })),
+      },
+    };
+  }
+
+  /** The charges of `entries`' tool calls already on record (`tool_spend`), for a resumed turn's usage. */
+  private async recordedSpend(entries: ConversationEntry[]): Promise<Usage> {
+    const ids = new Set<string>();
+    for (const e of entries) if (e.payload.type === "assistant") for (const b of e.payload.message.content as ContentBlock[]) if (b.type === "tool_use") ids.add(b.id);
+    const events = (await this.store.readEvents?.(this.cfg.sessionId, "tool_spend")) ?? [];
+    return events.filter((e) => typeof e.toolUseId === "string" && ids.has(e.toolUseId)).reduce<Usage>((u, e) => addUsage(u, e.usage as unknown as Usage), emptyUsage());
+  }
+
+  /** A started call's reconciliation on resume (`Tool.recover`), as its result. */
+  private async recoverTool(tu: ToolUseBlock, tool: Tool, log: Logger): Promise<ToolResultEvent> {
+    const { cfg } = this;
+    // a charge the dead engine recorded is already the turn's (resumeTurn): it is never recorded or counted again
+    for (const e of (await this.store.readEvents?.(cfg.sessionId, "tool_spend")) ?? []) if (typeof e.toolUseId === "string") this.spentCalls.add(e.toolUseId);
+    let res: ToolResult;
+    try {
+      res = await tool.recover!(tu.input, {
+        cwd: cfg.cwd,
+        roots: cfg.roots ?? [cfg.cwd],
+        ...(cfg.signal ? { signal: cfg.signal } : {}),
+        sessionId: cfg.sessionId,
+        ...(this.currentRun ? { runId: this.currentRun } : {}),
+        exec: cfg.exec,
+        toolUseId: tu.id,
+        ...this.callRecords(tu),
+      });
+    } catch (e) {
+      log.warn("resume: a tool's recovery failed", { tool: tu.name, toolUseId: tu.id, error: (e as Error).message });
+      return { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: `${INTERRUPTED_TOOL_RESULT}\n(its recovery failed: ${(e as Error).message.slice(0, 200)})`, isError: true, ts: now() };
+    }
+    const display = this.drawable(res.meta?.display);
+    const raw = res.content;
+    const content = res.meta?.displayText ?? (typeof raw === "string" ? raw : summarizeBlocks(raw));
+    return { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content, ...(typeof raw === "string" ? {} : { blocks: raw }), ...(display ? { display } : {}), isError: res.isError ?? false, ts: now() };
+  }
+
   /** Persists a tool result. One too large for the session store becomes an error result the model
    *  can act on, persisted in its place; any other failure propagates. */
   private async appendToolResult(trEvt: ToolResultEvent, parent: string | null): Promise<{ event: ToolResultEvent; uuid: string }> {
@@ -2025,7 +2110,11 @@ export class AgentSession {
     // The turn's model calls so far, so the resumed run's result counts the whole turn; past a park, only those
     // after it (the park's result counted the rest).
     const spent = held && turnEntries[0] === held.turn[0] ? all.slice(held.resultAt + 1) : turnEntries;
-    const usage = spent.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage());
+    // the turn's model calls, and the gateway charges its tools recorded before the engine died (review R5)
+    const usage = addUsage(
+      spent.reduce((u, e) => (e.payload.type === "assistant" ? addUsage(u, e.payload.usage) : u), emptyUsage()),
+      await this.recordedSpend(spent),
+    );
     yield* this.continueTurn(turnEntries, usage);
     return { resumed: true };
   }
@@ -2110,7 +2199,11 @@ export class AgentSession {
     const started = await this.startedCalls();
     for (const { tu, at } of pending) {
       let result: ToolResultEvent;
-      if (started(at)) {
+      const recoverable = started(at) ? await this.tools.resolve(tu.name) : undefined;
+      if (started(at) && recoverable?.recover) {
+        log.warn("resume: a started tool reconciles from its journal", { tool: tu.name, toolUseId: tu.id });
+        result = await this.recoverTool(tu, recoverable, log);
+      } else if (started(at)) {
         log.warn("resume: a started tool is not run again", { tool: tu.name, toolUseId: tu.id });
         result = { type: "tool_result", toolUseId: tu.id, toolName: tu.name, content: INTERRUPTED_TOOL_RESULT, isError: true, ts: now() };
       } else if (o.duplicated) {
@@ -2195,6 +2288,7 @@ export class AgentSession {
     // satisfy the call — the permission check below needs the real readOnly/edits flags.
     const tool = await this.tools.resolve(tu.name);
     const undeclared = undeclaredArgs(tool, input);
+    const alwaysAsk = tool?.alwaysAsk?.(input) ?? null;
     const permReq: PermissionRequest = {
       toolName: tu.name,
       input,
@@ -2203,6 +2297,7 @@ export class AgentSession {
       isMemory: tool?.memory ?? false,
       isGlobalMemory: tool?.isCallGlobalMemory?.(input) ?? false,
       ...(undeclared.length ? { undeclaredArgs: undeclared } : {}),
+      ...(alwaysAsk ? { alwaysAsk } : {}),
       principal,
       cwd: cfg.cwd,
       roots: cfg.roots ?? [cfg.cwd],
@@ -2241,6 +2336,7 @@ export class AgentSession {
           exec: cfg.exec,
           toolUseId: tu.id,
           emit: (e) => this.emitSide(e),
+          ...this.callRecords(tu),
         }),
         cfg.signal,
       );
@@ -2249,7 +2345,7 @@ export class AgentSession {
       diff = res.meta?.diff;
       refusal = res.meta?.refusal;
       sandboxRefusal = res.meta?.sandboxRefusal;
-      display = res.meta?.display;
+      display = this.drawable(res.meta?.display);
       displayText = res.meta?.displayText;
       // An ALLOWED call is observed only now: a tool's own boundary (roots) can still refuse it,
       // and the trace must record the effective outcome, not the cascade's permission.
@@ -2310,7 +2406,8 @@ export class AgentSession {
     // no answer means the ask proceeds exactly as before. It is told when the call's policy check reached no verdict.
     if (this.cfg.hooks?.has("PermissionRequest")) {
       const results = await this.cfg.hooks.run({ event: "PermissionRequest", toolName: req.toolName, input: req.input, ...(d.reason ? { reason: d.reason } : {}), ...(d.safetyReason ? { safetyReason: d.safetyReason } : {}), ...(undecided ? { noVerdict: undecided.noVerdict } : {}) }, this.hookCtx());
-      const answer = results.find((r) => r.decision);
+      // a hook may refuse a call that is always the person's, never approve it
+      const answer = results.find((r) => r.decision && !(req.alwaysAsk && r.decision === "allow"));
       if (answer?.decision) {
         const decided: Decision = answer.decision === "allow" ? { behavior: "allow" } : { behavior: "deny", reason: answer.reason ?? "denied by hook" };
         return { decision: decided.behavior === "allow" ? decided : this.observed(req, decided, "policy"), via: "policy" };
@@ -2328,6 +2425,7 @@ export class AgentSession {
         stamp: this.stamp(),
         ...(spend ? { spend } : {}),
         ...(undecided ? { noVerdict: undecided.noVerdict } : {}),
+        ...(req.alwaysAsk ? { alwaysAsk: req.alwaysAsk } : {}),
       });
       if (answered) {
         return { decision: answered.behavior === "allow" ? answered : this.observed(req, answered, "interactive"), via: "interactive" };
@@ -2336,7 +2434,7 @@ export class AgentSession {
     // A §10 safety edge with no interactive answerer (with `every_ask`, any ask): park the whole run
     // (stop-and-wait) instead of denying just this action and continuing — the infra HOP must not
     // proceed past the edge.
-    if ((d.safetyReason && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
+    if (((d.safetyReason || req.alwaysAsk) && this.cfg.parkHeadless) || this.cfg.parkHeadless === "every_ask") {
       this.observed(req, d, "headless_park");
       throw new SafetyParkSignal(parkCommand(req.input), d.safetyReason ?? "approval_required", call, parkedCall(req), undecided ? { noVerdict: undecided.noVerdict, detail: undecided.text } : undefined);
     }
@@ -2402,6 +2500,8 @@ export class AgentSession {
   private currentRun: string | null = null;
   /** The running turn's usage sink for an ask's answerer (E-12); null between turns. */
   private askSpend: ((usage: Usage) => void) | null = null;
+  /** The tool calls whose gateway charge this engine has recorded (`ToolContext.spend`): once per call. */
+  private readonly spentCalls = new Set<string>();
   /** C1 §7.4: the reason of the abuse marker this run's model ended a reply with; reported on its result. */
   private abuseReason: string | null = null;
   private currentPrompt: string | null = null;
