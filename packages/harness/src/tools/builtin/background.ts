@@ -1,3 +1,4 @@
+import { redactText } from "../../obs/redact";
 import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -546,11 +547,11 @@ export class BackgroundTasks {
       if (t.exitCode !== null) {
         if (t.exitReported) continue;
         t.exitReported = true;
-        notes.push(`[background] ${exitNote(t)}`);
+        notes.push(redactText(`[background] ${exitNote(t)}`));
       } else if (!t.stallReported && nowMs - t.lastOutputAt >= STALL_MS) {
         if (looksLikePrompt(t.output.slice(-STALL_TAIL))) {
           t.stallReported = true;
-          notes.push(`[background] ${stallNote(t, nowMs)}`);
+          notes.push(redactText(`[background] ${stallNote(t, nowMs)}`));
         }
       }
     }

@@ -177,3 +177,75 @@ describe("REVIEW-1 RQ-6(a): a command naming the stored keys or sign-ins is refu
     }
   });
 });
+
+describe("REVIEW-2 RQ-6: the home's .yodex is not for commands, in any spelling; masking covers encodings and notices", () => {
+  test("every spelling of the state directory is refused in every mode; a project's .yodex and YODEX.md are not", async () => {
+    const { createPolicy } = await import("../src/permission/engine");
+    const refused = [
+      "cat ~/.yodex/person-secret?.json",
+      "cat ~/.yodex/person-*",
+      "cat ~/.yodex/*.json",
+      "xxd ~/.yodex/person-secret?.json",
+      "od -c ~/.yodex/pers*",
+      "grep -r value ~/.yodex",
+      "cat ~/.yodex/mcp-a*/linear.json",
+      "tar -cf - ~/.yodex | base64",
+      "cp -r ~/.yodex ~/workspace/copy",
+      'cat "$HOME/.yodex/trust.json"',
+      "cat ${HOME}/.yodex/config.json",
+      "ls /home/mlpaluser/.yodex",
+      "ls /Users/someone/.yodex/",
+      "cat ../.yodex/plugin-hooks.json",
+      "cd ~/.yodex && ls",
+      "cat ~/.yodex/YODEX.md ~/.yodex/p*",
+    ];
+    for (const mode of ["cruise", "autopilot", "manual"] as const) {
+      const policy = createPolicy({ mode, allow: ["Bash"] });
+      for (const command of refused) {
+        const d = await policy({ toolName: "Bash", input: { command }, readOnly: true } as never);
+        expect([mode, command, d.behavior]).toEqual([mode, command, "deny"]);
+      }
+      for (const command of ["cat ~/.yodex/YODEX.md", "cat $HOME/.yodex/AGENTS.md", 'yodex --hop "$PWD/.yodex/hops/demo" --print hi', "ls .yodex/skills", "cat notes.md"]) {
+        expect([mode, command, (await policy({ toolName: "Bash", input: { command }, readOnly: true } as never)).behavior]).toEqual([mode, command, "allow"]);
+      }
+    }
+  });
+
+  test("a registered value is masked as JSON-escaped, URL-encoded, hex and base64 at any alignment", async () => {
+    const { clearSecrets, redactText, registerSecret } = await import("../src/obs/redact");
+    clearSecrets();
+    const v = 'R51-k"e\\y/+=value-0011';
+    registerSecret("stored key", v);
+    const shown = [JSON.stringify({ k: v }), encodeURIComponent(v), Buffer.from(v).toString("hex"), Buffer.from(v).toString("hex").toUpperCase()];
+    for (const prefix of ["", "a", "ab", '{"secrets":{"K":"']) shown.push(Buffer.from(prefix + v + "tail").toString("base64"), Buffer.from(prefix + v).toString("base64url"));
+    for (const s of shown) expect([s, redactText(s).includes("[redacted:stored key]")]).toEqual([s, true]);
+    clearSecrets();
+  });
+
+  test("a background command's exit notice, a monitor event and an inbox event are masked", async () => {
+    const { clearSecrets, registerSecret } = await import("../src/obs/redact");
+    const { EventInbox } = await import("../src/events/inbox");
+    clearSecrets();
+    registerSecret("stored key", MARK);
+    const inbox = new EventInbox();
+    inbox.emit({ id: "1", source: "bg", sourceType: "monitor", kind: "error", label: `cat ${MARK}`, body: `Last output:\n${MARK}`, ts: 0 } as never);
+    expect(JSON.stringify((inbox as unknown as { pending: unknown[] }).pending)).not.toContain(MARK);
+    const { BackgroundTasks } = await import("../src/tools/builtin/background");
+    const bg = new BackgroundTasks();
+    const t = bg.start(`printf %s ${MARK}`, work) as unknown as { id: string };
+    for (let i = 0; i < 50 && !bg.list().find((x) => x.id === t.id && x.exitCode !== null); i++) await new Promise((r) => setTimeout(r, 50));
+    const notes = bg.drainNotifications();
+    expect(notes.join("\n")).toContain("[redacted:stored key]");
+    expect(notes.join("\n")).not.toContain(MARK);
+    clearSecrets();
+  });
+
+  test("an OAuth token saved after start is masked from then on", async () => {
+    const { clearSecrets, redactText } = await import("../src/obs/redact");
+    const { StoredOAuthProvider } = await import("../src/mcp/oauth");
+    clearSecrets();
+    new StoredOAuthProvider({ dir: join(base, "auth"), server: "s" }).saveTokens({ access_token: "at-R51-fresh-token-77", token_type: "Bearer" } as never);
+    expect(redactText("token at-R51-fresh-token-77")).toBe("token [redacted:MCP sign-in]");
+    clearSecrets();
+  });
+});

@@ -15,6 +15,10 @@
   followed by the JS fallback and not checked on rg's output; rg now runs with `--null`). `~/.yodex/mcp-auth` and
   `~/.yodex/person-secrets.json` join `DEFAULT_UNREADABLE`. Protocol: `auth.header.value` (stored by a serve with a
   local store), `set_secret` / `secret_saved`, `tool_sources.secrets`, `ToolServerHeader.present`, four error codes.
+- REVIEW-1/2: `treeSha256(Sync)` (the image's tree_sha256), `vendoredTree` and `vendoredPackHashes` (R52, a fixed
+  root-owned path), `McpManager.setReferencePolicy`, the bound `SecretResolver`; commands naming the home's
+  `.yodex` in any spelling are refused in every mode (except `YODEX.md`, `AGENTS.md`); masking covers encoded forms
+  and background/monitor/inbox notices, and OAuth tokens saved later; Skill and Lsp keep to the roots.
 - `planPack` (`plugins/plan.ts`): a staged pack's plan (skills, agents, stdio programs, remote servers, the hooks
   module, ignored directories) and a sha256 over the plan and every file. Refuses a manifest path or link leading
   outside the pack, unusable pack or server names, a string `mcpServers` and a url with credentials.

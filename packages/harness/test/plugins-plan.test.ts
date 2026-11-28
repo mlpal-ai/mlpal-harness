@@ -153,3 +153,18 @@ describe("REVIEW-1 RQ-2: vendored by the image is the file-ownership fact, never
     expect(vendoredTree(dir).vendored).toBe(false);
   });
 });
+
+describe("R52: the image's packs by content, listed in one root-owned file", () => {
+  test("a listed hash is read only from a root-owned, not group/other-writable file and ancestors; else nothing", () => {
+    const { vendoredPackHashes } = require("../src/plugins/vendored") as typeof import("../src/plugins/vendored");
+    const dir = pack({ "a.txt": "x" });
+    const file = join(dirname(dir), "vendored-packs.json");
+    writeFileSync(file, JSON.stringify({ browser: "a".repeat(64), bad: "nope" }));
+    const root = () => ({ uid: 0, mode: 0o100644 });
+    expect(vendoredPackHashes({ file, uid: 1000, stat: root })).toEqual({ browser: "a".repeat(64) });
+    expect(vendoredPackHashes({ file, uid: 1000, stat: (p) => (p === file ? { uid: 1000, mode: 0o100644 } : root()) })).toEqual({});
+    expect(vendoredPackHashes({ file, uid: 1000, stat: (p) => (p === dirname(file) ? { uid: 0, mode: 0o40777 } : root()) })).toEqual({});
+    expect(vendoredPackHashes({ file, uid: 0, stat: root })).toEqual({});
+    expect(vendoredPackHashes({ file: join(dirname(dir), "absent.json"), uid: 1000, stat: root })).toEqual({});
+  });
+});

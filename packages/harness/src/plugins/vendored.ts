@@ -1,4 +1,4 @@
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -50,4 +50,34 @@ export function vendoredTree(dir: string, opts: VendoredOptions = {}): VendoredC
     if (s.uid !== 0 || (s.mode & 0o022) !== 0) return { vendored: false, why: "written by this user, not vendored by the image" };
   }
   return { vendored: true };
+}
+
+/**
+ * Ruling R52: the image names its packs by content. `/opt/mlpal/config/vendored-packs.json` (`{name: tree_sha256}`),
+ * written at build time with `yodex plugin hash <dir>` (the very treeSha256 that later checks it), lists the packs the
+ * image ships. A pack is the platform's when its tree, recomputed at every start, is the one listed for its name. The
+ * path is fixed here: no setting, flag or environment variable can point elsewhere (the person's env and config would
+ * otherwise vouch for their own pack). The file and every directory above it must be root's and writable by no group
+ * or other, and this process must not be root; otherwise, or when the file is absent or does not parse, nothing is
+ * vendored this way.
+ */
+export const VENDORED_PACKS_FILE = "/opt/mlpal/config/vendored-packs.json";
+
+export function vendoredPackHashes(o: { file?: string; uid?: number; stat?: (path: string) => { uid: number; mode: number } } = {}): Record<string, string> {
+  const file = o.file ?? VENDORED_PACKS_FILE;
+  const uid = o.uid ?? process.getuid?.();
+  if (uid === undefined || uid === 0) return {};
+  const stat = o.stat ?? ((path: string) => statSync(path));
+  try {
+    for (let p = file; ; p = dirname(p)) {
+      const s = stat(p);
+      if (s.uid !== 0 || (s.mode & 0o022) !== 0) return {};
+      if (dirname(p) === p) break;
+    }
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string" && /^[0-9a-f]{64}$/.test(e[1])));
+  } catch {
+    return {};
+  }
 }

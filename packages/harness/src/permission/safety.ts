@@ -269,10 +269,24 @@ const PROTECTED_READ = [
   { test: /\.yodex\/+mcp-auth\b|(^|[\s'"=])mcp-auth\//, reason: "the person's MCP sign-ins (~/.yodex/mcp-auth)" },
 ];
 
-/** A deny reason when the command names a file of PROTECTED_READ, else null. */
+/**
+ * REVIEW-2 RQ-6(a): the engine's own state directory, the home's `.yodex`, in any spelling a command can name it with
+ * (the spellings the workspace image's guard lists for `.mlpal`): `~/`, `$HOME`, `${HOME}`, an absolute home
+ * (`/home/<user>`, `/Users/<user>`, `/root`), and `../` out of the workspace into the home. A project's own
+ * `.yodex/` (a relative path, `$PWD/.yodex/hops/…`) is not this. Refused in every mode, bypass-immune, except the
+ * exact files the HOPs' skills tell the agent to read: `YODEX.md` (the environment's own description) and
+ * `AGENTS.md`.
+ */
+const STATE_DIR = /(?:(?:~|\$HOME|\$\{HOME\}|\/home\/[^/\s"'`]+|\/Users\/[^/\s"'`]+|\/root)\/+|(?:\.\.\/+)+)\.yodex(?=$|[/\s"'`;|&)<>*?[])([^\s"'`;|&)<>]*)/g;
+const STATE_READABLE = new Set(["/YODEX.md", "/AGENTS.md"]);
+
+/** A deny reason when the command names a file of PROTECTED_READ or reaches the home's `.yodex`, else null. */
 export function protectedReadDeny(command: string): string | null {
   for (const c of [command, ...splitShellCommands(command)]) {
     for (const rule of PROTECTED_READ) if (rule.test.test(c)) return `blocked: ${rule.reason} is not for commands`;
+    for (const m of c.matchAll(STATE_DIR)) {
+      if (!STATE_READABLE.has(m[1] ?? "")) return "blocked: the engine's own state (~/.yodex) is not for commands; ~/.yodex/YODEX.md and ~/.yodex/AGENTS.md are the files to read";
+    }
   }
   return null;
 }
