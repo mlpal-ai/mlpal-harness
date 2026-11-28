@@ -1,5 +1,6 @@
 import type { HopView } from "@mlpal/harness-protocol";
 import type { Profile } from "./types";
+import { describeUi } from "./ui";
 
 /**
  * The serialisable view of a composed HOP, for a frontend's HOP panel (`describe_hop`). It is
@@ -44,5 +45,6 @@ export function describeProfile(p: Profile): HopView {
     tunable: p.tunable,
     modules: p.modules,
     ...(p.warnings?.length ? { warnings: p.warnings } : {}),
+    ...(p.ui ? { ui: describeUi(p.ui) } : {}),
   };
 }

@@ -2,6 +2,7 @@ import type { Author } from "./author.js";
 import type { ContentBlock } from "./content.js";
 import type { PeerMessage } from "./control.js";
 import type { DisplayCaps } from "./display/caps.js";
+import type { HomeBlock, HomeView, HopUiView } from "./home.js";
 import type { PageContextV1 } from "./page-context.js";
 import type { AskOutcome, AskQuestion } from "./questions.js";
 import type { EngineEvent, ModelRefusal, PolicyNoVerdict, SDKMessage } from "./sdk.js";
@@ -99,7 +100,8 @@ export type ServerCapability =
   | "concurrent_runs" // 0.26.3: one connection runs several sessions at once; each run's frames carry its sessionId, interrupt {sessionId} stops only it
   | "session_archive" // 0.26.4: archive_sessions / delete_session, list_sessions.archived, SessionSummary.archivedAt
   | "incognito" // 0.26.5: run.memory "incognito" starts a session with memory off; SessionSummary.memory
-  | "display"; // 0.26.8: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
+  | "display" // 0.26.8: run.display is honoured: the Show tool is offered and tool_result.display carries what it showed
+  | "hop_home"; // W3-1: get_home → home, then home_update per block: the HOP's declared starters and home blocks (home.ts)
 
 /** 0.22.0: a schedule as a client writes it (SCHEDULES-WIRE.md §1). `cadence`: `every <dur>` | `daily@HH:MM` | a
  *  5-field cron; `timezone`: IANA, required; `delivery`: the store is always a sink; `mode`: a new conversation per
@@ -210,6 +212,8 @@ export interface HopView {
   tunable: Array<{ path: string; range: [number, number] | string[] }>;
   modules: Record<string, { prompt: string; tools?: string[]; enabled: boolean; description?: string }>;
   warnings?: string[];
+  /** W3-1: the HOP's declared starters and home blocks; absent when hop.yaml has no `ui`. */
+  ui?: HopUiView;
 }
 
 /** One HOP a serve can run (capability "hop_per_run"). `current` is the serve's own, in-process;
@@ -552,6 +556,8 @@ export type ClientMessage =
   /** yodex/2 (capability "describe_hop"): the view of a HOP, the server's own when unnamed;
    *  `hop` bare or as `name@version` (a version that is not installed is an error). */
   | { type: "describe_hop"; requestId?: string; hop?: string }
+  /** W3-1 (capability "hop_home"): the home of a HOP, the server's own when unnamed (`hop` as on describe_hop). */
+  | { type: "get_home"; requestId: string; hop?: string }
   /** 0.22.0 (capability "schedules"): the schedules this principal may see; replies `schedules`. */
   | { type: "list_schedules"; requestId: string }
   | { type: "add_schedule"; requestId: string; schedule: ScheduleSpec }
@@ -640,6 +646,10 @@ export type ServerMessage =
   | { type: "session_defaults"; requestId?: string; sessionId: string; defaults: SessionDefaults }
   /** yodex/2 (capability "describe_hop"). */
   | { type: "hop"; requestId?: string; hop: HopView }
+  /** W3-1 (capability "hop_home"): the cached view, at once. */
+  | ({ type: "home"; requestId: string } & HomeView)
+  /** W3-1 (capability "hop_home"): one block after its refresh, on the connection that asked; replaces that block. */
+  | { type: "home_update"; hop: string; block: HomeBlock }
   /** 0.22.0 (capability "schedules"). */
   | { type: "schedules"; requestId: string; schedules: ScheduleView[] }
   | { type: "schedule"; requestId: string; schedule: ScheduleView }

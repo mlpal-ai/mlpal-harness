@@ -68,12 +68,15 @@ export type Note = z.infer<typeof noteSchema>;
  *  slices that map tool results and draw host blocks. */
 export const displaySourceSchema = z
   .object({
-    by: z.literal("model"),
+    by: z.enum(["model", "host"]),
+    /** W3-1: what the host drew the block from, present exactly when `by` is `host`: `home`, a HOP's home script. */
+    origin: z.literal("home").optional(),
     /** The tool calls of this session whose results the block shows (every one checked to exist). */
     tool_use_ids: z.array(z.string()).max(DISPLAY_LIMITS.sources).optional(),
     as_of: z.string().datetime({ offset: true }).optional(),
   })
-  .strict();
+  .strict()
+  .refine((s) => (s.by === "host") === (s.origin !== undefined), { message: "origin is given exactly when by is host", path: ["origin"] });
 export type DisplaySource = z.infer<typeof displaySourceSchema>;
 
 /** Every other string of an envelope (title, caption, note text, cells, labels, chart data) is plain text: a client

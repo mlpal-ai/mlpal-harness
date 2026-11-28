@@ -1,4 +1,5 @@
 import type { SandboxPolicy } from "../sandbox/spec";
+import type { HopUi } from "./ui";
 /**
  * HOPs — Harness Optimization Profiles: the declarative, versioned artifact that
  * configures the agent LOOP, not just its edges. A plugin adds capability (tools,
@@ -397,6 +398,8 @@ export interface Profile {
   warnings?: string[];
   /** memory v10: capability modules (resolved prompt text, tools, enabled) keyed by name. */
   modules: Record<string, { prompt: string; tools?: string[]; enabled: boolean; description?: string }>;
+  /** W3-1: the HOP's declared starters and home blocks (ui.ts). Not inherited. Absent => none. */
+  ui?: HopUi;
 }
 
 /** v1.1 §9.2 — the deviation kinds a HOP may oblige the agent to memorise. Closed set. */
