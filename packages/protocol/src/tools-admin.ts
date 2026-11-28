@@ -68,6 +68,9 @@ export interface ToolServerVariable {
   name: string;
   granted: boolean;
   refused?: true;
+  /** "platform": granted by MLPal with a pack that is the image's own (vendored); not the person's to revoke (the pack
+   *  can be turned off). Absent: the person's grant, or none. */
+  grantedBy?: "platform";
 }
 
 /** Where a header's secret can be kept by this serve: "local" (the serve's own store, `~/.yodex/person-secrets.json`,
